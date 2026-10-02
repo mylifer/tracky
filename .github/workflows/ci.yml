@@ -15,11 +15,17 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            artifact: tracky-probe-macos-arm64
+            probe: tracky-probe-macos-arm64
             exe: tracky-probe
+            app: kum-macos-arm64
+            bundles: app,dmg
+            bundle_path: target/release/bundle/dmg/*.dmg
           - os: windows-latest
-            artifact: tracky-probe-windows-x64
+            probe: tracky-probe-windows-x64
             exe: tracky-probe.exe
+            app: kum-windows-x64
+            bundles: nsis
+            bundle_path: target/release/bundle/nsis/*.exe
           - os: ubuntu-latest
     runs-on: ${{ matrix.os }}
     steps:
@@ -28,9 +34,26 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Linux sistem kütüphaneleri
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+
+      - name: Arayüz
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
 
       - name: Biçim
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -38,10 +61,20 @@ jobs:
         run: cargo test --workspace
 
       - name: tracky-probe derle
-        if: matrix.artifact
+        if: matrix.probe
         run: cargo build --release -p tracky-probe
       - uses: actions/upload-artifact@v4
-        if: matrix.artifact
+        if: matrix.probe
         with:
-          name: ${{ matrix.artifact }}
+          name: ${{ matrix.probe }}
           path: target/release/${{ matrix.exe }}
+
+      - name: Kum uygulamasını paketle
+        if: matrix.app
+        working-directory: app
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+      - uses: actions/upload-artifact@v4
+        if: matrix.app
+        with:
+          name: ${{ matrix.app }}
+          path: ${{ matrix.bundle_path }}

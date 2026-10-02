@@ -10,6 +10,8 @@ pub mod platform;
 pub mod privacy;
 #[cfg(feature = "store")]
 pub mod store;
+#[cfg(feature = "store")]
+pub mod tracker;
 pub mod url_util;
 
 pub use engine::{Engine, EngineConfig};
@@ -18,3 +20,5 @@ pub use platform::ActivityProvider;
 pub use privacy::PrivacySettings;
 #[cfg(feature = "store")]
 pub use store::{Store, StoreError, UsageTotal};
+#[cfg(feature = "store")]
+pub use tracker::{TickOutcome, Tracker};

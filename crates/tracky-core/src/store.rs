@@ -100,25 +100,29 @@ impl Store {
 
     /// Kayıtlı gizlilik ayarları; hiç kaydedilmediyse varsayılanlar.
     pub fn privacy_settings(&self) -> Result<PrivacySettings> {
-        let raw: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                [PRIVACY_KEY],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(raw
-            .map(|v| serde_json::from_str(&v))
-            .transpose()?
-            .unwrap_or_default())
+        Ok(self.setting(PRIVACY_KEY)?.unwrap_or_default())
     }
 
     pub fn save_privacy_settings(&self, settings: &PrivacySettings) -> Result<()> {
+        self.save_setting(PRIVACY_KEY, settings)
+    }
+
+    /// JSON olarak saklanan bir ayarı okur; yoksa `None`.
+    pub fn setting<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(raw.map(|v| serde_json::from_str(&v)).transpose()?)
+    }
+
+    pub fn save_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
         self.conn.execute(
             "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
              ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            params![PRIVACY_KEY, serde_json::to_string(settings)?, ms(Utc::now())],
+            params![key, serde_json::to_string(value)?, ms(Utc::now())],
         )?;
         Ok(())
     }
@@ -349,6 +353,14 @@ mod tests {
         store.save_privacy_settings(&s).unwrap();
         store.save_privacy_settings(&s).unwrap();
         assert_eq!(store.privacy_settings().unwrap(), s);
+    }
+
+    #[test]
+    fn generic_settings() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.setting::<bool>("onboarded").unwrap(), None);
+        store.save_setting("onboarded", &true).unwrap();
+        assert_eq!(store.setting::<bool>("onboarded").unwrap(), Some(true));
     }
 
     #[test]

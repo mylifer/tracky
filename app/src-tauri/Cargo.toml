@@ -1,0 +1,22 @@
+[package]
+name = "kum"
+version = "0.1.0"
+edition = "2024"
+description = "Pencerelerde geçen süreyi takip eden masaüstü uygulaması"
+
+[lib]
+name = "kum_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = "0.4.45"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tracky-core = { version = "0.1.0", path = "../../crates/tracky-core" }
+tracky-platform = { version = "0.1.0", path = "../../crates/tracky-platform" }

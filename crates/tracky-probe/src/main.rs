@@ -16,11 +16,9 @@ use std::thread;
 use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
-use tracky_core::{ActivityProvider, Engine, EngineConfig, Session, Store};
+use tracky_core::{ActivityProvider, EngineConfig, Store, Tracker};
 
 const DEFAULT_DB: &str = "tracky-probe.db";
-/// Devam eden oturum bu kadar gözlemde bir diske yazılır.
-const FLUSH_EVERY: u32 = 5;
 /// Bu kadar gözlemden sonra hâlâ oturum yoksa kullanıcı uyarılır.
 const WARN_AFTER: u32 = 5;
 
@@ -68,7 +66,7 @@ fn run(store: &Store) -> Result<(), String> {
     if let Err(e @ tracky_platform::PlatformError::Unsupported) = provider.active_window() {
         return Err(e.to_string());
     }
-    let mut engine = Engine::new(EngineConfig::default());
+    let mut tracker = Tracker::new(provider, EngineConfig::default(), privacy);
 
     let running = Arc::new(AtomicBool::new(true));
     let flag = running.clone();
@@ -77,50 +75,35 @@ fn run(store: &Store) -> Result<(), String> {
     println!("Takip başladı (Ctrl+C ile durdur).");
     let mut ticks = 0u32;
     while running.load(Ordering::SeqCst) {
-        let window = match provider.active_window() {
-            Ok(w) => w.and_then(|w| privacy.apply(w)),
-            Err(e) => {
-                eprintln!("pencere okunamadı: {e}");
-                None
-            }
-        };
-        let idle = provider.idle_seconds().unwrap_or(0);
-        let before = engine.current().map(|s| s.id);
-
-        if let Some(closed) = engine.tick(Utc::now(), window, idle) {
-            save(store, &closed);
+        let outcome = tracker.tick(store, Utc::now());
+        if let Some(e) = outcome.error {
+            eprintln!("{e}");
         }
-        match engine.current() {
-            Some(s) if Some(s.id) != before => {
-                println!(
+        if outcome.changed {
+            match tracker.current() {
+                Some(s) => println!(
                     "{}  {}  —  {}  [{}]",
                     clock(s.started_at),
                     s.app_name,
                     s.title,
                     s.app_id
-                );
+                ),
+                None => println!("{}  (boşta / kayıt yok)", clock(Utc::now())),
             }
-            None if before.is_some() => println!("{}  (boşta / kayıt yok)", clock(Utc::now())),
-            _ => {}
         }
 
         ticks += 1;
-        if ticks == WARN_AFTER && engine.current().is_none() {
+        if ticks == WARN_AFTER && tracker.current().is_none() {
             println!(
-                "Uyarı: {WARN_AFTER} sn'dir aktif pencere kaydedilmedi (son idle: {idle} sn).\n\
+                "Uyarı: {WARN_AFTER} sn'dir aktif pencere kaydedilmedi.\n\
                  Sorunu bulmak için çıktısını paylaşın: tracky-probe diag"
             );
-        }
-        if ticks.is_multiple_of(FLUSH_EVERY)
-            && let Some(current) = engine.current()
-        {
-            save(store, current);
         }
         thread::sleep(Duration::from_secs(1));
     }
 
-    if let Some(last) = engine.flush(Utc::now()) {
-        save(store, &last);
+    if let Some(e) = tracker.shutdown(store, Utc::now()) {
+        eprintln!("{e}");
     }
     println!();
     report(store)
@@ -209,12 +192,6 @@ fn edit_privacy(
     }
     store.save_privacy_settings(&s).map_err(|e| e.to_string())?;
     show_privacy(store)
-}
-
-fn save(store: &Store, session: &Session) {
-    if let Err(e) = store.upsert_session(session) {
-        eprintln!("kayıt yazılamadı: {e}");
-    }
 }
 
 fn clock(t: DateTime<Utc>) -> String {
