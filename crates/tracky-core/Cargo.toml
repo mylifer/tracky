@@ -10,7 +10,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", optional = true }
 thiserror = "2.0.21"
 url = "2.5.8"
-uuid = { version = "1.26.1", features = ["v4", "serde"] }
+uuid = { version = "1.26.1", features = ["v4", "v5", "serde"] }
 
 [features]
 default = ["store"]

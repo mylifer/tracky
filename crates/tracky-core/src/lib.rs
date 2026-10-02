@@ -13,6 +13,8 @@ pub mod report;
 #[cfg(feature = "store")]
 pub mod store;
 #[cfg(feature = "store")]
+pub mod sync;
+#[cfg(feature = "store")]
 pub mod tracker;
 pub mod url_util;
 

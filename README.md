@@ -11,7 +11,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 3. Tauri uygulaması: arka planda takip, menü çubuğu/tray, karşılama ve izin ekranı, otomatik başlatma
 - [x] 4. Arayüz: gün (zaman çizelgesi) ve hafta raporları, uygulama/başlık dökümü, ayarlar
 - [x] 5. Kategoriler / projeler: uygulama ve başlık kuralları, hazır kategoriler, geçmişe dönük sınıflandırma
-- [ ] 6. Supabase senkronizasyonu
+- [x] 6. Supabase senkronizasyonu: e-posta/şifre ile giriş, 5 dakikada bir eşitleme, son yazan kazanır
 - [ ] 7. Paketleme, imzalama, CI
 
 ## Yapı
@@ -29,6 +29,8 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
   url_util.rs             URL'den domain çıkarma (ileride eklenti için)
 crates/tracky-platform/   macOS (Erişilebilirlik API) ve Windows (Win32) gözlemcileri
 crates/tracky-probe/      Takibi terminalden denemek için araç
+crates/tracky-sync/       Supabase istemcisi (Auth + PostgREST)
+supabase/migrations/      Sunucu şeması (tablolar, RLS, çakışma kuralı)
 app/                      Kum masaüstü uygulaması (Tauri + React)
   src/                    Arayüz: karşılama, gün/hafta raporları, kategoriler, ayarlar
   src-tauri/              Takip iş parçacığı, menü çubuğu, komutlar
@@ -79,3 +81,19 @@ Rust kurmadan: GitHub'da **Actions** sekmesindeki son başarılı çalıştırma
 ```sh
 cargo test
 ```
+
+## Cihazlar arası senkronizasyon (Supabase)
+
+Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birleşik rapor için:
+
+1. [supabase.com](https://supabase.com) üzerinde ücretsiz bir proje oluştur.
+2. **SQL Editor**'da `supabase/migrations/0001_kum_sync.sql` dosyasının içeriğini çalıştır.
+3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
+4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
+   **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.
+5. Diğer bilgisayarda aynı proje bilgileri ve aynı hesapla giriş yap.
+
+Nasıl çalışır: her satırın kimliği UUID'dir; değişen satırlar gönderilir, sunucuda son çekimden
+beri değişenler alınır. Aynı satır iki cihazda değiştiyse daha yeni olan kazanır. Silmeler
+yumuşaktır, o yüzden silinenler de eşitlenir. Satır güvenliği (RLS) sayesinde her kullanıcı yalnız
+kendi verisini görür. Bağlantı bilgileri ve oturum yalnızca o cihazda saklanır.

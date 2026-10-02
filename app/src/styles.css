@@ -927,3 +927,28 @@ li.open .chevron {
   word-break: break-all;
   user-select: text;
 }
+
+.stack-form {
+  display: grid;
+  gap: 10px;
+  max-width: 460px;
+}
+
+.stack-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.row-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.badge.warn {
+  background: var(--accent-soft);
+  color: var(--danger);
+}

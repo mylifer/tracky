@@ -123,6 +123,11 @@ impl Store {
         Ok(store)
     }
 
+    /// Senkronizasyon modülü için ham bağlantı.
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Bu kurulumun kalıcı kimliği; senkronizasyonda kayıtların kaynağını belirtir.
     pub fn device_id(&self) -> Uuid {
         self.device_id
@@ -232,8 +237,10 @@ impl Store {
             return Ok(());
         }
         for (position, (name, color, apps, titles)) in DEFAULT_CATEGORIES.iter().enumerate() {
+            // Kimlikler adlardan türetilir: her cihaz aynı varsayılanları aynı
+            // kimlikle üretir, senkronizasyonda kopya oluşmaz.
             let tag = Tag {
-                id: Uuid::new_v4().to_string(),
+                id: default_id(&format!("category:{name}")),
                 kind: TagKind::Category,
                 name: name.to_string(),
                 color: *color,
@@ -245,7 +252,7 @@ impl Store {
                 .chain(titles.iter().map(|p| (RuleField::Title, p)));
             for (field, pattern) in patterns {
                 self.upsert_rule(&Rule {
-                    id: Uuid::new_v4().to_string(),
+                    id: default_id(&format!("rule:{name}:{}:{pattern}", field.as_str())),
                     tag_id: tag.id.clone(),
                     field,
                     pattern: pattern.to_string(),
@@ -533,6 +540,12 @@ fn device_id(conn: &Connection) -> Result<Uuid> {
     }
 }
 
+/// Varsayılan kayıtlar için ad tabanlı (v5) kimlik.
+fn default_id(name: &str) -> String {
+    const NAMESPACE: Uuid = Uuid::from_u128(0x6b75_6d00_7472_6163_6b79_0000_0000_0001);
+    Uuid::new_v5(&NAMESPACE, name.as_bytes()).to_string()
+}
+
 fn ms(t: DateTime<Utc>) -> i64 {
     t.timestamp_millis()
 }
@@ -661,6 +674,17 @@ mod tests {
         store.delete_tag(&tags[0].id).unwrap();
         store.seed_default_tags().unwrap();
         assert_eq!(store.tags().unwrap().len(), DEFAULT_CATEGORIES.len() - 1);
+
+        // İki kurulum aynı varsayılan kimlikleri üretir.
+        let other = Store::open_in_memory().unwrap();
+        let ids = |s: &Store| {
+            s.tags()
+                .unwrap()
+                .into_iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>()
+        };
+        assert!(ids(&store).iter().all(|id| ids(&other).contains(id)));
     }
 
     #[test]

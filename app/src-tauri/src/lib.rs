@@ -1,6 +1,7 @@
 //! Kum masaüstü uygulaması: menü çubuğunda yaşayan zaman takipçisi.
 
 mod commands;
+mod sync;
 mod tracking;
 mod tray;
 
@@ -196,6 +197,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         tx,
         handle: Mutex::new(Some(worker)),
     });
+    sync::start(app)?;
 
     // Karşılama tamamlanmadıysa ya da izin eksikse pencereyi göster;
     // otomatik başlatmada (--hidden) yalnızca menü çubuğunda kal.
@@ -238,6 +240,12 @@ pub fn run() {
             commands::known_apps,
             commands::get_privacy,
             commands::save_privacy,
+            sync::sync_status,
+            sync::sync_configure,
+            sync::sync_sign_in,
+            sync::sync_sign_out,
+            sync::sync_disconnect,
+            sync::sync_now,
         ])
         .setup(setup)
         .on_window_event(|window, event| {
@@ -252,6 +260,7 @@ pub fn run() {
 
     app.run(|app, event| {
         if let RunEvent::Exit = event {
+            sync::shutdown(app);
             let worker = app.state::<Worker>();
             let _ = worker.tx.send(Command::Shutdown);
             if let Some(handle) = lock(&worker.handle).take() {

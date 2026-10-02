@@ -46,6 +46,14 @@ export type Report = {
   tags: Tag[];
 };
 
+export type LastSync = { at: string; ok: boolean; message: string };
+export type SyncStatus = {
+  configured: boolean;
+  url: string | null;
+  email: string | null;
+  last: LastSync | null;
+};
+
 /** Rust tarafında veritabanına bu adlarla kaydedildiği için snake_case. */
 export type PrivacySettings = {
   paused: boolean;
@@ -79,6 +87,16 @@ export const api = {
   knownApps: () => invoke<UsageTotal[]>("known_apps"),
   privacy: () => invoke<PrivacySettings>("get_privacy"),
   savePrivacy: (settings: PrivacySettings) => invoke<void>("save_privacy", { settings }),
+  syncStatus: () => invoke<SyncStatus>("sync_status"),
+  syncConfigure: (url: string, anonKey: string) =>
+    invoke<SyncStatus>("sync_configure", { url, anonKey }),
+  syncSignIn: (email: string, password: string, signUp: boolean) =>
+    invoke<SyncStatus>("sync_sign_in", { email, password, signUp }),
+  syncSignOut: () => invoke<SyncStatus>("sync_sign_out"),
+  syncDisconnect: () => invoke<SyncStatus>("sync_disconnect"),
+  syncNow: () => invoke<void>("sync_now"),
+  onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> =>
+    listen<SyncStatus>("sync", (e) => cb(e.payload)),
   diagnose: () => invoke<string>("diagnose"),
   onStatus: (cb: (s: TrackingStatus) => void): Promise<UnlistenFn> =>
     listen<TrackingStatus>("status", (e) => cb(e.payload)),

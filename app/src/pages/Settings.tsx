@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type AppStatus, type PrivacySettings, type UsageTotal } from "../api";
+import SyncSettings from "./SyncSettings";
 
 export default function Settings({ status, onChange }: { status: AppStatus; onChange: () => void }) {
   const [privacy, setPrivacy] = useState<PrivacySettings | null>(null);
@@ -93,6 +94,8 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
           <p className="muted hint">Değişiklikler yeni kayıtlara uygulanır; geçmiş kayıtlar değişmez.</p>
         </section>
       )}
+
+      <SyncSettings />
 
       <section className="card settings">
         <h2>Sorun giderme</h2>

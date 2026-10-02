@@ -35,6 +35,14 @@ export default function ReportView(p: Props) {
 
   useEffect(load, [load]);
 
+  // Başka cihazdan veri gelince yenile.
+  useEffect(() => {
+    const unlisten = api.onSync(load);
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, [load]);
+
   // Aralık bugünü içeriyorsa takip güncellendikçe yenile.
   const end = addDays(parseIsoDate(p.start), days);
   const isLive = new Date() < end && new Date() >= parseIsoDate(p.start);
