@@ -64,8 +64,10 @@ impl PrivacySettings {
 fn strip_invisible(s: &str) -> String {
     s.chars()
         .filter(|c| {
-            !matches!(c,
-                '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+            // Kontrol karakterleri de: PostgreSQL metinde NUL kabul etmez.
+            !c.is_control()
+                && !matches!(c,
+                    '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
         })
         .collect::<String>()
         .trim()
@@ -161,7 +163,7 @@ mod tests {
 
     #[test]
     fn strips_invisible_characters() {
-        let mut win = w("net.whatsapp.WhatsApp", "\u{200e}WhatsApp");
+        let mut win = w("net.whatsapp.WhatsApp", "\u{200e}What\u{0}sApp");
         win.app_name = "\u{200e}WhatsApp".into();
         let out = PrivacySettings::default().apply(win).unwrap();
         assert_eq!(

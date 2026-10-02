@@ -123,14 +123,44 @@ pub fn run(
     remote: &mut dyn Remote,
     user_id: &str,
 ) -> Result<SyncSummary, SyncError> {
+    // Bir tablodaki hata diğerlerini durdurmaz; ilk hata sonunda bildirilir.
     let mut summary = SyncSummary::default();
+    let mut first_error = None;
     for table in TABLES {
-        summary.pushed += push_table(store, remote, table, user_id)?;
+        match push_table(store, remote, table, user_id) {
+            Ok(n) => summary.pushed += n,
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
+        }
     }
     for table in TABLES {
-        summary.pulled += pull_table(store, remote, table)?;
+        let mut result = pull_table(store, remote, table);
+        // Etiketler çekildikten sonra başka cihaz yeni etiket + kural eklemiş olabilir:
+        // kuralın etiketi yerelde yoksa etiketleri yeniden çekip bir kez daha dene.
+        if table.name == "rules" && result.as_ref().is_err_and(is_foreign_key_error) {
+            let _ = pull_table(store, remote, &TABLES[0]);
+            result = pull_table(store, remote, table);
+        }
+        match result {
+            Ok(n) => summary.pulled += n,
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
+        }
     }
-    Ok(summary)
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(summary),
+    }
+}
+
+fn is_foreign_key_error(e: &SyncError) -> bool {
+    matches!(
+        e,
+        SyncError::Sqlite(rusqlite::Error::SqliteFailure(f, _))
+            if f.code == rusqlite::ErrorCode::ConstraintViolation
+    )
 }
 
 fn lock(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
@@ -193,6 +223,8 @@ fn pull_table(
             .map(str::to_string);
         {
             let store = lock(store);
+            // Tek işlem: bin satır için bin ayrı diske yazma yerine bir tane.
+            let tx = store.conn().unchecked_transaction()?;
             for row in &rows {
                 apply_remote(&store, table, row)?;
             }
@@ -202,6 +234,8 @@ fn pull_table(
                 store.save_setting(&key, newest)?;
                 cursor = Some(newest.clone());
             }
+            // Hata olursa geri alınır; imleç de ilerlemez, satırlar tekrar çekilir.
+            tx.commit()?;
         }
         total += rows.len();
         if rows.len() < PULL_BATCH || newest.is_none() {
@@ -258,11 +292,15 @@ fn mark_synced(store: &Store, table: &Table, rows: &[Pending]) -> Result<usize, 
         "UPDATE {} SET synced_at = ?2 WHERE id = ?1 AND updated_at = ?2",
         table.name
     );
-    let mut stmt = store.conn().prepare(&sql)?;
+    let tx = store.conn().unchecked_transaction()?;
     let mut marked = 0;
-    for (_, id, updated) in rows {
-        marked += stmt.execute(rusqlite::params![id, updated])?;
+    {
+        let mut stmt = tx.prepare(&sql)?;
+        for (_, id, updated) in rows {
+            marked += stmt.execute(rusqlite::params![id, updated])?;
+        }
     }
+    tx.commit()?;
     Ok(marked)
 }
 
@@ -502,6 +540,59 @@ mod tests {
         // Eski bir sürüm yeniyi ezemez: B'nin eski adı uzaktan geri gelmez.
         let row = remote.rows["tags"][&tag.id].clone();
         assert_eq!(row["name"], "Kod");
+    }
+
+    #[test]
+    fn late_device_seed_does_not_override_edits() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let tag: Tag = lock(&a).tags().unwrap()[0].clone();
+        lock(&a)
+            .upsert_tag(
+                &Tag {
+                    name: "Kod".into(),
+                    ..tag.clone()
+                },
+                0,
+            )
+            .unwrap();
+        let rule = lock(&a).rules().unwrap()[0].clone();
+        lock(&a).delete_rule(&rule.id).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+
+        // B daha sonra kurulur (tohumu daha yeni saatli olsa da epoch'tur).
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+
+        for store in [&a, &b] {
+            let s = lock(store);
+            let name = s
+                .tags()
+                .unwrap()
+                .into_iter()
+                .find(|t| t.id == tag.id)
+                .unwrap()
+                .name;
+            assert_eq!(name, "Kod");
+            assert!(s.rules().unwrap().iter().all(|r| r.id != rule.id));
+        }
+    }
+
+    #[test]
+    fn reset_sync_state_resends_everything() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        lock(&a).upsert_session(&session("Code", 60)).unwrap();
+        let mut first = FakeRemote::default();
+        run(&a, &mut first, "u1").unwrap();
+
+        // Başka hesap/proje: sıfırlanmazsa hiçbir şey gönderilmezdi.
+        lock(&a).reset_sync_state().unwrap();
+        let mut second = FakeRemote::default();
+        run(&a, &mut second, "u2").unwrap();
+        assert_eq!(second.rows["sessions"].len(), 1);
+        assert_eq!(second.rows["tags"].len(), first.rows["tags"].len());
     }
 
     #[test]

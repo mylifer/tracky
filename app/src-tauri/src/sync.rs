@@ -18,6 +18,8 @@ use crate::tracking::Shared;
 
 const CONFIG_KEY: &str = "sync_config";
 const AUTH_KEY: &str = "sync_auth";
+/// Yerel eşitleme durumunun ait olduğu "proje|kullanıcı".
+const OWNER_KEY: &str = "sync_owner";
 /// Arka planda bu aralıkla eşitlenir.
 const INTERVAL: Duration = Duration::from_secs(5 * 60);
 
@@ -90,13 +92,31 @@ fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
     };
     let client = Client::new(config);
     if auth.needs_refresh() {
-        auth = client.refresh(&auth).map_err(|e| e.to_string())?;
-        save(app, AUTH_KEY, &auth)?;
+        auth = refresh(app, &client, &auth)?;
     }
-    let mut remote = client.remote(&auth);
-    tracky_core::sync::run(&app.state::<Shared>().store, &mut remote, &auth.user_id)
-        .map(Some)
-        .map_err(|e| e.to_string())
+    let store = &app.state::<Shared>().store;
+    let attempt = |auth: &AuthSession| {
+        tracky_core::sync::run(store, &mut client.remote(auth), &auth.user_id)
+            .map_err(|e| e.to_string())
+    };
+    let result = match attempt(&auth) {
+        // Jeton beklenenden önce geçersiz kaldıysa bir kez yenileyip tekrar dene.
+        Err(e) if e.contains("[401]") => attempt(&refresh(app, &client, &auth)?),
+        other => other,
+    };
+    result.map(Some)
+}
+
+/// Jetonu yeniler ve kaydeder. Bu arada kullanıcı çıkış yaptıysa ya da başka
+/// hesapla girdiyse yazmaz (yoksa çıkış yapan kullanıcı sessizce geri girerdi).
+fn refresh(app: &AppHandle, client: &Client, auth: &AuthSession) -> Result<AuthSession, String> {
+    let fresh = client.refresh(auth).map_err(|e| e.to_string())?;
+    let stored: Option<AuthSession> = load(app, AUTH_KEY);
+    if stored.map(|s| s.refresh_token) != Some(auth.refresh_token.clone()) {
+        return Err("Oturum değişti; eşitleme atlandı".into());
+    }
+    save(app, AUTH_KEY, &fresh)?;
+    Ok(fresh)
 }
 
 fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) {
@@ -170,6 +190,7 @@ pub async fn sync_sign_in(
     sign_up: bool,
 ) -> CmdResult<SyncStatus> {
     let config: Config = load(&app, CONFIG_KEY).ok_or("Önce Supabase bağlantısını kaydet")?;
+    let url = config.url.clone();
     let auth = tauri::async_runtime::spawn_blocking(move || {
         let client = Client::new(config);
         let email = email.trim();
@@ -182,6 +203,15 @@ pub async fn sync_sign_in(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
+    // Başka hesap ya da proje: eski imleçler ve "gönderildi" işaretleri bu hesap için
+    // anlamsız; her şeyi yeniden gönder ve baştan çek.
+    let owner = format!("{url}|{}", auth.user_id);
+    if load::<String>(&app, OWNER_KEY).as_deref() != Some(owner.as_str()) {
+        lock(&app.state::<Shared>().store)
+            .reset_sync_state()
+            .map_err(|e| e.to_string())?;
+        save(&app, OWNER_KEY, &owner)?;
+    }
     save(&app, AUTH_KEY, &auth)?;
     sync_now(app.clone());
     Ok(status(&app))

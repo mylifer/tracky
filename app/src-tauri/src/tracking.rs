@@ -60,10 +60,12 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, rx: Receiver<Command>) {
             Err(RecvTimeoutError::Timeout) => {}
         }
 
+        // Platform çağrıları kilit dışında: yanıt vermeyen bir uygulama arayüzü kilitlemesin.
+        let observation = tracker.observe();
         let shared = app.state::<Shared>();
         let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
         let now = Utc::now();
-        let outcome = tracker.tick(&store, now);
+        let outcome = tracker.record(&store, now, observation);
         ticks = ticks.wrapping_add(1);
         if !outcome.changed && outcome.error.is_none() && !ticks.is_multiple_of(REFRESH_EVERY) {
             continue;
@@ -82,7 +84,10 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, rx: Receiver<Command>) {
             needs_permission: !tracky_platform::permissions().all_granted(),
             error: outcome.error,
         };
-        tray::update(&app, &status);
+        // Menü güncellemesi ana iş parçacığında çalışıp sonucunu bekler; burada
+        // beklersek kapanışta (ana iş parçacığı bizi beklerken) kilitlenirdik.
+        let (handle, snapshot) = (app.clone(), status.clone());
+        let _ = app.run_on_main_thread(move || tray::update(&handle, &snapshot));
         let _ = app.emit("status", &status);
         *shared.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
     }

@@ -191,13 +191,13 @@ impl Remote for SupabaseRemote<'_> {
 fn session_from(body: &Value) -> Result<AuthSession> {
     let s = |v: &Value| v.as_str().map(str::to_string);
     let missing = || Error::Api("sunucu yanıtında oturum bilgisi eksik".into());
+    // Süre yerel saatle hesaplanır; sunucunun mutlak `expires_at` değeri yerel
+    // saat geri kaldığında süresi dolmuş jetonun gönderilmesine yol açar.
     let expires_in = body["expires_in"].as_u64().unwrap_or(3600);
     Ok(AuthSession {
         access_token: s(&body["access_token"]).ok_or_else(missing)?,
         refresh_token: s(&body["refresh_token"]).ok_or_else(missing)?,
-        expires_at: body["expires_at"]
-            .as_u64()
-            .unwrap_or_else(|| now_secs() + expires_in),
+        expires_at: now_secs() + expires_in,
         user_id: s(&body["user"]["id"]).ok_or_else(missing)?,
         email: s(&body["user"]["email"]).unwrap_or_default(),
     })

@@ -24,7 +24,12 @@ fn local_midnight(date: NaiveDate) -> CmdResult<DateTime<Utc>> {
 
 /// `start` (YYYY-MM-DD, yerel) gününden başlayan `days` günlük rapor.
 #[tauri::command]
-pub fn get_report(app: AppHandle, start: String, days: u32, timeline: bool) -> CmdResult<Report> {
+pub async fn get_report(
+    app: AppHandle,
+    start: String,
+    days: u32,
+    timeline: bool,
+) -> CmdResult<Report> {
     let first = NaiveDate::parse_from_str(&start, "%Y-%m-%d").map_err(err)?;
     let days = days.clamp(1, 366);
     let starts = (0..days)
@@ -37,7 +42,7 @@ pub fn get_report(app: AppHandle, start: String, days: u32, timeline: bool) -> C
 }
 
 #[tauri::command]
-pub fn app_titles_between(
+pub async fn app_titles_between(
     app: AppHandle,
     app_id: String,
     start: String,
@@ -59,7 +64,7 @@ pub struct Taxonomy {
 }
 
 #[tauri::command]
-pub fn get_taxonomy(app: AppHandle) -> CmdResult<Taxonomy> {
+pub async fn get_taxonomy(app: AppHandle) -> CmdResult<Taxonomy> {
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
     Ok(Taxonomy {
@@ -79,7 +84,7 @@ pub struct TagInput {
 
 /// Yeni etiket için kimlik üretir; kaydedilen etiketi döndürür.
 #[tauri::command]
-pub fn save_tag(app: AppHandle, tag: TagInput) -> CmdResult<Tag> {
+pub async fn save_tag(app: AppHandle, tag: TagInput) -> CmdResult<Tag> {
     if tag.name.trim().is_empty() {
         return Err("Ad boş olamaz".into());
     }
@@ -97,14 +102,14 @@ pub fn save_tag(app: AppHandle, tag: TagInput) -> CmdResult<Tag> {
 }
 
 #[tauri::command]
-pub fn delete_tag(app: AppHandle, id: String) -> CmdResult<()> {
+pub async fn delete_tag(app: AppHandle, id: String) -> CmdResult<()> {
     lock(&app.state::<Shared>().store)
         .delete_tag(&id)
         .map_err(err)
 }
 
 #[tauri::command]
-pub fn add_rule(
+pub async fn add_rule(
     app: AppHandle,
     tag_id: String,
     field: RuleField,
@@ -121,14 +126,14 @@ pub fn add_rule(
 }
 
 #[tauri::command]
-pub fn delete_rule(app: AppHandle, id: String) -> CmdResult<()> {
+pub async fn delete_rule(app: AppHandle, id: String) -> CmdResult<()> {
     lock(&app.state::<Shared>().store)
         .delete_rule(&id)
         .map_err(err)
 }
 
 #[tauri::command]
-pub fn assign_app_category(
+pub async fn assign_app_category(
     app: AppHandle,
     app_id: String,
     tag_id: Option<String>,
@@ -139,14 +144,14 @@ pub fn assign_app_category(
 }
 
 #[tauri::command]
-pub fn known_apps(app: AppHandle) -> CmdResult<Vec<UsageTotal>> {
+pub async fn known_apps(app: AppHandle) -> CmdResult<Vec<UsageTotal>> {
     lock(&app.state::<Shared>().store)
         .known_apps(200)
         .map_err(err)
 }
 
 #[tauri::command]
-pub fn get_privacy(app: AppHandle) -> CmdResult<PrivacySettings> {
+pub async fn get_privacy(app: AppHandle) -> CmdResult<PrivacySettings> {
     lock(&app.state::<Shared>().store)
         .privacy_settings()
         .map_err(err)
@@ -154,7 +159,7 @@ pub fn get_privacy(app: AppHandle) -> CmdResult<PrivacySettings> {
 
 /// Duraklatma durumu ayrı yönetilir (menü çubuğu); buradan değiştirilmez.
 #[tauri::command]
-pub fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResult<()> {
+pub async fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResult<()> {
     let shared = app.state::<Shared>();
     let saved = {
         let store = lock(&shared.store);
@@ -181,7 +186,7 @@ pub fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResult<()> 
 
 /// Tüm kayıtları İndirilenler klasörüne CSV olarak yazar ve dosyayı gösterir.
 #[tauri::command]
-pub fn export_csv(app: AppHandle) -> CmdResult<String> {
+pub async fn export_csv(app: AppHandle) -> CmdResult<String> {
     let csv = lock(&app.state::<Shared>().store)
         .export_csv()
         .map_err(err)?;

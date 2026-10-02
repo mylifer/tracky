@@ -40,7 +40,7 @@ struct AppStatus {
 }
 
 #[tauri::command]
-fn get_status(app: AppHandle) -> Result<AppStatus, String> {
+async fn get_status(app: AppHandle) -> Result<AppStatus, String> {
     let shared = app.state::<Shared>();
     let onboarded = lock(&shared.store)
         .setting::<bool>(ONBOARDED_KEY)
@@ -73,31 +73,31 @@ fn open_accessibility_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+async fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     set_autostart_inner(&app, enabled)
 }
 
 #[tauri::command]
-fn set_paused(app: AppHandle, paused: bool) -> Result<(), String> {
+async fn set_paused(app: AppHandle, paused: bool) -> Result<(), String> {
     set_paused_inner(&app, paused)
 }
 
 #[tauri::command]
-fn complete_onboarding(app: AppHandle) -> Result<(), String> {
+async fn complete_onboarding(app: AppHandle) -> Result<(), String> {
     lock(&app.state::<Shared>().store)
         .save_setting(ONBOARDED_KEY, &true)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn today_apps(app: AppHandle) -> Result<Vec<UsageTotal>, String> {
+async fn today_apps(app: AppHandle) -> Result<Vec<UsageTotal>, String> {
     lock(&app.state::<Shared>().store)
         .app_totals(tracking::start_of_today(), chrono::Utc::now())
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn app_titles(app: AppHandle, app_id: String) -> Result<Vec<UsageTotal>, String> {
+async fn app_titles(app: AppHandle, app_id: String) -> Result<Vec<UsageTotal>, String> {
     lock(&app.state::<Shared>().store)
         .title_totals(&app_id, tracking::start_of_today(), chrono::Utc::now())
         .map_err(|e| e.to_string())

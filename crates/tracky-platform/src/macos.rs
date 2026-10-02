@@ -65,46 +65,9 @@ impl ActivityProvider for SystemProvider {
     type Error = PlatformError;
 
     fn active_window(&mut self) -> Result<Option<ActiveWindow>, PlatformError> {
-        if !is_trusted() {
-            return Err(PlatformError::PermissionDenied);
-        }
-        let Some(pid) = focused_pid()? else {
-            return Ok(None);
-        };
-        // SAFETY: Create kuralı; sahipliği CFType devralır ve bırakır.
-        let app = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) };
-        let Some(running) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
-        else {
-            return Ok(None);
-        };
-
-        let bundle_id = running.bundleIdentifier().map(|s| s.to_string());
-        if bundle_id
-            .as_deref()
-            .is_some_and(|id| IGNORED_BUNDLES.contains(&id))
-        {
-            return Ok(None);
-        }
-        let exe_path = running
-            .executableURL()
-            .and_then(|u| u.path())
-            .map(|s| s.to_string());
-        let app_id = bundle_id
-            .or(exe_path)
-            .unwrap_or_else(|| format!("pid:{pid}"));
-        let app_name = running
-            .localizedName()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| app_id.clone());
-
-        let title = window_title(&app)?;
-
-        Ok(Some(ActiveWindow {
-            app_id,
-            app_name,
-            title,
-            url: None,
-        }))
+        // Arka plan iş parçacığında otomatik serbest bırakma havuzu yok; her
+        // gözlemde açılmazsa Objective-C nesneleri zamanla birikir.
+        objc2::rc::autoreleasepool(|_| active_window())
     }
 
     fn idle_seconds(&mut self) -> Result<u64, PlatformError> {
@@ -114,6 +77,48 @@ impl ActivityProvider for SystemProvider {
         };
         Ok(secs.max(0.0) as u64)
     }
+}
+
+fn active_window() -> Result<Option<ActiveWindow>, PlatformError> {
+    if !is_trusted() {
+        return Err(PlatformError::PermissionDenied);
+    }
+    let Some(pid) = focused_pid()? else {
+        return Ok(None);
+    };
+    // SAFETY: Create kuralı; sahipliği CFType devralır ve bırakır.
+    let app = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) };
+    let Some(running) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else {
+        return Ok(None);
+    };
+
+    let bundle_id = running.bundleIdentifier().map(|s| s.to_string());
+    if bundle_id
+        .as_deref()
+        .is_some_and(|id| IGNORED_BUNDLES.contains(&id))
+    {
+        return Ok(None);
+    }
+    let exe_path = running
+        .executableURL()
+        .and_then(|u| u.path())
+        .map(|s| s.to_string());
+    let app_id = bundle_id
+        .or(exe_path)
+        .unwrap_or_else(|| format!("pid:{pid}"));
+    let app_name = running
+        .localizedName()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| app_id.clone());
+
+    let title = window_title(&app)?;
+
+    Ok(Some(ActiveWindow {
+        app_id,
+        app_name,
+        title,
+        url: None,
+    }))
 }
 
 /// Uygulamanın öndeki penceresinin başlığı.

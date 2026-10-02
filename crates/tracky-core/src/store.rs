@@ -173,7 +173,7 @@ impl Store {
                 url = excluded.url,
                 domain = excluded.domain,
                 ended_at = excluded.ended_at,
-                updated_at = excluded.updated_at",
+                updated_at = MAX(excluded.updated_at, sessions.updated_at + 1)",
             params![
                 s.id.to_string(),
                 self.device_id.to_string(),
@@ -259,7 +259,34 @@ impl Store {
                 })?;
             }
         }
+        // Varsayılanlar "en eski sürüm" sayılır: başka bir cihazdaki gerçek bir
+        // düzenleme, sonradan kurulan cihazın tohumuna her zaman üstün gelir.
+        self.conn
+            .execute_batch("UPDATE tags SET updated_at = 0; UPDATE rules SET updated_at = 0;")?;
         self.save_setting(DEFAULTS_SEEDED_KEY, &true)
+    }
+
+    /// Oturumu yumuşak siler (örn. boşta kalma sonrası geçersiz kalan kayıt).
+    pub fn delete_session(&self, id: &Uuid) -> Result<()> {
+        let now = ms(Utc::now());
+        self.conn.execute(
+            "UPDATE sessions SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1)
+             WHERE id = ?1 AND deleted_at IS NULL",
+            params![id.to_string(), now],
+        )?;
+        Ok(())
+    }
+
+    /// Senkronizasyon başka hesaba/projeye bağlandığında: imleçleri sil, her şeyi
+    /// yeniden gönderilecek işaretle.
+    pub fn reset_sync_state(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM settings WHERE key LIKE 'sync_cursor:%';
+             UPDATE sessions SET synced_at = NULL;
+             UPDATE tags SET synced_at = NULL;
+             UPDATE rules SET synced_at = NULL;",
+        )?;
+        Ok(())
     }
 
     pub fn tags(&self) -> Result<Vec<Tag>> {
@@ -301,7 +328,8 @@ impl Store {
             "INSERT INTO tags (id, kind, name, color, position, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (id) DO UPDATE SET
-                name = excluded.name, color = excluded.color, updated_at = excluded.updated_at",
+                name = excluded.name, color = excluded.color,
+                updated_at = MAX(excluded.updated_at, tags.updated_at + 1)",
             params![
                 tag.id,
                 tag.kind.as_str(),
@@ -318,11 +346,11 @@ impl Store {
     pub fn delete_tag(&self, id: &str) -> Result<()> {
         let now = ms(Utc::now());
         self.conn.execute(
-            "UPDATE tags SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+            "UPDATE tags SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
             params![id, now],
         )?;
         self.conn.execute(
-            "UPDATE rules SET deleted_at = ?2, updated_at = ?2
+            "UPDATE rules SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1)
              WHERE tag_id = ?1 AND deleted_at IS NULL",
             params![id, now],
         )?;
@@ -366,7 +394,8 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (id) DO UPDATE SET
                 tag_id = excluded.tag_id, field = excluded.field,
-                pattern = excluded.pattern, updated_at = excluded.updated_at",
+                pattern = excluded.pattern,
+                updated_at = MAX(excluded.updated_at, rules.updated_at + 1)",
             params![
                 rule.id,
                 rule.tag_id,
@@ -380,7 +409,7 @@ impl Store {
 
     pub fn delete_rule(&self, id: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE rules SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+            "UPDATE rules SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
             params![id, ms(Utc::now())],
         )?;
         Ok(())
@@ -683,6 +712,17 @@ mod tests {
         store.seed_default_tags().unwrap();
         assert_eq!(store.tags().unwrap().len(), DEFAULT_CATEGORIES.len() - 1);
 
+        // Varsayılanlar en eski sürüm olarak tohumlanır.
+        let max: i64 = store
+            .conn
+            .query_row(
+                "SELECT MAX(updated_at) FROM tags WHERE deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(max, 0);
+
         // İki kurulum aynı varsayılan kimlikleri üretir.
         let other = Store::open_in_memory().unwrap();
         let ids = |s: &Store| {
@@ -718,6 +758,39 @@ mod tests {
             .assign_app_category("com.microsoft.teams2", None)
             .unwrap();
         assert_eq!(category(&store), None);
+    }
+
+    #[test]
+    fn updated_at_never_goes_backwards() {
+        let store = Store::open_in_memory().unwrap();
+        let tag = store.tags().unwrap()[0].clone();
+        // Uzaktan, yerel saatten çok ileri bir sürüm gelmiş olsun.
+        let future = ms(Utc::now()) + 3_600_000;
+        store
+            .conn
+            .execute(
+                "UPDATE tags SET updated_at = ?2 WHERE id = ?1",
+                params![tag.id, future],
+            )
+            .unwrap();
+        store
+            .upsert_tag(
+                &Tag {
+                    name: "Yeni".into(),
+                    ..tag.clone()
+                },
+                0,
+            )
+            .unwrap();
+        let after: i64 = store
+            .conn
+            .query_row(
+                "SELECT updated_at FROM tags WHERE id = ?1",
+                [&tag.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(after > future);
     }
 
     #[test]
