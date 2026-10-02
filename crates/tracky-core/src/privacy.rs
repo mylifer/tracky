@@ -49,8 +49,24 @@ impl PrivacySettings {
         } else if is_browser {
             window.title = browser::clean_title(&window.title);
         }
+        // Tarayıcı ekleri (Edge'in sıfır genişlikli boşluğu) temizlendikten sonra.
+        window.app_name = strip_invisible(&window.app_name);
+        window.title = strip_invisible(&window.title);
         Some(window)
     }
+}
+
+/// Görünmez biçim karakterlerini (yazı yönü işaretleri, sıfır genişlikli boşluklar) atar.
+/// Örn. WhatsApp adının başına U+200E ekler; aynı uygulama iki farklı ad gibi görünmesin.
+fn strip_invisible(s: &str) -> String {
+    s.chars()
+        .filter(|c| {
+            !matches!(c,
+                '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn contains(list: &[String], app_id: &str) -> bool {
@@ -124,6 +140,17 @@ mod tests {
                 .unwrap()
                 .title,
             "a - Google Chrome"
+        );
+    }
+
+    #[test]
+    fn strips_invisible_characters() {
+        let mut win = w("net.whatsapp.WhatsApp", "\u{200e}WhatsApp");
+        win.app_name = "\u{200e}WhatsApp".into();
+        let out = PrivacySettings::default().apply(win).unwrap();
+        assert_eq!(
+            (out.app_name.as_str(), out.title.as_str()),
+            ("WhatsApp", "WhatsApp")
         );
     }
 

@@ -7,7 +7,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 ## Yol haritası
 
 - [x] 1. Çekirdek: veri modeli, sync'e hazır SQLite şeması, oturum motoru (idle/uyku tespiti), domain çıkarma
-- [x] 2. Platform katmanı: macOS ve Windows'ta aktif pencere, sekme adı, idle süresi, gizlilik ayarları
+- [x] 2. Platform katmanı: macOS ve Windows'ta aktif pencere, sekme adı, idle süresi, gizlilik ayarları (macOS gerçek makinede doğrulandı)
 - [ ] 3. Tauri kabuğu: arka plan servisi, tray/menü çubuğu, otomatik başlatma
 - [ ] 4. Arayüz: günlük/haftalık rapor, zaman çizelgesi (Türkçe)
 - [ ] 5. Kategoriler / projeler ve kural motoru
