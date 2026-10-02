@@ -7,6 +7,7 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
   const [apps, setApps] = useState<UsageTotal[]>([]);
   const [diag, setDiag] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [exported, setExported] = useState<string | null>(null);
 
   useEffect(() => {
     api.privacy().then(setPrivacy);
@@ -91,11 +92,37 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
             apps={apps}
             onChange={(hidden_title_apps) => save({ ...privacy, hidden_title_apps })}
           />
+          <SuffixEditor
+            suffixes={privacy.title_suffixes ?? []}
+            onChange={(title_suffixes) => save({ ...privacy, title_suffixes })}
+          />
           <p className="muted hint">Değişiklikler yeni kayıtlara uygulanır; geçmiş kayıtlar değişmez.</p>
         </section>
       )}
 
       <SyncSettings />
+
+      <section className="card settings">
+        <h2>Veriler</h2>
+        <div className="setting">
+          <div>
+            <strong>CSV olarak dışa aktar</strong>
+            <p className="muted">
+              {exported ?? "Tüm kayıtlar (başlangıç, bitiş, uygulama, başlık, kategori, proje) İndirilenler klasörüne yazılır."}
+            </p>
+          </div>
+          <button
+            onClick={() =>
+              api.exportCsv().then(
+                (p) => setExported(`Kaydedildi: ${p}`),
+                (e) => setError(String(e)),
+              )
+            }
+          >
+            Dışa aktar
+          </button>
+        </div>
+      </section>
 
       <section className="card settings">
         <h2>Sorun giderme</h2>
@@ -194,6 +221,49 @@ function AppPicker({
           ))}
         </select>
         <button type="submit" disabled={!pick}>
+          Ekle
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function SuffixEditor({ suffixes, onChange }: { suffixes: string[]; onChange: (s: string[]) => void }) {
+  const [text, setText] = useState("");
+  return (
+    <div className="setting column">
+      <div>
+        <strong>Başlıklardan kaldırılacak ekler</strong>
+        <p className="muted">
+          Bazı uygulamalar başlığın sonuna sabit bir şey ekler (örn. Firefox profil adı “— Kaan”). Buraya
+          yazdığın ek başlıklardan silinir.
+        </p>
+      </div>
+      <div className="chips">
+        {suffixes.map((s) => (
+          <span key={s} className="chip">
+            {s}
+            <button
+              className="ghost icon small"
+              onClick={() => onChange(suffixes.filter((x) => x !== s))}
+              aria-label="Kaldır"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        {suffixes.length === 0 && <span className="muted">Yok</span>}
+      </div>
+      <form
+        className="inline-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (text.trim()) onChange([...suffixes, text.trim()]);
+          setText("");
+        }}
+      >
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="örn. Kaan" />
+        <button type="submit" disabled={!text.trim()}>
           Ekle
         </button>
       </form>

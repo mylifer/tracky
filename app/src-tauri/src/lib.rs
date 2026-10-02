@@ -240,6 +240,7 @@ pub fn run() {
             commands::known_apps,
             commands::get_privacy,
             commands::save_privacy,
+            commands::export_csv,
             sync::sync_status,
             sync::sync_configure,
             sync::sync_sign_in,

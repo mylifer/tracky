@@ -60,6 +60,7 @@ export type PrivacySettings = {
   excluded_apps: string[];
   hidden_title_apps: string[];
   hide_private_windows: boolean;
+  title_suffixes: string[];
 };
 
 export const api = {
@@ -87,6 +88,7 @@ export const api = {
   knownApps: () => invoke<UsageTotal[]>("known_apps"),
   privacy: () => invoke<PrivacySettings>("get_privacy"),
   savePrivacy: (settings: PrivacySettings) => invoke<void>("save_privacy", { settings }),
+  exportCsv: () => invoke<string>("export_csv"),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
   syncConfigure: (url: string, anonKey: string) =>
     invoke<SyncStatus>("sync_configure", { url, anonKey }),

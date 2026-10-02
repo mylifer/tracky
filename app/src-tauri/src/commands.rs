@@ -161,7 +161,11 @@ pub fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResult<()> 
         let paused = store.privacy_settings().map_err(err)?.paused;
         let mut settings = settings;
         settings.paused = paused;
-        for list in [&mut settings.excluded_apps, &mut settings.hidden_title_apps] {
+        for list in [
+            &mut settings.excluded_apps,
+            &mut settings.hidden_title_apps,
+            &mut settings.title_suffixes,
+        ] {
             list.retain(|a| !a.trim().is_empty());
             list.sort_unstable();
             list.dedup();
@@ -173,4 +177,36 @@ pub fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResult<()> 
         .tx
         .send(Command::SetPrivacy(saved))
         .map_err(err)
+}
+
+/// Tüm kayıtları İndirilenler klasörüne CSV olarak yazar ve dosyayı gösterir.
+#[tauri::command]
+pub fn export_csv(app: AppHandle) -> CmdResult<String> {
+    let csv = lock(&app.state::<Shared>().store)
+        .export_csv()
+        .map_err(err)?;
+    let dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().home_dir())
+        .map_err(err)?;
+    let path = dir.join(format!("kum-{}.csv", Local::now().format("%Y-%m-%d-%H%M")));
+    std::fs::write(&path, csv).map_err(err)?;
+    reveal(&path);
+    Ok(path.display().to_string())
+}
+
+/// Dosyayı Finder / Gezgin'de seçili gösterir (başarısızlık önemsiz).
+fn reveal(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn();
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = path;
 }

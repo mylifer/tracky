@@ -411,6 +411,14 @@ impl Store {
         Ok(())
     }
 
+    /// Tüm oturumların CSV dökümü.
+    pub fn export_csv(&self) -> Result<String> {
+        let sessions = self.sessions_between(DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC)?;
+        let tags = self.tags()?;
+        let classifier = Classifier::new(&tags, &self.rules()?);
+        Ok(crate::export::sessions_csv(&sessions, &tags, &classifier))
+    }
+
     /// `[from, to)` raporu; `day_starts` yerel gün sınırlarıdır.
     pub fn report(
         &self,

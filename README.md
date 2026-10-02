@@ -12,7 +12,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 4. Arayüz: gün (zaman çizelgesi) ve hafta raporları, uygulama/başlık dökümü, ayarlar
 - [x] 5. Kategoriler / projeler: uygulama ve başlık kuralları, hazır kategoriler, geçmişe dönük sınıflandırma
 - [x] 6. Supabase senkronizasyonu: e-posta/şifre ile giriş, 5 dakikada bir eşitleme, son yazan kazanır
-- [ ] 7. Paketleme, imzalama, CI
+- [x] 7. Paketleme ve CI: her push'ta Mac/Windows paketleri, `v*` etiketiyle taslak sürüm (Apple imzası henüz yok)
 
 ## Yapı
 
@@ -97,3 +97,13 @@ Nasıl çalışır: her satırın kimliği UUID'dir; değişen satırlar gönder
 beri değişenler alınır. Aynı satır iki cihazda değiştiyse daha yeni olan kazanır. Silmeler
 yumuşaktır, o yüzden silinenler de eşitlenir. Satır güvenliği (RLS) sayesinde her kullanıcı yalnız
 kendi verisini görür. Bağlantı bilgileri ve oturum yalnızca o cihazda saklanır.
+
+## Sürüm çıkarmak
+
+1. `app/src-tauri/tauri.conf.json` ve `app/package.json` içindeki `version` alanını artır (örn. `0.2.0`).
+2. Commit'le, sonra etiketle ve push'la: `git tag v0.2.0 && git push origin v0.2.0`
+3. GitHub **Releases** sayfasında taslak sürüm oluşur; .dmg ve .exe ekli gelir. Notları yazıp **Publish** de.
+
+macOS paketi ad-hoc imzalıdır. Apple Developer hesabıyla (yıllık ücretli) imzalanıp
+notarize edilene kadar ilk açılışta "geliştirici doğrulanamadı" uyarısı çıkar ve her yeni sürümde
+Erişilebilirlik izni yeniden verilmelidir.

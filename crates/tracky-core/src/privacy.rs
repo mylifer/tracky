@@ -18,6 +18,8 @@ pub struct PrivacySettings {
     pub hidden_title_apps: Vec<String>,
     /// Tarayıcıların gizli pencerelerinde başlığı kaydetme.
     pub hide_private_windows: bool,
+    /// Başlıkların sonundan silinen ekler (örn. Firefox profil adı " — Kaan").
+    pub title_suffixes: Vec<String>,
 }
 
 impl Default for PrivacySettings {
@@ -27,6 +29,7 @@ impl Default for PrivacySettings {
             excluded_apps: Vec::new(),
             hidden_title_apps: Vec::new(),
             hide_private_windows: true,
+            title_suffixes: Vec::new(),
         }
     }
 }
@@ -51,7 +54,7 @@ impl PrivacySettings {
         }
         // Tarayıcı ekleri (Edge'in sıfır genişlikli boşluğu) temizlendikten sonra.
         window.app_name = strip_invisible(&window.app_name);
-        window.title = strip_invisible(&window.title);
+        window.title = strip_suffixes(&strip_invisible(&window.title), &self.title_suffixes);
         Some(window)
     }
 }
@@ -67,6 +70,19 @@ fn strip_invisible(s: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+/// Kullanıcının tanımladığı son ekleri (bir kez, ilk eşleşen) atar.
+fn strip_suffixes(title: &str, suffixes: &[String]) -> String {
+    for suffix in suffixes.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Some(rest) = title.strip_suffix(suffix) {
+            let rest = rest.trim_end_matches([' ', '-', '—', '–', '|', '·']);
+            if !rest.is_empty() {
+                return rest.to_string();
+            }
+        }
+    }
+    title.to_string()
 }
 
 fn contains(list: &[String], app_id: &str) -> bool {
@@ -151,6 +167,23 @@ mod tests {
         assert_eq!(
             (out.app_name.as_str(), out.title.as_str()),
             ("WhatsApp", "WhatsApp")
+        );
+    }
+
+    #[test]
+    fn strips_user_suffixes() {
+        let s = PrivacySettings {
+            title_suffixes: vec!["Kaan".into()],
+            ..Default::default()
+        };
+        let out = s
+            .apply(w("org.mozilla.firefox", "Anasayfa / X — Kaan"))
+            .unwrap();
+        assert_eq!(out.title, "Anasayfa / X");
+        // Başlığın tamamı ekse dokunulmaz.
+        assert_eq!(
+            s.apply(w("org.mozilla.firefox", "Kaan")).unwrap().title,
+            "Kaan"
         );
     }
 

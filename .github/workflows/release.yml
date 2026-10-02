@@ -1,0 +1,55 @@
+name: Sürüm
+
+# `v0.2.0` gibi bir etiket push'landığında Mac ve Windows paketlerini
+# derleyip bir GitHub Release'e ekler (taslak olarak; yayınlamak elle).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            bundles: app,dmg
+            files: target/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            bundles: nsis
+            files: target/release/bundle/nsis/*.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Sürüm numarası etiketle aynı mı?
+        shell: bash
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          if [ "$want" != "$have" ]; then
+            echo "Etiket $GITHUB_REF_NAME ama tauri.conf.json sürümü $have" >&2
+            exit 1
+          fi
+
+      - name: Paketle
+        working-directory: app
+        run: |
+          npm ci
+          npm run tauri build -- --bundles ${{ matrix.bundles }}
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: ${{ matrix.files }}
