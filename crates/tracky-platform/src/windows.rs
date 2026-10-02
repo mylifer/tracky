@@ -194,7 +194,13 @@ fn file_description(path: &str) -> Option<String> {
         let query = to_wide(r"\VarFileInfo\Translation");
         if VerQueryValueW(block, query.as_ptr(), &mut value, &mut len) != 0 && len >= 4 {
             let pairs = std::slice::from_raw_parts(value as *const u16, (len / 2) as usize);
-            languages.extend(pairs.chunks_exact(2).map(|p| (p[0], p[1])));
+            languages.extend(
+                pairs
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[lang, cp]| (lang, cp)),
+            );
         }
         // Çeviri tablosu eksik olan exe'ler için yaygın varsayılanlar.
         languages.extend([(0x0409, 0x04B0), (0x0409, 0x04E4)]);
