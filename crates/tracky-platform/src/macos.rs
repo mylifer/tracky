@@ -18,6 +18,8 @@ const AX_API_DISABLED: AXError = -25211;
 
 /// `kCGEventSourceStateCombinedSessionState`
 const COMBINED_SESSION_STATE: i32 = 0;
+/// `kCGEventSourceStateHIDSystemState`
+const HID_SYSTEM_STATE: i32 = 1;
 /// `kCGAnyInputEventType`
 const ANY_INPUT_EVENT: u32 = !0;
 
@@ -115,6 +117,15 @@ impl ActivityProvider for SystemProvider {
 
 /// Bir AX özniteliğini okur. Değer yoksa ya da uygulama yanıt vermiyorsa `None`.
 fn attribute(element: &CFType, name: &'static str) -> Result<Option<CFType>, PlatformError> {
+    match raw_attribute(element, name) {
+        Ok(value) => Ok(value),
+        Err(AX_API_DISABLED) => Err(PlatformError::PermissionDenied),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Ham AX hata kodunu koruyan okuma (teşhis için).
+fn raw_attribute(element: &CFType, name: &'static str) -> Result<Option<CFType>, AXError> {
     let attr = CFString::from_static_string(name);
     let mut value: CFTypeRef = ptr::null();
     // SAFETY: `element` geçerli bir AXUIElement; `value` Copy kuralıyla döner.
@@ -126,12 +137,60 @@ fn attribute(element: &CFType, name: &'static str) -> Result<Option<CFType>, Pla
         )
     };
     match err {
-        AX_SUCCESS if !value.is_null() => {
-            Ok(Some(unsafe { CFType::wrap_under_create_rule(value) }))
-        }
-        AX_API_DISABLED => Err(PlatformError::PermissionDenied),
-        _ => Ok(None),
+        AX_SUCCESS if value.is_null() => Ok(None),
+        // SAFETY: Copy kuralı; sahiplik bize geçti.
+        AX_SUCCESS => Ok(Some(unsafe { CFType::wrap_under_create_rule(value) })),
+        code => Err(code),
     }
+}
+
+/// Her adımın ham sonucunu tek satırda döndürür.
+pub fn diagnose() -> String {
+    let mut out = format!("izin={}", is_trusted());
+    // SAFETY: Saf sorgular.
+    let (combined, hid) = unsafe {
+        (
+            CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, ANY_INPUT_EVENT),
+            CGEventSourceSecondsSinceLastEventType(HID_SYSTEM_STATE, ANY_INPUT_EVENT),
+        )
+    };
+    out += &format!(" idle(oturum)={combined:.0}s idle(hid)={hid:.0}s");
+
+    // SAFETY: Create kuralı.
+    let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+    let app = match raw_attribute(&system, "AXFocusedApplication") {
+        Ok(Some(app)) => app,
+        Ok(None) => return out + " odak-uygulama=yok",
+        Err(code) => return out + &format!(" odak-uygulama=HATA({code})"),
+    };
+    let mut pid = 0;
+    // SAFETY: `app` geçerli bir AXUIElement.
+    let err = unsafe { AXUIElementGetPid(app.as_CFTypeRef(), &mut pid) };
+    out += &format!(" pid={pid} (kod {err})");
+    match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+        Some(r) => {
+            out += &format!(
+                " bundle={:?} ad={:?}",
+                r.bundleIdentifier().map(|s| s.to_string()),
+                r.localizedName().map(|s| s.to_string())
+            )
+        }
+        None => out += " NSRunningApplication=yok",
+    }
+    match raw_attribute(&app, "AXFocusedWindow") {
+        Ok(Some(w)) => match raw_attribute(&w, "AXTitle") {
+            Ok(t) => {
+                let title = t
+                    .and_then(|t| t.downcast::<CFString>())
+                    .map(|t| t.to_string());
+                out += &format!(" başlık={title:?}");
+            }
+            Err(code) => out += &format!(" başlık=HATA({code})"),
+        },
+        Ok(None) => out += " pencere=yok",
+        Err(code) => out += &format!(" pencere=HATA({code})"),
+    }
+    out
 }
 
 fn is_trusted() -> bool {

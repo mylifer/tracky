@@ -17,6 +17,10 @@ impl ActivityProvider for SystemProvider {
     }
 }
 
+pub fn diagnose() -> String {
+    "bu işletim sistemi desteklenmiyor".into()
+}
+
 /// İzin kavramı yok; desteklenmeme `active_window` hatasıyla bildirilir.
 pub fn permissions() -> Permissions {
     Permissions {

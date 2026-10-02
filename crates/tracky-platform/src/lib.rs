@@ -52,6 +52,11 @@ pub fn request_permissions() -> Permissions {
     imp::request_permissions()
 }
 
+/// Her gözlem adımının ham sonucunu tek satırda verir (sorun giderme için).
+pub fn diagnose() -> String {
+    imp::diagnose()
+}
+
 // macOS'ta birim struct, Windows'ta önbellekli; ortak kurucu `default`.
 #[allow(clippy::default_constructed_unit_structs)]
 pub fn provider() -> SystemProvider {

@@ -84,6 +84,15 @@ impl ActivityProvider for SystemProvider {
     }
 }
 
+pub fn diagnose() -> String {
+    let mut provider = SystemProvider::default();
+    format!(
+        "pencere={:?} idle={:?}s",
+        provider.active_window(),
+        provider.idle_seconds()
+    )
+}
+
 pub fn permissions() -> Permissions {
     Permissions {
         accessibility: true,

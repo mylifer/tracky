@@ -6,6 +6,7 @@
 //! tracky-probe [--db DOSYA] privacy        Gizlilik ayarlarını gösterir
 //! tracky-probe [--db DOSYA] exclude ID     Uygulamayı hiç kaydetme
 //! tracky-probe [--db DOSYA] hide-title ID  Uygulamanın pencere başlığını kaydetme
+//! tracky-probe diag                        15 sn boyunca ham gözlemleri yazdırır
 //! ```
 
 use std::process::ExitCode;
@@ -20,6 +21,8 @@ use tracky_core::{ActivityProvider, Engine, EngineConfig, Session, Store};
 const DEFAULT_DB: &str = "tracky-probe.db";
 /// Devam eden oturum bu kadar gözlemde bir diske yazılır.
 const FLUSH_EVERY: u32 = 5;
+/// Bu kadar gözlemden sonra hâlâ oturum yoksa kullanıcı uyarılır.
+const WARN_AFTER: u32 = 5;
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -45,6 +48,7 @@ fn main() -> ExitCode {
     {
         [] | ["run"] => run(&store),
         ["report"] => report(&store),
+        ["diag"] => diag(),
         ["privacy"] => show_privacy(&store),
         ["exclude", id] => edit_privacy(&store, |s| s.excluded_apps.push(id.to_string())),
         ["hide-title", id] => edit_privacy(&store, |s| s.hidden_title_apps.push(id.to_string())),
@@ -101,6 +105,12 @@ fn run(store: &Store) -> Result<(), String> {
         }
 
         ticks += 1;
+        if ticks == WARN_AFTER && engine.current().is_none() {
+            println!(
+                "Uyarı: {WARN_AFTER} sn'dir aktif pencere kaydedilmedi (son idle: {idle} sn).\n\
+                 Sorunu bulmak için çıktısını paylaşın: tracky-probe diag"
+            );
+        }
         if ticks.is_multiple_of(FLUSH_EVERY)
             && let Some(current) = engine.current()
         {
@@ -114,6 +124,19 @@ fn run(store: &Store) -> Result<(), String> {
     }
     println!();
     report(store)
+}
+
+fn diag() -> Result<(), String> {
+    println!(
+        "İzin isteniyor: {:?}",
+        tracky_platform::request_permissions()
+    );
+    println!("15 sn boyunca farklı pencerelere geçin:");
+    for _ in 0..15 {
+        println!("{}  {}", clock(Utc::now()), tracky_platform::diagnose());
+        thread::sleep(Duration::from_secs(1));
+    }
+    Ok(())
 }
 
 fn wait_for_permissions() {
