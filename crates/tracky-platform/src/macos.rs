@@ -5,6 +5,11 @@ use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::{CFString, CFStringRef};
+use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
+use core_foundation_sys::dictionary::CFDictionaryGetValue;
+use core_foundation_sys::number::{
+    CFNumberGetValue, CFNumberRef, kCFNumberFloat64Type, kCFNumberSInt64Type,
+};
 use objc2_app_kit::NSRunningApplication;
 use tracky_core::{ActiveWindow, ActivityProvider};
 
@@ -29,6 +34,7 @@ const IGNORED_BUNDLES: &[&str] = &["com.apple.loginwindow", "com.apple.ScreenSav
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXUIElementCreateSystemWide() -> AXUIElementRef;
+    fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
     fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,
         attribute: CFStringRef,
@@ -43,7 +49,14 @@ unsafe extern "C" {
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+    fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
+    static kCGWindowLayer: CFStringRef;
+    static kCGWindowOwnerPID: CFStringRef;
+    static kCGWindowAlpha: CFStringRef;
 }
+
+/// `kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements`
+const ON_SCREEN_WINDOWS: u32 = (1 << 0) | (1 << 4);
 
 #[derive(Debug, Default)]
 pub struct SystemProvider;
@@ -55,17 +68,11 @@ impl ActivityProvider for SystemProvider {
         if !is_trusted() {
             return Err(PlatformError::PermissionDenied);
         }
-        // SAFETY: Create kuralı; sahipliği CFType devralır ve bırakır.
-        let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
-        let Some(app) = attribute(&system, "AXFocusedApplication")? else {
+        let Some(pid) = focused_pid()? else {
             return Ok(None);
         };
-
-        let mut pid = 0;
-        // SAFETY: `app` geçerli bir AXUIElement.
-        if unsafe { AXUIElementGetPid(app.as_CFTypeRef(), &mut pid) } != AX_SUCCESS {
-            return Ok(None);
-        }
+        // SAFETY: Create kuralı; sahipliği CFType devralır ve bırakır.
+        let app = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) };
         let Some(running) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
         else {
             return Ok(None);
@@ -115,6 +122,64 @@ impl ActivityProvider for SystemProvider {
     }
 }
 
+/// Odaktaki uygulamanın pid'i.
+///
+/// Önce sistem geneli AX öğesine sorulur; bazı macOS kurulumlarında bu
+/// sürekli `kAXErrorCannotComplete` (-25204) döndürdüğü için ekrandaki
+/// en öndeki normal pencerenin sahibine düşülür (izin gerektirmez).
+fn focused_pid() -> Result<Option<i32>, PlatformError> {
+    // SAFETY: Create kuralı.
+    let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+    if let Some(app) = attribute(&system, "AXFocusedApplication")? {
+        let mut pid = 0;
+        // SAFETY: `app` geçerli bir AXUIElement.
+        if unsafe { AXUIElementGetPid(app.as_CFTypeRef(), &mut pid) } == AX_SUCCESS {
+            return Ok(Some(pid));
+        }
+    }
+    Ok(frontmost_window_pid())
+}
+
+/// Ekranda öndeden arkaya sıralı pencerelerden ilk görünür normal (katman 0) pencerenin sahibi.
+fn frontmost_window_pid() -> Option<i32> {
+    // SAFETY: Copy kuralıyla dönen dizi CFType'a sarılıp bırakılır; öğeler
+    // dizinin ömrü boyunca geçerlidir ve yalnızca okunur.
+    unsafe {
+        let list = CGWindowListCopyWindowInfo(ON_SCREEN_WINDOWS, 0);
+        if list.is_null() {
+            return None;
+        }
+        let _owner = CFType::wrap_under_create_rule(list.cast());
+        for i in 0..CFArrayGetCount(list) {
+            let info = CFArrayGetValueAtIndex(list, i).cast();
+            let layer = number_i64(info, kCGWindowLayer);
+            let alpha = number_f64(info, kCGWindowAlpha).unwrap_or(1.0);
+            if layer == Some(0) && alpha > 0.0 {
+                return number_i64(info, kCGWindowOwnerPID).map(|p| p as i32);
+            }
+        }
+        None
+    }
+}
+
+/// SAFETY: `dict` geçerli bir CFDictionary olmalı.
+unsafe fn number_i64(dict: CFDictionaryRef, key: CFStringRef) -> Option<i64> {
+    let mut out = 0i64;
+    let value = unsafe { CFDictionaryGetValue(dict, key.cast()) } as CFNumberRef;
+    (!value.is_null()
+        && unsafe { CFNumberGetValue(value, kCFNumberSInt64Type, (&raw mut out).cast()) })
+    .then_some(out)
+}
+
+/// SAFETY: `dict` geçerli bir CFDictionary olmalı.
+unsafe fn number_f64(dict: CFDictionaryRef, key: CFStringRef) -> Option<f64> {
+    let mut out = 0f64;
+    let value = unsafe { CFDictionaryGetValue(dict, key.cast()) } as CFNumberRef;
+    (!value.is_null()
+        && unsafe { CFNumberGetValue(value, kCFNumberFloat64Type, (&raw mut out).cast()) })
+    .then_some(out)
+}
+
 /// Bir AX özniteliğini okur. Değer yoksa ya da uygulama yanıt vermiyorsa `None`.
 fn attribute(element: &CFType, name: &'static str) -> Result<Option<CFType>, PlatformError> {
     match raw_attribute(element, name) {
@@ -158,15 +223,21 @@ pub fn diagnose() -> String {
 
     // SAFETY: Create kuralı.
     let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
-    let app = match raw_attribute(&system, "AXFocusedApplication") {
-        Ok(Some(app)) => app,
-        Ok(None) => return out + " odak-uygulama=yok",
-        Err(code) => return out + &format!(" odak-uygulama=HATA({code})"),
+    match raw_attribute(&system, "AXFocusedApplication") {
+        Ok(Some(_)) => out += " ax-odak=tamam",
+        Ok(None) => out += " ax-odak=yok",
+        Err(code) => out += &format!(" ax-odak=HATA({code})"),
+    }
+    let window_pid = frontmost_window_pid();
+    out += &format!(" pencere-listesi-pid={window_pid:?}");
+    let pid = match focused_pid() {
+        Ok(Some(pid)) => pid,
+        Ok(None) => return out + " pid=yok",
+        Err(e) => return out + &format!(" pid=HATA({e})"),
     };
-    let mut pid = 0;
-    // SAFETY: `app` geçerli bir AXUIElement.
-    let err = unsafe { AXUIElementGetPid(app.as_CFTypeRef(), &mut pid) };
-    out += &format!(" pid={pid} (kod {err})");
+    out += &format!(" pid={pid}");
+    // SAFETY: Create kuralı.
+    let app = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) };
     match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
         Some(r) => {
             out += &format!(
