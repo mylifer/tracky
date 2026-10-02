@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: tracky-probe-macos-arm64
+            exe: tracky-probe
+          - os: windows-latest
+            artifact: tracky-probe-windows-x64
+            exe: tracky-probe.exe
+          - os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Biçim
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Testler
+        run: cargo test --workspace
+
+      - name: tracky-probe derle
+        if: matrix.artifact
+        run: cargo build --release -p tracky-probe
+      - uses: actions/upload-artifact@v4
+        if: matrix.artifact
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/release/${{ matrix.exe }}

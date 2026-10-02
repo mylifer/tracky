@@ -5,8 +5,17 @@ edition = "2024"
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", optional = true }
 thiserror = "2.0.21"
 url = "2.5.8"
 uuid = { version = "1.26.1", features = ["v4", "serde"] }
+
+[features]
+default = ["store"]
+# SQLite depolama; platform katmanı yalnızca model tiplerine ihtiyaç duyduğu için kapatabilir.
+store = ["dep:rusqlite", "dep:serde_json"]
+
+[dev-dependencies]
+serde_json = "1.0.151"

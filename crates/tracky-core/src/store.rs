@@ -5,11 +5,14 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::model::Session;
+use crate::privacy::PrivacySettings;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("veritabanı hatası: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("ayar okunamadı: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("geçersiz kayıt: {0}")]
     Invalid(String),
 }
@@ -21,7 +24,8 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// Senkronizasyona hazırlık: tüm satırlar UUID ile tanımlanır, her satırda
 /// `device_id`, `updated_at` (son değişiklik) ve `deleted_at` (yumuşak silme)
 /// bulunur; `synced_at` yalnızca yerelde tutulur.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -45,7 +49,18 @@ CREATE TABLE sessions (
 CREATE INDEX sessions_started_at ON sessions (started_at);
 CREATE INDEX sessions_ended_at   ON sessions (ended_at);
 CREATE INDEX sessions_unsynced   ON sessions (updated_at) WHERE synced_at IS NULL OR synced_at < updated_at;
-"#];
+"#,
+    r#"
+-- Uygulama ayarları; değer JSON. Cihazlar arası senkronize edilebilir.
+CREATE TABLE settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+"#,
+];
+
+const PRIVACY_KEY: &str = "privacy";
 
 /// Bir zaman aralığında bir anahtar (uygulama, domain...) için toplam süre.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -81,6 +96,31 @@ impl Store {
     /// Bu kurulumun kalıcı kimliği; senkronizasyonda kayıtların kaynağını belirtir.
     pub fn device_id(&self) -> Uuid {
         self.device_id
+    }
+
+    /// Kayıtlı gizlilik ayarları; hiç kaydedilmediyse varsayılanlar.
+    pub fn privacy_settings(&self) -> Result<PrivacySettings> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                [PRIVACY_KEY],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw
+            .map(|v| serde_json::from_str(&v))
+            .transpose()?
+            .unwrap_or_default())
+    }
+
+    pub fn save_privacy_settings(&self, settings: &PrivacySettings) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![PRIVACY_KEY, serde_json::to_string(settings)?, ms(Utc::now())],
+        )?;
+        Ok(())
     }
 
     /// Oturumu ekler ya da (devam eden oturumun periyodik kaydında) günceller.
@@ -293,6 +333,22 @@ mod tests {
             .map(|u| (u.key.as_str(), u.seconds))
             .collect();
         assert_eq!(got, [("github.com", 100), ("youtube.com", 30)]);
+    }
+
+    #[test]
+    fn privacy_settings_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(
+            store.privacy_settings().unwrap(),
+            PrivacySettings::default()
+        );
+        let s = PrivacySettings {
+            excluded_apps: vec!["com.1password.1password".into()],
+            ..Default::default()
+        };
+        store.save_privacy_settings(&s).unwrap();
+        store.save_privacy_settings(&s).unwrap();
+        assert_eq!(store.privacy_settings().unwrap(), s);
     }
 
     #[test]
