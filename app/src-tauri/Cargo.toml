@@ -20,3 +20,4 @@ tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tracky-core = { version = "0.1.0", path = "../../crates/tracky-core" }
 tracky-platform = { version = "0.1.0", path = "../../crates/tracky-platform" }
+uuid = { version = "1.26.1", features = ["v4"] }

@@ -1,0 +1,276 @@
+//! Oturumlardan gün/hafta raporu üretimi (saf hesaplama; depolama bağımsız).
+
+use std::collections::HashMap;
+
+use chrono::{DateTime, Duration, Utc};
+use serde::Serialize;
+
+use crate::classify::{Classifier, Tag};
+use crate::model::Session;
+
+/// Bir kategori ya da proje için toplam. `id: None` = kategorisiz / projesiz.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bucket {
+    pub id: Option<String>,
+    pub seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppBucket {
+    pub app_id: String,
+    pub app_name: String,
+    /// Uygulamanın kendi kategorisi (uygulama kuralına göre).
+    pub category_id: Option<String>,
+    pub seconds: i64,
+}
+
+/// Bir günün toplamı ve kategori kırılımı (haftalık grafik için).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayBucket {
+    pub start: DateTime<Utc>,
+    pub seconds: i64,
+    pub categories: Vec<Bucket>,
+}
+
+/// Zaman çizelgesindeki kesintisiz bir blok.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Segment {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub app_name: String,
+    pub title: String,
+    pub category_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Report {
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub total_seconds: i64,
+    pub categories: Vec<Bucket>,
+    pub projects: Vec<Bucket>,
+    pub apps: Vec<AppBucket>,
+    pub days: Vec<DayBucket>,
+    pub timeline: Vec<Segment>,
+    pub tags: Vec<Tag>,
+}
+
+/// Aynı uygulamanın bu kadar yakın bloklarını zaman çizelgesinde birleştir.
+const MERGE_GAP_SECS: i64 = 5;
+
+/// `[from, to)` aralığının raporu. `day_starts` yerel gün sınırlarıdır
+/// (artan sırada, ilk öğe `from`); saat dilimi çağıranın sorumluluğundadır.
+pub fn build(
+    sessions: &[Session],
+    tags: &[Tag],
+    classifier: &Classifier,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    day_starts: &[DateTime<Utc>],
+    with_timeline: bool,
+) -> Report {
+    let mut categories: HashMap<Option<String>, i64> = HashMap::new();
+    let mut projects: HashMap<Option<String>, i64> = HashMap::new();
+    let mut apps: HashMap<&str, (String, i64)> = HashMap::new();
+    let mut days: Vec<(i64, HashMap<Option<String>, i64>)> =
+        day_starts.iter().map(|_| (0, HashMap::new())).collect();
+    let mut timeline: Vec<Segment> = Vec::new();
+    let mut total = 0;
+
+    for s in sessions {
+        let (start, end) = (s.started_at.max(from), s.ended_at.min(to));
+        if end <= start {
+            continue;
+        }
+        let secs = (end - start).num_seconds();
+        let class = classifier.classify(s);
+        total += secs;
+        *categories.entry(class.category.clone()).or_default() += secs;
+        *projects.entry(class.project.clone()).or_default() += secs;
+        let app = apps
+            .entry(s.app_id.as_str())
+            .or_insert_with(|| (s.app_name.clone(), 0));
+        app.1 += secs;
+
+        // Gün sınırını aşan oturum her güne kendi payı kadar yazılır.
+        for (i, day_start) in day_starts.iter().enumerate() {
+            let day_end = day_starts.get(i + 1).copied().unwrap_or(to);
+            let (a, b) = (start.max(*day_start), end.min(day_end));
+            if b > a {
+                let d = (b - a).num_seconds();
+                days[i].0 += d;
+                *days[i].1.entry(class.category.clone()).or_default() += d;
+            }
+        }
+
+        if with_timeline {
+            match timeline.last_mut() {
+                Some(last)
+                    if last.app_name == s.app_name
+                        && last.category_id == class.category
+                        && start - last.end <= Duration::seconds(MERGE_GAP_SECS) =>
+                {
+                    last.end = last.end.max(end);
+                }
+                _ => timeline.push(Segment {
+                    start,
+                    end,
+                    app_name: s.app_name.clone(),
+                    title: s.title.clone(),
+                    category_id: class.category,
+                }),
+            }
+        }
+    }
+
+    let mut apps: Vec<AppBucket> = apps
+        .into_iter()
+        .map(|(app_id, (app_name, seconds))| AppBucket {
+            category_id: classifier.app_category(app_id),
+            app_id: app_id.to_string(),
+            app_name,
+            seconds,
+        })
+        .collect();
+    apps.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.app_name.cmp(&b.app_name)));
+
+    Report {
+        from: Some(from),
+        to: Some(to),
+        total_seconds: total,
+        categories: sorted(categories),
+        projects: sorted(projects),
+        apps,
+        days: day_starts
+            .iter()
+            .zip(days)
+            .map(|(start, (seconds, cats))| DayBucket {
+                start: *start,
+                seconds,
+                categories: sorted(cats),
+            })
+            .collect(),
+        timeline,
+        tags: tags.to_vec(),
+    }
+}
+
+/// Süreye göre azalan; eşitlikte kimliğe göre (kararlı çıktı için).
+fn sorted(map: HashMap<Option<String>, i64>) -> Vec<Bucket> {
+    let mut v: Vec<Bucket> = map
+        .into_iter()
+        .filter(|(_, s)| *s > 0)
+        .map(|(id, seconds)| Bucket { id, seconds })
+        .collect();
+    v.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.id.cmp(&b.id)));
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::classify::{Rule, RuleField, TagKind};
+    use chrono::TimeZone;
+    use uuid::Uuid;
+
+    fn t(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(1_700_000_000 + secs, 0).unwrap()
+    }
+
+    fn s(app: &str, title: &str, a: i64, b: i64) -> Session {
+        Session {
+            id: Uuid::new_v4(),
+            app_id: format!("com.test.{app}"),
+            app_name: app.into(),
+            title: title.into(),
+            url: None,
+            domain: None,
+            started_at: t(a),
+            ended_at: t(b),
+        }
+    }
+
+    #[test]
+    fn aggregates_by_category_project_app_and_day() {
+        let tags = vec![
+            Tag {
+                id: "dev".into(),
+                kind: TagKind::Category,
+                name: "Geliştirme".into(),
+                color: 1,
+            },
+            Tag {
+                id: "kum".into(),
+                kind: TagKind::Project,
+                name: "Kum".into(),
+                color: 2,
+            },
+        ];
+        let rules = vec![
+            Rule {
+                id: "1".into(),
+                tag_id: "dev".into(),
+                field: RuleField::App,
+                pattern: "com.test.Code".into(),
+            },
+            Rule {
+                id: "2".into(),
+                tag_id: "kum".into(),
+                field: RuleField::Title,
+                pattern: "kum".into(),
+            },
+        ];
+        let c = Classifier::new(&tags, &rules);
+        let sessions = [
+            s("Code", "kum/main.rs", 0, 100),
+            s("Code", "kum/lib.rs", 102, 150), // birleşir (aynı uygulama, 2 sn boşluk)
+            s("Safari", "Haberler", 150, 200),
+            s("Code", "diğer", 980, 1100), // gün sınırını (1000) aşar
+        ];
+        let r = build(&sessions, &tags, &c, t(0), t(2000), &[t(0), t(1000)], true);
+
+        assert_eq!(r.total_seconds, 100 + 48 + 50 + 120);
+        assert_eq!(
+            r.categories,
+            [
+                Bucket {
+                    id: Some("dev".into()),
+                    seconds: 268
+                },
+                Bucket {
+                    id: None,
+                    seconds: 50
+                }
+            ]
+        );
+        assert_eq!(r.projects[0].id, None);
+        assert_eq!(r.projects[1].seconds, 148);
+        assert_eq!(r.apps[0].app_name, "Code");
+        assert_eq!(r.apps[0].category_id.as_deref(), Some("dev"));
+        assert_eq!(r.days[0].seconds, 100 + 48 + 50 + 20);
+        assert_eq!(r.days[1].seconds, 100);
+        assert_eq!(r.timeline.len(), 3);
+        assert_eq!((r.timeline[0].start, r.timeline[0].end), (t(0), t(150)));
+    }
+
+    #[test]
+    fn clips_sessions_to_range() {
+        let c = Classifier::new(&[], &[]);
+        let r = build(
+            &[s("A", "", 0, 100)],
+            &[],
+            &c,
+            t(50),
+            t(80),
+            &[t(50)],
+            false,
+        );
+        assert_eq!(r.total_seconds, 30);
+        assert!(r.timeline.is_empty());
+    }
+}

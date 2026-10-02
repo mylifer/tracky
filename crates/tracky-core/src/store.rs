@@ -4,8 +4,10 @@ use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
+use crate::classify::{Classifier, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind};
 use crate::model::Session;
 use crate::privacy::PrivacySettings;
+use crate::report::{self, Report};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -58,7 +60,33 @@ CREATE TABLE settings (
     updated_at INTEGER NOT NULL
 );
 "#,
+    r#"
+-- Kategoriler ve projeler (kind) ile oturumları onlara bağlayan kurallar.
+CREATE TABLE tags (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL CHECK (kind IN ('category', 'project')),
+    name       TEXT NOT NULL,
+    color      INTEGER NOT NULL CHECK (color BETWEEN 1 AND 8),
+    position   INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    synced_at  INTEGER
+);
+CREATE TABLE rules (
+    id         TEXT PRIMARY KEY,
+    tag_id     TEXT NOT NULL REFERENCES tags (id),
+    field      TEXT NOT NULL CHECK (field IN ('app', 'title')),
+    pattern    TEXT NOT NULL,
+    position   INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    synced_at  INTEGER
+);
+CREATE INDEX rules_tag ON rules (tag_id);
+"#,
 ];
+
+const DEFAULTS_SEEDED_KEY: &str = "default_tags_seeded";
 
 const PRIVACY_KEY: &str = "privacy";
 
@@ -90,7 +118,9 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&mut conn)?;
         let device_id = device_id(&conn)?;
-        Ok(Self { conn, device_id })
+        let store = Self { conn, device_id };
+        store.seed_default_tags()?;
+        Ok(store)
     }
 
     /// Bu kurulumun kalıcı kimliği; senkronizasyonda kayıtların kaynağını belirtir.
@@ -194,6 +224,223 @@ impl Store {
     /// Domain başına toplam süre (yalnızca URL'si bilinen oturumlar).
     pub fn domain_totals(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<UsageTotal>> {
         self.totals("domain", "domain", from, to)
+    }
+
+    /// İlk açılışta varsayılan kategorileri ekler (kullanıcı silerse geri gelmez).
+    fn seed_default_tags(&self) -> Result<()> {
+        if self.setting::<bool>(DEFAULTS_SEEDED_KEY)?.is_some() {
+            return Ok(());
+        }
+        for (position, (name, color, apps, titles)) in DEFAULT_CATEGORIES.iter().enumerate() {
+            let tag = Tag {
+                id: Uuid::new_v4().to_string(),
+                kind: TagKind::Category,
+                name: name.to_string(),
+                color: *color,
+            };
+            self.upsert_tag(&tag, position as i64)?;
+            let patterns = apps
+                .iter()
+                .map(|p| (RuleField::App, p))
+                .chain(titles.iter().map(|p| (RuleField::Title, p)));
+            for (field, pattern) in patterns {
+                self.upsert_rule(&Rule {
+                    id: Uuid::new_v4().to_string(),
+                    tag_id: tag.id.clone(),
+                    field,
+                    pattern: pattern.to_string(),
+                })?;
+            }
+        }
+        self.save_setting(DEFAULTS_SEEDED_KEY, &true)
+    }
+
+    pub fn tags(&self) -> Result<Vec<Tag>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, name, color FROM tags
+             WHERE deleted_at IS NULL ORDER BY kind, position, name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, u8>(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, kind, name, color) = row?;
+            let kind = TagKind::parse(&kind)
+                .ok_or_else(|| StoreError::Invalid(format!("bilinmeyen etiket türü: {kind}")))?;
+            Ok(Tag {
+                id,
+                kind,
+                name,
+                color,
+            })
+        })
+        .collect()
+    }
+
+    /// Ekler ya da günceller; `position` yalnızca eklemede kullanılır.
+    pub fn upsert_tag(&self, tag: &Tag, position: i64) -> Result<()> {
+        if !(1..=8).contains(&tag.color) {
+            return Err(StoreError::Invalid(format!(
+                "renk 1-8 olmalı: {}",
+                tag.color
+            )));
+        }
+        self.conn.execute(
+            "INSERT INTO tags (id, kind, name, color, position, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (id) DO UPDATE SET
+                name = excluded.name, color = excluded.color, updated_at = excluded.updated_at",
+            params![
+                tag.id,
+                tag.kind.as_str(),
+                tag.name.trim(),
+                tag.color,
+                position,
+                ms(Utc::now())
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Yumuşak siler; kuralları da birlikte silinir.
+    pub fn delete_tag(&self, id: &str) -> Result<()> {
+        let now = ms(Utc::now());
+        self.conn.execute(
+            "UPDATE tags SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+            params![id, now],
+        )?;
+        self.conn.execute(
+            "UPDATE rules SET deleted_at = ?2, updated_at = ?2
+             WHERE tag_id = ?1 AND deleted_at IS NULL",
+            params![id, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn rules(&self) -> Result<Vec<Rule>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, tag_id, field, pattern FROM rules
+             WHERE deleted_at IS NULL ORDER BY position, rowid",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, tag_id, field, pattern) = row?;
+            let field = RuleField::parse(&field)
+                .ok_or_else(|| StoreError::Invalid(format!("bilinmeyen kural alanı: {field}")))?;
+            Ok(Rule {
+                id,
+                tag_id,
+                field,
+                pattern,
+            })
+        })
+        .collect()
+    }
+
+    pub fn upsert_rule(&self, rule: &Rule) -> Result<()> {
+        let pattern = rule.pattern.trim();
+        if pattern.is_empty() {
+            return Err(StoreError::Invalid("kural deseni boş olamaz".into()));
+        }
+        self.conn.execute(
+            "INSERT INTO rules (id, tag_id, field, pattern, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (id) DO UPDATE SET
+                tag_id = excluded.tag_id, field = excluded.field,
+                pattern = excluded.pattern, updated_at = excluded.updated_at",
+            params![
+                rule.id,
+                rule.tag_id,
+                rule.field.as_str(),
+                pattern,
+                ms(Utc::now())
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_rule(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE rules SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+            params![id, ms(Utc::now())],
+        )?;
+        Ok(())
+    }
+
+    /// Bir uygulamayı bir kategoriye atar: mevcut uygulama kurallarını kaldırıp yenisini ekler.
+    /// `tag_id: None` uygulamayı kategorisiz bırakır.
+    pub fn assign_app_category(&self, app_id: &str, tag_id: Option<&str>) -> Result<()> {
+        let tags = self.tags()?;
+        let is_category = |id: &str| {
+            tags.iter()
+                .any(|t| t.id == id && t.kind == TagKind::Category)
+        };
+        for rule in self.rules()? {
+            if rule.field == RuleField::App && is_category(&rule.tag_id) && rule.matches(app_id, "")
+            {
+                self.delete_rule(&rule.id)?;
+            }
+        }
+        if let Some(tag_id) = tag_id {
+            self.upsert_rule(&Rule {
+                id: Uuid::new_v4().to_string(),
+                tag_id: tag_id.to_string(),
+                field: RuleField::App,
+                pattern: app_id.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// `[from, to)` raporu; `day_starts` yerel gün sınırlarıdır.
+    pub fn report(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        day_starts: &[DateTime<Utc>],
+        with_timeline: bool,
+    ) -> Result<Report> {
+        let sessions = self.sessions_between(from, to)?;
+        let tags = self.tags()?;
+        let classifier = Classifier::new(&tags, &self.rules()?);
+        Ok(report::build(
+            &sessions,
+            &tags,
+            &classifier,
+            from,
+            to,
+            day_starts,
+            with_timeline,
+        ))
+    }
+
+    /// Son kullanılan uygulamalar (kural ve gizlilik seçicileri için), en yeni önce.
+    pub fn known_apps(&self, limit: usize) -> Result<Vec<UsageTotal>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT app_id, MAX(app_name), SUM(ended_at - started_at) / 1000
+             FROM sessions WHERE deleted_at IS NULL
+             GROUP BY app_id ORDER BY MAX(ended_at) DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok(UsageTotal {
+                key: r.get(0)?,
+                label: r.get(1)?,
+                seconds: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Bir uygulamanın pencere başlıklarına göre süre dağılımı.
@@ -402,6 +649,43 @@ mod tests {
             got,
             [("GitHub".to_string(), 120), ("Gmail".to_string(), 30)]
         );
+    }
+
+    #[test]
+    fn seeds_default_categories_once() {
+        let store = Store::open_in_memory().unwrap();
+        let tags = store.tags().unwrap();
+        assert_eq!(tags.len(), DEFAULT_CATEGORIES.len());
+        assert!(!store.rules().unwrap().is_empty());
+        // Silinen varsayılan kategori yeniden eklenmez.
+        store.delete_tag(&tags[0].id).unwrap();
+        store.seed_default_tags().unwrap();
+        assert_eq!(store.tags().unwrap().len(), DEFAULT_CATEGORIES.len() - 1);
+    }
+
+    #[test]
+    fn assign_app_category_replaces_existing_rule() {
+        let store = Store::open_in_memory().unwrap();
+        let tags = store.tags().unwrap();
+        let comm = tags.iter().find(|t| t.name == "İletişim").unwrap();
+        let dev = tags.iter().find(|t| t.name == "Geliştirme").unwrap();
+        let mut s = session("x", None, 0, 60);
+        s.app_id = "com.microsoft.teams2".into();
+        store.upsert_session(&s).unwrap();
+
+        let category = |store: &Store| {
+            let r = store.report(t(0), t(100), &[t(0)], false).unwrap();
+            r.apps[0].category_id.clone()
+        };
+        assert_eq!(category(&store).as_deref(), Some(comm.id.as_str()));
+        store
+            .assign_app_category("com.microsoft.teams2", Some(&dev.id))
+            .unwrap();
+        assert_eq!(category(&store).as_deref(), Some(dev.id.as_str()));
+        store
+            .assign_app_category("com.microsoft.teams2", None)
+            .unwrap();
+        assert_eq!(category(&store), None);
     }
 
     #[test]

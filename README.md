@@ -9,8 +9,8 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 1. Çekirdek: veri modeli, sync'e hazır SQLite şeması, oturum motoru (idle/uyku tespiti), domain çıkarma
 - [x] 2. Platform katmanı: macOS ve Windows'ta aktif pencere, sekme adı, idle süresi, gizlilik ayarları (macOS gerçek makinede doğrulandı)
 - [x] 3. Tauri uygulaması: arka planda takip, menü çubuğu/tray, karşılama ve izin ekranı, otomatik başlatma
-- [ ] 4. Arayüz: günlük/haftalık rapor, zaman çizelgesi (Türkçe)
-- [ ] 5. Kategoriler / projeler ve kural motoru
+- [x] 4. Arayüz: gün (zaman çizelgesi) ve hafta raporları, uygulama/başlık dökümü, ayarlar
+- [x] 5. Kategoriler / projeler: uygulama ve başlık kuralları, hazır kategoriler, geçmişe dönük sınıflandırma
 - [ ] 6. Supabase senkronizasyonu
 - [ ] 7. Paketleme, imzalama, CI
 
@@ -23,11 +23,14 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
   privacy.rs              Gizlilik: duraklatma, hariç uygulamalar, başlık gizleme
   browser.rs              Tarayıcı tanıma, sekme adı temizleme, gizli pencere tespiti
   platform.rs             Her OS'un uygulayacağı ActivityProvider trait'i
+  classify.rs             Kategoriler, projeler, kurallar ve varsayılan kategoriler
+  report.rs               Gün/hafta raporu (kategori, proje, uygulama, gün, zaman çizelgesi)
+  tracker.rs              Gözlem → gizlilik → motor → depolama hattı
   url_util.rs             URL'den domain çıkarma (ileride eklenti için)
 crates/tracky-platform/   macOS (Erişilebilirlik API) ve Windows (Win32) gözlemcileri
 crates/tracky-probe/      Takibi terminalden denemek için araç
 app/                      Kum masaüstü uygulaması (Tauri + React)
-  src/                    Arayüz: karşılama ekranı, bugünün özeti
+  src/                    Arayüz: karşılama, gün/hafta raporları, kategoriler, ayarlar
   src-tauri/              Takip iş parçacığı, menü çubuğu, komutlar
 ```
 

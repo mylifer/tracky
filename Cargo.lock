@@ -1983,6 +1983,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tracky-core",
  "tracky-platform",
+ "uuid",
 ]
 
 [[package]]

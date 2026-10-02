@@ -1,5 +1,6 @@
 //! Kum masaüstü uygulaması: menü çubuğunda yaşayan zaman takipçisi.
 
+mod commands;
 mod tracking;
 mod tray;
 
@@ -22,8 +23,8 @@ const ONBOARDED_KEY: &str = "onboarded";
 const AUTOSTART_INIT_KEY: &str = "autostart_initialized";
 
 /// Takip iş parçacığına erişim; kapanışta son oturumun yazılmasını bekleriz.
-struct Worker {
-    tx: Sender<Command>,
+pub(crate) struct Worker {
+    pub(crate) tx: Sender<Command>,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -154,7 +155,7 @@ pub(crate) fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -226,6 +227,17 @@ pub fn run() {
             today_apps,
             app_titles,
             diagnose,
+            commands::get_report,
+            commands::app_titles_between,
+            commands::get_taxonomy,
+            commands::save_tag,
+            commands::delete_tag,
+            commands::add_rule,
+            commands::delete_rule,
+            commands::assign_app_category,
+            commands::known_apps,
+            commands::get_privacy,
+            commands::save_privacy,
         ])
         .setup(setup)
         .on_window_event(|window, event| {
