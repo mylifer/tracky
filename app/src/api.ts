@@ -26,6 +26,8 @@ export const api = {
   setPaused: (paused: boolean) => invoke<void>("set_paused", { paused }),
   completeOnboarding: () => invoke<void>("complete_onboarding"),
   todayApps: () => invoke<UsageTotal[]>("today_apps"),
+  appTitles: (appId: string) => invoke<UsageTotal[]>("app_titles", { appId }),
+  diagnose: () => invoke<string>("diagnose"),
   onStatus: (cb: (s: TrackingStatus) => void): Promise<UnlistenFn> =>
     listen<TrackingStatus>("status", (e) => cb(e.payload)),
 };

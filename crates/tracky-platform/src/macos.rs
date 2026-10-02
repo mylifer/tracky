@@ -97,13 +97,7 @@ impl ActivityProvider for SystemProvider {
             .map(|s| s.to_string())
             .unwrap_or_else(|| app_id.clone());
 
-        let title = attribute(&app, "AXFocusedWindow")?
-            .map(|window| attribute(&window, "AXTitle"))
-            .transpose()?
-            .flatten()
-            .and_then(|t| t.downcast::<CFString>())
-            .map(|t| t.to_string())
-            .unwrap_or_default();
+        let title = window_title(&app)?;
 
         Ok(Some(ActiveWindow {
             app_id,
@@ -119,6 +113,50 @@ impl ActivityProvider for SystemProvider {
             CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, ANY_INPUT_EVENT)
         };
         Ok(secs.max(0.0) as u64)
+    }
+}
+
+/// Uygulamanın öndeki penceresinin başlığı.
+///
+/// Odaktaki pencere her zaman okunamıyor (bazı uygulamalar -25204 döndürür);
+/// sırasıyla ana pencere ve pencere listesinin ilki denenir.
+fn window_title(app: &CFType) -> Result<String, PlatformError> {
+    for name in ["AXFocusedWindow", "AXMainWindow"] {
+        if let Some(window) = attribute(app, name)?
+            && let Some(title) = title_of(&window)?
+        {
+            return Ok(title);
+        }
+    }
+    if let Some(window) = first_window(app)?
+        && let Some(title) = title_of(&window)?
+    {
+        return Ok(title);
+    }
+    Ok(String::new())
+}
+
+fn title_of(window: &CFType) -> Result<Option<String>, PlatformError> {
+    Ok(attribute(window, "AXTitle")?
+        .and_then(|t| t.downcast::<CFString>())
+        .map(|t| t.to_string())
+        .filter(|t| !t.is_empty()))
+}
+
+/// `AXWindows` dizisinin ilk öğesi (öndeki pencere).
+fn first_window(app: &CFType) -> Result<Option<CFType>, PlatformError> {
+    let Some(list) = attribute(app, "AXWindows")? else {
+        return Ok(None);
+    };
+    let array: CFArrayRef = list.as_CFTypeRef().cast();
+    // SAFETY: AXWindows bir CFArray döndürür; öğe dizinin ömrü boyunca geçerli,
+    // Get kuralıyla sarılınca kendi referansını tutar.
+    unsafe {
+        if CFArrayGetCount(array) == 0 {
+            return Ok(None);
+        }
+        let first = CFArrayGetValueAtIndex(array, 0);
+        Ok((!first.is_null()).then(|| CFType::wrap_under_get_rule(first)))
     }
 }
 
@@ -248,19 +286,28 @@ pub fn diagnose() -> String {
         }
         None => out += " NSRunningApplication=yok",
     }
-    match raw_attribute(&app, "AXFocusedWindow") {
-        Ok(Some(w)) => match raw_attribute(&w, "AXTitle") {
-            Ok(t) => {
-                let title = t
-                    .and_then(|t| t.downcast::<CFString>())
-                    .map(|t| t.to_string());
-                out += &format!(" başlık={title:?}");
-            }
-            Err(code) => out += &format!(" başlık=HATA({code})"),
-        },
-        Ok(None) => out += " pencere=yok",
-        Err(code) => out += &format!(" pencere=HATA({code})"),
+    for name in ["AXFocusedWindow", "AXMainWindow"] {
+        let short = name.trim_start_matches("AX");
+        match raw_attribute(&app, name) {
+            Ok(Some(w)) => match raw_attribute(&w, "AXTitle") {
+                Ok(t) => {
+                    let title = t
+                        .and_then(|t| t.downcast::<CFString>())
+                        .map(|t| t.to_string());
+                    out += &format!(" {short}.başlık={title:?}");
+                }
+                Err(code) => out += &format!(" {short}.başlık=HATA({code})"),
+            },
+            Ok(None) => out += &format!(" {short}=yok"),
+            Err(code) => out += &format!(" {short}=HATA({code})"),
+        }
     }
+    match first_window(&app) {
+        Ok(Some(w)) => out += &format!(" Windows[0].başlık={:?}", title_of(&w)),
+        Ok(None) => out += " Windows=boş",
+        Err(e) => out += &format!(" Windows=HATA({e})"),
+    }
+    out += &format!(" → sonuç={:?}", window_title(&app));
     out
 }
 

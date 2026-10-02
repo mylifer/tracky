@@ -94,6 +94,19 @@ fn today_apps(app: AppHandle) -> Result<Vec<UsageTotal>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn app_titles(app: AppHandle, app_id: String) -> Result<Vec<UsageTotal>, String> {
+    lock(&app.state::<Shared>().store)
+        .title_totals(&app_id, tracking::start_of_today(), chrono::Utc::now())
+        .map_err(|e| e.to_string())
+}
+
+/// Kum'un kendi izinleriyle ham gözlem; başlık okunamıyorsa nedenini gösterir.
+#[tauri::command]
+fn diagnose() -> String {
+    tracky_platform::diagnose()
+}
+
 pub(crate) fn set_autostart_inner(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let manager = app.autolaunch();
     let result = if enabled {
@@ -211,6 +224,8 @@ pub fn run() {
             set_paused,
             complete_onboarding,
             today_apps,
+            app_titles,
+            diagnose,
         ])
         .setup(setup)
         .on_window_event(|window, event| {

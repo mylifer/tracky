@@ -196,6 +196,31 @@ impl Store {
         self.totals("domain", "domain", from, to)
     }
 
+    /// Bir uygulamanın pencere başlıklarına göre süre dağılımı.
+    pub fn title_totals(
+        &self,
+        app_id: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<UsageTotal>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT title, title, SUM(MIN(ended_at, ?3) - MAX(started_at, ?2)) / 1000 AS secs
+             FROM sessions
+             WHERE deleted_at IS NULL AND app_id = ?1
+               AND started_at < ?3 AND ended_at > ?2
+             GROUP BY title
+             ORDER BY secs DESC, 1",
+        )?;
+        let rows = stmt.query_map(params![app_id, ms(from), ms(to)], |r| {
+            Ok(UsageTotal {
+                key: r.get(0)?,
+                label: r.get(1)?,
+                seconds: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     fn totals(
         &self,
         key_col: &str,
@@ -353,6 +378,30 @@ mod tests {
         store.save_privacy_settings(&s).unwrap();
         store.save_privacy_settings(&s).unwrap();
         assert_eq!(store.privacy_settings().unwrap(), s);
+    }
+
+    #[test]
+    fn title_totals_for_one_app() {
+        let store = Store::open_in_memory().unwrap();
+        let mut a = session("Safari", None, 0, 60);
+        a.title = "GitHub".into();
+        let mut b = session("Safari", None, 60, 90);
+        b.title = "Gmail".into();
+        let mut c = session("Safari", None, 90, 150);
+        c.title = "GitHub".into();
+        for s in [&a, &b, &c, &session("Code", None, 0, 500)] {
+            store.upsert_session(s).unwrap();
+        }
+        let got: Vec<_> = store
+            .title_totals("com.test.Safari", t(0), t(1000))
+            .unwrap()
+            .into_iter()
+            .map(|u| (u.label, u.seconds))
+            .collect();
+        assert_eq!(
+            got,
+            [("GitHub".to_string(), 120), ("Gmail".to_string(), 30)]
+        );
     }
 
     #[test]

@@ -267,12 +267,6 @@ header {
   gap: 10px;
 }
 
-.apps li {
-  display: grid;
-  grid-template-columns: minmax(120px, 200px) 1fr 70px;
-  align-items: center;
-  gap: 14px;
-}
 
 .apps .name {
   overflow: hidden;
@@ -298,4 +292,94 @@ header {
   text-align: right;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+.now-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.apps button.row {
+  all: unset;
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) 1fr 70px;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.apps button.row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.apps > li {
+  display: block;
+}
+
+.chevron {
+  display: inline-block;
+  width: 14px;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+.apps li.open .chevron {
+  transform: rotate(90deg);
+}
+
+.titles {
+  list-style: none;
+  margin: 8px 0 6px 14px;
+  padding: 8px 0 0 12px;
+  border-left: 2px solid var(--border);
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.titles li {
+  display: grid;
+  grid-template-columns: 1fr 70px;
+  gap: 14px;
+}
+
+.titles .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.titles .time {
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.diag {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+button.small {
+  font-size: 12px;
+  padding: 4px 10px;
+  color: var(--muted);
+}
+
+.diag pre {
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
 }
