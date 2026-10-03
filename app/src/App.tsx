@@ -1,18 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, formatDuration, type AppStatus, type TrackingStatus } from "./api";
-import { IconPause, IconPlay, IconSettings, IconTag, IconToday, IconWeek } from "./components/Icons";
+import { IconMonth, IconPause, IconPlay, IconSettings, IconTag, IconToday, IconWeek } from "./components/Icons";
 import ReportView from "./components/ReportView";
-import { addDays, formatWeek, isoDate, parseIsoDate, startOfWeek, today } from "./lib/dates";
+import {
+  addDays,
+  addMonths,
+  formatMonth,
+  formatWeek,
+  isoDate,
+  parseIsoDate,
+  startOfMonth,
+  startOfWeek,
+  today,
+} from "./lib/dates";
 import Onboarding from "./Onboarding";
 import Categories from "./pages/Categories";
 import Settings from "./pages/Settings";
 import { useUpdate } from "./lib/useUpdate";
 
-type View = "day" | "week" | "categories" | "settings";
+type View = "day" | "week" | "month" | "categories" | "settings";
 
 const NAV: { id: View; label: string; icon: React.ReactNode }[] = [
   { id: "day", label: "Takvim", icon: <IconToday /> },
   { id: "week", label: "Hafta", icon: <IconWeek /> },
+  { id: "month", label: "Ay", icon: <IconMonth /> },
   { id: "categories", label: "Kategoriler", icon: <IconTag /> },
 ];
 
@@ -43,6 +54,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   const [view, setView] = useState<View>("day");
   const [day, setDay] = useState(isoDate(today()));
   const [week, setWeek] = useState(isoDate(startOfWeek(today())));
+  const [month, setMonth] = useState(isoDate(startOfMonth(today())));
   const [tracking, setTracking] = useState<TrackingStatus>(status.tracking);
   const [update] = useUpdate();
 
@@ -61,7 +73,14 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   const shift = (iso: string, n: number) => isoDate(addDays(parseIsoDate(iso), n));
   const todayIso = isoDate(today());
   const thisWeek = isoDate(startOfWeek(today()));
+  const thisMonth = isoDate(startOfMonth(today()));
   const dayDate = parseIsoDate(day);
+
+  function step(n: number) {
+    if (view === "day") setDay(shift(day, n));
+    else if (view === "week") setWeek(shift(week, 7 * n));
+    else setMonth(isoDate(addMonths(parseIsoDate(month), n)));
+  }
 
   return (
     <div className={`shell ${status.platform === "macos" ? "mac" : ""}`}>
@@ -102,25 +121,36 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
         <LiveCard tracking={tracking} onToggle={togglePause} />
       </nav>
       <main className="content">
-        {(view === "day" || view === "week") && (
+        {(view === "day" || view === "week" || view === "month") && (
           <ReportView
             mode={view}
-            start={view === "day" ? day : week}
-            title={view === "day" ? capitalize(longDate.format(dayDate)) : formatWeek(parseIsoDate(week))}
+            start={view === "day" ? day : view === "week" ? week : month}
+            title={
+              view === "day"
+                ? capitalize(longDate.format(dayDate))
+                : view === "week"
+                  ? formatWeek(parseIsoDate(week))
+                  : capitalize(formatMonth(parseIsoDate(month)))
+            }
             onMode={(m) => {
               if (m === "week") setWeek(isoDate(startOfWeek(dayDate)));
+              if (m === "month") setMonth(isoDate(startOfMonth(view === "week" ? parseIsoDate(week) : dayDate)));
               setView(m);
             }}
-            onPrev={() => (view === "day" ? setDay(shift(day, -1)) : setWeek(shift(week, -7)))}
-            onNext={() => (view === "day" ? setDay(shift(day, 1)) : setWeek(shift(week, 7)))}
+            onPrev={() => step(-1)}
+            onNext={() => step(1)}
             onToday={
               view === "day"
                 ? day === todayIso
                   ? null
                   : () => setDay(todayIso)
-                : week === thisWeek
-                  ? null
-                  : () => setWeek(thisWeek)
+                : view === "week"
+                  ? week === thisWeek
+                    ? null
+                    : () => setWeek(thisWeek)
+                  : month === thisMonth
+                    ? null
+                    : () => setMonth(thisMonth)
             }
             onSelectDay={(iso) => {
               setDay(iso);

@@ -50,3 +50,18 @@ export function formatWeek(start: Date): string {
   const end = addDays(start, 6);
   return `${formatDate(start)} – ${formatDate(end)} ${end.getFullYear()}`;
 }
+
+export function startOfMonth(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+
+export function addMonths(d: Date, n: number): Date {
+  return new Date(d.getFullYear(), d.getMonth() + n, 1);
+}
+
+export function daysInMonth(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+}
+
+const monthFmt = new Intl.DateTimeFormat("tr-TR", { month: "long", year: "numeric" });
+export const formatMonth = (d: Date) => monthFmt.format(d);

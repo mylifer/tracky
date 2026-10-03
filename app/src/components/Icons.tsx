@@ -31,6 +31,12 @@ export const IconWeek = (p: P) => (
     <path d="M3 9h18M8 2v4M16 2v4M8 14h.01M12 14h.01M16 14h.01M8 17.5h.01M12 17.5h.01" />
   </Svg>
 );
+export const IconMonth = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="18" height="17" rx="3" />
+    <path d="M3 9h18M8 2v4M16 2v4M7 13h3v3H7zM14 13h3v3h-3z" />
+  </Svg>
+);
 export const IconTag = (p: P) => (
   <Svg {...p}>
     <path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z" />

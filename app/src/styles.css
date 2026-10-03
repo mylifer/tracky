@@ -1612,3 +1612,96 @@ select:focus {
   width: 72px;
   text-align: right;
 }
+
+/* Ay takvimi */
+.month-cal {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mc-head {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 6px 4px;
+}
+
+.mc-day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 92px;
+  padding: 8px 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) calc(var(--level, 0) * 38%), var(--surface));
+  text-align: left;
+  overflow: hidden;
+}
+
+.mc-day:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.mc-day:disabled {
+  opacity: 0.45;
+}
+
+.mc-day.today {
+  box-shadow: inset 0 0 0 1px var(--accent-2);
+}
+
+.mc-num {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.mc-total,
+.mc-focus {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mc-total {
+  font-size: 15px;
+  font-weight: 700;
+  margin-top: auto;
+}
+
+.mc-focus {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mc-focus::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--focus);
+  vertical-align: 1px;
+}
+
+.mc-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  display: flex;
+}
+
+.mc-bar i {
+  display: block;
+  height: 100%;
+}

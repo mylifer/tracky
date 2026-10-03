@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Report, Tag } from "../api";
+import type { Mode } from "./ReportView";
 import { formatDuration } from "../api";
 import { NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { ScoreRing, scoreLabel } from "./Stats";
@@ -10,12 +11,13 @@ type Props = {
   tags: Map<string, Tag>;
   days: number;
   title: string;
+  mode: Mode;
   /** Ayarlardaki günlük hedef (saat). */
   dailyHours: number;
 };
 
 /** Sağ panel: Rize'deki "Summary" düzeni. */
-export default function Summary({ report, previous, tags, days, title, dailyHours }: Props) {
+export default function Summary({ report, previous, tags, days, mode, title, dailyHours }: Props) {
   const f = report.focus;
   const target = dailyHours * 3600 * activeDays(report, days);
   const pctTarget = target ? Math.round((report.totalSeconds / target) * 100) : 0;
@@ -33,7 +35,7 @@ export default function Summary({ report, previous, tags, days, title, dailyHour
           <div>
             <div className="kv-label">Çalışma süresi</div>
             <div className="kv-big">{formatDuration(report.totalSeconds)}</div>
-            <Delta now={report.totalSeconds} before={previous?.totalSeconds} unit={days === 1 ? "düne göre" : "geçen haftaya göre"} />
+            <Delta now={report.totalSeconds} before={previous?.totalSeconds} unit={DELTA_UNIT[mode]} />
           </div>
           <div className="kv-right">
             <div className="kv-label">Hedefin yüzdesi</div>
@@ -57,7 +59,7 @@ export default function Summary({ report, previous, tags, days, title, dailyHour
         <section className="s-card">
           <div className="kv-label">Odak süresi</div>
           <div className="kv-mid">{formatDuration(f.focusSeconds)}</div>
-          <Delta now={f.focusSeconds} before={previous?.focus.focusSeconds} unit={days === 1 ? "düne göre" : "geçen haftaya göre"} />
+          <Delta now={f.focusSeconds} before={previous?.focus.focusSeconds} unit={DELTA_UNIT[mode]} />
         </section>
       </div>
 
@@ -81,6 +83,12 @@ export default function Summary({ report, previous, tags, days, title, dailyHour
     </aside>
   );
 }
+
+const DELTA_UNIT: Record<Mode, string> = {
+  day: "düne göre",
+  week: "geçen haftaya göre",
+  month: "geçen aya göre",
+};
 
 function activeDays(report: Report, days: number): number {
   if (days === 1) return 1;
