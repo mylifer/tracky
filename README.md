@@ -97,8 +97,9 @@ cargo test
 Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birleşik rapor için:
 
 1. [supabase.com](https://supabase.com) üzerinde ücretsiz bir proje oluştur.
-2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…`, `0002_…`) çalıştır.
-   Önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli.
+2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…`, `0002_…`, `0003_…`) çalıştır.
+   Önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli. `0003_writer.sql`
+   cihazların kendi gönderdiklerini geri indirmesini önler; çalıştırılmazsa eşitleme eskisi gibi sürer.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.
@@ -137,6 +138,6 @@ indirir ve imzasını doğrular; kurulum kullanıcı onayıyla yapılır (menü 
 **Güncellemeyi Yükle**, kenar çubuğundaki bildirim ya da *Ayarlar → Güncellemeler*).
 Kurulumdan sonra uygulama yeniden başlar.
 
-macOS paketi ad-hoc imzalıdır. Apple Developer hesabıyla (yıllık ücretli) imzalanıp
-notarize edilene kadar ilk açılışta "geliştirici doğrulanamadı" uyarısı çıkar ve her yeni sürümde
-Erişilebilirlik izni yeniden verilmelidir.
+macOS paketi kendinden imzalı sabit bir sertifikayla imzalanır; Erişilebilirlik izni güncellemelerde
+korunur. Apple Developer hesabıyla (yıllık ücretli) imzalanıp notarize edilene kadar ilk açılışta
+"geliştirici doğrulanamadı" uyarısı çıkar.

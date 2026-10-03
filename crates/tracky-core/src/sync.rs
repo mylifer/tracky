@@ -7,6 +7,9 @@
 //! - `synced_at < updated_at` olan yerel satırlar gönderilmeyi bekler.
 //! - Uzak taraf her satıra sunucu saatiyle `server_updated_at` verir; çekme
 //!   bu imleçten sonrasını ister.
+//! - Gönderilen satırlar `writer` (cihaz kimliği) taşır; çekme, sunucudaki son
+//!   sürümü bu cihazın yazdığı satırları atlar. Sütunu olmayan eski şemada
+//!   (0003 öncesi) filtre olmadan çalışılır.
 //!
 //! Ağ çağrıları sırasında depo kilidi tutulmaz; takip sürerken senkronizasyon
 //! yapılabilir.
@@ -24,10 +27,12 @@ pub trait Remote {
     /// Satırları upsert eder (uzak taraf eski sürümleri reddeder).
     fn push(&mut self, table: &str, rows: &[Value]) -> Result<(), String>;
     /// `since`'den (hariç) sonra değişen satırlar, `server_updated_at`'e göre artan.
+    /// `skip_writer` verilirse son sürümünü o cihazın yazdığı satırlar gelmez.
     fn pull(
         &mut self,
         table: &str,
         since: Option<&str>,
+        skip_writer: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>, String>;
 }
@@ -99,6 +104,8 @@ const MAX_BATCHES: usize = 200;
 /// Eşzamanlı işlemlerde sunucu saatinin geride kalan satırlarını kaçırmamak için
 /// her çalıştırmada imleç bu kadar geriden başlar (yeniden uygulamak zararsız).
 const CURSOR_OVERLAP_SECS: i64 = 5;
+/// Satırı sunucuda son yazan cihazın sütunu (supabase/migrations/0003).
+const WRITER: &str = "writer";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct SyncSummary {
@@ -128,13 +135,16 @@ pub fn run(
     let mut summary = SyncSummary::default();
     let mut first_error = None;
     let mut tags_failed = false;
+    let device = lock(store).device_id().to_string();
+    // Sunucuda `writer` sütunu yoksa ilk hatada kapanır.
+    let mut writer = Some(device.as_str());
     for table in TABLES {
         // Etiketleri gönderilemeyen kurallar sunucuya etiketsiz düşer ve diğer
         // cihazlarda çekimi tıkar; bir sonraki çalıştırmaya bırak.
         if table.name == "rules" && tags_failed {
             continue;
         }
-        match push_table(store, remote, table, user_id) {
+        match push_table(store, remote, table, user_id, &mut writer) {
             Ok(n) => summary.pushed += n,
             Err(e) => {
                 tags_failed |= table.name == "tags";
@@ -143,12 +153,12 @@ pub fn run(
         }
     }
     for table in TABLES {
-        let mut result = pull_table(store, remote, table);
+        let mut result = pull_table(store, remote, table, &mut writer);
         // Etiketler çekildikten sonra başka cihaz yeni etiket + kural eklemiş olabilir:
         // kuralın etiketi yerelde yoksa etiketleri yeniden çekip bir kez daha dene.
         if table.name == "rules" && result.as_ref().is_err_and(is_foreign_key_error) {
-            let _ = pull_table(store, remote, &TABLES[0]);
-            result = pull_table(store, remote, table);
+            let _ = pull_table(store, remote, &TABLES[0], &mut writer);
+            result = pull_table(store, remote, table, &mut writer);
         }
         match result {
             Ok(n) => summary.pulled += n,
@@ -171,6 +181,11 @@ fn is_foreign_key_error(e: &SyncError) -> bool {
     )
 }
 
+/// Sunucu şeması 0003'ten eskiyse `writer` sütunu bulunamaz.
+fn missing_writer(e: &str) -> bool {
+    e.contains(WRITER)
+}
+
 fn lock(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
     store.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -180,6 +195,7 @@ fn push_table(
     remote: &mut dyn Remote,
     table: &Table,
     user_id: &str,
+    writer: &mut Option<&str>,
 ) -> Result<usize, SyncError> {
     let mut total = 0;
     for _ in 0..MAX_BATCHES {
@@ -187,15 +203,24 @@ fn push_table(
         if rows.is_empty() {
             break;
         }
-        let payload: Vec<Value> = rows
-            .iter()
-            .map(|(row, _, _)| {
-                let mut row = row.clone();
-                row.insert("user_id".into(), Value::String(user_id.into()));
-                Value::Object(row)
-            })
-            .collect();
-        remote.push(table.name, &payload).map_err(|e| {
+        let payload = |writer: Option<&str>| -> Vec<Value> {
+            rows.iter()
+                .map(|(row, _, _)| {
+                    let mut row = row.clone();
+                    row.insert("user_id".into(), Value::String(user_id.into()));
+                    if let Some(w) = writer {
+                        row.insert(WRITER.into(), Value::String(w.into()));
+                    }
+                    Value::Object(row)
+                })
+                .collect()
+        };
+        let mut result = remote.push(table.name, &payload(*writer));
+        if writer.is_some() && result.as_ref().is_err_and(|e| missing_writer(e)) {
+            *writer = None;
+            result = remote.push(table.name, &payload(None));
+        }
+        result.map_err(|e| {
             // 0.2 ile eklenen sütun sunucuda yoksa kullanıcıya ne yapacağını söyle.
             if e.contains("category_id") {
                 SyncError::Remote(format!(
@@ -220,15 +245,19 @@ fn pull_table(
     store: &Mutex<Store>,
     remote: &mut dyn Remote,
     table: &Table,
+    writer: &mut Option<&str>,
 ) -> Result<usize, SyncError> {
     let key = format!("sync_cursor:{}", table.name);
     let mut cursor: Option<String> = lock(store).setting(&key)?;
     let mut since = cursor.as_deref().map(overlap);
     let mut total = 0;
     for _ in 0..MAX_BATCHES {
-        let rows = remote
-            .pull(table.name, since.as_deref(), PULL_BATCH)
-            .map_err(SyncError::Remote)?;
+        let mut result = remote.pull(table.name, since.as_deref(), *writer, PULL_BATCH);
+        if writer.is_some() && result.as_ref().is_err_and(|e| missing_writer(e)) {
+            *writer = None;
+            result = remote.pull(table.name, since.as_deref(), None, PULL_BATCH);
+        }
+        let rows = result.map_err(SyncError::Remote)?;
         if rows.is_empty() {
             break;
         }
@@ -242,7 +271,7 @@ fn pull_table(
             // Tek işlem: bin satır için bin ayrı diske yazma yerine bir tane.
             let tx = store.conn().unchecked_transaction()?;
             for row in &rows {
-                apply_remote(&store, table, row)?;
+                total += apply_remote(&store, table, row)?;
             }
             if let Some(newest) = &newest
                 && cursor.as_deref().is_none_or(|c| later(newest, c))
@@ -253,7 +282,6 @@ fn pull_table(
             // Hata olursa geri alınır; imleç de ilerlemez, satırlar tekrar çekilir.
             tx.commit()?;
         }
-        total += rows.len();
         if rows.len() < PULL_BATCH || newest.is_none() {
             break;
         }
@@ -320,8 +348,8 @@ fn mark_synced(store: &Store, table: &Table, rows: &[Pending]) -> Result<usize, 
     Ok(marked)
 }
 
-/// Uzak satırı yerelde uygular; yerel sürüm daha yeniyse dokunmaz.
-fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<(), SyncError> {
+/// Uzak satırı yerelde uygular; yerel sürüm daha yeniyse dokunmaz. Değişen satır sayısı.
+fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, SyncError> {
     let obj = row
         .as_object()
         .ok_or_else(|| SyncError::Invalid(row.to_string()))?;
@@ -366,8 +394,7 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<(), SyncErr
         ph = placeholders.join(", "),
         up = updates.join(", "),
     );
-    store.conn().execute(&sql, params_from_iter(values))?;
-    Ok(())
+    Ok(store.conn().execute(&sql, params_from_iter(values))?)
 }
 
 fn iso(ms: i64) -> String {
@@ -411,11 +438,18 @@ mod tests {
         rows: HashMap<String, HashMap<String, Value>>,
         clock: i64,
         pushes: usize,
+        /// 0003 öncesi şema: `writer` sütunu yok.
+        legacy: bool,
     }
+
+    const NO_WRITER: &str = "Could not find the 'writer' column in the schema cache";
 
     impl Remote for FakeRemote {
         fn push(&mut self, table: &str, rows: &[Value]) -> Result<(), String> {
             self.pushes += 1;
+            if self.legacy && rows.iter().any(|r| r.get(WRITER).is_some()) {
+                return Err(NO_WRITER.into());
+            }
             let t = self.rows.entry(table.into()).or_default();
             for row in rows {
                 let id = row["id"].as_str().unwrap().to_string();
@@ -426,7 +460,8 @@ mod tests {
                 if t.get(&id).is_none_or(newer) {
                     self.clock += 1;
                     let mut row = row.clone();
-                    row["server_updated_at"] = Value::String(iso(1_700_000_000_000 + self.clock));
+                    row["server_updated_at"] =
+                        Value::String(iso(1_700_000_000_000 + self.clock * 10_000));
                     t.insert(id, row);
                 }
             }
@@ -437,14 +472,21 @@ mod tests {
             &mut self,
             table: &str,
             since: Option<&str>,
+            skip_writer: Option<&str>,
             limit: usize,
         ) -> Result<Vec<Value>, String> {
+            if self.legacy && skip_writer.is_some() {
+                return Err(NO_WRITER.into());
+            }
             let since = since.map(|s| parse_time(s).unwrap());
             let mut rows: Vec<Value> = self
                 .rows
                 .get(table)
                 .map(|t| t.values().cloned().collect())
                 .unwrap_or_default();
+            rows.retain(|r| {
+                skip_writer.is_none_or(|w| r.get(WRITER).and_then(Value::as_str) != Some(w))
+            });
             rows.retain(|r| {
                 since.is_none_or(|s| {
                     parse_time(r["server_updated_at"].as_str().unwrap()).unwrap() > s
@@ -626,6 +668,51 @@ mod tests {
         assert_eq!(
             totals(&b),
             vec![("Code".to_string(), (PULL_BATCH + 50) as i64)]
+        );
+    }
+
+    #[test]
+    fn own_rows_are_not_pulled_back() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let first = run(&a, &mut remote, "u1").unwrap();
+        assert!(first.pushed > 0);
+        assert_eq!(first.pulled, 0);
+
+        // B'nin satırları A'ya gelir, A'nın kendi gönderdikleri gelmez.
+        let safari = session("Safari", 30);
+        lock(&b).upsert_session(&safari).unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        // Varsayılan kategoriler B'de de aynı; yalnızca yeni oturum uygulanır.
+        assert_eq!(run(&a, &mut remote, "u1").unwrap().pulled, 1);
+        assert_eq!(totals(&a), vec![("Safari".to_string(), 30)]);
+
+        // A, B'nin oturumunu silerse silme B'ye ulaşır, A'ya geri gelmez.
+        lock(&a).delete_session(&safari.id).unwrap();
+        let deleted = run(&a, &mut remote, "u1").unwrap();
+        assert_eq!((deleted.pushed, deleted.pulled), (1, 0));
+        assert_eq!(run(&b, &mut remote, "u1").unwrap().pulled, 1);
+        assert!(totals(&b).is_empty());
+        assert_eq!(run(&a, &mut remote, "u1").unwrap().pulled, 0);
+    }
+
+    #[test]
+    fn legacy_schema_without_writer_still_syncs() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote {
+            legacy: true,
+            ..Default::default()
+        };
+        lock(&a).upsert_session(&session("Code", 60)).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        assert_eq!(totals(&b), vec![("Code".to_string(), 60)]);
+        assert!(
+            remote.rows["sessions"]
+                .values()
+                .all(|r| r.get(WRITER).is_none())
         );
     }
 }

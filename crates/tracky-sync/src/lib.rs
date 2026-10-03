@@ -163,6 +163,7 @@ impl Remote for SupabaseRemote<'_> {
         &mut self,
         table: &str,
         since: Option<&str>,
+        skip_writer: Option<&str>,
         limit: usize,
     ) -> std::result::Result<Vec<Value>, String> {
         let mut req = self
@@ -179,6 +180,10 @@ impl Remote for SupabaseRemote<'_> {
             );
         if let Some(since) = since {
             req = req.query("server_updated_at", format!("gt.{}", utc_z(since)));
+        }
+        if let Some(writer) = skip_writer {
+            // `neq` NULL'ları da dışlar; 0003 öncesi yazılan satırlar da gelmeli.
+            req = req.query("or", format!("(writer.is.null,writer.neq.{writer})"));
         }
         let mut resp = req.call().map_err(|e| e.to_string())?;
         self.check(&mut resp)?;
@@ -319,7 +324,12 @@ mod tests {
         };
         let rows = c
             .remote(&session)
-            .pull("sessions", Some("2026-10-02T12:00:00.123+00:00"), 1000)
+            .pull(
+                "sessions",
+                Some("2026-10-02T12:00:00.123+00:00"),
+                Some("d1"),
+                1000,
+            )
             .unwrap();
         assert_eq!(rows.len(), 1);
         let (path, headers, _) = rx.recv().unwrap();
@@ -328,6 +338,10 @@ mod tests {
         assert!(
             path.contains("server_updated_at=gt.2026-10-02T12%3A00%3A00.123Z")
                 || path.contains("server_updated_at=gt.2026-10-02T12:00:00.123Z"),
+            "{path}"
+        );
+        assert!(
+            path.contains("writer.is.null") && path.contains("writer.neq.d1"),
             "{path}"
         );
         assert!(headers.contains("authorization: bearer tok"));
