@@ -63,6 +63,10 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: app
         run: npm run format:check
+      - name: Arayüz testleri
+        if: runner.os == 'Linux'
+        working-directory: app
+        run: npm test
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       # Çalışma alanında özellikler birleşir; çekirdeğin depo olmadan derlendiğini ayrıca denetle.
