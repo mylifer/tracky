@@ -133,6 +133,22 @@ async fn set_paused(app: AppHandle, paused: bool) -> Result<(), String> {
     set_paused_inner(&app, paused)
 }
 
+/// `minutes` dakika duraklatır; `None` yarına (yerel gece yarısına) kadar.
+#[tauri::command]
+async fn pause_for(app: AppHandle, minutes: Option<u32>) -> Result<(), String> {
+    pause_inner(&app, true, Some(pause_end(minutes)))
+}
+
+pub(crate) fn pause_end(minutes: Option<u32>) -> chrono::DateTime<chrono::Utc> {
+    match minutes {
+        Some(m) => chrono::Utc::now() + chrono::Duration::minutes(i64::from(m.clamp(1, 24 * 60))),
+        None => {
+            let tomorrow = chrono::Local::now().date_naive() + chrono::Days::new(1);
+            tracking::local_midnight(tomorrow)
+        }
+    }
+}
+
 #[tauri::command]
 async fn complete_onboarding(app: AppHandle) -> Result<(), String> {
     lock(&app.state::<Shared>().store)
@@ -194,6 +210,16 @@ pub(crate) fn set_autostart_inner(app: &AppHandle, enabled: bool) -> Result<(), 
 
 /// Duraklatma gizlilik ayarının parçasıdır; kalıcıdır ve uygulama yeniden açıldığında korunur.
 pub(crate) fn set_paused_inner(app: &AppHandle, paused: bool) -> Result<(), String> {
+    pause_inner(app, paused, None)
+}
+
+/// `until` verilirse takip o ana kadar duraklar, sonra kendiliğinden sürer.
+pub(crate) fn pause_inner(
+    app: &AppHandle,
+    paused: bool,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<(), String> {
+    let until = until.filter(|_| paused);
     let shared = app.state::<Shared>();
     let privacy = {
         let store = lock(&shared.store);
@@ -202,15 +228,19 @@ pub(crate) fn set_paused_inner(app: &AppHandle, paused: bool) -> Result<(), Stri
         store
             .save_privacy_settings(&privacy)
             .map_err(|e| e.to_string())?;
+        store
+            .save_setting(tracking::PAUSE_UNTIL_KEY, &until)
+            .map_err(|e| e.to_string())?;
         privacy
     };
-    app.state::<Worker>()
-        .tx
-        .send(Command::SetPrivacy(privacy))
+    let tx = &app.state::<Worker>().tx;
+    tx.send(Command::SetPrivacy(privacy))
+        .and_then(|_| tx.send(Command::PauseUntil(until)))
         .map_err(|e| e.to_string())?;
     let status = {
         let mut status = lock(&shared.status);
         status.paused = paused;
+        status.paused_until = until;
         status.clone()
     };
     tray::update(app, &status);
@@ -250,6 +280,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .setting::<tracky_core::Goals>(tracking::GOALS_KEY)?
         .unwrap_or_default();
     let onboarded = store.setting::<bool>(ONBOARDED_KEY)?.unwrap_or(false);
+    let pause_until = store
+        .setting::<Option<chrono::DateTime<chrono::Utc>>>(tracking::PAUSE_UNTIL_KEY)?
+        .flatten()
+        .filter(|_| privacy.paused);
     apply_theme(app.handle(), &theme_setting(&store));
 
     app.manage(Shared {
@@ -266,7 +300,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
     let worker = std::thread::Builder::new()
         .name("kum-tracker".into())
-        .spawn(move || tracking::run(handle, privacy, goals, rx))?;
+        .spawn(move || tracking::run(handle, privacy, goals, pause_until, rx))?;
     app.manage(Worker {
         tx,
         handle: Mutex::new(Some(worker)),
@@ -302,6 +336,7 @@ pub fn run() {
             open_accessibility_settings,
             set_autostart,
             set_paused,
+            pause_for,
             complete_onboarding,
             diagnose,
             start_focus,

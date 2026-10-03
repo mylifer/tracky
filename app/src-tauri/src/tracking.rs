@@ -22,6 +22,8 @@ pub struct Status {
     /// macOS Erişilebilirlik izni eksik ya da geri alınmış.
     pub needs_permission: bool,
     pub error: Option<String>,
+    /// Süreli duraklatmanın bitişi.
+    pub paused_until: Option<DateTime<Utc>>,
     /// Süren odak zamanlayıcısı.
     pub focus: Option<FocusState>,
 }
@@ -45,12 +47,16 @@ pub struct Current {
 
 /// Hedef ve hatırlatıcı ayarlarının anahtarı.
 pub const GOALS_KEY: &str = "goals";
+/// Süreli duraklatmanın bitişi (yoksa süresiz).
+pub const PAUSE_UNTIL_KEY: &str = "pause_until";
 
 pub enum Command {
     SetPrivacy(PrivacySettings),
     SetGoals(Goals),
     /// Durumu hemen yeniden hesapla (örn. odak zamanlayıcısı değişti).
     Refresh,
+    /// Süreli duraklatma: bu anda takip kendiliğinden sürer.
+    PauseUntil(Option<DateTime<Utc>>),
     Shutdown,
 }
 
@@ -65,7 +71,13 @@ const REFRESH_EVERY: u32 = 5;
 const LIMITS_EVERY: u32 = 30;
 
 /// `rx` kapanana ya da `Shutdown` gelene kadar saniyede bir gözlem yapar.
-pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Receiver<Command>) {
+pub fn run(
+    app: AppHandle,
+    privacy: PrivacySettings,
+    mut goals: Goals,
+    mut pause_until: Option<DateTime<Utc>>,
+    rx: Receiver<Command>,
+) {
     let mut tracker = Tracker::new(
         tracky_platform::provider(),
         EngineConfig::default(),
@@ -81,8 +93,26 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Recei
             Ok(Command::SetPrivacy(p)) => tracker.set_privacy(p),
             Ok(Command::SetGoals(g)) => goals = g,
             Ok(Command::Refresh) => force = true,
+            Ok(Command::PauseUntil(until)) => {
+                pause_until = until;
+                force = true;
+            }
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
+        }
+
+        // Süreli duraklatma doldu: takibe kendiliğinden devam et.
+        if pause_until.is_some_and(|t| Utc::now() >= t) {
+            pause_until = None;
+            let shared = app.state::<Shared>();
+            let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            if let Ok(mut privacy) = store.privacy_settings() {
+                privacy.paused = false;
+                let _ = store.save_privacy_settings(&privacy);
+                let _ = store.save_setting(PAUSE_UNTIL_KEY, &None::<DateTime<Utc>>);
+                tracker.set_privacy(privacy);
+            }
+            force = true;
         }
 
         // Platform çağrıları kilit dışında: yanıt vermeyen bir uygulama arayüzü kilitlemesin.
@@ -139,6 +169,7 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Recei
             today_seconds: totals.iter().map(|t| t.seconds).sum(),
             needs_permission: !tracky_platform::permissions().all_granted(),
             error: outcome.error,
+            paused_until: pause_until.filter(|_| tracker.privacy().paused),
             focus,
         };
         // Menü güncellemesi ana iş parçacığında çalışıp sonucunu bekler; burada

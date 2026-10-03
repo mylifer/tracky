@@ -8,6 +8,8 @@ export type TrackingStatus = {
   todaySeconds: number;
   needsPermission: boolean;
   error: string | null;
+  /** Süreli duraklatmanın bitişi. */
+  pausedUntil: string | null;
   focus: FocusState | null;
 };
 export type FocusState = { startedAt: string; endsAt: string; minutes: number };
@@ -123,6 +125,8 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   setTheme: (theme: "system" | "light" | "dark") => invoke<void>("set_theme", { theme }),
   setPaused: (paused: boolean) => invoke<void>("set_paused", { paused }),
+  /** `null`: yarına kadar. */
+  pauseFor: (minutes: number | null) => invoke<void>("pause_for", { minutes }),
   completeOnboarding: () => invoke<void>("complete_onboarding"),
   /** `until` verilirse rapor o anda kesilir (süren dönemin kıyası için). */
   report: (start: string, days: number, timeline: boolean, until?: string) =>

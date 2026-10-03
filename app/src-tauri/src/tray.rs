@@ -25,6 +25,7 @@ pub struct Items {
     today: MenuItem<Wry>,
     current: MenuItem<Wry>,
     pause: MenuItem<Wry>,
+    pause_for: Submenu<Wry>,
     focus_start: Submenu<Wry>,
     focus_stop: MenuItem<Wry>,
     pub autostart: CheckMenuItem<Wry>,
@@ -45,6 +46,17 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
     let today = MenuItem::with_id(app, "today", "Bugün: —", false, None::<&str>)?;
     let current = MenuItem::with_id(app, "current", "Başlıyor…", false, None::<&str>)?;
     let pause = MenuItem::with_id(app, "toggle_pause", "Duraklat", true, None::<&str>)?;
+    let pause_for = Submenu::with_id_and_items(
+        app,
+        "pause_for",
+        "Süreli Duraklat",
+        true,
+        &[
+            &MenuItem::with_id(app, "pause_15", "15 dakika", true, None::<&str>)?,
+            &MenuItem::with_id(app, "pause_60", "1 saat", true, None::<&str>)?,
+            &MenuItem::with_id(app, "pause_tomorrow", "Yarına kadar", true, None::<&str>)?,
+        ],
+    )?;
     let open = MenuItem::with_id(app, "open", "Raporu Aç", true, None::<&str>)?;
     let focus_items = FOCUS_MINUTES
         .iter()
@@ -84,6 +96,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
             &focus_stop,
             &PredefinedMenuItem::separator(app)?,
             &pause,
+            &pause_for,
             &open,
             &PredefinedMenuItem::separator(app)?,
             &autostart_item,
@@ -108,6 +121,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         today,
         current,
         pause,
+        pause_for,
         focus_start,
         focus_stop,
         autostart: autostart_item,
@@ -144,6 +158,16 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             }
         }
         "quit" => app.exit(0),
+        "pause_15" | "pause_60" | "pause_tomorrow" => {
+            let minutes = match event.id().as_ref() {
+                "pause_15" => Some(15),
+                "pause_60" => Some(60),
+                _ => None,
+            };
+            if let Err(e) = crate::pause_inner(app, true, Some(crate::pause_end(minutes))) {
+                eprintln!("duraklatılamadı: {e}");
+            }
+        }
         "focus_stop" => {
             if let Err(e) = crate::stop_focus_inner(app) {
                 eprintln!("odak bitirilemedi: {e}");
@@ -186,6 +210,7 @@ pub fn update(app: &AppHandle, status: &Status) {
     } else {
         "Odak Başlat"
     });
+    let _ = items.pause_for.set_enabled(!status.paused);
     let _ = items.pause.set_text(if status.paused {
         "Devam Et"
     } else {
@@ -220,7 +245,13 @@ fn label(status: &Status) -> String {
             truncate(&c.app_name, MAX_NAME),
             format_duration(c.app_seconds_today)
         ),
-        (None, true) => "Duraklatıldı".into(),
+        (None, true) => match status.paused_until {
+            Some(until) => format!(
+                "Duraklatıldı · devam {}",
+                until.with_timezone(&chrono::Local).format("%H:%M")
+            ),
+            None => "Duraklatıldı".into(),
+        },
         (None, false) if status.needs_permission => "İzin gerekli".into(),
         (None, false) => "Boşta".into(),
     }

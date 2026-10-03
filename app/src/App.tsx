@@ -14,11 +14,13 @@ import FocusCard from "./components/FocusCard";
 import ReportView from "./components/ReportView";
 import Toolbar from "./components/Toolbar";
 import { Button } from "./components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
 import {
   addDays,
   addMonths,
   formatMonth,
+  formatTime,
   formatWeek,
   isoDate,
   parseIsoDate,
@@ -270,6 +272,7 @@ function NavItem({
 
 /** Kenar çubuğunun altında: şu an ne takip ediliyor, bugünkü toplam, duraklat. */
 function LiveCard({ tracking, onToggle }: { tracking: TrackingStatus; onToggle: () => void }) {
+  const [menu, setMenu] = useState(false);
   const state = tracking.paused
     ? "Duraklatıldı"
     : tracking.needsPermission
@@ -289,6 +292,11 @@ function LiveCard({ tracking, onToggle }: { tracking: TrackingStatus; onToggle: 
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium">{state}</div>
+          {tracking.paused && tracking.pausedUntil && (
+            <div className="text-[11px] text-muted-foreground tabular">
+              Devam: {formatTime(new Date(tracking.pausedUntil))}
+            </div>
+          )}
           {live && tracking.current?.title && (
             <div className="truncate text-[11px] text-muted-foreground" title={tracking.current.title}>
               {tracking.current.title}
@@ -301,24 +309,57 @@ function LiveCard({ tracking, onToggle }: { tracking: TrackingStatus; onToggle: 
           <div className="text-[11px] text-muted-foreground">Bugün</div>
           <div className="text-[15px] font-semibold tabular">{formatDuration(tracking.todaySeconds)}</div>
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="outline"
-              size="icon-sm"
-              className="rounded-full"
-              onClick={onToggle}
-              aria-label={tracking.paused ? "Devam et" : "Duraklat"}
-            >
-              {tracking.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{tracking.paused ? "Takibe devam et" : "Takibi duraklat"}</TooltipContent>
-        </Tooltip>
+        {tracking.paused ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                className="rounded-full"
+                onClick={onToggle}
+                aria-label="Devam et"
+              >
+                <Play className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Takibe devam et</TooltipContent>
+          </Tooltip>
+        ) : (
+          <Popover open={menu} onOpenChange={setMenu}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="icon-sm" className="rounded-full" aria-label="Duraklat" title="Duraklat">
+                <Pause className="size-3.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent side="top" align="end" className="w-44 p-1">
+              {PAUSE_OPTIONS.map(([label, minutes]) => (
+                <button
+                  key={label}
+                  className="flex h-7 w-full items-center rounded-md px-2 text-left text-xs hover:bg-accent"
+                  onClick={() => {
+                    setMenu(false);
+                    if (minutes === "forever") onToggle();
+                    else api.pauseFor(minutes).catch(() => {});
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+        )}
       </div>
     </div>
   );
 }
+
+/** Duraklatma seçenekleri: dakika, `null` yarına kadar, "forever" süresiz. */
+const PAUSE_OPTIONS: [string, number | null | "forever"][] = [
+  ["15 dakika", 15],
+  ["1 saat", 60],
+  ["Yarına kadar", null],
+  ["Ben devam ettirene kadar", "forever"],
+];
 
 function capitalize(s: string) {
   return s.charAt(0).toLocaleUpperCase("tr-TR") + s.slice(1);
