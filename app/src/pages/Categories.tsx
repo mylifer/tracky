@@ -15,6 +15,7 @@ import {
   AlertDialogTrigger,
 } from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Input } from "../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
@@ -25,10 +26,19 @@ const KIND_TITLE: Record<TagKind, string> = { category: "Kategoriler", project: 
 const KIND_HINT: Record<TagKind, string> = {
   category:
     "Uygulamaları gruplar. Bir oturum tek kategoriye girer; başlık kuralları uygulama kurallarından önce gelir.",
-  project: 'Pencere başlığında geçen bir kelimeyle uygulamalar arası işleri toplar (örn. "fintrack").',
+  project:
+    'Pencere başlığında geçen bir sözcükle uygulamalar arası işleri toplar (örn. "fintrack"). Yeni projenin adı, başlıkta aranan sözcük olarak da eklenir; kuralları sonra değiştirebilirsin.',
 };
 
-export default function Categories({ onSuggestions }: { onSuggestions?: (count: number) => void }) {
+export default function Categories({
+  onSuggestions,
+  initialKind = "category",
+}: {
+  onSuggestions?: (count: number) => void;
+  /** Açılışta gösterilecek bölüm (örn. Eğilimler'deki "Proje ekle"den gelince projeler). */
+  initialKind?: TagKind;
+}) {
+  const [kind, setKind] = useState<TagKind>(initialKind);
   const [tags, setTags] = useState<Tag[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestions>({ projects: [], categories: [] });
   const [rules, setRules] = useState<Rule[]>([]);
@@ -66,7 +76,19 @@ export default function Categories({ onSuggestions }: { onSuggestions?: (count: 
     <Page title="Kategoriler ve projeler">
       <ErrorText>{error}</ErrorText>
       <SuggestionsCard suggestions={suggestions} tags={tags} onChanged={load} onError={setError} />
-      {(["category", "project"] as TagKind[]).map((kind) => (
+      <Tabs value={kind} onValueChange={(v) => setKind(v as TagKind)}>
+        <TabsList aria-label="Bölüm">
+          {(["category", "project"] as TagKind[]).map((k) => (
+            <TabsTrigger key={k} value={k} className="gap-1.5 px-3.5">
+              {KIND_TITLE[k]}
+              <span className="text-[11px] text-muted-foreground tabular">
+                {tags.filter((t) => t.kind === k).length}
+              </span>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+      {[kind].map((kind) => (
         <TagSection
           key={kind}
           kind={kind}
@@ -115,7 +137,9 @@ function TagSection({
   const [name, setName] = useState("");
   const add = run(async () => {
     if (!name.trim()) return;
-    await api.saveTag({ kind, name, color: nextColor(allTags) });
+    const tag = await api.saveTag({ kind, name, color: nextColor(allTags) });
+    // Kuralsız proje hiç süre toplamaz: adı, başlıkta aranan sözcük olarak eklenir.
+    if (kind === "project") await api.addRule(tag.id, "title", tag.name);
     setName("");
   });
 

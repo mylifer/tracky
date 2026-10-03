@@ -90,6 +90,8 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   const [view, setView] = useState<View>("day");
   // Arama görünümden çıkınca kaybolmasın.
   const [search, setSearch] = useState<SearchState>({ query: "", days: 30 });
+  // Kategoriler sayfası hangi bölümle açılsın (Eğilimler'deki "Proje ekle" projelerle açar).
+  const [categoriesKind, setCategoriesKind] = useState<"category" | "project">("category");
   // Bekleyen öneri sayısı (kenar çubuğunda); görünüm değişince ve saatte bir yenilenir.
   const [suggestionCount, setSuggestionCount] = useState(0);
   useEffect(() => {
@@ -207,10 +209,13 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
             <NavItem
               icon={<Tags />}
               active={view === "categories"}
-              onClick={() => setView("categories")}
+              onClick={() => {
+                setCategoriesKind("category");
+                setView("categories");
+              }}
               badge={suggestionCount}
             >
-              Kategoriler
+              Kategoriler ve projeler
             </NavItem>
             <NavItem icon={<Settings2 />} active={view === "settings"} onClick={() => setView("settings")}>
               Ayarlar
@@ -251,6 +256,10 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
             <div className="flex-1 overflow-y-auto">
               {view === "trends" && (
                 <Trends
+                  onAddProject={() => {
+                    setCategoriesKind("project");
+                    setView("categories");
+                  }}
                   onSearch={(query) => {
                     setSearch({ query, days: 30 });
                     setView("search");
@@ -267,7 +276,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                   }}
                 />
               )}
-              {view === "categories" && <Categories onSuggestions={setSuggestionCount} />}
+              {view === "categories" && <Categories onSuggestions={setSuggestionCount} initialKind={categoriesKind} />}
               {view === "settings" && <Settings status={status} onChange={refresh} />}
             </div>
           </>

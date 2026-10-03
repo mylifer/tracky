@@ -196,7 +196,12 @@ function BreakdownCard({ report, tags }: { report: Report; tags: Map<string, Tag
             <TabsTrigger value="apps">Uygulamalar</TabsTrigger>
           </TabsList>
         </Tabs>
-        {items.length === 0 ? (
+        {tab === "projects" && items.length > 0 && items.every((i) => i.key === "none") ? (
+          <p className="py-2 text-xs text-muted-foreground">
+            Bu dönemde bir projeye düşen süre yok. Proje eklemek için kenar çubuğunda Kategoriler ve projeler →
+            Projeler.
+          </p>
+        ) : items.length === 0 ? (
           <p className="py-2 text-xs text-muted-foreground">Kayıt yok.</p>
         ) : (
           <div className="flex items-center gap-4">

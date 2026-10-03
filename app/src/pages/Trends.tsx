@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search as SearchIcon } from "lucide-react";
+import { Plus, Search as SearchIcon } from "lucide-react";
 import { api, formatDuration, type Tag, type Trends as TrendsData } from "../api";
 import { ErrorText, Page } from "../components/settings";
+import { Button } from "../components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { addDays, formatDate } from "../lib/dates";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
@@ -15,7 +16,13 @@ type Kind = "projects" | "categories";
  * haftalık çubuk grafik; tüm satırlar aynı ölçekte (büyüklükler kıyaslanabilsin). Süren hafta
  * yarım olduğundan soluk çizilir ve ortalamaya katılmaz.
  */
-export default function Trends({ onSearch }: { onSearch: (query: string) => void }) {
+export default function Trends({
+  onSearch,
+  onAddProject,
+}: {
+  onSearch: (query: string) => void;
+  onAddProject: () => void;
+}) {
   const [weeks, setWeeks] = useState<number>(8);
   const [kind, setKind] = useState<Kind | null>(null);
   const [data, setData] = useState<TrendsData | null>(null);
@@ -75,13 +82,29 @@ export default function Trends({ onSearch }: { onSearch: (query: string) => void
         </Tabs>
       </div>
       <ErrorText>{error}</ErrorText>
+      {data && data.projects.length === 0 && shownKind === "categories" && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed px-4 py-2.5 text-xs text-muted-foreground">
+          <span>Henüz proje yok: proje ya da müşteri bazında süreyi görmek için bir proje ekle.</span>
+          <Button size="sm" variant="outline" onClick={onAddProject}>
+            <Plus /> Proje ekle
+          </Button>
+        </div>
+      )}
 
       {data && series.length === 0 ? (
-        <p className="px-1 text-sm text-muted-foreground">
-          {shownKind === "projects"
-            ? "Henüz bir projeye düşen süre yok. Kategoriler sayfasından proje ekleyebilir ya da önerileri kabul edebilirsin."
-            : "Bu dönemde kayıt yok."}
-        </p>
+        shownKind === "projects" ? (
+          <div className="space-y-3 rounded-xl border bg-card px-5 py-4 shadow-xs">
+            <p className="text-sm text-muted-foreground">
+              Henüz bir projeye düşen süre yok. Proje, pencere başlığında geçen bir sözcükle (örn. proje ya da müşteri
+              adı) uygulamalar arası çalışmayı toplar.
+            </p>
+            <Button size="sm" onClick={onAddProject}>
+              <Plus /> Proje ekle
+            </Button>
+          </div>
+        ) : (
+          <p className="px-1 text-sm text-muted-foreground">Bu dönemde kayıt yok.</p>
+        )
       ) : data ? (
         <section className="space-y-2">
           <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_88px_88px] items-end gap-3 px-4 text-[11px] text-muted-foreground">
