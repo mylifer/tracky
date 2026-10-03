@@ -389,7 +389,9 @@ pub fn run() {
             sync::shutdown(app);
             let worker = app.state::<Worker>();
             let _ = worker.tx.send(Command::Shutdown);
-            if let Some(handle) = lock(&worker.handle).take() {
+            // Kilit join'den önce bırakılır; takip iş parçacığı bitmeyi beklerken tutulmasın.
+            let handle = lock(&worker.handle).take();
+            if let Some(handle) = handle {
                 let _ = handle.join();
             }
         }
