@@ -5,6 +5,7 @@
 
 pub mod browser;
 pub mod classify;
+pub mod coach;
 pub mod engine;
 pub mod export;
 pub mod focus;
@@ -21,6 +22,7 @@ pub mod tracker;
 pub mod url_util;
 
 pub use classify::{Classifier, Rule, RuleField, Tag, TagKind};
+pub use coach::{Coach, Goals, Nudge};
 pub use engine::{Engine, EngineConfig};
 pub use model::{ActiveWindow, Session};
 pub use platform::ActivityProvider;

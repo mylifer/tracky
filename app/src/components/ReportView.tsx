@@ -23,6 +23,10 @@ export default function ReportView(p: Props) {
   const [report, setReport] = useState<Report | null>(null);
   const [previous, setPrevious] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dailyHours, setDailyHours] = useState(8);
+  useEffect(() => {
+    api.goals().then((g) => setDailyHours(g.dailyHours), () => {});
+  }, []);
 
   const load = useCallback(() => {
     api.report(p.start, days, true).then(
@@ -122,6 +126,7 @@ export default function ReportView(p: Props) {
             previous={previous}
             tags={tags}
             days={days}
+            dailyHours={dailyHours}
             title={p.mode === "day" ? (isLive ? "Özet · Bugün" : "Özet · Gün") : "Özet · Hafta"}
           />
         </div>

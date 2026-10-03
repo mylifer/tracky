@@ -177,6 +177,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         store.save_setting(AUTOSTART_INIT_KEY, &true)?;
     }
     let privacy = store.privacy_settings()?;
+    let goals = store
+        .setting::<tracky_core::Goals>(tracking::GOALS_KEY)?
+        .unwrap_or_default();
     let onboarded = store.setting::<bool>(ONBOARDED_KEY)?.unwrap_or(false);
 
     app.manage(Shared {
@@ -193,7 +196,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
     let worker = std::thread::Builder::new()
         .name("kum-tracker".into())
-        .spawn(move || tracking::run(handle, privacy, rx))?;
+        .spawn(move || tracking::run(handle, privacy, goals, rx))?;
     app.manage(Worker {
         tx,
         handle: Mutex::new(Some(worker)),
@@ -218,6 +221,7 @@ pub fn run() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![HIDDEN_ARG]),
@@ -243,6 +247,8 @@ pub fn run() {
             commands::known_apps,
             commands::get_privacy,
             commands::save_privacy,
+            commands::get_goals,
+            commands::save_goals,
             commands::export_csv,
             sync::sync_status,
             sync::sync_configure,

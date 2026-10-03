@@ -1599,3 +1599,16 @@ select:focus {
   flex-wrap: wrap;
   align-items: center;
 }
+
+.number-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.number-field input {
+  width: 72px;
+  text-align: right;
+}

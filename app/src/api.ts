@@ -89,6 +89,13 @@ export type PrivacySettings = {
   title_suffixes: string[];
 };
 
+export type Goals = {
+  dailyHours: number;
+  notifyGoal: boolean;
+  /** `null` = mola hatırlatıcı kapalı. */
+  breakAfterMinutes: number | null;
+};
+
 export type UpdateStatus = {
   current: string;
   available: string | null;
@@ -124,6 +131,8 @@ export const api = {
   knownApps: () => invoke<UsageTotal[]>("known_apps"),
   privacy: () => invoke<PrivacySettings>("get_privacy"),
   savePrivacy: (settings: PrivacySettings) => invoke<void>("save_privacy", { settings }),
+  goals: () => invoke<Goals>("get_goals"),
+  saveGoals: (goals: Goals) => invoke<void>("save_goals", { goals }),
   exportCsv: () => invoke<string>("export_csv"),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
   syncConfigure: (url: string, anonKey: string) =>

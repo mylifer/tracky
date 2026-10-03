@@ -3,10 +3,10 @@
 use chrono::{DateTime, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
-use tracky_core::{PrivacySettings, Report, Rule, RuleField, Tag, TagKind, UsageTotal};
+use tracky_core::{Goals, PrivacySettings, Report, Rule, RuleField, Tag, TagKind, UsageTotal};
 
 use crate::lock;
-use crate::tracking::{Command, Shared};
+use crate::tracking::{Command, GOALS_KEY, Shared};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -181,6 +181,30 @@ pub async fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResul
     app.state::<crate::Worker>()
         .tx
         .send(Command::SetPrivacy(saved))
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn get_goals(app: AppHandle) -> CmdResult<Goals> {
+    Ok(lock(&app.state::<Shared>().store)
+        .setting::<Goals>(GOALS_KEY)
+        .map_err(err)?
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn save_goals(app: AppHandle, goals: Goals) -> CmdResult<()> {
+    let goals = Goals {
+        daily_hours: goals.daily_hours.clamp(0.0, 24.0),
+        break_after_minutes: goals.break_after_minutes.map(|m| m.clamp(10, 240)),
+        ..goals
+    };
+    lock(&app.state::<Shared>().store)
+        .save_setting(GOALS_KEY, &goals)
+        .map_err(err)?;
+    app.state::<crate::Worker>()
+        .tx
+        .send(Command::SetGoals(goals))
         .map_err(err)
 }
 

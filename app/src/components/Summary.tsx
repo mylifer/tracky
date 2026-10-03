@@ -4,21 +4,20 @@ import { formatDuration } from "../api";
 import { NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { ScoreRing, scoreLabel } from "./Stats";
 
-/** Günlük hedef (saat); ileride ayarlardan değiştirilebilir. */
-export const DAILY_TARGET_HOURS = 8;
-
 type Props = {
   report: Report;
   previous: Report | null;
   tags: Map<string, Tag>;
   days: number;
   title: string;
+  /** Ayarlardaki günlük hedef (saat). */
+  dailyHours: number;
 };
 
 /** Sağ panel: Rize'deki "Summary" düzeni. */
-export default function Summary({ report, previous, tags, days, title }: Props) {
+export default function Summary({ report, previous, tags, days, title, dailyHours }: Props) {
   const f = report.focus;
-  const target = DAILY_TARGET_HOURS * 3600 * activeDays(report, days);
+  const target = dailyHours * 3600 * activeDays(report, days);
   const pctTarget = target ? Math.round((report.totalSeconds / target) * 100) : 0;
   const breakSecs = f.breakSeconds;
   const otherWork = Math.max(0, report.totalSeconds - f.focusSeconds);

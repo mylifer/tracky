@@ -7,7 +7,8 @@ use std::time::Duration;
 use chrono::{DateTime, Local, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use tracky_core::{EngineConfig, PrivacySettings, Store, Tracker, UsageTotal};
+use tauri_plugin_notification::NotificationExt;
+use tracky_core::{Coach, EngineConfig, Goals, Nudge, PrivacySettings, Store, Tracker, UsageTotal};
 
 use crate::tray;
 
@@ -32,8 +33,12 @@ pub struct Current {
     pub app_seconds_today: i64,
 }
 
+/// Hedef ve hatırlatıcı ayarlarının anahtarı.
+pub const GOALS_KEY: &str = "goals";
+
 pub enum Command {
     SetPrivacy(PrivacySettings),
+    SetGoals(Goals),
     Shutdown,
 }
 
@@ -46,16 +51,19 @@ pub struct Shared {
 const REFRESH_EVERY: u32 = 5;
 
 /// `rx` kapanana ya da `Shutdown` gelene kadar saniyede bir gözlem yapar.
-pub fn run(app: AppHandle, privacy: PrivacySettings, rx: Receiver<Command>) {
+pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Receiver<Command>) {
     let mut tracker = Tracker::new(
         tracky_platform::provider(),
         EngineConfig::default(),
         privacy,
     );
+    let mut coach = Coach::new();
+    let mut first_refresh = true;
     let mut ticks = 0u32;
     loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(Command::SetPrivacy(p)) => tracker.set_privacy(p),
+            Ok(Command::SetGoals(g)) => goals = g,
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -86,6 +94,16 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, rx: Receiver<Command>) {
         };
         // Menü güncellemesi ana iş parçacığında çalışıp sonucunu bekler; burada
         // beklersek kapanışta (ana iş parçacığı bizi beklerken) kilitlenirdik.
+        let today = Local::now().date_naive();
+        if std::mem::take(&mut first_refresh) && status.today_seconds >= goals.daily_seconds() {
+            // Gün içinde yeniden açıldı: hedef bildirimi zaten gösterilmiş olabilir.
+            coach.mark_goal_notified(today);
+        }
+        let active = status.current.is_some() && !status.paused;
+        for nudge in coach.observe(&goals, now, active, today, status.today_seconds) {
+            notify(&app, &nudge);
+        }
+
         let (handle, snapshot) = (app.clone(), status.clone());
         let _ = app.run_on_main_thread(move || tray::update(&handle, &snapshot));
         let _ = app.emit("status", &status);
@@ -96,6 +114,25 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, rx: Receiver<Command>) {
     let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = tracker.shutdown(&store, Utc::now()) {
         eprintln!("{e}");
+    }
+}
+
+fn notify(app: &AppHandle, nudge: &Nudge) {
+    let (title, body) = match nudge {
+        Nudge::TakeBreak { minutes } => (
+            "Mola zamanı".to_string(),
+            format!(
+                "{} kesintisiz çalışıyorsun. Birkaç dakika ara ver, gözlerini dinlendir.",
+                format_duration(minutes * 60)
+            ),
+        ),
+        Nudge::GoalReached { seconds } => (
+            "Günlük hedefe ulaştın".to_string(),
+            format!("Bugün {} çalıştın. Tebrikler!", format_duration(*seconds)),
+        ),
+    };
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("bildirim gösterilemedi: {e}");
     }
 }
 

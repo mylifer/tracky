@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type AppStatus, type PrivacySettings, type UsageTotal } from "../api";
+import Toggle from "../components/Toggle";
+import GoalsSettings from "./GoalsSettings";
 import SyncSettings from "./SyncSettings";
 import UpdateSettings from "./UpdateSettings";
 
@@ -69,6 +71,8 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
           </div>
         )}
       </section>
+
+      <GoalsSettings />
 
       {privacy && (
         <section className="card settings">
@@ -142,31 +146,6 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
         {diag && <pre className="diag-out">{diag.join("\n")}</pre>}
       </section>
     </div>
-  );
-}
-
-function Toggle({
-  label,
-  hint,
-  checked,
-  onChange,
-}: {
-  label: string;
-  hint: string;
-  checked: boolean;
-  onChange: () => void;
-}) {
-  return (
-    <label className="setting">
-      <div>
-        <strong>{label}</strong>
-        <p className="muted">{hint}</p>
-      </div>
-      <span className="switch">
-        <input type="checkbox" checked={checked} onChange={onChange} />
-        <span />
-      </span>
-    </label>
   );
 }
 
