@@ -2,10 +2,11 @@ import type { DayBucket, Tag } from "../api";
 import { formatDuration } from "../api";
 import { addDays, isoDate, today } from "../lib/dates";
 import { tagColor } from "../lib/tags";
+import { cn } from "../lib/utils";
 
 const WEEKDAYS = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
 
-/** Ay takvimi: her gün toplam süre, yoğunluk ve kategori şeridiyle. */
+/** Ay takvimi: her gün toplam süre, odak süresi, hedefe göre yoğunluk ve kategori şeridi. */
 export default function MonthCalendar({
   from,
   days,
@@ -24,42 +25,53 @@ export default function MonthCalendar({
   const now = today();
 
   return (
-    <div className="month-cal">
+    <div className="grid grid-cols-7 gap-1.5">
       {WEEKDAYS.map((w) => (
-        <div key={w} className="mc-head">
+        <div key={w} className="px-1.5 pb-1 text-[11px] font-medium text-muted-foreground">
           {w}
         </div>
       ))}
       {Array.from({ length: lead }, (_, i) => (
-        <div key={`b${i}`} className="mc-blank" />
+        <div key={`b${i}`} />
       ))}
       {days.map((d, i) => {
         const date = addDays(from, i);
         const future = date > now;
+        const isToday = +date === +now;
         const level = Math.min(1, d.seconds / target);
         return (
           <button
             key={i}
-            className={`mc-day ${+date === +now ? "today" : ""}`}
             disabled={future}
             onClick={() => onSelectDay(isoDate(date))}
-            style={{ "--level": level } as React.CSSProperties}
-            title={d.seconds ? `${formatDuration(d.seconds)} çalışma · ${formatDuration(d.focusSeconds)} odak · skor ${d.focusScore}` : undefined}
+            title={
+              d.seconds
+                ? `${formatDuration(d.seconds)} çalışma · ${formatDuration(d.focusSeconds)} odak · skor ${d.focusScore}`
+                : undefined
+            }
+            className="relative flex min-h-[84px] flex-col items-start overflow-hidden rounded-lg border p-2 text-left transition-colors hover:border-primary/60 disabled:opacity-40"
+            style={{ background: `color-mix(in srgb, var(--primary) ${Math.round(level * 16)}%, var(--card))` }}
           >
-            <span className="mc-num">{date.getDate()}</span>
+            <span
+              className={cn(
+                "grid size-5 place-items-center rounded-full text-[11px] font-semibold tabular",
+                isToday ? "bg-primary text-primary-foreground" : "text-muted-foreground",
+              )}
+            >
+              {date.getDate()}
+            </span>
             {d.seconds > 0 && (
               <>
-                <span className="mc-total">{compact(d.seconds)}</span>
-                {d.focusSeconds > 0 && <span className="mc-focus">{compact(d.focusSeconds)}</span>}
-                <span className="mc-bar">
+                <span className="mt-auto max-w-full truncate text-[14px] font-semibold tabular">{compact(d.seconds)}</span>
+                {d.focusSeconds > 0 && (
+                  <span className="flex max-w-full items-center gap-1 truncate text-[11px] text-muted-foreground tabular">
+                    <i className="size-1.5 shrink-0 rounded-full bg-focus" />
+                    {compact(d.focusSeconds)}
+                  </span>
+                )}
+                <span className="absolute inset-x-0 bottom-0 flex h-[3px]">
                   {d.categories.map((c) => (
-                    <i
-                      key={c.id ?? "none"}
-                      style={{
-                        flexGrow: c.seconds,
-                        background: tagColor(c.id ? tags.get(c.id) : undefined),
-                      }}
-                    />
+                    <i key={c.id ?? "none"} style={{ flexGrow: c.seconds, background: tagColor(c.id ? tags.get(c.id) : undefined) }} />
                   ))}
                 </span>
               </>

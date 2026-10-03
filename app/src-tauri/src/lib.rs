@@ -1,6 +1,7 @@
 //! Kum masaüstü uygulaması: menü çubuğunda yaşayan zaman takipçisi.
 
 mod commands;
+mod effects;
 mod sync;
 mod tracking;
 mod tray;
@@ -37,6 +38,8 @@ struct AppStatus {
     accessibility: bool,
     onboarded: bool,
     autostart: bool,
+    /// Pencere malzemesi: "vibrancy", "mica" ya da "none".
+    effect: &'static str,
     tracking: Status,
 }
 
@@ -52,6 +55,7 @@ async fn get_status(app: AppHandle) -> Result<AppStatus, String> {
         accessibility: tracky_platform::permissions().accessibility,
         onboarded,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
+        effect: app.state::<effects::WindowEffect>().0,
         tracking: lock(&shared.status).clone(),
     })
 }
@@ -165,6 +169,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // Dock'ta ikon yok; uygulama yalnızca menü çubuğunda yaşar.
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    effects::apply(app);
 
     let dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&dir)?;

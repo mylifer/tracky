@@ -11,6 +11,8 @@ export type TrackingStatus = {
 };
 export type AppStatus = {
   platform: string;
+  /** Pencere malzemesi: "vibrancy" (macOS), "mica" (Windows 11) ya da "none". */
+  effect: string;
   accessibility: boolean;
   onboarded: boolean;
   autostart: boolean;

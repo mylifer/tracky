@@ -1,0 +1,191 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+/* Pencere yerel malzeme kullanıyorsa (macOS vibrancy, Windows Mica). */
+@custom-variant material (&:is([data-effect="vibrancy"] *, [data-effect="mica"] *));
+@custom-variant vibrancy (&:is([data-effect="vibrancy"] *));
+@custom-variant mica (&:is([data-effect="mica"] *));
+@custom-variant mac (&:is([data-platform="macos"] *));
+
+/*
+ * Renkler macOS / Windows sistem renklerinden: açık ve koyu tema sistemi izler.
+ * --c1…--c8 kategori renkleri (Apple sistem paleti), --c0 kategorisiz.
+ */
+:root {
+  --radius: 0.625rem;
+  --background: #ffffff;
+  --foreground: #1d1d1f;
+  --card: #ffffff;
+  --card-foreground: #1d1d1f;
+  --popover: #ffffff;
+  --popover-foreground: #1d1d1f;
+  --primary: #007aff;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f2f4;
+  --secondary-foreground: #1d1d1f;
+  --muted: #f4f4f5;
+  --muted-foreground: #6e6e73;
+  --accent: #efeff1;
+  --accent-foreground: #1d1d1f;
+  --destructive: #ff3b30;
+  --border: rgb(0 0 0 / 0.09);
+  --input: rgb(0 0 0 / 0.13);
+  --ring: rgb(0 122 255 / 0.45);
+  --sidebar: #f3f3f5;
+  --sidebar-foreground: #1d1d1f;
+  --sidebar-accent: rgb(0 0 0 / 0.07);
+  --sidebar-border: rgb(0 0 0 / 0.08);
+  --focus: #5856d6;
+  --success: #28a745;
+
+  --c0: #a1a1a6;
+  --c1: #007aff;
+  --c2: #ff9500;
+  --c3: #34c759;
+  --c4: #ffcc00;
+  --c5: #ff2d55;
+  --c6: #30b0c7;
+  --c7: #af52de;
+  --c8: #ff3b30;
+}
+
+.dark {
+  --background: #1e1e20;
+  --foreground: #f5f5f7;
+  --card: #262628;
+  --card-foreground: #f5f5f7;
+  --popover: #2a2a2d;
+  --popover-foreground: #f5f5f7;
+  --primary: #0a84ff;
+  --primary-foreground: #ffffff;
+  --secondary: #333336;
+  --secondary-foreground: #f5f5f7;
+  --muted: #2c2c2e;
+  --muted-foreground: #98989d;
+  --accent: #333336;
+  --accent-foreground: #f5f5f7;
+  --destructive: #ff453a;
+  --border: rgb(255 255 255 / 0.08);
+  --input: rgb(255 255 255 / 0.12);
+  --ring: rgb(10 132 255 / 0.55);
+  --sidebar: #19191b;
+  --sidebar-foreground: #f5f5f7;
+  --sidebar-accent: rgb(255 255 255 / 0.09);
+  --sidebar-border: rgb(255 255 255 / 0.06);
+  --focus: #5e5ce6;
+  --success: #30d158;
+
+  --c0: #636366;
+  --c1: #0a84ff;
+  --c2: #ff9f0a;
+  --c3: #30d158;
+  --c4: #ffd60a;
+  --c5: #ff375f;
+  --c6: #40c8e0;
+  --c7: #bf5af2;
+  --c8: #ff453a;
+}
+
+@theme inline {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui,
+    sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-focus: var(--focus);
+  --color-success: var(--success);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 13px;
+    line-height: 1.4;
+    overflow: hidden;
+    /* Yerel uygulamalar gibi: arayüz metni seçilmez, imleç ok kalır. */
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+    font-feature-settings: "tnum" 0;
+  }
+
+  /* Yerel malzeme varken pencere arka planı saydam; içerik kendi zeminini çizer. */
+  html[data-effect="vibrancy"] body,
+  html[data-effect="mica"] body {
+    background: transparent;
+  }
+
+  input,
+  textarea,
+  pre,
+  .selectable {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  button,
+  [role="button"],
+  [role="tab"],
+  a {
+    cursor: default;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--foreground) 18%, transparent);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--foreground) 30%, transparent);
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}

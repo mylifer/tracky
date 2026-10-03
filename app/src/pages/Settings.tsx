@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { Plus, X } from "lucide-react";
 import { api, type AppStatus, type PrivacySettings, type UsageTotal } from "../api";
-import Toggle from "../components/Toggle";
+import { ErrorText, Page, SettingBlock, SettingRow, SettingsGroup, ToggleRow } from "../components/settings";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import GoalsSettings from "./GoalsSettings";
 import SyncSettings from "./SyncSettings";
 import UpdateSettings from "./UpdateSettings";
@@ -43,45 +48,38 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
   }
 
   return (
-    <div className="page">
-      <header>
-        <h1>Ayarlar</h1>
-      </header>
-      {error && <p className="error">{error}</p>}
+    <Page title="Ayarlar">
+      <ErrorText>{error}</ErrorText>
 
-      <section className="card settings">
-        <h2>Genel</h2>
-        <Toggle
+      <SettingsGroup title="Genel">
+        <ToggleRow
           label="Bilgisayar açılınca başlat"
           hint="Kum menü çubuğunda sessizce başlar."
           checked={status.autostart}
           onChange={toggleAutostart}
         />
         {status.platform === "macos" && (
-          <div className="setting">
-            <div>
-              <strong>Erişilebilirlik izni</strong>
-              <p className="muted">Pencere başlıklarını okumak için gerekir.</p>
-            </div>
+          <SettingRow label="Erişilebilirlik izni" hint="Pencere başlıklarını okumak için gerekir.">
             {status.accessibility ? (
-              <span className="badge ok">Verildi</span>
+              <Badge variant="success">Verildi</Badge>
             ) : (
-              <button onClick={() => api.openAccessibilitySettings()}>Ayarları Aç</button>
+              <Button variant="outline" size="sm" onClick={() => api.openAccessibilitySettings()}>
+                Ayarları Aç
+              </Button>
             )}
-          </div>
+          </SettingRow>
         )}
-      </section>
+      </SettingsGroup>
 
       <GoalsSettings />
 
       {privacy && (
-        <section className="card settings">
-          <h2>Gizlilik</h2>
-          <Toggle
+        <SettingsGroup title="Gizlilik" description="Değişiklikler yeni kayıtlara uygulanır; geçmiş kayıtlar değişmez.">
+          <ToggleRow
             label="Gizli pencerelerin başlığını kaydetme"
             hint="Tarayıcıların gizli/InPrivate pencerelerinde süre kaydedilir, başlık “Gizli” olarak saklanır."
             checked={privacy.hide_private_windows}
-            onChange={() => save({ ...privacy, hide_private_windows: !privacy.hide_private_windows })}
+            onChange={(v) => save({ ...privacy, hide_private_windows: v })}
           />
           <AppPicker
             title="Hiç kaydedilmeyen uygulamalar"
@@ -101,24 +99,21 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
             suffixes={privacy.title_suffixes ?? []}
             onChange={(title_suffixes) => save({ ...privacy, title_suffixes })}
           />
-          <p className="muted hint">Değişiklikler yeni kayıtlara uygulanır; geçmiş kayıtlar değişmez.</p>
-        </section>
+        </SettingsGroup>
       )}
 
       <SyncSettings />
 
       <UpdateSettings />
 
-      <section className="card settings">
-        <h2>Veriler</h2>
-        <div className="setting">
-          <div>
-            <strong>CSV olarak dışa aktar</strong>
-            <p className="muted">
-              {exported ?? "Tüm kayıtlar (başlangıç, bitiş, uygulama, başlık, kategori, proje) İndirilenler klasörüne yazılır."}
-            </p>
-          </div>
-          <button
+      <SettingsGroup title="Veriler">
+        <SettingRow
+          label="CSV olarak dışa aktar"
+          hint={exported ?? "Tüm kayıtlar (başlangıç, bitiş, uygulama, başlık, kategori, proje) İndirilenler klasörüne yazılır."}
+        >
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() =>
               api.exportCsv().then(
                 (p) => setExported(`Kaydedildi: ${p}`),
@@ -127,24 +122,45 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
             }
           >
             Dışa aktar
-          </button>
-        </div>
-      </section>
+          </Button>
+        </SettingRow>
+      </SettingsGroup>
 
-      <section className="card settings">
-        <h2>Sorun giderme</h2>
-        <div className="setting">
-          <div>
-            <strong>Tanılama</strong>
-            <p className="muted">
-              Pencere başlıkları görünmüyorsa çalıştır, 5 saniye boyunca farklı pencerelere geç ve
-              çıkan metni paylaş.
-            </p>
-          </div>
-          <button onClick={runDiagnostics}>Çalıştır</button>
-        </div>
-        {diag && <pre className="diag-out">{diag.join("\n")}</pre>}
-      </section>
+      <SettingsGroup title="Sorun giderme">
+        <SettingRow
+          label="Tanılama"
+          hint="Pencere başlıkları görünmüyorsa çalıştır, 5 saniye boyunca farklı pencerelere geç ve çıkan metni paylaş."
+        >
+          <Button variant="outline" size="sm" onClick={runDiagnostics}>
+            Çalıştır
+          </Button>
+        </SettingRow>
+        {diag && (
+          <pre className="max-h-56 overflow-auto bg-muted/50 px-4 py-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+            {diag.join("\n")}
+          </pre>
+        )}
+      </SettingsGroup>
+    </Page>
+  );
+}
+
+function Chips({ items, onRemove }: { items: { key: string; label: string; title?: string }[]; onRemove: (key: string) => void }) {
+  if (items.length === 0) return <p className="text-xs text-muted-foreground">Yok</p>;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((i) => (
+        <Badge key={i.key} variant="secondary" className="gap-1 py-0.5 pr-1 pl-2 text-xs font-normal" title={i.title}>
+          {i.label}
+          <button
+            className="grid size-4 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+            onClick={() => onRemove(i.key)}
+            aria-label="Kaldır"
+          >
+            <X className="size-3" />
+          </button>
+        </Badge>
+      ))}
     </div>
   );
 }
@@ -162,93 +178,52 @@ function AppPicker({
   apps: UsageTotal[];
   onChange: (ids: string[]) => void;
 }) {
-  const [pick, setPick] = useState("");
   const names = useMemo(() => new Map(apps.map((a) => [a.key, a.label])), [apps]);
   const available = apps.filter((a) => !selected.includes(a.key));
   return (
-    <div className="setting column">
-      <div>
-        <strong>{title}</strong>
-        <p className="muted">{hint}</p>
-      </div>
-      <div className="chips">
-        {selected.map((id) => (
-          <span key={id} className="chip" title={id}>
-            {names.get(id) ?? id}
-            <button
-              className="ghost icon small"
-              onClick={() => onChange(selected.filter((s) => s !== id))}
-              aria-label="Kaldır"
-            >
-              ×
-            </button>
-          </span>
-        ))}
-        {selected.length === 0 && <span className="muted">Yok</span>}
-      </div>
-      <form
-        className="inline-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (pick) onChange([...selected, pick]);
-          setPick("");
-        }}
-      >
-        <select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Uygulama seç">
-          <option value="">Uygulama seç…</option>
+    <SettingBlock label={title} hint={hint}>
+      <Chips
+        items={selected.map((id) => ({ key: id, label: names.get(id) ?? id, title: id }))}
+        onRemove={(id) => onChange(selected.filter((s) => s !== id))}
+      />
+      <Select value="" onValueChange={(v) => v && onChange([...selected, v])} disabled={available.length === 0}>
+        <SelectTrigger size="sm" className="w-56">
+          <Plus className="size-3.5" />
+          <SelectValue placeholder="Uygulama ekle…" />
+        </SelectTrigger>
+        <SelectContent>
           {available.map((a) => (
-            <option key={a.key} value={a.key}>
+            <SelectItem key={a.key} value={a.key}>
               {a.label}
-            </option>
+            </SelectItem>
           ))}
-        </select>
-        <button type="submit" disabled={!pick}>
-          Ekle
-        </button>
-      </form>
-    </div>
+        </SelectContent>
+      </Select>
+    </SettingBlock>
   );
 }
 
 function SuffixEditor({ suffixes, onChange }: { suffixes: string[]; onChange: (s: string[]) => void }) {
   const [text, setText] = useState("");
   return (
-    <div className="setting column">
-      <div>
-        <strong>Başlıklardan kaldırılacak ekler</strong>
-        <p className="muted">
-          Bazı uygulamalar başlığın sonuna sabit bir şey ekler (örn. Firefox profil adı “— Kaan”). Buraya
-          yazdığın ek başlıklardan silinir.
-        </p>
-      </div>
-      <div className="chips">
-        {suffixes.map((s) => (
-          <span key={s} className="chip">
-            {s}
-            <button
-              className="ghost icon small"
-              onClick={() => onChange(suffixes.filter((x) => x !== s))}
-              aria-label="Kaldır"
-            >
-              ×
-            </button>
-          </span>
-        ))}
-        {suffixes.length === 0 && <span className="muted">Yok</span>}
-      </div>
+    <SettingBlock
+      label="Başlıklardan kaldırılacak ekler"
+      hint="Bazı uygulamalar başlığın sonuna sabit bir şey ekler (örn. Firefox profil adı “— Kaan”). Buraya yazdığın ek başlıklardan silinir."
+    >
+      <Chips items={suffixes.map((s) => ({ key: s, label: s }))} onRemove={(s) => onChange(suffixes.filter((x) => x !== s))} />
       <form
-        className="inline-form"
+        className="flex max-w-sm gap-2"
         onSubmit={(e) => {
           e.preventDefault();
           if (text.trim()) onChange([...suffixes, text.trim()]);
           setText("");
         }}
       >
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="örn. Kaan" />
-        <button type="submit" disabled={!text.trim()}>
+        <Input className="h-7 text-xs" value={text} onChange={(e) => setText(e.target.value)} placeholder="örn. Kaan" />
+        <Button type="submit" variant="outline" size="sm" disabled={!text.trim()}>
           Ekle
-        </button>
+        </Button>
       </form>
-    </div>
+    </SettingBlock>
   );
 }

@@ -1,14 +1,17 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
+import { Zap } from "lucide-react";
 import type { Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
-import { addDays, formatTime, isoDate } from "../lib/dates";
+import { addDays, formatTime, isoDate, today } from "../lib/dates";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
-import { IconBolt } from "./Icons";
+import { cn } from "../lib/utils";
+import { Badge } from "./ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
-const HOUR_PX = 56;
+const HOUR_PX = 52;
 const HOUR_MS = 3600_000;
 /** Bu yükseklikten küçük bloklarda yalnızca başlık gösterilir. */
-const FULL_LABEL_PX = 44;
+const FULL_LABEL_PX = 40;
 /** Bundan alçak bloklarda yazı yok (yalnızca renk; ayrıntı ipucunda). */
 const LABEL_MIN_PX = 15;
 
@@ -30,17 +33,25 @@ function hourRange(from: Date, spans: { start: string; end: string }[], days = 1
   return { first, last: Math.min(24, Math.max(last, first + 6)) };
 }
 
-function useTop(from: Date, range: Range) {
-  return (t: number) => ((t - (+from + range.first * HOUR_MS)) / HOUR_MS) * HOUR_PX;
+function topFn(dayStart: number, range: Range) {
+  return (t: number) => ((t - (dayStart + range.first * HOUR_MS)) / HOUR_MS) * HOUR_PX;
+}
+
+function hours(range: Range) {
+  const out = [];
+  for (let h = range.first; h <= range.last; h++) out.push(h);
+  return out;
 }
 
 function HourRail({ range }: { range: Range }) {
-  const hours = [];
-  for (let h = range.first; h <= range.last; h++) hours.push(h);
   return (
-    <div className="cal-rail" style={{ height: (range.last - range.first) * HOUR_PX }}>
-      {hours.map((h) => (
-        <span key={h} style={{ top: (h - range.first) * HOUR_PX }}>
+    <div className="relative" style={{ height: (range.last - range.first) * HOUR_PX }}>
+      {hours(range).map((h) => (
+        <span
+          key={h}
+          className="absolute right-1 -translate-y-1/2 text-[10px] text-muted-foreground tabular"
+          style={{ top: (h - range.first) * HOUR_PX }}
+        >
           {String(h % 24).padStart(2, "0")}:00
         </span>
       ))}
@@ -48,68 +59,68 @@ function HourRail({ range }: { range: Range }) {
   );
 }
 
-function GridLines({ range }: { range: Range }) {
-  const lines = [];
-  for (let h = range.first; h <= range.last; h++) lines.push(h);
+function Column({ range, children, className }: { range: Range; children: React.ReactNode; className?: string }) {
   return (
-    <>
-      {lines.map((h) => (
-        <span key={h} className="cal-line" style={{ top: (h - range.first) * HOUR_PX }} />
+    <div className={cn("relative", className)} style={{ height: (range.last - range.first) * HOUR_PX }}>
+      {hours(range).map((h) => (
+        <span key={h} className="absolute inset-x-0 border-t border-border/70" style={{ top: (h - range.first) * HOUR_PX }} />
       ))}
-    </>
+      {children}
+    </div>
   );
 }
 
-function NowLine({ from, range, days }: { from: Date; range: Range; days: number }) {
-  const now = Date.now();
-  const end = +addDays(from, days);
-  if (now < +from || now >= end) return null;
-  const today = new Date();
-  const dayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const top = ((now - (+dayStart + range.first * HOUR_MS)) / HOUR_MS) * HOUR_PX;
+function NowLine({ day, range }: { day: Date; range: Range }) {
+  if (+day !== +today()) return null;
+  const top = topFn(+day, range)(Date.now());
   if (top < 0 || top > (range.last - range.first) * HOUR_PX) return null;
-  return <span className="cal-now" style={{ top }} />;
+  return (
+    <span className="pointer-events-none absolute inset-x-0 z-10 h-px bg-destructive" style={{ top }}>
+      <span className="absolute -top-[3px] -left-[3px] size-[7px] rounded-full bg-destructive" />
+    </span>
+  );
 }
 
-/** Bloğun ayrıntı kartı (Rize'deki gibi uygulama yüzdeleriyle). */
-function BlockCard({ block, tags, onClose }: { block: WorkBlock; tags: Map<string, Tag>; onClose: () => void }) {
+/** Bloğun ayrıntı kartı: kategori, süre, uygulama yüzdeleri. */
+function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag> }) {
   const tag = block.categoryId ? tags.get(block.categoryId) : undefined;
+  const color = tagColor(tag);
   return (
-    <div className="pop" role="dialog" aria-label="Oturum ayrıntısı">
-      <div className="pop-head">
-        <span className="chip" style={{ ["--c" as string]: tagColor(tag) }}>
-          <i />
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Badge variant="outline" className="gap-1.5">
+          <i className="size-2 rounded-full" style={{ background: color }} />
           {tag?.name ?? UNCATEGORIZED}
-        </span>
+        </Badge>
         {block.focus && (
-          <span className="focus-chip">
-            <IconBolt size={12} /> Odak
-          </span>
+          <Badge variant="outline" className="gap-1 border-focus/30 text-focus">
+            <Zap /> Odak
+          </Badge>
         )}
-        <button className="icon-btn" onClick={onClose} aria-label="Kapat">
-          ×
-        </button>
       </div>
-      <div className="pop-title">
-        <strong>{block.topApps[0]?.appName ?? tag?.name ?? "Çalışma"}</strong>
-        <span>{formatDuration(block.activeSeconds)}</span>
+      <div>
+        <div className="flex items-baseline justify-between gap-3">
+          <strong className="truncate text-sm">{block.topApps[0]?.appName ?? tag?.name ?? "Çalışma"}</strong>
+          <span className="text-sm font-semibold tabular">{formatDuration(block.activeSeconds)}</span>
+        </div>
+        <p className="mt-0.5 text-xs text-muted-foreground tabular">
+          {formatTime(new Date(block.start))} – {formatTime(new Date(block.end))}
+          {block.switches > 0 && ` · ${block.switches} uygulama geçişi`}
+        </p>
       </div>
-      <p className="muted">
-        {formatTime(new Date(block.start))} – {formatTime(new Date(block.end))}
-        {block.switches > 0 && ` · ${block.switches} uygulama geçişi`}
-      </p>
-      <div className="pop-sub">Uygulamalar ve siteler</div>
-      <ul className="pct-rows">
+      <ul className="space-y-1.5">
         {block.topApps.map((a) => {
           const pct = block.activeSeconds ? Math.round((a.seconds / block.activeSeconds) * 100) : 0;
           return (
-            <li key={a.appName}>
-              <span className="pct">%{pct}</span>
-              <span className="pct-bar">
-                <span style={{ width: `${pct}%` }} />
+            <li key={a.appName} className="grid grid-cols-[34px_1fr_auto] items-center gap-2 text-xs">
+              <span className="text-muted-foreground tabular">%{pct}</span>
+              <span className="min-w-0">
+                <span className="block truncate">{a.appName}</span>
+                <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
+                  <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+                </span>
               </span>
-              <span className="pct-name">{a.appName}</span>
-              <span className="pct-time">{formatDuration(a.seconds)}</span>
+              <span className="text-muted-foreground tabular">{formatDuration(a.seconds)}</span>
             </li>
           );
         })}
@@ -127,54 +138,54 @@ function blockTitle(b: WorkBlock, tags: Map<string, Tag>) {
   };
 }
 
-function Block({
-  b,
-  tags,
-  top,
-  height,
-  selected,
-  onSelect,
-}: {
-  b: WorkBlock;
-  tags: Map<string, Tag>;
-  top: number;
-  height: number;
-  selected: boolean;
-  onSelect: () => void;
-}) {
+/** Takvim.app tarzı etkinlik bloğu; tıklayınca ayrıntı açılır. */
+function Block({ b, tags, top, height }: { b: WorkBlock; tags: Map<string, Tag>; top: number; height: number }) {
   const { tag, title, apps } = blockTitle(b, tags);
+  const color = tagColor(tag);
   const full = height >= FULL_LABEL_PX;
   const label = height >= LABEL_MIN_PX;
-  const summary = `${title} · ${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))} · ${formatDuration(b.activeSeconds)}${apps ? "\n" + apps : ""}`;
-  if (!label) {
-    return (
-      <button
-        className={`cal-block bare ${selected ? "sel" : ""}`}
-        style={{ top, height, ["--c" as string]: tagColor(tag) }}
-        onClick={onSelect}
-        title={summary}
-        aria-label={summary}
-      />
-    );
-  }
+  const summary = `${title} · ${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))} · ${formatDuration(b.activeSeconds)}`;
   return (
-    <button
-      className={`cal-block ${b.focus ? "focus" : ""} ${selected ? "sel" : ""} ${full ? "" : "compact"}`}
-      style={{ top, height, ["--c" as string]: tagColor(tag) }}
-      onClick={onSelect}
-      title={summary}
-      aria-label={summary}
-    >
-      <span className="cb-title">{title}</span>
-      {full && (
-        <span className="cb-sub">
-          {formatTime(new Date(b.start))} – {formatTime(new Date(b.end))}
-          {apps && ` · ${apps}`}
-        </span>
-      )}
-      <span className="cb-dur">{formatDuration(b.activeSeconds)}</span>
-    </button>
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          className="absolute inset-x-0.5 overflow-hidden rounded-[5px] border-l-[3px] px-1.5 text-left transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:ring-2 data-[state=open]:ring-[var(--cat)] dark:hover:brightness-125"
+          style={{
+            top,
+            height,
+            ["--cat" as string]: color,
+            borderLeftColor: color,
+            background: `color-mix(in srgb, ${color} 22%, var(--card))`,
+          }}
+          title={summary}
+          aria-label={summary}
+        >
+          {label && (
+            <span className={cn("flex h-full", full ? "flex-col py-1" : "items-center gap-1.5")}>
+              <span className="truncate text-[11px] leading-tight font-semibold">{title}</span>
+              {full && (
+                <span className="truncate text-[10px] leading-tight text-muted-foreground">
+                  {formatTime(new Date(b.start))} – {formatTime(new Date(b.end))}
+                  {apps && ` · ${apps}`}
+                </span>
+              )}
+              <span className={cn("text-[10px] text-muted-foreground tabular", full ? "mt-auto" : "ml-auto shrink-0")}>
+                {formatDuration(b.activeSeconds)}
+              </span>
+            </span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="right" align="start" className="w-72">
+        <BlockDetails block={b} tags={tags} />
+      </PopoverContent>
+    </Popover>
   );
+}
+
+function blockGeometry(b: { start: string; end: string }, top: (t: number) => number) {
+  const t = top(+new Date(b.start));
+  return { top: t, height: Math.max(3, top(+new Date(b.end)) - t - 2) };
 }
 
 /** Gün takvimi: Oturumlar · Uygulamalar · Odak şeridi. */
@@ -189,67 +200,59 @@ export function DayCalendar({
   segments: Segment[];
   tags: Map<string, Tag>;
 }) {
-  const [sel, setSel] = useState<number | null>(null);
   const range = useMemo(() => hourRange(from, [...blocks, ...segments]), [from, blocks, segments]);
-  const top = useTop(from, range);
-  const height = (range.last - range.first) * HOUR_PX;
+  const top = topFn(+from, range);
   // Kısa uygulama dilimlerini aynı uygulamanın komşularıyla birleştir (takvimde okunur kalsın).
   const apps = useMemo(() => mergeSegments(segments), [segments]);
+  const grid = "grid grid-cols-[40px_minmax(0,1fr)_minmax(0,1fr)_8px] gap-x-2";
 
   return (
-    <div className="cal">
-      <div className="cal-heads">
+    <div>
+      <div className={cn(grid, "pb-2 text-[11px] font-medium text-muted-foreground")}>
         <span />
         <span>Oturumlar</span>
         <span>Uygulamalar</span>
-        <span title="Odak blokları" className="focus-head">
-          <IconBolt size={13} />
+        <span title="Odak blokları">
+          <Zap className="size-3 text-focus" />
         </span>
       </div>
-      <div className="cal-body">
+      <div className={cn(grid, "pt-1.5")}>
         <HourRail range={range} />
-        <div className="cal-col" style={{ height }}>
-          <GridLines range={range} />
-          {blocks.map((b, i) => {
-            const t = top(+new Date(b.start));
-            const h = Math.max(4, top(+new Date(b.end)) - t - 2);
-            return (
-              <Block key={b.start} b={b} tags={tags} top={t} height={h} selected={sel === i} onSelect={() => setSel(sel === i ? null : i)} />
-            );
-          })}
-          <NowLine from={from} range={range} days={1} />
-        </div>
-        <div className="cal-col" style={{ height }}>
-          <GridLines range={range} />
+        <Column range={range}>
+          {blocks.map((b) => (
+            <Block key={b.start} b={b} tags={tags} {...blockGeometry(b, top)} />
+          ))}
+          <NowLine day={from} range={range} />
+        </Column>
+        <Column range={range}>
           {apps.map((s, i) => {
-            const t = top(+new Date(s.start));
-            const h = Math.max(4, top(+new Date(s.end)) - t - 2);
-            const tag = s.categoryId ? tags.get(s.categoryId) : undefined;
+            const { top: t, height: h } = blockGeometry(s, top);
+            const color = tagColor(s.categoryId ? tags.get(s.categoryId) : undefined);
             return (
               <span
                 key={i}
-                className={`cal-seg ${h >= 20 ? "" : "thin"}`}
-                style={{ top: t, height: h, ["--c" as string]: tagColor(tag) }}
+                className="absolute inset-x-0.5 flex items-center overflow-hidden rounded-[4px] px-1.5 text-[10px] font-medium text-white"
+                style={{ top: t, height: h, background: `color-mix(in srgb, ${color} 80%, transparent)` }}
                 title={`${s.appName}${s.title ? " — " + s.title : ""}\n${formatTime(new Date(s.start))}–${formatTime(new Date(s.end))} · ${formatDuration((+new Date(s.end) - +new Date(s.start)) / 1000)}`}
               >
-                {h >= 20 && <span className="cs-name">{s.appName}</span>}
+                {h >= 18 && <span className="truncate drop-shadow-sm">{s.appName}</span>}
               </span>
             );
           })}
-          <NowLine from={from} range={range} days={1} />
-        </div>
-        <div className="cal-col focus-col" style={{ height }}>
+          <NowLine day={from} range={range} />
+        </Column>
+        <div className="relative" style={{ height: (range.last - range.first) * HOUR_PX }}>
           {blocks.map((b) => {
-            const t = top(+new Date(b.start));
-            const h = Math.max(4, top(+new Date(b.end)) - t - 3);
-            return <span key={b.start} className={`focus-bar ${b.focus ? "on" : ""}`} style={{ top: t, height: h }} />;
+            const g = blockGeometry(b, top);
+            return (
+              <span
+                key={b.start}
+                className={cn("absolute inset-x-0 rounded-full", b.focus ? "bg-focus" : "bg-muted")}
+                style={{ top: g.top, height: Math.max(3, g.height - 1) }}
+              />
+            );
           })}
         </div>
-        {sel !== null && blocks[sel] && (
-          <div className="pop-anchor" style={{ top: Math.min(top(+new Date(blocks[sel].start)), height - 260) }}>
-            <BlockCard block={blocks[sel]} tags={tags} onClose={() => setSel(null)} />
-          </div>
-        )}
       </div>
     </div>
   );
@@ -269,51 +272,57 @@ export function WeekCalendar({
   tags: Map<string, Tag>;
   onSelectDay: (iso: string) => void;
 }) {
-  const [sel, setSel] = useState<string | null>(null);
   const range = useMemo(() => hourRange(from, blocks, 7), [from, blocks]);
-  const height = (range.last - range.first) * HOUR_PX;
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
-  const dayFmt = new Intl.DateTimeFormat("tr-TR", { weekday: "short", day: "numeric" });
-  const selected = blocks.find((b) => b.start === sel);
+  const weekday = new Intl.DateTimeFormat("tr-TR", { weekday: "short" });
+  const grid = "grid grid-cols-[40px_repeat(7,minmax(0,1fr))] gap-x-1";
+  const now = today();
 
   return (
-    <div className="cal week-cal">
-      <div className="cal-heads">
+    <div>
+      <div className={cn(grid, "pb-2")}>
         <span />
-        {days.map((d, i) => (
-          <button key={i} className="day-head" onClick={() => onSelectDay(isoDate(d))}>
-            {dayFmt.format(d)}
-            <small>{dayTotals[i] ? formatDuration(dayTotals[i]) : "—"}</small>
-          </button>
-        ))}
+        {days.map((d, i) => {
+          const isToday = +d === +now;
+          return (
+            <button
+              key={i}
+              onClick={() => onSelectDay(isoDate(d))}
+              className="flex flex-col items-center gap-0.5 rounded-md py-1 transition-colors hover:bg-accent"
+            >
+              <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                {weekday.format(d)}
+                <span
+                  className={cn(
+                    "inline-grid size-5 place-items-center rounded-full font-semibold tabular",
+                    isToday ? "bg-primary text-primary-foreground" : "text-foreground",
+                  )}
+                >
+                  {d.getDate()}
+                </span>
+              </span>
+              <span className="text-[11px] font-medium tabular">{dayTotals[i] ? formatDuration(dayTotals[i]) : "—"}</span>
+            </button>
+          );
+        })}
       </div>
-      <div className="cal-body">
+      <div className={cn(grid, "pt-1.5")}>
         <HourRail range={range} />
         {days.map((d, i) => {
           const dayStart = +d;
           const dayEnd = +addDays(d, 1);
-          const top = (t: number) => ((t - (dayStart + range.first * HOUR_MS)) / HOUR_MS) * HOUR_PX;
+          const top = topFn(dayStart, range);
           return (
-            <div key={i} className="cal-col" style={{ height }}>
-              <GridLines range={range} />
+            <Column key={i} range={range} className={cn(+d === +now && "bg-primary/[0.04]")}>
               {blocks
                 .filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd)
-                .map((b) => {
-                  const t = top(+new Date(b.start));
-                  const h = Math.max(4, top(+new Date(b.end)) - t - 2);
-                  return (
-                    <Block key={b.start} b={b} tags={tags} top={t} height={h} selected={sel === b.start} onSelect={() => setSel(sel === b.start ? null : b.start)} />
-                  );
-                })}
-              <NowLine from={d} range={range} days={1} />
-            </div>
+                .map((b) => (
+                  <Block key={b.start} b={b} tags={tags} {...blockGeometry(b, top)} />
+                ))}
+              <NowLine day={d} range={range} />
+            </Column>
           );
         })}
-        {selected && (
-          <div className="pop-anchor center">
-            <BlockCard block={selected} tags={tags} onClose={() => setSel(null)} />
-          </div>
-        )}
       </div>
     </div>
   );

@@ -2131,6 +2131,7 @@ dependencies = [
  "tracky-platform",
  "tracky-sync",
  "uuid",
+ "window-vibrancy",
 ]
 
 [[package]]

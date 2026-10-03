@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { api } from "../api";
+import { ErrorText, SettingRow, SettingsGroup } from "../components/settings";
+import { Button } from "../components/ui/button";
 import { useUpdate } from "../lib/useUpdate";
 
 const time = new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -30,24 +32,29 @@ export default function UpdateSettings() {
   }
 
   return (
-    <section className="card settings">
-      <h2>Güncellemeler</h2>
-      <div className="setting">
-        <div>
-          <strong>Kum {status.current}</strong>
-          <p className="muted">{error ?? describe()}</p>
-          {status.ready && status.notes && <p className="hint">{status.notes}</p>}
-        </div>
+    <SettingsGroup title="Güncellemeler">
+      <SettingRow label={`Kum ${status.current}`} hint={describe()}>
         {status.ready ? (
-          <button className="primary" disabled={installing} onClick={install}>
+          <Button size="sm" disabled={installing} onClick={install}>
             {installing ? "Kuruluyor…" : "Yükle ve yeniden başlat"}
-          </button>
+          </Button>
         ) : (
-          <button disabled={status.checking} onClick={() => api.checkUpdate().then(setStatus, (e) => setError(String(e)))}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={status.checking}
+            onClick={() => api.checkUpdate().then(setStatus, (e) => setError(String(e)))}
+          >
             Şimdi denetle
-          </button>
+          </Button>
         )}
-      </div>
-    </section>
+      </SettingRow>
+      {(error || (status.ready && status.notes)) && (
+        <div className="space-y-1 px-4 py-2.5">
+          <ErrorText>{error}</ErrorText>
+          {status.ready && status.notes && <p className="text-xs whitespace-pre-wrap text-muted-foreground">{status.notes}</p>}
+        </div>
+      )}
+    </SettingsGroup>
   );
 }

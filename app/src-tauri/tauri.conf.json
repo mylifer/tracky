@@ -21,12 +21,14 @@
         "center": true,
         "visible": false,
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "transparent": true
       }
     ],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,

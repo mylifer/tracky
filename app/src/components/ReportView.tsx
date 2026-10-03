@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Hourglass } from "lucide-react";
 import { api, type Report, type Tag } from "../api";
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
 import { tagMap } from "../lib/tags";
 import { AppList, Legend } from "./Breakdown";
 import { DayCalendar, WeekCalendar } from "./Calendar";
-import { IconLeft, IconRight } from "./Icons";
 import MonthCalendar from "./MonthCalendar";
 import Summary from "./Summary";
+import Toolbar from "./Toolbar";
+import { Button } from "./ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
 export type Mode = "day" | "week" | "month";
 
@@ -88,80 +92,94 @@ export default function ReportView(p: Props) {
   const mode = MODES.find((m) => m.id === p.mode) ?? MODES[0];
 
   return (
-    <div className="report">
-      <header className="topbar" data-tauri-drag-region>
-        <div data-tauri-drag-region className="topbar-spacer" />
-        <h1 data-tauri-drag-region>{p.title}</h1>
-        <div className="seg-tabs big" role="tablist" aria-label="Görünüm">
-          {MODES.map((m) => (
-            <button key={m.id} role="tab" aria-selected={p.mode === m.id} className={p.mode === m.id ? "on" : ""} onClick={() => p.onMode(m.id)}>
-              {m.label}
-            </button>
-          ))}
-        </div>
-        <div className="nav">
-          <button className="icon-btn" onClick={p.onPrev} aria-label="Önceki">
-            <IconLeft />
-          </button>
-          <button className="pill" onClick={p.onToday ?? undefined} disabled={!p.onToday}>
+    <>
+      <Toolbar title={p.title}>
+        <Tabs value={p.mode} onValueChange={(v) => p.onMode(v as Mode)}>
+          <TabsList aria-label="Görünüm">
+            {MODES.map((m) => (
+              <TabsTrigger key={m.id} value={m.id} className="px-3.5">
+                {m.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="icon-sm" onClick={p.onPrev} aria-label="Önceki">
+            <ChevronLeft />
+          </Button>
+          <Button variant="outline" size="sm" onClick={p.onToday ?? undefined} disabled={!p.onToday}>
             {mode.current}
-          </button>
-          <button className="icon-btn" onClick={p.onNext} disabled={isLive} aria-label="Sonraki">
-            <IconRight />
-          </button>
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={p.onNext} disabled={isLive} aria-label="Sonraki">
+            <ChevronRight />
+          </Button>
         </div>
-      </header>
+      </Toolbar>
 
-      {error && <p className="error pad">{error}</p>}
-      {report && (
-        <div className="report-grid">
-          <div className="report-main">
-            <section className="panel cal-panel">
-              {order.length > 0 && <Legend order={order} tags={tags} />}
-              {p.mode === "month" ? (
-                <MonthCalendar from={from} days={report.days} tags={tags} dailyHours={dailyHours} onSelectDay={p.onSelectDay} />
-              ) : report.totalSeconds === 0 ? (
-                <Empty />
-              ) : p.mode === "day" ? (
-                <DayCalendar from={from} blocks={report.focus.blocks} segments={report.timeline} tags={tags} />
-              ) : (
-                <WeekCalendar
-                  from={from}
-                  blocks={report.focus.blocks}
-                  dayTotals={report.days.map((d) => d.seconds)}
-                  tags={tags}
-                  onSelectDay={p.onSelectDay}
-                />
+      <div className="@container flex-1 overflow-y-auto px-5 pb-6">
+        {error && <p className="pb-3 text-xs text-destructive selectable">{error}</p>}
+        {report && (
+          <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
+            <div className="min-w-0 space-y-4">
+              <Card className="gap-3 py-3">
+                {order.length > 0 && (
+                  <CardContent>
+                    <Legend order={order} tags={tags} />
+                  </CardContent>
+                )}
+                <CardContent className="px-3">
+                  {p.mode === "month" ? (
+                    <MonthCalendar from={from} days={report.days} tags={tags} dailyHours={dailyHours} onSelectDay={p.onSelectDay} />
+                  ) : report.totalSeconds === 0 ? (
+                    <Empty />
+                  ) : p.mode === "day" ? (
+                    <DayCalendar from={from} blocks={report.focus.blocks} segments={report.timeline} tags={tags} />
+                  ) : (
+                    <WeekCalendar
+                      from={from}
+                      blocks={report.focus.blocks}
+                      dayTotals={report.days.map((d) => d.seconds)}
+                      tags={tags}
+                      onSelectDay={p.onSelectDay}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+              {report.apps.length > 0 && (
+                <Card className="gap-2">
+                  <CardHeader>
+                    <CardTitle>Uygulamalar ve pencereler</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-2">
+                    <AppList apps={report.apps} tags={tags} categories={categories as Tag[]} start={p.start} days={days} onChanged={load} />
+                  </CardContent>
+                </Card>
               )}
-            </section>
-            {report.apps.length > 0 && (
-              <section className="panel">
-                <h2>Uygulamalar ve pencereler</h2>
-                <AppList apps={report.apps} tags={tags} categories={categories as Tag[]} start={p.start} days={days} onChanged={load} />
-              </section>
-            )}
+            </div>
+            <Summary
+              report={report}
+              previous={previous}
+              tags={tags}
+              days={days}
+              dailyHours={dailyHours}
+              mode={p.mode}
+              title={isLive ? mode.current : mode.summary}
+            />
           </div>
-          <Summary
-            report={report}
-            previous={previous}
-            tags={tags}
-            days={days}
-            dailyHours={dailyHours}
-            mode={p.mode}
-            title={`Özet · ${isLive ? mode.current : mode.summary}`}
-          />
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </>
   );
 }
 
 function Empty() {
   return (
-    <div className="empty">
-      <div className="empty-glyph">⌛</div>
-      <p>Bu aralık için kayıt yok.</p>
-      <p className="muted">Kum arka planda çalışırken takvim kendiliğinden dolacak.</p>
+    <div className="flex flex-col items-center gap-1.5 py-16 text-center">
+      <div className="mb-2 grid size-11 place-items-center rounded-full bg-muted">
+        <Hourglass className="size-5 text-muted-foreground" />
+      </div>
+      <p className="text-[13px] font-medium">Bu aralık için kayıt yok</p>
+      <p className="text-xs text-muted-foreground">Kum arka planda çalışırken takvim kendiliğinden dolacak.</p>
     </div>
   );
 }

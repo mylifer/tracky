@@ -1,6 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
+import { Check, Plus, Trash2, X } from "lucide-react";
 import { api, type Rule, type RuleField, type Tag, type TagKind, type UsageTotal } from "../api";
-import { nextColor, tagColor } from "../lib/tags";
+import { ErrorText, Page } from "../components/settings";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "../components/ui/alert-dialog";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { nextColor } from "../lib/tags";
+import { cn } from "../lib/utils";
 
 const KIND_TITLE: Record<TagKind, string> = { category: "Kategoriler", project: "Projeler" };
 const KIND_HINT: Record<TagKind, string> = {
@@ -36,11 +54,8 @@ export default function Categories() {
   };
 
   return (
-    <div className="page">
-      <header>
-        <h1>Kategoriler ve projeler</h1>
-      </header>
-      {error && <p className="error">{error}</p>}
+    <Page title="Kategoriler ve projeler">
+      <ErrorText>{error}</ErrorText>
       {(["category", "project"] as TagKind[]).map((kind) => (
         <TagSection
           key={kind}
@@ -52,7 +67,7 @@ export default function Categories() {
           run={run}
         />
       ))}
-    </div>
+    </Page>
   );
 }
 
@@ -81,35 +96,41 @@ function TagSection({
   });
 
   return (
-    <section className="card">
-      <h2>{KIND_TITLE[kind]}</h2>
-      <p className="muted hint">{KIND_HINT[kind]}</p>
-      <div className="tag-cards">
-        {tags.map((t) => (
-          <TagCard key={t.id} tag={t} rules={rules.filter((r) => r.tagId === t.id)} apps={apps} run={run} />
-        ))}
+    <section className="space-y-2">
+      <div className="px-1">
+        <h2 className="text-[13px] font-semibold">{KIND_TITLE[kind]}</h2>
+        <p className="mt-0.5 text-xs text-muted-foreground">{KIND_HINT[kind]}</p>
       </div>
-      <form
-        className="inline-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          add();
-        }}
-      >
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={kind === "category" ? "Yeni kategori adı" : "Yeni proje adı"}
-        />
-        <button type="submit" disabled={!name.trim()}>
-          Ekle
-        </button>
-      </form>
+      <div className="divide-y rounded-xl border bg-card shadow-xs">
+        {tags.map((t) => (
+          <TagRow key={t.id} tag={t} rules={rules.filter((r) => r.tagId === t.id)} apps={apps} run={run} />
+        ))}
+        <form
+          className="flex items-center gap-2 px-4 py-2.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add();
+          }}
+        >
+          <Plus className="size-4 text-muted-foreground" />
+          <Input
+            className="h-7 max-w-xs border-transparent bg-transparent px-1 shadow-none focus-visible:border-input dark:bg-transparent"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={kind === "category" ? "Yeni kategori ekle" : "Yeni proje ekle"}
+          />
+          {name.trim() && (
+            <Button type="submit" size="sm">
+              Ekle
+            </Button>
+          )}
+        </form>
+      </div>
     </section>
   );
 }
 
-function TagCard({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: UsageTotal[]; run: Run }) {
+function TagRow({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: UsageTotal[]; run: Run }) {
   const [field, setField] = useState<RuleField>(tag.kind === "project" ? "title" : "app");
   const [pattern, setPattern] = useState("");
   const [name, setName] = useState(tag.name);
@@ -122,69 +143,95 @@ function TagCard({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: Usa
   });
 
   return (
-    <div className="tag-card">
-      <div className="tag-card-head">
-        <ColorPicker
-          value={tag.color}
-          onChange={(color) => run(() => api.saveTag({ ...tag, color }))()}
-        />
-        <input
-          className="tag-name"
+    <div className="space-y-2.5 px-4 py-3">
+      <div className="flex items-center gap-2">
+        <ColorPicker value={tag.color} onChange={(color) => run(() => api.saveTag({ ...tag, color }))()} />
+        <Input
+          className="h-7 flex-1 border-transparent bg-transparent px-1.5 text-[13px] font-medium shadow-none hover:border-input focus-visible:border-input dark:bg-transparent"
           value={name}
           onChange={(e) => setName(e.target.value)}
           onBlur={() => name.trim() && name !== tag.name && run(() => api.saveTag({ ...tag, name }))()}
           aria-label="Ad"
         />
-        <button
-          className="ghost small danger"
-          onClick={() => {
-            if (confirm(`"${tag.name}" silinsin mi? Kuralları da silinir; kayıtlar silinmez.`))
-              run(() => api.deleteTag(tag.id))();
-          }}
-        >
-          Sil
-        </button>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive" aria-label="Sil">
+              <Trash2 className="size-3.5" />
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>“{tag.name}” silinsin mi?</AlertDialogTitle>
+              <AlertDialogDescription>Kuralları da silinir. Geçmiş kayıtlar silinmez, kategorisiz görünür.</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Vazgeç</AlertDialogCancel>
+              <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={run(() => api.deleteTag(tag.id))}>
+                Sil
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
-      <ul className="rules">
+      <div className="flex flex-wrap items-center gap-1.5 pl-8">
         {rules.map((r) => (
-          <li key={r.id}>
-            <span className="rule-kind">{r.field === "app" ? "Uygulama" : "Başlıkta"}</span>
-            <span className="rule-pattern" title={r.pattern}>
-              {r.field === "app" ? appNames.get(r.pattern) ?? r.pattern : `“${r.pattern}”`}
+          <span key={r.id} className="inline-flex h-6 items-center gap-1 rounded-md bg-secondary pr-0.5 pl-2 text-xs" title={r.pattern}>
+            <span className="text-muted-foreground">{r.field === "app" ? "Uygulama" : "Başlıkta"}</span>
+            <span className="max-w-48 truncate font-medium">
+              {r.field === "app" ? (appNames.get(r.pattern) ?? r.pattern) : `“${r.pattern}”`}
             </span>
-            <button className="ghost icon small" onClick={run(() => api.deleteRule(r.id))} aria-label="Kuralı sil">
-              ×
+            <button
+              className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+              onClick={run(() => api.deleteRule(r.id))}
+              aria-label="Kuralı sil"
+            >
+              <X className="size-3" />
             </button>
-          </li>
+          </span>
         ))}
-        {rules.length === 0 && <li className="muted">Kural yok</li>}
-      </ul>
+        {rules.length === 0 && <span className="text-xs text-muted-foreground">Kural yok</span>}
+      </div>
       <form
-        className="inline-form"
+        className="flex flex-wrap items-center gap-1.5 pl-8"
         onSubmit={(e) => {
           e.preventDefault();
           addRule();
         }}
       >
-        <select value={field} onChange={(e) => setField(e.target.value as RuleField)} aria-label="Kural türü">
-          <option value="app">Uygulama</option>
-          <option value="title">Başlıkta geçen</option>
-        </select>
+        <Select
+          value={field}
+          onValueChange={(v) => {
+            setField(v as RuleField);
+            setPattern("");
+          }}
+        >
+          <SelectTrigger size="sm" className="w-36" aria-label="Kural türü">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="app">Uygulama</SelectItem>
+            <SelectItem value="title">Başlıkta geçen</SelectItem>
+          </SelectContent>
+        </Select>
         {field === "app" ? (
-          <select value={pattern} onChange={(e) => setPattern(e.target.value)} aria-label="Uygulama">
-            <option value="">Uygulama seç…</option>
-            {apps.map((a) => (
-              <option key={a.key} value={a.key}>
-                {a.label}
-              </option>
-            ))}
-          </select>
+          <Select value={pattern} onValueChange={setPattern}>
+            <SelectTrigger size="sm" className="w-52" aria-label="Uygulama">
+              <SelectValue placeholder="Uygulama seç…" />
+            </SelectTrigger>
+            <SelectContent>
+              {apps.map((a) => (
+                <SelectItem key={a.key} value={a.key}>
+                  {a.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         ) : (
-          <input value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="örn. fintrack" />
+          <Input className="h-7 w-52 text-xs" value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="örn. fintrack" />
         )}
-        <button type="submit" disabled={!pattern.trim()}>
+        <Button type="submit" variant="outline" size="sm" disabled={!pattern.trim()}>
           Kural ekle
-        </button>
+        </Button>
       </form>
     </div>
   );
@@ -193,29 +240,33 @@ function TagCard({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: Usa
 function ColorPicker({ value, onChange }: { value: number; onChange: (c: number) => void }) {
   const [open, setOpen] = useState(false);
   return (
-    <span className="color-picker">
-      <button
-        className="swatch-btn"
-        style={{ background: tagColor({ id: "", kind: "category", name: "", color: value }) }}
-        onClick={() => setOpen(!open)}
-        aria-label="Renk seç"
-      />
-      {open && (
-        <span className="swatches">
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          className="grid size-6 shrink-0 place-items-center rounded-full ring-offset-2 ring-offset-card transition-shadow hover:ring-2 hover:ring-border"
+          aria-label="Renk seç"
+        >
+          <span className="size-3.5 rounded-full" style={{ background: `var(--c${value})` }} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-auto p-2">
+        <div className="grid grid-cols-4 gap-1.5">
           {[1, 2, 3, 4, 5, 6, 7, 8].map((c) => (
             <button
               key={c}
-              className={`swatch-btn ${c === value ? "on" : ""}`}
+              className={cn("grid size-7 place-items-center rounded-full text-white transition-transform hover:scale-110")}
               style={{ background: `var(--c${c})` }}
               onClick={() => {
                 setOpen(false);
                 onChange(c);
               }}
               aria-label={`Renk ${c}`}
-            />
+            >
+              {c === value && <Check className="size-3.5" />}
+            </button>
           ))}
-        </span>
-      )}
-    </span>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
