@@ -2,14 +2,11 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { api, type Tag } from "../api";
 import { isoDate, parseIsoDate } from "../lib/dates";
-import { tagColor } from "../lib/tags";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
-import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "./ui/select";
-
-const AUTO = "__auto";
+import { CategorySelect } from "./CategorySelect";
 
 /** "geçersiz kayıt: bu aralıkta…" → "Bu aralıkta…" */
 function message(e: unknown) {
@@ -20,23 +17,6 @@ function message(e: unknown) {
 /** Takvimdeki blokların düzenleme bağlamı (kategoriler ve yenileme). */
 export const EditContext = createContext<{ categories: Tag[]; onChanged: () => void } | null>(null);
 export const useEdit = () => useContext(EditContext);
-
-function CategoryOptions({ categories, autoLabel }: { categories: Tag[]; autoLabel: string }) {
-  return (
-    <SelectContent>
-      <SelectItem value={AUTO}>
-        <span className="text-muted-foreground">{autoLabel}</span>
-      </SelectItem>
-      <SelectSeparator />
-      {categories.map((c) => (
-        <SelectItem key={c.id} value={c.id}>
-          <i className="size-2 rounded-full" style={{ background: tagColor(c) }} />
-          {c.name}
-        </SelectItem>
-      ))}
-    </SelectContent>
-  );
-}
 
 /** Blok kartının altı: bloğu kategoriye ata ya da sil. */
 export function BlockActions({
@@ -59,15 +39,14 @@ export function BlockActions({
   return (
     <div className="space-y-2 border-t pt-3">
       <div className="flex items-center gap-2">
-        <Select
-          value={categoryId ?? AUTO}
-          onValueChange={(v) => run(() => api.setRangeCategory(start, end, v === AUTO ? null : v))}
-        >
-          <SelectTrigger size="sm" className="min-w-0 flex-1" aria-label="Bloğun kategorisi">
-            <SelectValue />
-          </SelectTrigger>
-          <CategoryOptions categories={categories} autoLabel="Kurallara göre" />
-        </Select>
+        <CategorySelect
+          value={categoryId}
+          onChange={(id) => run(() => api.setRangeCategory(start, end, id))}
+          categories={categories}
+          noneLabel="Kurallara göre"
+          className="min-w-0 flex-1"
+          aria-label="Bloğun kategorisi"
+        />
         {confirm ? (
           <Button size="sm" variant="destructive" onClick={() => run(() => api.deleteRange(start, end))}>
             Silinsin
@@ -115,7 +94,7 @@ export function ManualEntry({
   const [date, setDate] = useState(day);
   const [from, setFrom] = useState("09:00");
   const [to, setTo] = useState("10:00");
-  const [category, setCategory] = useState(AUTO);
+  const [category, setCategory] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -141,7 +120,7 @@ export function ManualEntry({
     if (+end <= +start) return setError("Bitiş başlangıçtan sonra olmalı.");
     if (+end > Date.now()) return setError("Henüz gelmemiş bir zaman için kayıt eklenemez.");
     try {
-      await api.addManualEntry(label, start.toISOString(), end.toISOString(), category === AUTO ? null : category);
+      await api.addManualEntry(label, start.toISOString(), end.toISOString(), category);
       setOpen(false);
       onClose?.();
       setLabel("");
@@ -169,7 +148,7 @@ export function ManualEntry({
           <Plus className="size-3.5" /> Kayıt ekle
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80">
+      <PopoverContent align="end" className="w-[22rem]">
         <form className="space-y-3" onSubmit={save}>
           <div>
             <p className="text-[13px] font-semibold">Elle kayıt</p>
@@ -185,7 +164,7 @@ export function ManualEntry({
               autoFocus
             />
           </div>
-          <div className="grid grid-cols-[1.3fr_1fr_1fr] gap-2">
+          <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2">
             <div className="space-y-1.5">
               <Label htmlFor="manual-date">Tarih</Label>
               <Input
@@ -219,12 +198,14 @@ export function ManualEntry({
           </div>
           <div className="space-y-1.5">
             <Label>Kategori</Label>
-            <Select value={category} onValueChange={setCategory}>
-              <SelectTrigger size="sm" className="w-full" aria-label="Kategori">
-                <SelectValue />
-              </SelectTrigger>
-              <CategoryOptions categories={categories} autoLabel="Kategorisiz" />
-            </Select>
+            <CategorySelect
+              value={category}
+              onChange={setCategory}
+              categories={categories}
+              noneLabel="Kategorisiz"
+              className="w-full"
+              aria-label="Kategori"
+            />
           </div>
           {error && <p className="text-xs text-destructive selectable">{error}</p>}
           <div className="flex justify-end gap-2">

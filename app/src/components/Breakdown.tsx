@@ -3,10 +3,9 @@ import { ChevronRight, PenLine } from "lucide-react";
 import { api, formatDuration, type AppBucket, type Tag, type UsageTotal } from "../api";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
-import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "./ui/select";
+import { CategorySelect } from "./CategorySelect";
 
 const MAX_TITLES = 15;
-const NONE = "__none__";
 
 /** Uygulamalar: harf rozeti (kategori renginde), kategori ataması, tıklayınca pencere başlıkları. */
 export function AppList({
@@ -43,8 +42,8 @@ export function AppList({
     };
   }, [open, start, days, openMinutes]);
 
-  async function assign(appId: string, tagId: string) {
-    await api.assignAppCategory(appId, tagId === NONE ? null : tagId).catch(() => {});
+  async function assign(appId: string, tagId: string | null) {
+    await api.assignAppCategory(appId, tagId).catch(() => {});
     onChanged();
   }
 
@@ -87,24 +86,15 @@ export function AppList({
                   </span>
                 </span>
               </button>
-              <Select value={a.categoryId ?? NONE} onValueChange={(v) => assign(a.appId, v)}>
-                <SelectTrigger size="sm" className="w-44 shrink-0" aria-label={`${a.appName} kategorisi`}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  <SelectItem value={NONE}>
-                    <Dot color={tagColor(undefined)} />
-                    {UNCATEGORIZED}
-                  </SelectItem>
-                  <SelectSeparator />
-                  {categories.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      <Dot color={tagColor(c)} />
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <CategorySelect
+                value={a.categoryId}
+                onChange={(id) => assign(a.appId, id)}
+                categories={categories}
+                noneLabel={UNCATEGORIZED}
+                align="end"
+                className="w-44 shrink-0"
+                aria-label={`${a.appName} kategorisi`}
+              />
               <span className="w-[72px] shrink-0 text-right text-[13px] tabular">{formatDuration(a.seconds)}</span>
             </div>
             {isOpen && (

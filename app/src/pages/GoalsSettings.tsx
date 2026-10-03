@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { api, type Goals, type Tag } from "../api";
+import { CategorySelect } from "../components/CategorySelect";
 import { ErrorText, SettingRow, SettingsGroup, ToggleRow } from "../components/settings";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
@@ -167,20 +168,14 @@ function LimitsBlock({
         </ul>
       )}
       {free.length > 0 && (
-        <Select value="" onValueChange={(id) => id && set([...limits, { categoryId: id, minutes: 60 }])}>
-          <SelectTrigger size="sm" className="w-56 [&>[data-slot=select-value]]:flex-1">
-            <Plus className="size-3.5" />
-            <SelectValue placeholder="Limit ekle…" />
-          </SelectTrigger>
-          <SelectContent>
-            {free.map((c) => (
-              <SelectItem key={c.id} value={c.id}>
-                <i className="size-2 rounded-full" style={{ background: tagColor(c) }} />
-                {c.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <CategorySelect
+          value={null}
+          onChange={(id) => id && set([...limits, { categoryId: id, minutes: 60 }])}
+          categories={free}
+          placeholder="Limit ekle…"
+          icon={<Plus className="size-3.5" />}
+          className="w-56"
+        />
       )}
     </div>
   );
