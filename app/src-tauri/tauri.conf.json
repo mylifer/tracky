@@ -14,12 +14,14 @@
       {
         "label": "main",
         "title": "Kum",
-        "width": 920,
-        "height": 640,
-        "minWidth": 720,
-        "minHeight": 520,
+        "width": 1180,
+        "height": 780,
+        "minWidth": 860,
+        "minHeight": 600,
         "center": true,
-        "visible": false
+        "visible": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {

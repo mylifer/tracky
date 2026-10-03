@@ -26,7 +26,32 @@ export type Taxonomy = { tags: Tag[]; rules: Rule[] };
 
 export type Bucket = { id: string | null; seconds: number };
 export type AppBucket = { appId: string; appName: string; categoryId: string | null; seconds: number };
-export type DayBucket = { start: string; seconds: number; categories: Bucket[] };
+export type DayBucket = {
+  start: string;
+  seconds: number;
+  categories: Bucket[];
+  focusScore: number;
+  focusSeconds: number;
+};
+export type WorkBlock = {
+  start: string;
+  end: string;
+  activeSeconds: number;
+  categoryId: string | null;
+  focus: boolean;
+  switches: number;
+  topApps: { appName: string; seconds: number }[];
+};
+export type FocusStats = {
+  score: number;
+  activeSeconds: number;
+  focusSeconds: number;
+  breakSeconds: number;
+  switches: number;
+  switchesPerHourX10: number;
+  longestFocusSeconds: number;
+  blocks: WorkBlock[];
+};
 export type Segment = {
   start: string;
   end: string;
@@ -44,6 +69,7 @@ export type Report = {
   days: DayBucket[];
   timeline: Segment[];
   tags: Tag[];
+  focus: FocusStats;
 };
 
 export type LastSync = { at: string; ok: boolean; message: string };
@@ -108,6 +134,6 @@ export const api = {
 export function formatDuration(secs: number): string {
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
-  if (h === 0) return m === 0 ? "<1dk" : `${m}dk`;
+  if (h === 0) return m === 0 ? (secs > 0 ? "<1dk" : "0dk") : `${m}dk`;
   return m === 0 ? `${h}sa` : `${h}sa ${m}dk`;
 }

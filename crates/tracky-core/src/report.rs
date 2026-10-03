@@ -6,6 +6,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 
 use crate::classify::{Classifier, Tag};
+use crate::focus::{self, Activity, FocusStats};
 use crate::model::Session;
 
 /// Bir kategori ya da proje için toplam. `id: None` = kategorisiz / projesiz.
@@ -33,6 +34,8 @@ pub struct DayBucket {
     pub start: DateTime<Utc>,
     pub seconds: i64,
     pub categories: Vec<Bucket>,
+    pub focus_score: u8,
+    pub focus_seconds: i64,
 }
 
 /// Zaman çizelgesindeki kesintisiz bir blok.
@@ -58,7 +61,12 @@ pub struct Report {
     pub days: Vec<DayBucket>,
     pub timeline: Vec<Segment>,
     pub tags: Vec<Tag>,
+    /// Tüm aralığın odak analizi (bloklar yalnızca zaman çizelgesi istenince doldurulur).
+    pub focus: FocusStats,
 }
+
+/// Kırpılmış oturum dilimi: (başlangıç, bitiş, oturum, kategori).
+type Span<'a> = (DateTime<Utc>, DateTime<Utc>, &'a Session, Option<String>);
 
 /// Aynı uygulamanın bu kadar yakın bloklarını zaman çizelgesinde birleştir.
 const MERGE_GAP_SECS: i64 = 5;
@@ -81,6 +89,8 @@ pub fn build(
         day_starts.iter().map(|_| (0, HashMap::new())).collect();
     let mut timeline: Vec<Segment> = Vec::new();
     let mut total = 0;
+    // Odak analizi için kırpılmış etkinlikler: (başlangıç, bitiş, oturum, kategori).
+    let mut spans: Vec<Span> = Vec::new();
 
     for s in sessions {
         let (start, end) = (s.started_at.max(from), s.ended_at.min(to));
@@ -89,6 +99,7 @@ pub fn build(
         }
         let secs = (end - start).num_seconds();
         let class = classifier.classify(s);
+        spans.push((start, end, s, class.category.clone()));
         total += secs;
         *categories.entry(class.category.clone()).or_default() += secs;
         *projects.entry(class.project.clone()).or_default() += secs;
@@ -128,6 +139,18 @@ pub fn build(
         }
     }
 
+    let mut per_day: Vec<FocusStats> = day_starts
+        .iter()
+        .enumerate()
+        .map(|(i, start)| {
+            let end = day_starts.get(i + 1).copied().unwrap_or(to);
+            focus::analyze(&activities(&spans, *start, end))
+        })
+        .collect();
+    if per_day.is_empty() {
+        per_day.push(focus::analyze(&activities(&spans, from, to)));
+    }
+
     let mut apps: Vec<AppBucket> = apps
         .into_iter()
         .map(|(app_id, (app_name, seconds))| AppBucket {
@@ -149,15 +172,52 @@ pub fn build(
         days: day_starts
             .iter()
             .zip(days)
-            .map(|(start, (seconds, cats))| DayBucket {
+            .zip(&per_day)
+            .map(|((start, (seconds, cats)), day)| DayBucket {
                 start: *start,
                 seconds,
                 categories: sorted(cats),
+                focus_score: day.score,
+                focus_seconds: day.focus_seconds,
             })
             .collect(),
         timeline,
         tags: tags.to_vec(),
+        focus: {
+            // Çok günlü aralıkta günler ayrı analiz edilip birleştirilir
+            // (gece boşlukları mola sayılmasın, skor gün gün hesaplansın).
+            let mut stats = if per_day.len() == 1 {
+                per_day.pop().unwrap_or_default()
+            } else {
+                focus::merge(per_day)
+            };
+            if !with_timeline {
+                stats.blocks.clear();
+            }
+            stats
+        },
     }
+}
+
+/// `[from, to)` aralığına kırpılmış odak etkinlikleri.
+fn activities<'a>(
+    spans: &'a [Span<'a>],
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Vec<Activity<'a>> {
+    spans
+        .iter()
+        .filter_map(|(start, end, s, category)| {
+            let (a, b) = ((*start).max(from), (*end).min(to));
+            (b > a).then(|| Activity {
+                start: a,
+                end: b,
+                app_id: &s.app_id,
+                app_name: &s.app_name,
+                category: category.as_deref(),
+            })
+        })
+        .collect()
 }
 
 /// Süreye göre azalan; eşitlikte kimliğe göre (kararlı çıktı için).
@@ -255,6 +315,9 @@ mod tests {
         assert_eq!(r.days[0].seconds, 100 + 48 + 50 + 20);
         assert_eq!(r.days[1].seconds, 100);
         assert_eq!(r.timeline.len(), 3);
+        // Gün sınırını aşan oturum her gün ayrı blok olur.
+        assert_eq!(r.focus.blocks.len(), 3);
+        assert_eq!(r.focus.switches, 1);
         assert_eq!((r.timeline[0].start, r.timeline[0].end), (t(0), t(150)));
     }
 

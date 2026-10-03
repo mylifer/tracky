@@ -7,6 +7,7 @@ pub mod browser;
 pub mod classify;
 pub mod engine;
 pub mod export;
+pub mod focus;
 pub mod model;
 pub mod platform;
 pub mod privacy;

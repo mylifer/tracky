@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, formatDuration, type AppBucket, type Bucket, type Tag, type UsageTotal } from "../api";
 import { NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
+import { IconChevron } from "./Icons";
 
 const MAX_TITLES = 15;
 
@@ -8,45 +9,51 @@ function pct(part: number, total: number) {
   return total > 0 ? Math.round((part / total) * 100) : 0;
 }
 
-/** Kategori ya da proje toplamları. Renk her zaman adla birlikte (yalnız renk değil). */
-export function BucketList({
+/** Kategoriler: üstte yığılmış oran çubuğu, altında adlı satırlar (renk tek başına taşımaz). */
+export function CategoryBreakdown({
   buckets,
   tags,
   total,
-  kind,
+  kind = "category",
 }: {
   buckets: Bucket[];
   tags: Map<string, Tag>;
   total: number;
-  kind: "category" | "project";
+  kind?: "category" | "project";
 }) {
-  const max = buckets[0]?.seconds ?? 1;
+  const fallback = kind === "category" ? UNCATEGORIZED : NO_PROJECT;
   return (
-    <ul className="list">
-      {buckets.map((b) => {
-        const tag = b.id ? tags.get(b.id) : undefined;
-        const name = tag?.name ?? (kind === "category" ? UNCATEGORIZED : NO_PROJECT);
-        return (
-          <li key={b.id ?? "none"} className={b.id ? "" : "dim"}>
-            <span className="name">
-              <i className="swatch" style={{ background: tagColor(tag) }} />
-              {name}
-            </span>
-            <span className="bar">
-              <span style={{ width: `${Math.max(2, (b.seconds / max) * 100)}%`, background: tagColor(tag) }} />
-            </span>
-            <span className="time">
-              {formatDuration(b.seconds)}
-              <small>%{pct(b.seconds, total)}</small>
-            </span>
-          </li>
-        );
-      })}
-    </ul>
+    <>
+      <div className="stackbar" role="presentation">
+        {buckets.map((b) => {
+          const tag = b.id ? tags.get(b.id) : undefined;
+          return (
+            <span
+              key={b.id ?? "none"}
+              style={{ flexGrow: b.seconds, background: tagColor(tag) }}
+              title={`${tag?.name ?? fallback}: ${formatDuration(b.seconds)}`}
+            />
+          );
+        })}
+      </div>
+      <ul className="rows">
+        {buckets.map((b) => {
+          const tag = b.id ? tags.get(b.id) : undefined;
+          return (
+            <li key={b.id ?? "none"} className={b.id ? "" : "dim"}>
+              <i className="dot-sq" style={{ background: tagColor(tag) }} />
+              <span className="row-name">{tag?.name ?? fallback}</span>
+              <span className="row-pct">%{pct(b.seconds, total)}</span>
+              <span className="row-time">{formatDuration(b.seconds)}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }
 
-/** Uygulamalar: kategori atama ve tıklayınca pencere başlıkları. */
+/** Uygulamalar: harf rozeti (kategori renginde), kategori ataması, tıklayınca pencere başlıkları. */
 export function AppList({
   apps,
   tags,
@@ -76,7 +83,7 @@ export function AppList({
   }
 
   return (
-    <ul className="list apps">
+    <ul className="apps">
       {apps.map((a) => {
         const tag = a.categoryId ? tags.get(a.categoryId) : undefined;
         const isOpen = open === a.appId;
@@ -84,18 +91,21 @@ export function AppList({
           <li key={a.appId} className={isOpen ? "open" : ""}>
             <div className="app-row">
               <button
-                className="row-toggle"
+                className="app-main"
                 onClick={() => setOpen(isOpen ? null : a.appId)}
                 aria-expanded={isOpen}
                 title={a.appId}
               >
-                <span className="chevron">›</span>
-                {a.appName}
+                <span className="avatar" style={{ ["--c" as string]: tagColor(tag) }}>
+                  {initial(a.appName)}
+                </span>
+                <span className="app-text">
+                  <span className="app-name">{a.appName}</span>
+                  <span className="app-meter">
+                    <span style={{ width: `${Math.max(3, (a.seconds / max) * 100)}%`, background: tagColor(tag) }} />
+                  </span>
+                </span>
               </button>
-              <span className="bar">
-                <span style={{ width: `${Math.max(2, (a.seconds / max) * 100)}%`, background: tagColor(tag) }} />
-              </span>
-              <span className="time">{formatDuration(a.seconds)}</span>
               <select
                 className="tag-select"
                 value={a.categoryId ?? ""}
@@ -109,6 +119,10 @@ export function AppList({
                   </option>
                 ))}
               </select>
+              <span className="row-time">{formatDuration(a.seconds)}</span>
+              <span className="chev">
+                <IconChevron size={14} />
+              </span>
             </div>
             {isOpen && (
               <ul className="titles">
@@ -117,7 +131,7 @@ export function AppList({
                     <span className="title" title={t.label}>
                       {t.label || <em className="muted">(başlık okunamadı)</em>}
                     </span>
-                    <span className="time">{formatDuration(t.seconds)}</span>
+                    <span className="row-time">{formatDuration(t.seconds)}</span>
                   </li>
                 ))}
                 {titles.length > MAX_TITLES && (
@@ -132,7 +146,7 @@ export function AppList({
   );
 }
 
-/** Grafik efsanesi: raporda görünen kategoriler, sabit sırada. */
+/** Grafik efsanesi: görünen kategoriler, sabit sırada. */
 export function Legend({ order, tags }: { order: (string | null)[]; tags: Map<string, Tag> }) {
   return (
     <ul className="legend">
@@ -147,4 +161,9 @@ export function Legend({ order, tags }: { order: (string | null)[]; tags: Map<st
       })}
     </ul>
   );
+}
+
+function initial(name: string): string {
+  const ch = [...name.trim()][0] ?? "?";
+  return ch.toLocaleUpperCase("tr-TR");
 }

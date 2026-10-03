@@ -48,6 +48,5 @@ export const formatTime = (d: Date) => timeFmt.format(d);
 
 export function formatWeek(start: Date): string {
   const end = addDays(start, 6);
-  if (+start === +startOfWeek(today())) return "Bu hafta";
-  return `${formatDate(start)} – ${formatDate(end)}`;
+  return `${formatDate(start)} – ${formatDate(end)} ${end.getFullYear()}`;
 }
