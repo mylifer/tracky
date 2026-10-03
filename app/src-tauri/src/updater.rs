@@ -75,10 +75,17 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
     if lock(&app.state::<UpdateState>().pending).is_some() {
         return lock(&app.state::<UpdateState>().status).clone();
     }
-    set(app, |s| {
-        s.checking = true;
-        s.error = None;
-    });
+    // Arka plan denetimi sürerken elle denetim (ya da tersi) aynı paketi ikinci kez
+    // indirmesin: bayrak denetimle aynı kilit altında alınır.
+    {
+        let state = app.state::<UpdateState>();
+        let mut status = lock(&state.status);
+        if status.checking {
+            return status.clone();
+        }
+        status.checking = true;
+    }
+    set(app, |s| s.error = None);
     let result = async {
         let checked = app.updater().map_err(message)?.check().await;
         let update = match checked {
