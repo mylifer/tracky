@@ -69,11 +69,25 @@ jobs:
           name: ${{ matrix.probe }}
           path: target/release/${{ matrix.exe }}
 
+      # Sabit sertifikayla imza: Erişilebilirlik izni güncellemelerde korunur.
+      - name: macOS imza sertifikası
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: bash .github/scripts/macos-keychain.sh
+
       - name: Kum uygulamasını paketle
         if: matrix.app
         working-directory: app
         # Güncelleme imzası yalnızca sürüm iş akışında (gizli anahtarla) üretilir.
         run: npm run tauri build -- --bundles ${{ matrix.bundles }} --config "${{ github.workspace }}/app/src-tauri/tauri.ci.conf.json"
+
+      - name: macOS imzasını doğrula
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        run: bash .github/scripts/macos-verify.sh
 
       - uses: actions/upload-artifact@v4
         if: matrix.app

@@ -1,0 +1,2 @@
+# Betikler macOS/Linux üzerinde çalışır; Windows checkout'unda da LF kalsın.
+*.sh text eol=lf

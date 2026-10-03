@@ -45,6 +45,14 @@ jobs:
         working-directory: app
         run: npm ci
 
+      # Sabit sertifikayla imza: Erişilebilirlik izni güncellemelerde korunur.
+      - name: macOS imza sertifikası
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: bash .github/scripts/macos-keychain.sh
+
       # Paketleri derler, güncelleme imzalarını üretir ve `latest.json` ile
       # birlikte Release'e yükler. Uygulama içi güncelleyici bu dosyayı okur;
       # bu yüzden Release taslak değil, yayınlanmış olmalı.
@@ -61,3 +69,9 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --bundles ${{ matrix.bundles }}
+
+      - name: macOS imzasını doğrula
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        run: bash .github/scripts/macos-verify.sh

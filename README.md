@@ -12,7 +12,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 4. Arayüz: gün (zaman çizelgesi) ve hafta raporları, uygulama/başlık dökümü, ayarlar
 - [x] 5. Kategoriler / projeler: uygulama ve başlık kuralları, hazır kategoriler, geçmişe dönük sınıflandırma
 - [x] 6. Supabase senkronizasyonu: e-posta/şifre ile giriş, 5 dakikada bir eşitleme, son yazan kazanır
-- [x] 7. Paketleme ve CI: her push'ta Mac/Windows paketleri, `v*` etiketiyle sürüm (Apple imzası henüz yok)
+- [x] 7. Paketleme ve CI: her push'ta Mac/Windows paketleri, `v*` etiketiyle sürüm, macOS'ta sabit (kendinden imzalı) sertifika
 - [x] 8. Otomatik güncelleme: 6 saatte bir denetim, arka planda indirme, imza doğrulama, tek tıkla kurulum
 - [x] 9. Oturum düzenleme: takvimdeki bloğu kategoriye atama ya da silme, elle kayıt ekleme
 - [x] 10. Kategori limitleri: günlük sınır, %80'de ve dolunca bildirim, özette limit çubukları
@@ -52,9 +52,12 @@ npm run tauri build    # .app/.dmg (macOS) ya da kurulum dosyası (Windows) üre
 Hazır paketler: GitHub **Actions** sekmesindeki son başarılı çalıştırmada
 `kum-macos-arm64` (.dmg) ve `kum-windows-x64` (kurulum .exe).
 
-- **macOS:** Paket imzasız (ad-hoc). İlk açılışta "geliştirici doğrulanamadı" uyarısında
-  uygulamaya sağ tıklayıp **Aç** deyin ya da `xattr -cr /Applications/Kum.app` çalıştırın.
-  Her yeni sürümde Erişilebilirlik iznini yeniden vermek gerekebilir.
+- **macOS:** Paket Kum'un kendinden imzalı sertifikasıyla imzalanır (Apple onaylı değil).
+  İlk açılışta "geliştirici doğrulanamadı" uyarısında uygulamaya sağ tıklayıp **Aç** deyin,
+  *Sistem Ayarları → Gizlilik ve Güvenlik → Yine de Aç* seçin ya da
+  `xattr -cr /Applications/Kum.app` çalıştırın. İmza kimliği sabit olduğu için Erişilebilirlik
+  izni güncellemelerde korunur. Ad-hoc imzalı eski bir sürümden (0.2.0 ve öncesi) geçerken
+  izni bir kez daha vermek gerekir.
 - Veriler: macOS'ta `~/Library/Application Support/com.kum.app/kum.db`,
   Windows'ta `%APPDATA%\com.kum.app\kum.db`.
 
@@ -110,6 +113,13 @@ kendi verisini görür. Bağlantı bilgileri ve oturum yalnızca o cihazda sakla
 `TAURI_SIGNING_PRIVATE_KEY` adıyla ekle (anahtar dosyasının içeriği). Anahtarın şifresi
 yoksa `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` gerekmez. Anahtarı yedekle: kaybolursa
 kurulu uygulamalar yeni sürümleri kabul etmez (açık anahtar `tauri.conf.json` içinde).
+
+**macOS imza sertifikası (bir kerelik):** `bash scripts/macos-sign-cert.sh` kendinden imzalı
+bir kod imzalama sertifikası üretir (`~/.kum-signing`). İki secret ekle:
+`MACOS_CERTIFICATE` = `kum-codesign.p12.base64` dosyasının içeriği,
+`MACOS_CERTIFICATE_PASSWORD` = `kum-codesign.password` dosyasının içeriği. CI ve sürüm iş
+akışları sertifikayı geçici bir anahtar zincirine aktarıp paketi onunla imzalar; secret yoksa
+ad-hoc imzaya döner. Klasörü yedekle: sertifika değişirse kullanıcılar izni bir kez daha verir.
 
 1. `app/src-tauri/tauri.conf.json`, `app/package.json` ve `app/src-tauri/Cargo.toml` içindeki sürümü artır.
 2. Commit'le, sonra etiketle ve push'la: `git tag v0.3.0 && git push origin v0.3.0`
