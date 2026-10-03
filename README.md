@@ -17,7 +17,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 9. Oturum düzenleme: takvimdeki bloğu kategoriye atama ya da silme, elle kayıt ekleme
 - [x] 10. Kategori limitleri: günlük sınır, %80'de ve dolunca bildirim, özette limit çubukları
 - [x] 11. Odak modu: 25/50/90 dk zamanlayıcı (menü çubuğu ve kenar çubuğu), bitince bildirim, takvimde odak aralığı
-- [x] 12. Kullanım kolaylıkları: takvimde boş alana tıklayarak kayıt, klavye kısayolları (←/→, T, 1/2/3),
+- [x] 12. Kullanım kolaylıkları: takvimde boş alana tıklayarak kayıt, klavye kısayolları (←/→, T, 1/2/3, +/−/0),
       süreli duraklatma, görünüm seçimi (sistem/açık/koyu), hafta/ay öne çıkanları
 - [x] 13. Uygulama çizelgesi: gün ve hafta görünümünde uygulama ve pencere başlığı bazında Gantt çizelgesi
 - [x] 14. Gün sonu özeti: seçilen saatte (varsayılan 18:00) süre, hedef, odak ve en çok kategori bildirimi
@@ -92,9 +92,22 @@ Rust kurmadan: GitHub'da **Actions** sekmesindeki son başarılı çalıştırma
 
 ## Geliştirme
 
+CI'daki denetimlerin aynısı:
+
 ```sh
-cargo test
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo check -p tracky-core --no-default-features   # çekirdek depo olmadan da derlenmeli
+cargo test --workspace
+
+cd app
+npm run build          # tsc + vite
+npm run format:check   # Prettier (satır genişliği 120, .prettierrc)
+npm test               # Vitest; saat dilimi Europe/Berlin'e sabit (yaz saati testleri)
 ```
+
+Windows platform kodu macOS'ta da denetlenebilir:
+`rustup target add x86_64-pc-windows-msvc && cargo clippy -p tracky-platform --target x86_64-pc-windows-msvc`.
 
 ## Cihazlar arası senkronizasyon (Supabase)
 
