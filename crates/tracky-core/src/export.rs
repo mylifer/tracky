@@ -44,10 +44,10 @@ fn local(t: DateTime<Utc>) -> String {
 }
 
 /// RFC 4180: virgül, tırnak ya da satır sonu içeren alan tırnaklanır.
-/// `=`, `+`, `-`, `@` ile başlayan alanlar tablo programlarında formül
-/// sayılmasın diye başına `'` alır (CSV enjeksiyonu).
+/// `=`, `+`, `-`, `@`, sekme ya da satır başı ile başlayan alanlar tablo
+/// programlarında formül sayılmasın diye başına `'` alır (CSV enjeksiyonu, OWASP).
 fn escape(field: &str) -> String {
-    let field = if field.starts_with(['=', '+', '-', '@']) {
+    let field = if field.starts_with(['=', '+', '-', '@', '\t', '\r']) {
         format!("'{field}")
     } else {
         field.to_string()
@@ -85,5 +85,7 @@ mod tests {
         let row = lines.next().unwrap();
         assert!(row.contains(",90,Safari,com.apple.Safari,\"Bütçe, \"\"2026\"\" =SUM(A1)\",,"));
         assert_eq!(escape("=1+1"), "'=1+1");
+        assert_eq!(escape("\t=1+1"), "'\t=1+1");
+        assert_eq!(escape("\r=1+1"), "\"'\r=1+1\"");
     }
 }
