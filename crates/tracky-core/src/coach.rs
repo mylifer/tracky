@@ -1,6 +1,8 @@
 //! Hedefler ve hatırlatıcılar: kesintisiz çalışma süresini izleyip mola önerir,
 //! günlük hedefe ulaşılınca haber verir. Saf mantık; bildirimi çağıran gösterir.
 
+use std::collections::{HashMap, HashSet};
+
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +16,26 @@ pub struct Goals {
     pub notify_goal: bool,
     /// Bu kadar dakika kesintisiz çalışınca mola hatırlat; `None` = kapalı.
     pub break_after_minutes: Option<u32>,
+    /// Kategori başına günlük üst sınırlar.
+    pub limits: Vec<CategoryLimit>,
 }
+
+/// Bir kategoride günde en fazla `minutes` dakika.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryLimit {
+    pub category_id: String,
+    pub minutes: u32,
+}
+
+impl CategoryLimit {
+    pub fn seconds(&self) -> i64 {
+        i64::from(self.minutes) * 60
+    }
+}
+
+/// Limitin bu oranına gelince önceden uyarılır.
+pub const LIMIT_WARN_RATIO: f64 = 0.8;
 
 impl Default for Goals {
     fn default() -> Self {
@@ -22,6 +43,7 @@ impl Default for Goals {
             daily_hours: 8.0,
             notify_goal: true,
             break_after_minutes: Some(60),
+            limits: Vec::new(),
         }
     }
 }
@@ -41,6 +63,20 @@ pub enum Nudge {
     TakeBreak { minutes: i64 },
     /// Günlük hedef (`seconds`) aşıldı.
     GoalReached { seconds: i64 },
+    /// Kategori limitinin %80'ine gelindi.
+    LimitNear {
+        category_id: String,
+        limit: i64,
+        used: i64,
+    },
+    /// Kategori limiti aşıldı.
+    LimitReached { category_id: String, limit: i64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum LimitLevel {
+    Near,
+    Reached,
 }
 
 #[derive(Debug, Default)]
@@ -51,6 +87,9 @@ pub struct Coach {
     /// Son mola hatırlatması (aynı çalışmada tekrar için).
     last_break_nudge: Option<DateTime<Utc>>,
     goal_notified_on: Option<NaiveDate>,
+    /// Bugün gösterilen limit uyarıları: (kategori, seviye).
+    limits_notified: HashSet<(String, LimitLevel)>,
+    limits_day: Option<NaiveDate>,
 }
 
 impl Coach {
@@ -113,6 +152,56 @@ impl Coach {
         nudges
     }
 
+    /// Kategori limitlerini denetler. `used` bugünkü kategori süreleri (saniye).
+    /// Her limit için günde en çok bir "yaklaştın" ve bir "aştın" bildirimi.
+    pub fn observe_limits(
+        &mut self,
+        goals: &Goals,
+        today: NaiveDate,
+        used: &HashMap<String, i64>,
+    ) -> Vec<Nudge> {
+        if self.limits_day != Some(today) {
+            self.limits_day = Some(today);
+            self.limits_notified.clear();
+        }
+        let mut nudges = Vec::new();
+        for limit in &goals.limits {
+            let (secs, spent) = (
+                limit.seconds(),
+                used.get(&limit.category_id).copied().unwrap_or(0),
+            );
+            if secs <= 0 {
+                continue;
+            }
+            let key = |level| (limit.category_id.clone(), level);
+            if spent >= secs {
+                // Aşıldıysa ayrıca "yaklaştın" demeye gerek yok.
+                self.limits_notified.insert(key(LimitLevel::Near));
+                if self.limits_notified.insert(key(LimitLevel::Reached)) {
+                    nudges.push(Nudge::LimitReached {
+                        category_id: limit.category_id.clone(),
+                        limit: secs,
+                    });
+                }
+            } else if spent as f64 >= secs as f64 * LIMIT_WARN_RATIO
+                && self.limits_notified.insert(key(LimitLevel::Near))
+            {
+                nudges.push(Nudge::LimitNear {
+                    category_id: limit.category_id.clone(),
+                    limit: secs,
+                    used: spent,
+                });
+            }
+        }
+        nudges
+    }
+
+    /// Uygulama gün içinde yeniden açıldığında, zaten geçilmiş eşikler için
+    /// bildirimi tekrarlamamak üzere bugünkü durumu sessizce işaretler.
+    pub fn prime_limits(&mut self, goals: &Goals, today: NaiveDate, used: &HashMap<String, i64>) {
+        self.observe_limits(goals, today, used);
+    }
+
     /// Hedefe bugün zaten ulaşıldıysa (uygulama gün içinde yeniden açıldı)
     /// bildirimi tekrarlama.
     pub fn mark_goal_notified(&mut self, today: NaiveDate) {
@@ -138,6 +227,7 @@ mod tests {
             daily_hours: 8.0,
             notify_goal: true,
             break_after_minutes: Some(break_after),
+            limits: Vec::new(),
         }
     }
 
@@ -207,5 +297,45 @@ mod tests {
         let mut c = Coach::new();
         c.mark_goal_notified(day());
         assert!(c.observe(&g, t(0), true, day(), target).is_empty());
+    }
+
+    #[test]
+    fn limits_warn_once_then_notify_once_per_day() {
+        let mut c = Coach::new();
+        let g = Goals {
+            limits: vec![CategoryLimit {
+                category_id: "fun".into(),
+                minutes: 60,
+            }],
+            ..goals(50)
+        };
+        let used = |secs: i64| HashMap::from([("fun".to_string(), secs)]);
+        assert!(c.observe_limits(&g, day(), &used(47 * 60)).is_empty());
+        assert_eq!(
+            c.observe_limits(&g, day(), &used(48 * 60)),
+            [Nudge::LimitNear {
+                category_id: "fun".into(),
+                limit: 3600,
+                used: 48 * 60
+            }]
+        );
+        assert!(c.observe_limits(&g, day(), &used(50 * 60)).is_empty());
+        assert_eq!(
+            c.observe_limits(&g, day(), &used(3600)),
+            [Nudge::LimitReached {
+                category_id: "fun".into(),
+                limit: 3600
+            }]
+        );
+        assert!(c.observe_limits(&g, day(), &used(4000)).is_empty());
+
+        // Ertesi gün sıfırlanır; doğrudan aşılırsa yalnızca "aştın" gelir.
+        let tomorrow = day().succ_opt().unwrap();
+        assert_eq!(c.observe_limits(&g, tomorrow, &used(4000)).len(), 1);
+
+        // Yeniden açılışta zaten geçilmiş eşikler tekrarlanmaz.
+        let mut c = Coach::new();
+        c.prime_limits(&g, day(), &used(3700));
+        assert!(c.observe_limits(&g, day(), &used(3800)).is_empty());
     }
 }

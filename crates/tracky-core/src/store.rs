@@ -563,6 +563,23 @@ impl Store {
         ))
     }
 
+    /// Kategori başına toplam süre (saniye); kategorisiz süre dahil edilmez.
+    pub fn category_totals(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<std::collections::HashMap<String, i64>> {
+        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let mut out = std::collections::HashMap::new();
+        for s in self.sessions_between(from, to)? {
+            let secs = (s.ended_at.min(to) - s.started_at.max(from)).num_seconds();
+            if let (Some(id), true) = (classifier.classify(&s).category, secs > 0) {
+                *out.entry(id).or_default() += secs;
+            }
+        }
+        Ok(out)
+    }
+
     /// Son kullanılan uygulamalar (kural ve gizlilik seçicileri için), en yeni önce.
     pub fn known_apps(&self, limit: usize) -> Result<Vec<UsageTotal>> {
         let mut stmt = self.conn.prepare(

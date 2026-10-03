@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { TrendingDown, TrendingUp } from "lucide-react";
-import type { Report, Tag } from "../api";
+import type { CategoryLimit, Report, Tag } from "../api";
 import { formatDuration } from "../api";
 import { NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
@@ -18,10 +18,12 @@ type Props = {
   mode: Mode;
   /** Ayarlardaki günlük hedef (saat). */
   dailyHours: number;
+  /** Gösterilecek kategori limitleri (yalnızca gün görünümünde). */
+  limits: CategoryLimit[];
 };
 
 /** Sağ panel: süre, hedef, kırılım ve odak metrikleri. */
-export default function Summary({ report, previous, tags, days, mode, title, dailyHours }: Props) {
+export default function Summary({ report, previous, tags, days, mode, title, dailyHours, limits }: Props) {
   const f = report.focus;
   const target = dailyHours * 3600 * activeDays(report, days);
   const ratio = target ? report.totalSeconds / target : 0;
@@ -58,6 +60,8 @@ export default function Summary({ report, previous, tags, days, mode, title, dai
       </Card>
 
       <BreakdownCard report={report} tags={tags} />
+
+      <LimitsCard report={report} tags={tags} limits={limits} />
 
       <div className="grid grid-cols-2 gap-3">
         <Card className="gap-2 py-3.5">
@@ -121,7 +125,8 @@ function activeDays(report: Report, days: number): number {
 
 function Delta({ now, before, unit }: { now: number; before?: number; unit: string }) {
   // Dönemde henüz kayıt yoksa "-%100" yanıltıcı olur; kıyas gösterilmez.
-  if (before === undefined || before === 0 || now === 0) return <div className="mt-1.5 text-[11px] text-muted-foreground">—</div>;
+  if (before === undefined || before === 0 || now === 0)
+    return <div className="mt-1.5 text-[11px] text-muted-foreground">—</div>;
   const pct = Math.round(((now - before) / before) * 100);
   const up = pct >= 0;
   const Icon = up ? TrendingUp : TrendingDown;
@@ -238,7 +243,11 @@ function Metrics({ parts }: { parts: { label: string; secs: number; color: strin
         {parts
           .filter((p) => p.secs > 0)
           .map((p) => (
-            <span key={p.label} className="h-full first:rounded-l-full last:rounded-r-full" style={{ flexGrow: p.secs, background: p.color }} />
+            <span
+              key={p.label}
+              className="h-full first:rounded-l-full last:rounded-r-full"
+              style={{ flexGrow: p.secs, background: p.color }}
+            />
           ))}
       </div>
       <ul className="flex justify-between gap-2">
@@ -253,5 +262,50 @@ function Metrics({ parts }: { parts: { label: string; secs: number; color: strin
         ))}
       </ul>
     </>
+  );
+}
+
+/** Kategori limitleri: kullanılan / sınır, dolunca kırmızı. */
+function LimitsCard({ report, tags, limits }: { report: Report; tags: Map<string, Tag>; limits: CategoryLimit[] }) {
+  const rows = limits.flatMap((l) => {
+    const tag = tags.get(l.categoryId);
+    if (!tag) return [];
+    const used = report.categories.find((c) => c.id === l.categoryId)?.seconds ?? 0;
+    return [{ tag, used, limit: l.minutes * 60 }];
+  });
+  if (rows.length === 0) return null;
+  return (
+    <Card className="gap-3">
+      <CardContent className="space-y-3">
+        <Label>Limitler</Label>
+        <ul className="space-y-2.5">
+          {rows.map(({ tag, used, limit }) => {
+            const ratio = used / limit;
+            return (
+              <li key={tag.id} className="space-y-1">
+                <div className="flex items-center gap-2 text-xs">
+                  <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(tag) }} />
+                  <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+                  <span
+                    className={cn("tabular", ratio >= 1 ? "font-medium text-destructive" : "text-muted-foreground")}
+                  >
+                    {formatDuration(used)} / {formatDuration(limit)}
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.min(100, ratio * 100)}%`,
+                      background: ratio >= 1 ? "var(--destructive)" : tagColor(tag),
+                    }}
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }

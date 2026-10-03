@@ -49,6 +49,8 @@ pub struct Shared {
 
 /// Durum (menü çubuğu, toplamlar) bu kadar gözlemde bir yeniden hesaplanır.
 const REFRESH_EVERY: u32 = 5;
+/// Kategori limitleri bu kadar gözlemde bir denetlenir (rapor sınıflandırması gerekir).
+const LIMITS_EVERY: u32 = 30;
 
 /// `rx` kapanana ya da `Shutdown` gelene kadar saniyede bir gözlem yapar.
 pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Receiver<Command>) {
@@ -59,6 +61,7 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Recei
     );
     let mut coach = Coach::new();
     let mut first_refresh = true;
+    let mut limits_primed = false;
     let mut ticks = 0u32;
     loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
@@ -80,6 +83,23 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Recei
         }
 
         let totals = store.app_totals(start_of_today(), now).unwrap_or_default();
+        let check_limits =
+            !goals.limits.is_empty() && (!limits_primed || ticks.is_multiple_of(LIMITS_EVERY));
+        let category_totals = check_limits.then(|| {
+            store
+                .category_totals(start_of_today(), now)
+                .unwrap_or_default()
+        });
+        let limit_names: std::collections::HashMap<String, String> = if check_limits {
+            store
+                .tags()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| (t.id, t.name))
+                .collect()
+        } else {
+            Default::default()
+        };
         drop(store);
         let status = Status {
             paused: tracker.privacy().paused,
@@ -101,7 +121,17 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Recei
         }
         let active = status.current.is_some() && !status.paused;
         for nudge in coach.observe(&goals, now, active, today, status.today_seconds) {
-            notify(&app, &nudge);
+            notify(&app, &nudge, &limit_names);
+        }
+        if let Some(used) = category_totals {
+            if std::mem::replace(&mut limits_primed, true) {
+                for nudge in coach.observe_limits(&goals, today, &used) {
+                    notify(&app, &nudge, &limit_names);
+                }
+            } else {
+                // Gün içinde yeniden açıldı: geçilmiş eşikleri tekrar bildirme.
+                coach.prime_limits(&goals, today, &used);
+            }
         }
 
         let (handle, snapshot) = (app.clone(), status.clone());
@@ -117,7 +147,8 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Recei
     }
 }
 
-fn notify(app: &AppHandle, nudge: &Nudge) {
+fn notify(app: &AppHandle, nudge: &Nudge, names: &std::collections::HashMap<String, String>) {
+    let name = |id: &str| names.get(id).cloned().unwrap_or_else(|| "Kategori".into());
     let (title, body) = match nudge {
         Nudge::TakeBreak { minutes } => (
             "Mola zamanı".to_string(),
@@ -129,6 +160,23 @@ fn notify(app: &AppHandle, nudge: &Nudge) {
         Nudge::GoalReached { seconds } => (
             "Günlük hedefe ulaştın".to_string(),
             format!("Bugün {} çalıştın. Tebrikler!", format_duration(*seconds)),
+        ),
+        Nudge::LimitNear {
+            category_id,
+            limit,
+            used,
+        } => (
+            format!("{} limitine yaklaştın", name(category_id)),
+            format!(
+                "Bugün {} / {} kullandın. {} kaldı.",
+                format_duration(*used),
+                format_duration(*limit),
+                format_duration(limit - used)
+            ),
+        ),
+        Nudge::LimitReached { category_id, limit } => (
+            format!("{} limiti doldu", name(category_id)),
+            format!("Bugünkü {} sınırına ulaştın.", format_duration(*limit)),
         ),
     };
     if let Err(e) = app.notification().builder().title(title).body(body).show() {

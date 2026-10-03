@@ -15,6 +15,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 7. Paketleme ve CI: her push'ta Mac/Windows paketleri, `v*` etiketiyle sürüm (Apple imzası henüz yok)
 - [x] 8. Otomatik güncelleme: 6 saatte bir denetim, arka planda indirme, imza doğrulama, tek tıkla kurulum
 - [x] 9. Oturum düzenleme: takvimdeki bloğu kategoriye atama ya da silme, elle kayıt ekleme
+- [x] 10. Kategori limitleri: günlük sınır, %80'de ve dolunca bildirim, özette limit çubukları
 
 ## Yapı
 

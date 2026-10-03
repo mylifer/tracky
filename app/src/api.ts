@@ -96,7 +96,10 @@ export type Goals = {
   notifyGoal: boolean;
   /** `null` = mola hatırlatıcı kapalı. */
   breakAfterMinutes: number | null;
+  /** Kategori başına günlük üst sınır (dakika). */
+  limits: CategoryLimit[];
 };
+export type CategoryLimit = { categoryId: string; minutes: number };
 
 export type UpdateStatus = {
   current: string;

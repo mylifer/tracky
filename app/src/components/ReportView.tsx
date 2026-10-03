@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Hourglass } from "lucide-react";
-import { api, type Report, type Tag } from "../api";
+import { api, type CategoryLimit, type Report, type Tag } from "../api";
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
 import { tagMap } from "../lib/tags";
 import { AppList, Legend } from "./Breakdown";
@@ -40,9 +40,13 @@ export default function ReportView(p: Props) {
   const [previous, setPrevious] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dailyHours, setDailyHours] = useState(8);
+  const [limits, setLimits] = useState<CategoryLimit[]>([]);
   useEffect(() => {
     api.goals().then(
-      (g) => setDailyHours(g.dailyHours),
+      (g) => {
+        setDailyHours(g.dailyHours);
+        setLimits(g.limits ?? []);
+      },
       () => {},
     );
   }, []);
@@ -195,6 +199,7 @@ export default function ReportView(p: Props) {
               tags={tags}
               days={days}
               dailyHours={dailyHours}
+              limits={p.mode === "day" ? limits : []}
               mode={p.mode}
               title={isLive ? mode.current : mode.summary}
             />
