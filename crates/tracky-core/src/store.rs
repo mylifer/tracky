@@ -895,6 +895,7 @@ impl Store {
              FROM sessions
              WHERE deleted_at IS NULL AND app_id = ?1
                AND started_at < ?3 AND ended_at > ?2
+               AND started_at >= ?2 - (SELECT max_duration FROM session_stats)
              GROUP BY title
              ORDER BY secs DESC, 1",
         )?;
