@@ -301,11 +301,8 @@ pub fn project_from_title(app_id: &str, title: &str, domain: Option<&str>) -> Op
         let first = title.split(" — ").next().unwrap_or(title);
         let path = first.rsplit(':').next().unwrap_or(first);
         path.trim().trim_end_matches('/').rsplit('/').next()
-    } else if is_browser(&id)
-        && (domain.is_some_and(|d| d.ends_with("github.com"))
-            || title.to_lowercase().contains("github"))
-    {
-        github_repo(title)
+    } else if is_browser(&id) {
+        github_repo(title, domain.is_some_and(|d| d.ends_with("github.com")))
     } else {
         None
     }?;
@@ -313,20 +310,64 @@ pub fn project_from_title(app_id: &str, title: &str, domain: Option<&str>) -> Op
     Some(name)
 }
 
-/// GitHub sayfa başlığındaki "sahip/repo" içinden repo adı.
-fn github_repo(title: &str) -> Option<&str> {
-    title
-        .split([' ', ':', '·'])
-        .map(|w| w.trim())
-        .find_map(|w| {
-            let (owner, repo) = w.split_once('/')?;
-            let ok = |s: &str| {
-                !s.is_empty()
-                    && s.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-            };
-            (ok(owner) && ok(repo) && !repo.contains('/')).then_some(repo)
-        })
+/// GitHub sayfalarının "… · sahip/repo" başlıklarındaki bölüm adları.
+const GITHUB_SECTIONS: &[&str] = &[
+    "issues",
+    "pull requests",
+    "actions",
+    "commits",
+    "branches",
+    "releases",
+    "tags",
+    "settings",
+    "insights",
+    "security",
+    "discussions",
+    "projects",
+    "wiki",
+];
+
+/// `sahip/repo` biçimindeki parçanın repo adı.
+fn owner_repo(w: &str) -> Option<&str> {
+    let (owner, repo) = w.trim().split_once('/')?;
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    (ok(owner) && ok(repo)).then_some(repo)
+}
+
+/// GitHub sayfa başlığından repo adı. Tarayıcı adresi okunamadığından (çoğu zaman alan adı
+/// yok) GitHub'a özgü kalıplar aranır; "Back in Black · AC/DC" gibi başlıklar sayılmaz:
+/// - "GitHub - sahip/repo: açıklama"
+/// - "Başlık · Pull Request #12 · sahip/repo", "… · Issue #3 · sahip/repo"
+/// - "Issues · sahip/repo", "Actions · sahip/repo" …
+/// - alan adı github.com ise "sahip/repo: açıklama" ya da sondaki "sahip/repo"
+fn github_repo(title: &str, on_github: bool) -> Option<&str> {
+    if let Some(rest) = title.strip_prefix("GitHub - ") {
+        return owner_repo(rest.split(':').next()?);
+    }
+    let parts: Vec<&str> = title.split(" · ").map(str::trim).collect();
+    if let [before @ .., last] = parts.as_slice()
+        && !before.is_empty()
+    {
+        let github_page = on_github
+            || before.iter().any(|p| {
+                let lower = p.to_lowercase();
+                lower.starts_with("pull request #")
+                    || lower.starts_with("issue #")
+                    || lower.starts_with("commit ")
+                    || GITHUB_SECTIONS.contains(&lower.as_str())
+            });
+        if github_page {
+            return owner_repo(last);
+        }
+    }
+    if on_github {
+        return owner_repo(title.split(':').next()?);
+    }
+    None
 }
 
 /// Parantezli ekleri atar ("tracky (Workspace)", "proje [~/kod/proje]"), gürültüyü eler.
@@ -582,10 +623,33 @@ mod tests {
             p("com.googlecode.iterm2", "kaan@mac:~/code/fintrack-os").as_deref(),
             Some("fintrack-os")
         );
+        // Tarayıcı adresi çoğu zaman okunamaz: kalıplar alan adı olmadan da tanınmalı.
+        assert_eq!(
+            p(
+                "com.google.Chrome",
+                "Fix sync · Pull Request #12 · mylifer/tracky"
+            )
+            .as_deref(),
+            Some("tracky")
+        );
+        assert_eq!(
+            p(
+                "com.google.Chrome",
+                "Çökme · Issue #3 · mylifer/fintrack-os"
+            )
+            .as_deref(),
+            Some("fintrack-os")
+        );
+        assert_eq!(
+            p("com.google.Chrome", "Actions · mylifer/tracky").as_deref(),
+            Some("tracky")
+        );
+        assert_eq!(p("com.google.Chrome", "Back in Black · AC/DC"), None);
+        assert_eq!(p("com.google.Chrome", "Sayfa 1/2 · Haberler"), None);
         assert_eq!(
             project_from_title(
                 "com.google.Chrome",
-                "Fix sync · Pull Request #12 · mylifer/tracky",
+                "mylifer/tracky: Zaman takibi",
                 Some("github.com")
             )
             .as_deref(),
