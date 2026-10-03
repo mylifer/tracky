@@ -162,12 +162,19 @@ export default function ReportView(p: Props) {
                     ) : report.totalSeconds === 0 ? (
                       <Empty />
                     ) : p.mode === "day" ? (
-                      <DayCalendar from={from} blocks={report.focus.blocks} segments={report.timeline} tags={tags} />
+                      <DayCalendar
+                        from={from}
+                        blocks={report.focus.blocks}
+                        segments={report.timeline}
+                        timers={report.focusTimers}
+                        tags={tags}
+                      />
                     ) : (
                       <WeekCalendar
                         from={from}
                         blocks={report.focus.blocks}
                         dayTotals={report.days.map((d) => d.seconds)}
+                        timers={report.focusTimers}
                         tags={tags}
                         onSelectDay={p.onSelectDay}
                       />

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Zap } from "lucide-react";
-import type { Segment, Tag, WorkBlock } from "../api";
+import type { FocusTimer, Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
 import { addDays, formatTime, isoDate, today } from "../lib/dates";
 import { UNCATEGORIZED, tagColor, tagInk } from "../lib/tags";
@@ -215,6 +215,28 @@ function Block({
   );
 }
 
+/** Odak zamanlayıcısı aralıkları: blokların arkasında hafif mor şerit. */
+function FocusBands({ timers, top }: { timers: FocusTimer[]; top: (t: number) => number }) {
+  return (
+    <>
+      {timers.map((f) => {
+        const end = f.end ?? (Date.now() < +new Date(f.plannedEnd) ? new Date().toISOString() : f.plannedEnd);
+        const t = top(+new Date(f.start));
+        const h = Math.max(4, top(+new Date(end)) - t);
+        const mins = Math.round((+new Date(end) - +new Date(f.start)) / 60000);
+        return (
+          <span
+            key={f.id}
+            className="pointer-events-none absolute inset-x-0 rounded-md bg-focus/12 ring-1 ring-focus/40"
+            style={{ top: t - 1, height: h + 2 }}
+            title={`Odak zamanlayıcısı · ${mins} dk`}
+          />
+        );
+      })}
+    </>
+  );
+}
+
 function blockGeometry(b: { start: string; end: string }, top: (t: number) => number) {
   const t = top(+new Date(b.start));
   return { top: t, height: Math.max(3, top(+new Date(b.end)) - t - 2) };
@@ -226,11 +248,13 @@ export function DayCalendar({
   blocks,
   segments,
   tags,
+  timers = [],
 }: {
   from: Date;
   blocks: WorkBlock[];
   segments: Segment[];
   tags: Map<string, Tag>;
+  timers?: FocusTimer[];
 }) {
   const range = useMemo(() => hourRange(from, [...blocks, ...segments]), [from, blocks, segments]);
   const top = topFn(+from, range);
@@ -249,14 +273,23 @@ export function DayCalendar({
         </span>
       </div>
       <div className={cn(grid, "pt-1.5")}>
-        <HourRail range={range} />
-        <Column range={range}>
+        <div className="col-start-1 row-start-1">
+          <HourRail range={range} />
+        </div>
+        {/* Odak zamanlayıcıları iki sütunun arkasında; bloklar arasındaki boşluklarda görünür. */}
+        <div
+          className="relative col-span-2 col-start-2 row-start-1 -mx-1"
+          style={{ height: (range.last - range.first) * HOUR_PX }}
+        >
+          <FocusBands timers={timers} top={top} />
+        </div>
+        <Column range={range} className="col-start-2 row-start-1">
           {blocks.map((b) => (
             <Block key={b.start} b={b} tags={tags} {...blockGeometry(b, top)} />
           ))}
           <NowLine day={from} range={range} />
         </Column>
-        <Column range={range}>
+        <Column range={range} className="col-start-3 row-start-1">
           {apps.map((s, i) => {
             const { top: t, height: h } = blockGeometry(s, top);
             const tag = s.categoryId ? tags.get(s.categoryId) : undefined;
@@ -273,7 +306,7 @@ export function DayCalendar({
           })}
           <NowLine day={from} range={range} />
         </Column>
-        <div className="relative" style={{ height: (range.last - range.first) * HOUR_PX }}>
+        <div className="relative col-start-4 row-start-1" style={{ height: (range.last - range.first) * HOUR_PX }}>
           {blocks.map((b) => {
             const g = blockGeometry(b, top);
             return (
@@ -297,12 +330,14 @@ export function WeekCalendar({
   dayTotals,
   tags,
   onSelectDay,
+  timers = [],
 }: {
   from: Date;
   blocks: WorkBlock[];
   dayTotals: number[];
   tags: Map<string, Tag>;
   onSelectDay: (iso: string) => void;
+  timers?: FocusTimer[];
 }) {
   const range = useMemo(() => hourRange(from, blocks, 7), [from, blocks]);
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
@@ -348,6 +383,10 @@ export function WeekCalendar({
           const top = topFn(dayStart, range);
           return (
             <Column key={i} range={range} className={cn(+d === +now && "bg-primary/[0.04]")}>
+              <FocusBands
+                timers={timers.filter((f) => +new Date(f.start) >= dayStart && +new Date(f.start) < dayEnd)}
+                top={top}
+              />
               {blocks
                 .filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd)
                 .map((b) => (

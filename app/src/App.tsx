@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { CalendarDays, CalendarRange, Calendar as CalendarIcon, Download, Pause, Play, Settings2, Tags } from "lucide-react";
+import {
+  CalendarDays,
+  CalendarRange,
+  Calendar as CalendarIcon,
+  Download,
+  Pause,
+  Play,
+  Settings2,
+  Tags,
+} from "lucide-react";
 import { api, formatDuration, type AppStatus, type TrackingStatus } from "./api";
+import FocusCard from "./components/FocusCard";
 import ReportView from "./components/ReportView";
 import Toolbar from "./components/Toolbar";
 import { Button } from "./components/ui/button";
@@ -149,6 +159,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
               </span>
             </button>
           )}
+          <FocusCard focus={tracking.focus} />
           <LiveCard tracking={tracking} onToggle={togglePause} />
         </div>
       </aside>
@@ -250,7 +261,9 @@ function LiveCard({ tracking, onToggle }: { tracking: TrackingStatus; onToggle: 
       <div className="flex items-start gap-2">
         <span className="relative mt-[5px] flex size-2 shrink-0">
           {live && <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60" />}
-          <span className={cn("relative inline-flex size-2 rounded-full", live ? "bg-success" : "bg-muted-foreground/50")} />
+          <span
+            className={cn("relative inline-flex size-2 rounded-full", live ? "bg-success" : "bg-muted-foreground/50")}
+          />
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium">{state}</div>

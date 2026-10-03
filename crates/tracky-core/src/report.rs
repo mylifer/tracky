@@ -63,6 +63,8 @@ pub struct Report {
     pub tags: Vec<Tag>,
     /// Tüm aralığın odak analizi (bloklar yalnızca zaman çizelgesi istenince doldurulur).
     pub focus: FocusStats,
+    /// Aralıktaki odak zamanlayıcıları (zaman çizelgesiyle birlikte).
+    pub focus_timers: Vec<crate::store::FocusTimer>,
 }
 
 /// Kırpılmış oturum dilimi: (başlangıç, bitiş, oturum, kategori).
@@ -196,6 +198,7 @@ pub fn build(
             }
             stats
         },
+        focus_timers: Vec::new(),
     }
 }
 

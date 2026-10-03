@@ -8,7 +8,10 @@ export type TrackingStatus = {
   todaySeconds: number;
   needsPermission: boolean;
   error: string | null;
+  focus: FocusState | null;
 };
+export type FocusState = { startedAt: string; endsAt: string; minutes: number };
+export type FocusTimer = { id: string; start: string; plannedEnd: string; end: string | null };
 export type AppStatus = {
   platform: string;
   /** Pencere malzemesi: "vibrancy" (macOS), "mica" (Windows 11) ya da "none". */
@@ -72,6 +75,7 @@ export type Report = {
   timeline: Segment[];
   tags: Tag[];
   focus: FocusStats;
+  focusTimers: FocusTimer[];
 };
 
 export type LastSync = { at: string; ok: boolean; message: string };
@@ -156,6 +160,8 @@ export const api = {
   onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> =>
     listen<SyncStatus>("sync", (e) => cb(e.payload)),
   diagnose: () => invoke<string>("diagnose"),
+  startFocus: (minutes: number) => invoke<void>("start_focus", { minutes }),
+  stopFocus: () => invoke<void>("stop_focus"),
   updateStatus: () => invoke<UpdateStatus>("update_status"),
   checkUpdate: () => invoke<UpdateStatus>("check_update"),
   installUpdate: () => invoke<void>("install_update"),

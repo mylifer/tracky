@@ -22,6 +22,16 @@ pub struct Status {
     /// macOS Erişilebilirlik izni eksik ya da geri alınmış.
     pub needs_permission: bool,
     pub error: Option<String>,
+    /// Süren odak zamanlayıcısı.
+    pub focus: Option<FocusState>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusState {
+    pub started_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
+    pub minutes: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +49,8 @@ pub const GOALS_KEY: &str = "goals";
 pub enum Command {
     SetPrivacy(PrivacySettings),
     SetGoals(Goals),
+    /// Durumu hemen yeniden hesapla (örn. odak zamanlayıcısı değişti).
+    Refresh,
     Shutdown,
 }
 
@@ -64,9 +76,11 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Recei
     let mut limits_primed = false;
     let mut ticks = 0u32;
     loop {
+        let mut force = false;
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(Command::SetPrivacy(p)) => tracker.set_privacy(p),
             Ok(Command::SetGoals(g)) => goals = g,
+            Ok(Command::Refresh) => force = true,
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -78,9 +92,23 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Recei
         let now = Utc::now();
         let outcome = tracker.record(&store, now, observation);
         ticks = ticks.wrapping_add(1);
-        if !outcome.changed && outcome.error.is_none() && !ticks.is_multiple_of(REFRESH_EVERY) {
+        let focus_done = store.complete_due_focus(now).ok().flatten();
+        if let Some(timer) = &focus_done {
+            notify_focus_done(&app, timer.planned_minutes());
+            force = true;
+        }
+        if !force
+            && !outcome.changed
+            && outcome.error.is_none()
+            && !ticks.is_multiple_of(REFRESH_EVERY)
+        {
             continue;
         }
+        let focus = store.active_focus().ok().flatten().map(|t| FocusState {
+            started_at: t.start,
+            ends_at: t.planned_end,
+            minutes: t.planned_minutes(),
+        });
 
         let totals = store.app_totals(start_of_today(), now).unwrap_or_default();
         let check_limits =
@@ -111,6 +139,7 @@ pub fn run(app: AppHandle, privacy: PrivacySettings, mut goals: Goals, rx: Recei
             today_seconds: totals.iter().map(|t| t.seconds).sum(),
             needs_permission: !tracky_platform::permissions().all_granted(),
             error: outcome.error,
+            focus,
         };
         // Menü güncellemesi ana iş parçacığında çalışıp sonucunu bekler; burada
         // beklersek kapanışta (ana iş parçacığı bizi beklerken) kilitlenirdik.
@@ -180,6 +209,21 @@ fn notify(app: &AppHandle, nudge: &Nudge, names: &std::collections::HashMap<Stri
         ),
     };
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("bildirim gösterilemedi: {e}");
+    }
+}
+
+fn notify_focus_done(app: &AppHandle, minutes: i64) {
+    let result = app
+        .notification()
+        .builder()
+        .title("Odak süresi bitti")
+        .body(format!(
+            "{} odaklandın. Kısa bir mola iyi gelir.",
+            format_duration(minutes * 60)
+        ))
+        .show();
+    if let Err(e) = result {
         eprintln!("bildirim gösterilemedi: {e}");
     }
 }
