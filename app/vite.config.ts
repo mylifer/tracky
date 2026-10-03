@@ -6,7 +6,7 @@ import { defineConfig } from "vite";
 // Tauri sabit bir port bekler; dosya izleyici Rust tarafını yok saymalı.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+  resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
   clearScreen: false,
   server: { port: 1420, strictPort: true, watch: { ignored: ["**/src-tauri/**"] } },
 });
