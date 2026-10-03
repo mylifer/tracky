@@ -37,12 +37,18 @@ impl ActivityProvider for SystemProvider {
     type Error = PlatformError;
 
     fn active_window(&mut self) -> Result<Option<ActiveWindow>, PlatformError> {
+        self.active_window_with(&|_| true)
+    }
+
+    fn active_window_with(
+        &mut self,
+        read_title: &dyn Fn(&str) -> bool,
+    ) -> Result<Option<ActiveWindow>, PlatformError> {
         // SAFETY: Parametresiz sorgu.
         let hwnd = unsafe { GetForegroundWindow() };
         if hwnd.is_null() {
             return Ok(None);
         }
-        let title = window_text(hwnd);
         let pid = window_pid(hwnd);
         let Some(mut path) = process_path(pid) else {
             return Ok(None);
@@ -61,6 +67,11 @@ impl ActivityProvider for SystemProvider {
             .entry(path.clone())
             .or_insert_with(|| display_name(&path))
             .clone();
+        let title = if read_title(&path) {
+            window_text(hwnd)
+        } else {
+            String::new()
+        };
         Ok(Some(ActiveWindow {
             app_id: path,
             app_name,

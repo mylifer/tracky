@@ -80,7 +80,9 @@ impl<P: ActivityProvider> Tracker<P> {
                 error: None,
             };
         }
-        let (window, error) = match self.provider.active_window() {
+        let privacy = &self.privacy;
+        let read_title = |app_id: &str| privacy.reads_title(app_id);
+        let (window, error) = match self.provider.active_window_with(&read_title) {
             Ok(w) => (w.and_then(|w| self.privacy.apply(w)), None),
             Err(e) => (None, Some(format!("pencere okunamadı: {e}"))),
         };
@@ -267,5 +269,53 @@ mod tests {
         assert!(tracker.current().is_none());
         // Gözlemler tüketilmedi: sağlayıcıya hiç sorulmadı.
         assert_eq!(tracker.provider.0.len(), 2);
+    }
+
+    /// Başlığı yalnızca izin verildiğinde dolduran sağlayıcı; kararları kaydeder.
+    struct TitleProbe(Vec<(String, bool)>);
+
+    impl ActivityProvider for TitleProbe {
+        type Error = Never;
+        fn active_window(&mut self) -> Result<Option<ActiveWindow>, Never> {
+            unreachable!("takipçi başlık iznini sormalı")
+        }
+        fn active_window_with(
+            &mut self,
+            read_title: &dyn Fn(&str) -> bool,
+        ) -> Result<Option<ActiveWindow>, Never> {
+            let app = ["com.test.Pass", "com.test.Mail", "com.test.Code"][self.0.len() % 3];
+            let read = read_title(app);
+            self.0.push((app.to_string(), read));
+            Ok(Some(ActiveWindow {
+                app_id: app.into(),
+                app_name: app.into(),
+                title: if read {
+                    "gizli değil".into()
+                } else {
+                    String::new()
+                },
+                url: None,
+            }))
+        }
+        fn idle_seconds(&mut self) -> Result<u64, Never> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn titles_of_excluded_and_hidden_apps_are_never_read() {
+        let store = Store::open_in_memory().unwrap();
+        let privacy = PrivacySettings {
+            excluded_apps: vec!["com.test.Pass".into()],
+            hidden_title_apps: vec!["COM.TEST.MAIL".into()],
+            ..Default::default()
+        };
+        let mut tracker = Tracker::new(TitleProbe(Vec::new()), EngineConfig::default(), privacy);
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        for i in 0..3 {
+            tracker.tick(&store, t0 + Duration::seconds(i));
+        }
+        let reads: Vec<bool> = tracker.provider.0.iter().map(|(_, r)| *r).collect();
+        assert_eq!(reads, [false, false, true]);
     }
 }

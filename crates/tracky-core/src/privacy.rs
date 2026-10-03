@@ -87,6 +87,14 @@ fn strip_suffixes(title: &str, suffixes: &[String]) -> String {
     title.to_string()
 }
 
+impl PrivacySettings {
+    /// Uygulamanın pencere başlığına hiç ihtiyaç var mı? Hariç tutulan ya da başlığı
+    /// gizlenen uygulamalarda başlık okunmaz.
+    pub fn reads_title(&self, app_id: &str) -> bool {
+        !contains(&self.excluded_apps, app_id) && !contains(&self.hidden_title_apps, app_id)
+    }
+}
+
 fn contains(list: &[String], app_id: &str) -> bool {
     list.iter().any(|a| a.eq_ignore_ascii_case(app_id))
 }

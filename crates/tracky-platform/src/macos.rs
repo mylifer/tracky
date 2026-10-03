@@ -73,7 +73,14 @@ impl ActivityProvider for SystemProvider {
     fn active_window(&mut self) -> Result<Option<ActiveWindow>, PlatformError> {
         // Arka plan iş parçacığında otomatik serbest bırakma havuzu yok; her
         // gözlemde açılmazsa Objective-C nesneleri zamanla birikir.
-        objc2::rc::autoreleasepool(|_| active_window())
+        self.active_window_with(&|_| true)
+    }
+
+    fn active_window_with(
+        &mut self,
+        read_title: &dyn Fn(&str) -> bool,
+    ) -> Result<Option<ActiveWindow>, PlatformError> {
+        objc2::rc::autoreleasepool(|_| active_window(read_title))
     }
 
     fn idle_seconds(&mut self) -> Result<u64, PlatformError> {
@@ -96,7 +103,7 @@ fn set_ax_timeout() {
     });
 }
 
-fn active_window() -> Result<Option<ActiveWindow>, PlatformError> {
+fn active_window(read_title: &dyn Fn(&str) -> bool) -> Result<Option<ActiveWindow>, PlatformError> {
     if !is_trusted() {
         return Err(PlatformError::PermissionDenied);
     }
@@ -129,7 +136,11 @@ fn active_window() -> Result<Option<ActiveWindow>, PlatformError> {
         .map(|s| s.to_string())
         .unwrap_or_else(|| app_id.clone());
 
-    let title = window_title(&app)?;
+    let title = if read_title(&app_id) {
+        window_title(&app)?
+    } else {
+        String::new()
+    };
 
     Ok(Some(ActiveWindow {
         app_id,
