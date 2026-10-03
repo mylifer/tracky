@@ -24,6 +24,8 @@ const HIDDEN_ARG: &str = "--hidden";
 const ONBOARDED_KEY: &str = "onboarded";
 /// Otomatik başlatma ilk çalıştırmada bir kez açılır; sonra kullanıcının seçimi korunur.
 const AUTOSTART_INIT_KEY: &str = "autostart_initialized";
+/// Görünüm tercihi: "system", "light" ya da "dark".
+const THEME_KEY: &str = "theme";
 
 /// Takip iş parçacığına erişim; kapanışta son oturumun yazılmasını bekleriz.
 pub(crate) struct Worker {
@@ -40,24 +42,68 @@ struct AppStatus {
     autostart: bool,
     /// Pencere malzemesi: "vibrancy", "mica" ya da "none".
     effect: &'static str,
+    /// Görünüm tercihi: "system", "light" ya da "dark".
+    theme: String,
     tracking: Status,
 }
 
 #[tauri::command]
 async fn get_status(app: AppHandle) -> Result<AppStatus, String> {
     let shared = app.state::<Shared>();
-    let onboarded = lock(&shared.store)
-        .setting::<bool>(ONBOARDED_KEY)
-        .map_err(|e| e.to_string())?
-        .unwrap_or(false);
+    let (onboarded, theme) = {
+        let store = lock(&shared.store);
+        (
+            store
+                .setting::<bool>(ONBOARDED_KEY)
+                .map_err(|e| e.to_string())?
+                .unwrap_or(false),
+            theme_setting(&store),
+        )
+    };
     Ok(AppStatus {
         platform: std::env::consts::OS,
         accessibility: tracky_platform::permissions().accessibility,
         onboarded,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         effect: app.state::<effects::WindowEffect>().0,
+        theme,
         tracking: lock(&shared.status).clone(),
     })
+}
+
+fn theme_setting(store: &Store) -> String {
+    store
+        .setting::<String>(THEME_KEY)
+        .ok()
+        .flatten()
+        .filter(|t| matches!(t.as_str(), "light" | "dark"))
+        .unwrap_or_else(|| "system".into())
+}
+
+/// Pencerenin (ve macOS vibrancy / Windows Mica malzemesinin) temasını uygular.
+fn apply_theme(app: &AppHandle, theme: &str) {
+    let theme = match theme {
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_theme(theme);
+    }
+}
+
+/// Görünüm tercihini kaydeder ve pencereye uygular.
+#[tauri::command]
+async fn set_theme(app: AppHandle, theme: String) -> Result<(), String> {
+    let theme = match theme.as_str() {
+        "light" | "dark" => theme,
+        _ => "system".to_string(),
+    };
+    lock(&app.state::<Shared>().store)
+        .save_setting(THEME_KEY, &theme)
+        .map_err(|e| e.to_string())?;
+    apply_theme(&app, &theme);
+    Ok(())
 }
 
 /// macOS'ta sistem izin penceresini gösterir.
@@ -204,6 +250,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .setting::<tracky_core::Goals>(tracking::GOALS_KEY)?
         .unwrap_or_default();
     let onboarded = store.setting::<bool>(ONBOARDED_KEY)?.unwrap_or(false);
+    apply_theme(app.handle(), &theme_setting(&store));
 
     app.manage(Shared {
         store: Mutex::new(store),
@@ -258,6 +305,7 @@ pub fn run() {
             complete_onboarding,
             diagnose,
             start_focus,
+            set_theme,
             stop_focus,
             commands::get_report,
             commands::app_titles_between,

@@ -6,6 +6,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { formatTime } from "../lib/dates";
+import { useTauriEvent } from "../lib/useTauriEvent";
 
 /** Supabase bağlantısı, giriş ve eşitleme durumu. */
 export default function SyncSettings() {
@@ -18,12 +19,9 @@ export default function SyncSettings() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.syncStatus().then(setStatus);
-    const unlisten = api.onSync(setStatus);
-    return () => {
-      unlisten.then((f) => f());
-    };
+    api.syncStatus().then(setStatus, () => {});
   }, []);
+  useTauriEvent(api.onSync, setStatus);
 
   async function run(f: () => Promise<SyncStatus | void>) {
     setBusy(true);

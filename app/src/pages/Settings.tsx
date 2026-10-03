@@ -58,6 +58,21 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
           checked={status.autostart}
           onChange={toggleAutostart}
         />
+        <SettingRow label="Görünüm" hint="Sistem seçiliyken bilgisayarın açık/koyu ayarını izler.">
+          <Select
+            value={status.theme}
+            onValueChange={(v) => api.setTheme(v as AppStatus["theme"]).then(onChange, (e) => setError(String(e)))}
+          >
+            <SelectTrigger size="sm" className="w-32" aria-label="Görünüm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="system">Sistem</SelectItem>
+              <SelectItem value="light">Açık</SelectItem>
+              <SelectItem value="dark">Koyu</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingRow>
         {status.platform === "macos" && (
           <SettingRow label="Erişilebilirlik izni" hint="Pencere başlıklarını okumak için gerekir.">
             {status.accessibility ? (

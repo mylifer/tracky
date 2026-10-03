@@ -63,6 +63,8 @@ export default function Summary({ report, previous, tags, days, mode, title, dai
 
       <LimitsCard report={report} tags={tags} limits={limits} />
 
+      {mode !== "day" && <Highlights report={report} dailyHours={dailyHours} />}
+
       <div className="grid grid-cols-2 gap-3">
         <Card className="gap-2 py-3.5">
           <CardContent className="px-3.5">
@@ -304,6 +306,45 @@ function LimitsCard({ report, tags, limits }: { report: Report; tags: Map<string
               </li>
             );
           })}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+const weekdayFmt = new Intl.DateTimeFormat("tr-TR", { weekday: "long", day: "numeric", month: "short" });
+
+/** Hafta/ay için öne çıkanlar: en yoğun ve en odaklı gün, ortalama, hedef günleri, en çok kullanılan uygulama. */
+function Highlights({ report, dailyHours }: { report: Report; dailyHours: number }) {
+  const active = report.days.filter((d) => d.seconds > 0);
+  if (active.length < 2) return null;
+  const busiest = active.reduce((a, b) => (b.seconds > a.seconds ? b : a));
+  const focused = active.reduce((a, b) => (b.focusScore > a.focusScore ? b : a));
+  const goalDays = active.filter((d) => d.seconds >= dailyHours * 3600).length;
+  const average = Math.round(active.reduce((s, d) => s + d.seconds, 0) / active.length);
+  const topApp = report.apps[0];
+  const day = (iso: string) => weekdayFmt.format(new Date(iso));
+  const rows: [string, string, string?][] = [
+    ["En yoğun gün", formatDuration(busiest.seconds), day(busiest.start)],
+    ["En odaklı gün", `skor ${focused.focusScore}`, day(focused.start)],
+    ["Günlük ortalama", formatDuration(average), `${active.length} aktif gün`],
+    ["Hedef tutan gün", `${goalDays} / ${active.length}`, `günde ${dailyHours} sa`],
+  ];
+  if (topApp) rows.push(["En çok kullanılan", topApp.appName, formatDuration(topApp.seconds)]);
+  return (
+    <Card className="gap-3">
+      <CardContent className="space-y-2.5">
+        <Label>Öne çıkanlar</Label>
+        <ul className="space-y-2">
+          {rows.map(([label, value, hint]) => (
+            <li key={label} className="flex items-baseline justify-between gap-3 text-xs">
+              <span className="shrink-0 whitespace-nowrap text-muted-foreground">{label}</span>
+              <span className="min-w-0 truncate text-right">
+                <span className="font-medium tabular">{value}</span>
+                {hint && <span className="text-muted-foreground"> · {hint}</span>}
+              </span>
+            </li>
+          ))}
         </ul>
       </CardContent>
     </Card>

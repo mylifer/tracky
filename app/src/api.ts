@@ -19,6 +19,7 @@ export type AppStatus = {
   accessibility: boolean;
   onboarded: boolean;
   autostart: boolean;
+  theme: "system" | "light" | "dark";
   tracking: TrackingStatus;
 };
 export type UsageTotal = { key: string; label: string; seconds: number };
@@ -120,6 +121,7 @@ export const api = {
   requestAccessibility: () => invoke<boolean>("request_accessibility"),
   openAccessibilitySettings: () => invoke<void>("open_accessibility_settings"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  setTheme: (theme: "system" | "light" | "dark") => invoke<void>("set_theme", { theme }),
   setPaused: (paused: boolean) => invoke<void>("set_paused", { paused }),
   completeOnboarding: () => invoke<void>("complete_onboarding"),
   /** `until` verilirse rapor o anda kesilir (süren dönemin kıyası için). */

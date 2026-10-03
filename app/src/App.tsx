@@ -26,12 +26,13 @@ import {
   startOfWeek,
   today,
 } from "./lib/dates";
-import { applyPlatform, useSystemTheme } from "./lib/theme";
+import { applyPlatform, useTheme } from "./lib/theme";
 import { useUpdate } from "./lib/useUpdate";
 import { cn } from "./lib/utils";
 import Onboarding from "./Onboarding";
 import Categories from "./pages/Categories";
 import Settings from "./pages/Settings";
+import { useTauriEvent } from "./lib/useTauriEvent";
 
 type Mode = "day" | "week" | "month";
 type View = Mode | "categories" | "settings";
@@ -49,7 +50,7 @@ const longDate = new Intl.DateTimeFormat("tr-TR", { weekday: "long", day: "numer
 export default function App() {
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useSystemTheme();
+  useTheme(status?.theme ?? "system");
 
   const refresh = useCallback(() => {
     api.status().then(
@@ -83,12 +84,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   const [update] = useUpdate();
   const isMac = status.platform === "macos";
 
-  useEffect(() => {
-    const unlisten = api.onStatus(setTracking);
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, []);
+  useTauriEvent(api.onStatus, setTracking);
 
   async function togglePause() {
     const paused = !tracking.paused;
