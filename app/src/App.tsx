@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { CalendarDays, CalendarRange, Calendar as CalendarIcon, Pause, Play, Settings2, Tags } from "lucide-react";
+import {
+  CalendarDays,
+  CalendarRange,
+  Calendar as CalendarIcon,
+  Pause,
+  Play,
+  Search as SearchIcon,
+  Settings2,
+  Tags,
+} from "lucide-react";
 import { api, formatDuration, type AppStatus, type TrackingStatus } from "./api";
 import FocusCard from "./components/FocusCard";
 import { UpdateCard } from "./components/UpdateCard";
@@ -25,11 +34,12 @@ import { useUpdate } from "./lib/useUpdate";
 import { cn } from "./lib/utils";
 import Onboarding from "./Onboarding";
 import Categories from "./pages/Categories";
+import Search, { type SearchState } from "./pages/Search";
 import Settings from "./pages/Settings";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
 type Mode = "day" | "week" | "month";
-type View = Mode | "categories" | "settings";
+type View = Mode | "search" | "categories" | "settings";
 
 const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
   { id: "day", label: "Gün", icon: <CalendarDays /> },
@@ -37,7 +47,11 @@ const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
   { id: "month", label: "Ay", icon: <CalendarIcon /> },
 ];
 
-const TITLES: Partial<Record<View, string>> = { categories: "Kategoriler ve projeler", settings: "Ayarlar" };
+const TITLES: Partial<Record<View, string>> = {
+  search: "Ara",
+  categories: "Kategoriler ve projeler",
+  settings: "Ayarlar",
+};
 
 const longDate = new Intl.DateTimeFormat("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
@@ -71,6 +85,8 @@ export default function App() {
 
 function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) {
   const [view, setView] = useState<View>("day");
+  // Arama görünümden çıkınca kaybolmasın.
+  const [search, setSearch] = useState<SearchState>({ query: "", days: 30 });
   // Bekleyen öneri sayısı (kenar çubuğunda); görünüm değişince ve saatte bir yenilenir.
   const [suggestionCount, setSuggestionCount] = useState(0);
   useEffect(() => {
@@ -132,7 +148,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
     else if (view === "month") setMonth(thisMonth);
   }
 
-  // Klavye: ←/→ önceki/sonraki dönem, T bugün, 1/2/3 Gün/Hafta/Ay.
+  // Klavye: ←/→ önceki/sonraki dönem, T bugün, 1/2/3 Gün/Hafta/Ay, / arama.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
@@ -146,6 +162,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
       else if (report && e.key === "ArrowLeft") step(-1);
       else if (report && e.key === "ArrowRight") step(1);
       else if (report && (e.key === "t" || e.key === "T")) goToday();
+      else if (e.key === "/") setView("search");
       else return;
       e.preventDefault();
     }
@@ -176,6 +193,9 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                 {r.label}
               </NavItem>
             ))}
+            <NavItem icon={<SearchIcon />} active={view === "search"} onClick={() => setView("search")}>
+              Ara
+            </NavItem>
           </NavSection>
           <NavSection title="Düzenle">
             <NavItem
@@ -223,6 +243,16 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           <>
             <Toolbar title={TITLES[view] ?? ""} />
             <div className="flex-1 overflow-y-auto">
+              {view === "search" && (
+                <Search
+                  state={search}
+                  onChange={setSearch}
+                  onSelectDay={(iso) => {
+                    setDay(iso);
+                    setView("day");
+                  }}
+                />
+              )}
               {view === "categories" && <Categories onSuggestions={setSuggestionCount} />}
               {view === "settings" && <Settings status={status} onChange={refresh} />}
             </div>

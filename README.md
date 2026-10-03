@@ -17,13 +17,14 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 9. Oturum düzenleme: takvimdeki bloğu kategoriye atama ya da silme, elle kayıt ekleme
 - [x] 10. Kategori limitleri: günlük sınır, %80'de ve dolunca bildirim, özette limit çubukları
 - [x] 11. Odak modu: 25/50/90 dk zamanlayıcı (menü çubuğu ve kenar çubuğu), bitince bildirim, takvimde odak aralığı
-- [x] 12. Kullanım kolaylıkları: takvimde boş alana tıklayarak kayıt, klavye kısayolları (←/→, T, 1/2/3, +/−/0),
+- [x] 12. Kullanım kolaylıkları: takvimde boş alana tıklayarak kayıt, klavye kısayolları (←/→, T, 1/2/3, +/−/0, /),
       süreli duraklatma, görünüm seçimi (sistem/açık/koyu), hafta/ay öne çıkanları
 - [x] 13. Uygulama çizelgesi: gün ve hafta görünümünde uygulama ve pencere başlığı bazında Gantt çizelgesi
 - [x] 14. Gün sonu özeti: seçilen saatte (varsayılan 18:00) süre, hedef, odak ve en çok kategori bildirimi
 - [x] 15. Otomatik öneriler: pencere başlıklarından projeler (VS Code, JetBrains, Xcode, terminal, GitHub),
       tanınan uygulama/sitelerden kategoriler; onayla ya da yoksay, tamamen yerel
 - [x] 16. Yakınlaştırma: gün/hafta takviminde ve uygulama çizelgesinde ⌘ + kaydırma, kıstırma, +/− ve 0
+- [x] 17. Arama: başlıkta ya da uygulama adında geçen ifadeye göre süre, günlük dağılım, uygulamalar, pencereler (`/`)
 
 ## Yapı
 

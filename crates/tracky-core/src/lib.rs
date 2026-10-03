@@ -13,6 +13,7 @@ pub mod model;
 pub mod platform;
 pub mod privacy;
 pub mod report;
+pub mod search;
 #[cfg(feature = "store")]
 pub mod store;
 pub mod suggest;

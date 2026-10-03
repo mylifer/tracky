@@ -3,6 +3,7 @@
 use chrono::{DateTime, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use tracky_core::search::SearchResult;
 use tracky_core::suggest::Suggestions;
 use tracky_core::{Goals, PrivacySettings, Report, Rule, RuleField, Tag, TagKind, UsageTotal};
 
@@ -36,6 +37,24 @@ pub async fn get_report(
     }
     lock(&app.state::<Shared>().store)
         .report(starts[0], to, &starts, timeline)
+        .map_err(err)
+}
+
+/// `start` gününden başlayan `days` günde başlığında ya da uygulama adında `query` geçen süre.
+#[tauri::command]
+pub async fn search(
+    app: AppHandle,
+    query: String,
+    start: String,
+    days: u32,
+) -> CmdResult<SearchResult> {
+    let first = NaiveDate::parse_from_str(&start, "%Y-%m-%d").map_err(err)?;
+    let starts: Vec<_> = (0..days.clamp(1, 366))
+        .map(|i| local_midnight(first + Days::new(i.into())))
+        .collect();
+    let to = local_midnight(first + Days::new(starts.len() as u64)).min(Utc::now());
+    lock(&app.state::<Shared>().store)
+        .search(&query, starts[0], to.max(starts[0]), &starts)
         .map_err(err)
 }
 

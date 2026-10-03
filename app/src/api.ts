@@ -101,6 +101,14 @@ export type CategorySuggestion = {
 };
 export type Suggestions = { projects: ProjectSuggestion[]; categories: CategorySuggestion[] };
 
+export type SearchResult = {
+  totalSeconds: number;
+  /** Dönemin her günü için süre (saniye). */
+  days: number[];
+  apps: { appId: string; appName: string; seconds: number }[];
+  titles: { appName: string; title: string; seconds: number }[];
+};
+
 export type LastSync = { at: string; ok: boolean; message: string };
 export type SyncStatus = {
   configured: boolean;
@@ -163,6 +171,8 @@ export const api = {
   assignAppCategory: (appId: string, tagId: string | null) => invoke<void>("assign_app_category", { appId, tagId }),
   knownApps: () => invoke<UsageTotal[]>("known_apps"),
   suggestions: () => invoke<Suggestions>("get_suggestions"),
+  /** `start` (YYYY-MM-DD) gününden itibaren `days` günde `query` geçen süre. */
+  search: (query: string, start: string, days: number) => invoke<SearchResult>("search", { query, start, days }),
   acceptProject: (name: string) => invoke<Tag>("accept_project_suggestion", { name }),
   acceptCategory: (s: CategorySuggestion) =>
     invoke<void>("accept_category_suggestion", { field: s.field, pattern: s.pattern, categoryId: s.categoryId }),

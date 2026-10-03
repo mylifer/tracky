@@ -352,6 +352,7 @@ pub fn run() {
             commands::assign_app_category,
             commands::known_apps,
             commands::get_suggestions,
+            commands::search,
             commands::accept_project_suggestion,
             commands::accept_category_suggestion,
             commands::dismiss_suggestion,

@@ -655,6 +655,20 @@ impl Store {
         Ok(())
     }
 
+    /// `[from, to)` aralığında başlığında ya da uygulama adında `query` geçen süre.
+    pub fn search(
+        &self,
+        query: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        day_starts: &[DateTime<Utc>],
+    ) -> Result<crate::search::SearchResult> {
+        let sessions = self.sessions_between(from, to)?;
+        Ok(crate::search::search(
+            &sessions, query, from, to, day_starts,
+        ))
+    }
+
     /// Son iki haftanın oturumlarından proje ve kategori önerileri.
     pub fn suggestions(&self, now: DateTime<Utc>) -> Result<Suggestions> {
         let sessions = self.sessions_between(now - chrono::Duration::days(SUGGEST_DAYS), now)?;
