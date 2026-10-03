@@ -25,7 +25,13 @@ pub struct Session {
     pub domain: Option<String>,
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
+    /// Kullanıcının elle verdiği kategori; varsa kurallardan önce gelir.
+    #[serde(default)]
+    pub category_id: Option<String>,
 }
+
+/// Elle eklenen kayıtların uygulama kimliği.
+pub const MANUAL_APP_ID: &str = "kum.manual";
 
 impl Session {
     pub fn start(window: ActiveWindow, at: DateTime<Utc>) -> Self {
@@ -39,6 +45,7 @@ impl Session {
             domain,
             started_at: at,
             ended_at: at,
+            category_id: None,
         }
     }
 

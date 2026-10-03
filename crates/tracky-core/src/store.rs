@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::classify::{Classifier, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind};
-use crate::model::Session;
+use crate::model::{MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
 
@@ -83,6 +83,10 @@ CREATE TABLE rules (
     synced_at  INTEGER
 );
 CREATE INDEX rules_tag ON rules (tag_id);
+"#,
+    r#"
+-- Oturuma elle verilen kategori (takvimde bloğu atama, manuel kayıt).
+ALTER TABLE sessions ADD COLUMN category_id TEXT;
 "#,
 ];
 
@@ -193,7 +197,7 @@ impl Store {
     /// `[from, to)` ile kesişen oturumlar, başlangıca göre sıralı.
     pub fn sessions_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, app_id, app_name, title, url, domain, started_at, ended_at
+            "SELECT id, app_id, app_name, title, url, domain, started_at, ended_at, category_id
              FROM sessions
              WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1
              ORDER BY started_at",
@@ -210,6 +214,7 @@ impl Store {
                     domain: r.get(5)?,
                     started_at: from_ms(r.get(6)?),
                     ended_at: from_ms(r.get(7)?),
+                    category_id: r.get(8)?,
                 },
             ))
         })?;
@@ -275,6 +280,94 @@ impl Store {
             params![id.to_string(), now],
         )?;
         Ok(())
+    }
+
+    /// `[from, to)` ile kesişen oturumlara elle kategori verir (`None`: kurallara
+    /// dön). Takvimdeki bir blok bu oturumlardan oluşur. Değişen satır sayısı.
+    pub fn set_category_between(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        category_id: Option<&str>,
+    ) -> Result<usize> {
+        if let Some(id) = category_id {
+            self.require_tag(id, TagKind::Category)?;
+        }
+        Ok(self.conn.execute(
+            "UPDATE sessions SET category_id = ?3, updated_at = MAX(?4, updated_at + 1)
+             WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1
+               AND category_id IS NOT ?3",
+            params![ms(from), ms(to), category_id, ms(Utc::now())],
+        )?)
+    }
+
+    /// `[from, to)` ile kesişen oturumları yumuşak siler. Silinen satır sayısı.
+    pub fn delete_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE sessions SET deleted_at = ?3, updated_at = MAX(?3, updated_at + 1)
+             WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1",
+            params![ms(from), ms(to), ms(Utc::now())],
+        )?)
+    }
+
+    /// Elle kayıt ekler (bilgisayar dışında geçen toplantı, okuma...).
+    pub fn add_manual_session(
+        &self,
+        label: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        category_id: Option<&str>,
+    ) -> Result<Session> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(StoreError::Invalid("kayıt adı boş".into()));
+        }
+        if to <= from {
+            return Err(StoreError::Invalid(
+                "bitiş başlangıçtan sonra olmalı".into(),
+            ));
+        }
+        if let Some(id) = category_id {
+            self.require_tag(id, TagKind::Category)?;
+        }
+        // Takip edilen süreyle çakışırsa aynı dakikalar iki kez sayılırdı.
+        if !self.sessions_between(from, to)?.is_empty() {
+            return Err(StoreError::Invalid(
+                "bu aralıkta zaten kayıt var; önce o bloğu silin".into(),
+            ));
+        }
+        let session = Session {
+            id: Uuid::new_v4(),
+            app_id: MANUAL_APP_ID.into(),
+            app_name: "Elle eklenen".into(),
+            title: label.into(),
+            url: None,
+            domain: None,
+            started_at: from,
+            ended_at: to,
+            category_id: category_id.map(Into::into),
+        };
+        self.upsert_session(&session)?;
+        self.conn.execute(
+            "UPDATE sessions SET category_id = ?2 WHERE id = ?1",
+            params![session.id.to_string(), session.category_id],
+        )?;
+        Ok(session)
+    }
+
+    fn require_tag(&self, id: &str, kind: TagKind) -> Result<()> {
+        let found: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT kind FROM tags WHERE id = ?1 AND deleted_at IS NULL",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match found {
+            Some(k) if k == kind.as_str() => Ok(()),
+            _ => Err(StoreError::Invalid(format!("etiket bulunamadı: {id}"))),
+        }
     }
 
     /// Senkronizasyon başka hesaba/projeye bağlandığında: imleçleri sil, her şeyi
@@ -609,6 +702,7 @@ mod tests {
             domain: url.and_then(crate::url_util::domain_of),
             started_at: t(start),
             ended_at: t(end),
+            category_id: None,
         }
     }
 
@@ -806,5 +900,83 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "user_version", 99).unwrap();
         assert!(matches!(Store::init(conn), Err(StoreError::Invalid(_))));
+    }
+
+    #[test]
+    fn manual_category_overrides_rules_and_can_be_cleared() {
+        let store = Store::open_in_memory().unwrap();
+        let tags = store.tags().unwrap();
+        let design = tags
+            .iter()
+            .find(|t| t.name == "Tasarım")
+            .unwrap()
+            .id
+            .clone();
+        store
+            .upsert_session(&session("VSCode", None, 0, 600))
+            .unwrap();
+        let mut vscode = session("Other", None, 700, 900);
+        vscode.app_id = "com.microsoft.VSCode".into();
+        store.upsert_session(&vscode).unwrap();
+
+        let report = |s: &Store| s.report(t(0), t(3600), &[t(0)], false).unwrap();
+        let dev = report(&store).categories;
+        assert!(dev.iter().any(|b| b.id.is_some() && b.seconds == 200));
+
+        // Yalnızca aralıkla kesişen oturum değişir.
+        assert_eq!(
+            store
+                .set_category_between(t(650), t(1000), Some(&design))
+                .unwrap(),
+            1
+        );
+        let cats = report(&store).categories;
+        assert!(cats.contains(&report::Bucket {
+            id: Some(design.clone()),
+            seconds: 200
+        }));
+
+        // Geri alınınca kurala döner; bilinmeyen etiket reddedilir.
+        store.set_category_between(t(650), t(1000), None).unwrap();
+        assert!(
+            !report(&store)
+                .categories
+                .iter()
+                .any(|b| b.id.as_deref() == Some(&*design))
+        );
+        assert!(
+            store
+                .set_category_between(t(0), t(10), Some("yok"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn delete_between_and_manual_sessions() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_session(&session("A", None, 0, 600)).unwrap();
+        store.upsert_session(&session("B", None, 600, 900)).unwrap();
+        assert_eq!(store.delete_between(t(0), t(600)).unwrap(), 1);
+        assert_eq!(store.app_totals(t(0), t(3600)).unwrap().len(), 1);
+
+        // Çakışan elle kayıt reddedilir, boş aralığa eklenir.
+        assert!(
+            store
+                .add_manual_session("Toplantı", t(800), t(1200), None)
+                .is_err()
+        );
+        assert!(
+            store
+                .add_manual_session("  ", t(1000), t(1200), None)
+                .is_err()
+        );
+        let cat = store.tags().unwrap()[0].id.clone();
+        let s = store
+            .add_manual_session("Toplantı", t(1000), t(1600), Some(&cat))
+            .unwrap();
+        let back = store.sessions_between(t(0), t(3600)).unwrap();
+        let manual = back.iter().find(|x| x.id == s.id).unwrap();
+        assert_eq!(manual.app_id, MANUAL_APP_ID);
+        assert_eq!(manual.category_id.as_deref(), Some(&*cat));
     }
 }

@@ -6,6 +6,7 @@ import { addDays, formatTime, isoDate, today } from "../lib/dates";
 import { UNCATEGORIZED, tagColor, tagInk } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
+import { BlockActions, useEdit } from "./SessionEdit";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
 const HOUR_PX = 52;
@@ -63,7 +64,11 @@ function Column({ range, children, className }: { range: Range; children: React.
   return (
     <div className={cn("relative", className)} style={{ height: (range.last - range.first) * HOUR_PX }}>
       {hours(range).map((h) => (
-        <span key={h} className="absolute inset-x-0 border-t border-border/70" style={{ top: (h - range.first) * HOUR_PX }} />
+        <span
+          key={h}
+          className="absolute inset-x-0 border-t border-border/70"
+          style={{ top: (h - range.first) * HOUR_PX }}
+        />
       ))}
       {children}
     </div>
@@ -83,6 +88,7 @@ function NowLine({ day, range }: { day: Date; range: Range }) {
 
 /** Bloğun ayrıntı kartı: kategori, süre, uygulama yüzdeleri. */
 function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag> }) {
+  const edit = useEdit();
   const tag = block.categoryId ? tags.get(block.categoryId) : undefined;
   const color = tagColor(tag);
   return (
@@ -125,6 +131,15 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
           );
         })}
       </ul>
+      {edit && (
+        <BlockActions
+          start={block.start}
+          end={block.end}
+          categoryId={block.categoryId}
+          categories={edit.categories}
+          onChanged={edit.onChanged}
+        />
+      )}
     </div>
   );
 }
@@ -318,7 +333,9 @@ export function WeekCalendar({
                   {d.getDate()}
                 </span>
               </span>
-              <span className="text-[11px] font-medium tabular">{dayTotals[i] ? formatDuration(dayTotals[i]) : "—"}</span>
+              <span className="text-[11px] font-medium tabular">
+                {dayTotals[i] ? formatDuration(dayTotals[i]) : "—"}
+              </span>
             </button>
           );
         })}

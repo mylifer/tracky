@@ -85,6 +85,7 @@ const TABLES: &[Table] = &[
             ("domain", Col::OptText),
             ("started_at", Col::Time),
             ("ended_at", Col::Time),
+            ("category_id", Col::OptText),
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
         ],
@@ -187,9 +188,17 @@ fn push_table(
                 Value::Object(row)
             })
             .collect();
-        remote
-            .push(table.name, &payload)
-            .map_err(SyncError::Remote)?;
+        remote.push(table.name, &payload).map_err(|e| {
+            // 0.2 ile eklenen sütun sunucuda yoksa kullanıcıya ne yapacağını söyle.
+            if e.contains("category_id") {
+                SyncError::Remote(format!(
+                    "Supabase şeması güncel değil: supabase/migrations/0002_session_category.sql \
+                     dosyasını SQL Editor'da çalıştırın ({e})"
+                ))
+            } else {
+                SyncError::Remote(e)
+            }
+        })?;
         // Gönderilen sürüm işaretlenir; arada yerelde güncellenen satır kirli kalır.
         let marked = mark_synced(&lock(store), table, &rows)?;
         total += rows.len();
@@ -451,6 +460,7 @@ mod tests {
             domain: None,
             started_at: t0,
             ended_at: t0 + Duration::seconds(secs),
+            category_id: None,
         }
     }
 

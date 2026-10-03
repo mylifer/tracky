@@ -6,6 +6,7 @@ import { tagMap } from "../lib/tags";
 import { AppList, Legend } from "./Breakdown";
 import { DayCalendar, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
+import { EditContext, ManualEntry } from "./SessionEdit";
 import Summary from "./Summary";
 import Toolbar from "./Toolbar";
 import { Button } from "./ui/button";
@@ -40,7 +41,10 @@ export default function ReportView(p: Props) {
   const [error, setError] = useState<string | null>(null);
   const [dailyHours, setDailyHours] = useState(8);
   useEffect(() => {
-    api.goals().then((g) => setDailyHours(g.dailyHours), () => {});
+    api.goals().then(
+      (g) => setDailyHours(g.dailyHours),
+      () => {},
+    );
   }, []);
 
   const load = useCallback(() => {
@@ -90,6 +94,11 @@ export default function ReportView(p: Props) {
   }, [report, categories]);
 
   const mode = MODES.find((m) => m.id === p.mode) ?? MODES[0];
+  const editCtx = useMemo(() => ({ categories, onChanged: load }), [categories, load]);
+  // Hafta görünümünde elle kayıt varsayılan olarak bugüne (haftadaysa) ya da haftanın ilk gününe.
+  const todayIso = isoDate(today());
+  const manualDay =
+    todayIso >= p.start && todayIso < isoDate(addDays(parseIsoDate(p.start), days)) ? todayIso : p.start;
 
   return (
     <>
@@ -122,27 +131,44 @@ export default function ReportView(p: Props) {
           <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
             <div className="min-w-0 space-y-4">
               <Card className="gap-3 py-3">
-                {order.length > 0 && (
-                  <CardContent>
-                    <Legend order={order} tags={tags} />
+                {(order.length > 0 || p.mode !== "month") && (
+                  <CardContent className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <Legend order={order} tags={tags} />
+                    </div>
+                    {p.mode !== "month" && (
+                      <ManualEntry
+                        day={p.mode === "day" ? p.start : manualDay}
+                        categories={categories}
+                        onChanged={load}
+                      />
+                    )}
                   </CardContent>
                 )}
                 <CardContent className="px-3">
-                  {p.mode === "month" ? (
-                    <MonthCalendar from={from} days={report.days} tags={tags} dailyHours={dailyHours} onSelectDay={p.onSelectDay} />
-                  ) : report.totalSeconds === 0 ? (
-                    <Empty />
-                  ) : p.mode === "day" ? (
-                    <DayCalendar from={from} blocks={report.focus.blocks} segments={report.timeline} tags={tags} />
-                  ) : (
-                    <WeekCalendar
-                      from={from}
-                      blocks={report.focus.blocks}
-                      dayTotals={report.days.map((d) => d.seconds)}
-                      tags={tags}
-                      onSelectDay={p.onSelectDay}
-                    />
-                  )}
+                  <EditContext.Provider value={editCtx}>
+                    {p.mode === "month" ? (
+                      <MonthCalendar
+                        from={from}
+                        days={report.days}
+                        tags={tags}
+                        dailyHours={dailyHours}
+                        onSelectDay={p.onSelectDay}
+                      />
+                    ) : report.totalSeconds === 0 ? (
+                      <Empty />
+                    ) : p.mode === "day" ? (
+                      <DayCalendar from={from} blocks={report.focus.blocks} segments={report.timeline} tags={tags} />
+                    ) : (
+                      <WeekCalendar
+                        from={from}
+                        blocks={report.focus.blocks}
+                        dayTotals={report.days.map((d) => d.seconds)}
+                        tags={tags}
+                        onSelectDay={p.onSelectDay}
+                      />
+                    )}
+                  </EditContext.Provider>
                 </CardContent>
               </Card>
               {report.apps.length > 0 && (
@@ -151,7 +177,14 @@ export default function ReportView(p: Props) {
                     <CardTitle>Uygulamalar ve pencereler</CardTitle>
                   </CardHeader>
                   <CardContent className="px-2">
-                    <AppList apps={report.apps} tags={tags} categories={categories as Tag[]} start={p.start} days={days} onChanged={load} />
+                    <AppList
+                      apps={report.apps}
+                      tags={tags}
+                      categories={categories as Tag[]}
+                      start={p.start}
+                      days={days}
+                      onChanged={load}
+                    />
                   </CardContent>
                 </Card>
               )}

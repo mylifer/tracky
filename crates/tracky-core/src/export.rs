@@ -77,6 +77,7 @@ mod tests {
             domain: None,
             started_at: t0,
             ended_at: t0 + chrono::Duration::seconds(90),
+            category_id: None,
         };
         let csv = sessions_csv(&[s], &[], &Classifier::new(&[], &[]));
         let mut lines = csv.lines();

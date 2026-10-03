@@ -143,6 +143,55 @@ pub async fn assign_app_category(
         .map_err(err)
 }
 
+fn parse_time(s: &str) -> CmdResult<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|t| t.with_timezone(&Utc))
+        .map_err(|e| format!("geçersiz zaman {s}: {e}"))
+}
+
+/// Takvimdeki bir bloğu (aralıktaki oturumları) kategoriye atar; `None` kurallara döndürür.
+#[tauri::command]
+pub async fn set_range_category(
+    app: AppHandle,
+    start: String,
+    end: String,
+    category_id: Option<String>,
+) -> CmdResult<usize> {
+    lock(&app.state::<Shared>().store)
+        .set_category_between(
+            parse_time(&start)?,
+            parse_time(&end)?,
+            category_id.as_deref(),
+        )
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn delete_range(app: AppHandle, start: String, end: String) -> CmdResult<usize> {
+    lock(&app.state::<Shared>().store)
+        .delete_between(parse_time(&start)?, parse_time(&end)?)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn add_manual_entry(
+    app: AppHandle,
+    label: String,
+    start: String,
+    end: String,
+    category_id: Option<String>,
+) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .add_manual_session(
+            &label,
+            parse_time(&start)?,
+            parse_time(&end)?,
+            category_id.as_deref(),
+        )
+        .map(|_| ())
+        .map_err(err)
+}
+
 #[tauri::command]
 pub async fn known_apps(app: AppHandle) -> CmdResult<Vec<UsageTotal>> {
     lock(&app.state::<Shared>().store)

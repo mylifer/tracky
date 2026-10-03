@@ -24,7 +24,7 @@ pub mod url_util;
 pub use classify::{Classifier, Rule, RuleField, Tag, TagKind};
 pub use coach::{Coach, Goals, Nudge};
 pub use engine::{Engine, EngineConfig};
-pub use model::{ActiveWindow, Session};
+pub use model::{ActiveWindow, MANUAL_APP_ID, Session};
 pub use platform::ActivityProvider;
 pub use privacy::PrivacySettings;
 pub use report::Report;

@@ -131,6 +131,12 @@ export const api = {
   assignAppCategory: (appId: string, tagId: string | null) =>
     invoke<void>("assign_app_category", { appId, tagId }),
   knownApps: () => invoke<UsageTotal[]>("known_apps"),
+  /** Aralıktaki oturumlara elle kategori; `null` kurallara döndürür. */
+  setRangeCategory: (start: string, end: string, categoryId: string | null) =>
+    invoke<number>("set_range_category", { start, end, categoryId }),
+  deleteRange: (start: string, end: string) => invoke<number>("delete_range", { start, end }),
+  addManualEntry: (label: string, start: string, end: string, categoryId: string | null) =>
+    invoke<void>("add_manual_entry", { label, start, end, categoryId }),
   privacy: () => invoke<PrivacySettings>("get_privacy"),
   savePrivacy: (settings: PrivacySettings) => invoke<void>("save_privacy", { settings }),
   goals: () => invoke<Goals>("get_goals"),

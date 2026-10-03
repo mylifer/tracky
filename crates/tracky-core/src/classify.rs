@@ -116,6 +116,8 @@ pub struct Classification {
 pub struct Classifier {
     category_rules: Vec<Rule>,
     project_rules: Vec<Rule>,
+    /// Var olan kategoriler: silinmiş bir kategoriye verilmiş elle atama yok sayılır.
+    categories: std::collections::HashSet<String>,
 }
 
 impl Classifier {
@@ -137,11 +139,23 @@ impl Classifier {
         Self {
             category_rules,
             project_rules,
+            categories: tags
+                .iter()
+                .filter(|t| t.kind == TagKind::Category)
+                .map(|t| t.id.clone())
+                .collect(),
         }
     }
 
+    /// Elle verilen kategori (hâlâ varsa) kurallardan önce gelir.
     pub fn classify(&self, session: &Session) -> Classification {
-        self.classify_parts(&session.app_id, &session.title)
+        let mut class = self.classify_parts(&session.app_id, &session.title);
+        if let Some(id) = &session.category_id
+            && self.categories.contains(id)
+        {
+            class.category = Some(id.clone());
+        }
+        class
     }
 
     pub fn classify_parts(&self, app_id: &str, title: &str) -> Classification {
