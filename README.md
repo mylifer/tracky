@@ -14,7 +14,8 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 6. Supabase senkronizasyonu: e-posta/şifre ile giriş, 5 dakikada bir eşitleme, son yazan kazanır
 - [x] 7. Paketleme ve CI: her push'ta Mac/Windows paketleri, `v*` etiketiyle sürüm, macOS'ta sabit (kendinden imzalı) sertifika
 - [x] 8. Otomatik güncelleme: 6 saatte bir denetim, arka planda indirme, imza doğrulama, tek tıkla kurulum
-- [x] 9. Oturum düzenleme: takvimdeki bloğu kategoriye atama ya da silme, elle kayıt ekleme
+- [x] 9. Oturum düzenleme: takvimdeki bloğu kategoriye atama ya da silme, elle kayıt ekleme; takvimde sürükleyerek
+      seçilen aralığı kategoriye atama, silme ya da elle kayda çevirme
 - [x] 10. Kategori limitleri: günlük sınır, %80'de ve dolunca bildirim, özette limit çubukları
 - [x] 11. Odak modu: 25/50/90 dk zamanlayıcı (menü çubuğu ve kenar çubuğu), bitince bildirim, takvimde odak aralığı
 - [x] 12. Kullanım kolaylıkları: takvimde boş alana tıklayarak kayıt, klavye kısayolları (←/→, T, 1/2/3, +/−/0, /),

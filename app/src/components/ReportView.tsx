@@ -9,7 +9,7 @@ import { AppList, Legend } from "./Breakdown";
 import AppTimeline from "./AppTimeline";
 import { DayCalendar, HOUR_PX, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
-import { EditContext, type EntryDraft, ManualEntry } from "./SessionEdit";
+import { EditContext, type EntryDraft, ManualEntry, RangeMenu, type RangeSelection } from "./SessionEdit";
 import Summary from "./Summary";
 import Toolbar from "./Toolbar";
 import { Button } from "./ui/button";
@@ -120,6 +120,12 @@ export default function ReportView(p: Props) {
   const [draft, setDraft] = useState<EntryDraft | null>(null);
   const [calendarView, setCalendarView] = useCalendarView();
   const [preview, setPreview] = useState<[number, number] | null>(null);
+  const [selection, setSelection] = useState<RangeSelection | null>(null);
+  const closeSelection = useCallback(() => setSelection(null), []);
+  const selectRange = useCallback(
+    (start: number, end: number, x: number, y: number) => setSelection({ start, end, x, y }),
+    [],
+  );
   const openDraft = useCallback((start: number, end: number) => {
     const hm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
     // Form dakika hassasiyetinde: başlangıç yukarı, bitiş aşağı yuvarlanır ki komşu oturumlarla çakışmasın.
@@ -306,6 +312,7 @@ export default function ReportView(p: Props) {
                           timers={report.focusTimers}
                           tags={tags}
                           onEmpty={openDraft}
+                          onRange={selectRange}
                           preview={preview}
                           hourPx={HOUR_PX * calZoom}
                         />
@@ -318,11 +325,21 @@ export default function ReportView(p: Props) {
                           tags={tags}
                           onSelectDay={p.onSelectDay}
                           onEmpty={openDraft}
+                          onRange={selectRange}
                           preview={preview}
                           hourPx={HOUR_PX * calZoom}
                         />
                       )}
                     </EditContext.Provider>
+                    {selection && (
+                      <RangeMenu
+                        selection={selection}
+                        categories={categories}
+                        onAddEntry={openDraft}
+                        onChanged={load}
+                        onClose={closeSelection}
+                      />
+                    )}
                   </div>
                 </CardContent>
               </Card>

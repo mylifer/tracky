@@ -8,7 +8,7 @@ const NONE = "__none__";
 
 /**
  * Kategori seçici: renk noktası ve ad. `noneLabel` verilirse en üstte "kategori yok" seçeneği
- * (değeri `null`) bulunur; verilmezse boş değer `placeholder`'ı gösterir.
+ * (değeri `null`) bulunur. Boş değer `placeholder` varsa onu, yoksa `noneLabel`'ı gösterir.
  */
 export function CategorySelect({
   value,
@@ -32,7 +32,8 @@ export function CategorySelect({
   className?: string;
   "aria-label"?: string;
 }) {
-  const current = value ?? (noneLabel ? NONE : "");
+  // İpucu verildiyse boş değer onu gösterir ("kategori yok" seçeneği yine listede durur).
+  const current = value ?? (noneLabel && !placeholder ? NONE : "");
   return (
     <Select value={current} onValueChange={(v) => v && onChange(v === NONE ? null : v)}>
       <SelectTrigger

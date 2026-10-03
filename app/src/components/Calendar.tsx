@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Zap } from "lucide-react";
 import type { FocusTimer, Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
@@ -81,31 +81,84 @@ function HourRail({ range }: { range: Range }) {
   );
 }
 
+/** Sürükleme 5 dakikaya yuvarlanır; bundan az kayma tıklama sayılır (piksel). */
+const SNAP_MS = 5 * 60_000;
+const DRAG_MIN_PX = 4;
+
 function Column({
   range,
   children,
   className,
   onEmpty,
+  onRange,
 }: {
   range: Range;
   children: React.ReactNode;
   className?: string;
   /** Boş alana tıklanınca tıklanan duvar saatinin gece yarısından itibaren ms karşılığı. */
   onEmpty?: (offsetMs: number) => void;
+  /** Boş alandan sürükleyerek seçilen aralık (duvar saati ms) ve bırakılan nokta. */
+  onRange?: (fromMs: number, toMs: number, x: number, y: number) => void;
 }) {
+  const [drag, setDrag] = useState<{ a: number; b: number; y0: number } | null>(null);
+  // Bloğun üzerinde basılınca hemen sürüklemeye geçilmez: kıpırdamadan bırakılırsa bloğa
+  // tıklanmıştır (ayrıntı kartı açılır), kayarsa aralık seçimi başlar.
+  const pending = useRef<{ a: number; y0: number } | null>(null);
+  // Sürükleme bitince oluşan tıklama bloğun kartını açmasın.
+  const swallowClick = useRef(false);
+  const offsetAt = (el: HTMLElement, clientY: number) =>
+    range.first * HOUR_MS + ((clientY - el.getBoundingClientRect().top) / range.px) * HOUR_MS;
+  const snap = (ms: number) => Math.round(ms / SNAP_MS) * SNAP_MS;
+  const interactive = !!(onEmpty || onRange);
+  const ghost =
+    drag && Math.abs(drag.b - drag.a) >= SNAP_MS ? [Math.min(drag.a, drag.b), Math.max(drag.a, drag.b)] : null;
+
   return (
     <div
-      className={cn("relative", onEmpty && "cursor-cell", className)}
+      className={cn("relative touch-none select-none", interactive && "cursor-cell", className)}
       style={{ height: (range.last - range.first) * range.px }}
-      title={onEmpty ? "Boş alana tıkla: bu saate elle kayıt ekle" : undefined}
-      onClick={
-        onEmpty &&
-        ((e) => {
-          if ((e.target as HTMLElement).closest("button")) return;
-          const y = e.clientY - e.currentTarget.getBoundingClientRect().top;
-          onEmpty(range.first * HOUR_MS + (y / range.px) * HOUR_MS);
-        })
-      }
+      title={interactive ? "Boş alana tıkla: elle kayıt · sürükle: aralığı seç" : undefined}
+      onPointerDown={(e) => {
+        if (!interactive || e.button !== 0) return;
+        const at = snap(offsetAt(e.currentTarget, e.clientY));
+        if ((e.target as HTMLElement).closest("button")) {
+          if (onRange) pending.current = { a: at, y0: e.clientY };
+          return;
+        }
+        e.currentTarget.setPointerCapture(e.pointerId);
+        setDrag({ a: at, b: at, y0: e.clientY });
+      }}
+      onPointerMove={(e) => {
+        const p = pending.current;
+        if (p && Math.abs(e.clientY - p.y0) >= DRAG_MIN_PX) {
+          pending.current = null;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          setDrag({ a: p.a, b: snap(offsetAt(e.currentTarget, e.clientY)), y0: p.y0 });
+        } else if (drag) {
+          setDrag({ ...drag, b: snap(offsetAt(e.currentTarget, e.clientY)) });
+        }
+      }}
+      onPointerUp={(e) => {
+        pending.current = null;
+        if (!drag) return;
+        setDrag(null);
+        if (Math.abs(e.clientY - drag.y0) < DRAG_MIN_PX) {
+          onEmpty?.(offsetAt(e.currentTarget, e.clientY));
+        } else {
+          swallowClick.current = true;
+          if (ghost) onRange?.(ghost[0], ghost[1], e.clientX, e.clientY);
+        }
+      }}
+      onPointerCancel={() => {
+        pending.current = null;
+        setDrag(null);
+      }}
+      onClickCapture={(e) => {
+        if (!swallowClick.current) return;
+        swallowClick.current = false;
+        e.stopPropagation();
+        e.preventDefault();
+      }}
     >
       {hours(range).map((h) => (
         <span key={h}>
@@ -124,7 +177,25 @@ function Column({
         </span>
       ))}
       {children}
+      {ghost && <DragGhost from={ghost[0]} to={ghost[1]} range={range} />}
     </div>
+  );
+}
+
+/** Sürüklenen aralığın kesik çizgili önizlemesi (duvar saati ms). */
+function DragGhost({ from, to, range }: { from: number; to: number; range: Range }) {
+  const top = ((from - range.first * HOUR_MS) / HOUR_MS) * range.px;
+  const label = (ms: number) => {
+    const m = Math.round(ms / 60_000);
+    return `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  };
+  return (
+    <span
+      className="pointer-events-none absolute inset-x-0.5 z-20 grid place-items-center rounded-[5px] border-2 border-dashed border-primary/70 bg-primary/15 text-[11px] font-medium text-primary tabular"
+      style={{ top, height: Math.max(14, ((to - from) / HOUR_MS) * range.px) }}
+    >
+      {label(from)} – {label(to)}
+    </span>
   );
 }
 
@@ -351,6 +422,7 @@ export function DayCalendar({
   tags,
   timers = [],
   onEmpty,
+  onRange,
   preview,
   hourPx = HOUR_PX,
 }: {
@@ -360,6 +432,8 @@ export function DayCalendar({
   tags: Map<string, Tag>;
   timers?: FocusTimer[];
   onEmpty?: (start: number, end: number) => void;
+  /** Sürükleyerek seçilen aralık (zaman damgası) ve bırakılan nokta. */
+  onRange?: (start: number, end: number, x: number, y: number) => void;
   preview?: [number, number] | null;
   /** Bir saatin yüksekliği (yakınlaştırma). */
   hourPx?: number;
@@ -403,6 +477,7 @@ export function DayCalendar({
               if (gap) onEmpty(...gap);
             })
           }
+          onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y))}
         >
           {blocks.map((b) => (
             <Block key={b.start} b={b} tags={tags} {...blockGeometry(b, top)} />
@@ -453,6 +528,7 @@ export function WeekCalendar({
   onSelectDay,
   timers = [],
   onEmpty,
+  onRange,
   preview,
   hourPx = HOUR_PX,
 }: {
@@ -463,6 +539,7 @@ export function WeekCalendar({
   onSelectDay: (iso: string) => void;
   timers?: FocusTimer[];
   onEmpty?: (start: number, end: number) => void;
+  onRange?: (start: number, end: number, x: number, y: number) => void;
   preview?: [number, number] | null;
   hourPx?: number;
 }) {
@@ -520,6 +597,7 @@ export function WeekCalendar({
                   if (gap) onEmpty(...gap);
                 })
               }
+              onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, dayStart), fromWallMs(b, dayStart), x, y))}
             >
               <FocusBands
                 timers={timers.filter((f) => +new Date(f.start) >= dayStart && +new Date(f.start) < dayEnd)}

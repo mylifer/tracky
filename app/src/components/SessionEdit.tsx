@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
-import { api, type Tag } from "../api";
-import { isoDate, parseIsoDate } from "../lib/dates";
+import { PenLine, Plus, Trash2, X } from "lucide-react";
+import { api, formatDuration, type Tag } from "../api";
+import { formatTime, isoDate, parseIsoDate } from "../lib/dates";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -17,6 +17,119 @@ function message(e: unknown) {
 /** Takvimdeki blokların düzenleme bağlamı (kategoriler ve yenileme). */
 export const EditContext = createContext<{ categories: Tag[]; onChanged: () => void } | null>(null);
 export const useEdit = () => useContext(EditContext);
+
+/** Takvimde sürükleyerek seçilen aralık ve menünün açılacağı nokta. */
+export type RangeSelection = { start: number; end: number; x: number; y: number };
+
+/**
+ * Seçilen aralık için menü: içindeki kayıtları kategoriye ata, elle kayıt ekle ya da sil.
+ * Bırakılan noktanın yanında açılır; dışına tıklayınca ya da Esc ile kapanır.
+ */
+export function RangeMenu({
+  selection,
+  categories,
+  onAddEntry,
+  onChanged,
+  onClose,
+}: {
+  selection: RangeSelection;
+  categories: Tag[];
+  onAddEntry: (start: number, end: number) => void;
+  onChanged: () => void;
+  onClose: () => void;
+}) {
+  const [confirm, setConfirm] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Gelecek kaydedilemez ve silinecek bir şey de yoktur: bitiş şimdiye kırpılır.
+  const end = Math.min(selection.end, Date.now());
+  const start = Math.min(selection.start, end);
+  const iso = (t: number) => new Date(t).toISOString();
+  const run = (f: () => Promise<unknown>) =>
+    f().then(
+      () => {
+        onChanged();
+        onClose();
+      },
+      (e) => setError(message(e)),
+    );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const width = 264;
+  const left = Math.min(selection.x + 12, window.innerWidth - width - 12);
+  const top = Math.min(selection.y, window.innerHeight - 220);
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onPointerDown={onClose} />
+      <div
+        role="dialog"
+        aria-label="Seçilen aralık"
+        className="fixed z-50 space-y-3 rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg"
+        style={{ left, top, width }}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <div className="text-sm font-medium tabular">
+              {formatTime(new Date(selection.start))} – {formatTime(new Date(selection.end))}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {formatDuration((selection.end - selection.start) / 1000)}
+            </div>
+          </div>
+          <Button size="icon-sm" variant="ghost" className="-mt-1 -mr-1" onClick={onClose} aria-label="Kapat">
+            <X />
+          </Button>
+        </div>
+        {end > start && (
+          <CategorySelect
+            value={null}
+            onChange={(id) => run(() => api.setRangeCategory(iso(start), iso(end), id))}
+            categories={categories}
+            noneLabel="Kurallara göre"
+            placeholder="İçindeki kayıtları kategoriye ata…"
+            className="w-full"
+            aria-label="Aralığın kategorisi"
+          />
+        )}
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="flex-1"
+            onClick={() => {
+              onAddEntry(selection.start, selection.end);
+              onClose();
+            }}
+          >
+            <PenLine /> Elle kayıt ekle
+          </Button>
+          {end > start &&
+            (confirm ? (
+              <Button size="sm" variant="destructive" onClick={() => run(() => api.deleteRange(iso(start), iso(end)))}>
+                Silinsin
+              </Button>
+            ) : (
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => setConfirm(true)}
+                aria-label="Aralıktaki kayıtları sil"
+                title="Aralıktaki kayıtları sil"
+              >
+                <Trash2 />
+              </Button>
+            ))}
+        </div>
+        {error && <p className="text-xs text-destructive selectable">{error}</p>}
+      </div>
+    </>
+  );
+}
 
 /** Blok kartının altı: bloğu kategoriye ata ya da sil. */
 export function BlockActions({
