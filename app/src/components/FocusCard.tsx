@@ -16,11 +16,14 @@ function clock(secs: number) {
 export default function FocusCard({ focus }: { focus: FocusState | null }) {
   const [now, setNow] = useState(Date.now());
   const [open, setOpen] = useState(false);
+  // Durum olayı her geldiğinde nesne yenilenir; sayaç yalnızca zamanlayıcı değişince kurulur.
+  const endsAt = focus?.endsAt;
   useEffect(() => {
-    if (!focus) return;
+    if (!endsAt) return;
+    setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [focus]);
+  }, [endsAt]);
 
   if (!focus) {
     return (

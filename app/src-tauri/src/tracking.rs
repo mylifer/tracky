@@ -237,12 +237,21 @@ fn app_seconds(totals: &[UsageTotal], app_id: &str) -> i64 {
 
 /// Yerel saatle bugünün başlangıcı.
 pub fn start_of_today() -> DateTime<Utc> {
-    Local::now()
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .and_then(|t| t.and_local_timezone(Local).earliest())
+    local_midnight(Local::now().date_naive())
+}
+
+/// Günün yerel başlangıcı. Gece yarısı yaz saati geçişine denk gelip hiç
+/// yaşanmıyorsa (örn. Şili, Paraguay) o günün ilk geçerli saati.
+pub fn local_midnight(date: chrono::NaiveDate) -> DateTime<Utc> {
+    (0..4)
+        .filter_map(|h| {
+            date.and_hms_opt(h, 0, 0)?
+                .and_local_timezone(Local)
+                .earliest()
+        })
+        .next()
         .map(|t| t.with_timezone(&Utc))
-        .unwrap_or_else(Utc::now)
+        .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc())
 }
 
 /// "23dk", "1sa 5dk", "<1dk"

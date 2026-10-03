@@ -18,10 +18,17 @@ function minutesLabel(m: number) {
 export default function GoalsSettings() {
   const [goals, setGoals] = useState<Goals | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hours, setHours] = useState("");
   const [categories, setCategories] = useState<Tag[]>([]);
 
   useEffect(() => {
-    api.goals().then(setGoals, (e) => setError(String(e)));
+    api.goals().then(
+      (g) => {
+        setGoals(g);
+        setHours(String(g.dailyHours));
+      },
+      (e) => setError(String(e)),
+    );
     api.taxonomy().then((t) => setCategories(t.tags.filter((x) => x.kind === "category")));
   }, []);
 
@@ -43,11 +50,16 @@ export default function GoalsSettings() {
           max={16}
           step={0.5}
           className="h-7 w-16 text-right tabular"
-          value={goals.dailyHours}
-          onChange={(e) => {
-            const v = Number(e.target.value);
-            if (v >= 0.5 && v <= 16) save({ ...goals, dailyHours: v });
+          value={hours}
+          onChange={(e) => setHours(e.target.value)}
+          onBlur={() => {
+            // Yazarken değil, alandan çıkınca kaydet; geçersizse eski değere dön.
+            const v = Number(hours.replace(",", "."));
+            if (v >= 0.5 && v <= 16) {
+              if (v !== goals.dailyHours) save({ ...goals, dailyHours: v });
+            } else setHours(String(goals.dailyHours));
           }}
+          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
         />
         <span className="text-xs text-muted-foreground">saat</span>
       </SettingRow>

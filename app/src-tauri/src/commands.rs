@@ -6,7 +6,7 @@ use tauri::{AppHandle, Manager};
 use tracky_core::{Goals, PrivacySettings, Report, Rule, RuleField, Tag, TagKind, UsageTotal};
 
 use crate::lock;
-use crate::tracking::{Command, GOALS_KEY, Shared};
+use crate::tracking::{Command, GOALS_KEY, Shared, local_midnight};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -14,28 +14,25 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// Yerel gece yarısı (yaz saati geçişinde ilk geçerli an).
-fn local_midnight(date: NaiveDate) -> CmdResult<DateTime<Utc>> {
-    date.and_hms_opt(0, 0, 0)
-        .and_then(|t| t.and_local_timezone(Local).earliest())
-        .map(|t| t.with_timezone(&Utc))
-        .ok_or_else(|| format!("{date} için yerel saat hesaplanamadı"))
-}
-
-/// `start` (YYYY-MM-DD, yerel) gününden başlayan `days` günlük rapor.
+/// `start` (YYYY-MM-DD, yerel) gününden başlayan `days` günlük rapor. `until`
+/// verilirse rapor o anda kesilir (süren dönemi önceki dönemin aynı noktasıyla kıyaslamak için).
 #[tauri::command]
 pub async fn get_report(
     app: AppHandle,
     start: String,
     days: u32,
     timeline: bool,
+    until: Option<String>,
 ) -> CmdResult<Report> {
     let first = NaiveDate::parse_from_str(&start, "%Y-%m-%d").map_err(err)?;
     let days = days.clamp(1, 366);
-    let starts = (0..days)
+    let starts: Vec<_> = (0..days)
         .map(|i| local_midnight(first + Days::new(i.into())))
-        .collect::<CmdResult<Vec<_>>>()?;
-    let to = local_midnight(first + Days::new(days.into()))?;
+        .collect();
+    let mut to = local_midnight(first + Days::new(days.into()));
+    if let Some(until) = until {
+        to = to.min(parse_time(&until)?.max(starts[0]));
+    }
     lock(&app.state::<Shared>().store)
         .report(starts[0], to, &starts, timeline)
         .map_err(err)
@@ -49,8 +46,8 @@ pub async fn app_titles_between(
     days: u32,
 ) -> CmdResult<Vec<UsageTotal>> {
     let first = NaiveDate::parse_from_str(&start, "%Y-%m-%d").map_err(err)?;
-    let from = local_midnight(first)?;
-    let to = local_midnight(first + Days::new(days.clamp(1, 366).into()))?;
+    let from = local_midnight(first);
+    let to = local_midnight(first + Days::new(days.clamp(1, 366).into()));
     lock(&app.state::<Shared>().store)
         .title_totals(&app_id, from, to)
         .map_err(err)

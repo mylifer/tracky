@@ -30,19 +30,9 @@ export function today(): Date {
   return new Date(n.getFullYear(), n.getMonth(), n.getDate());
 }
 
-const dayFmt = new Intl.DateTimeFormat("tr-TR", { weekday: "long", day: "numeric", month: "long" });
-const shortDayFmt = new Intl.DateTimeFormat("tr-TR", { weekday: "short" });
 const dateFmt = new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short" });
 const timeFmt = new Intl.DateTimeFormat("tr-TR", { hour: "2-digit", minute: "2-digit" });
 
-export function formatDay(d: Date): string {
-  const t = today();
-  if (+d === +t) return "Bugün";
-  if (+d === +addDays(t, -1)) return "Dün";
-  return dayFmt.format(d);
-}
-
-export const formatShortDay = (d: Date) => shortDayFmt.format(d);
 export const formatDate = (d: Date) => dateFmt.format(d);
 export const formatTime = (d: Date) => timeFmt.format(d);
 

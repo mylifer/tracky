@@ -138,7 +138,16 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     let Some((update, bytes)) = lock(&app.state::<UpdateState>().pending).take() else {
         return Err("Kurulacak güncelleme yok".into());
     };
-    update.install(bytes).map_err(message)?;
+    if let Err(e) = update.install(bytes) {
+        // İndirilen paket gitti: "hazır" görünmesin, bir sonraki denetim yeniden indirsin.
+        let msg = message(e);
+        set(app, |s| {
+            s.ready = false;
+            s.available = None;
+            s.error = Some(msg.clone());
+        });
+        return Err(msg);
+    }
     app.restart();
 }
 

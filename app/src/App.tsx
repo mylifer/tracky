@@ -91,8 +91,14 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   }, []);
 
   async function togglePause() {
-    await api.setPaused(!tracking.paused);
-    setTracking({ ...tracking, paused: !tracking.paused });
+    const paused = !tracking.paused;
+    try {
+      await api.setPaused(paused);
+      // Beklerken gelen durum güncellemesini ezmemek için güncel değerin üzerine yaz.
+      setTracking((t) => ({ ...t, paused }));
+    } catch {
+      /* durum olayı doğru değeri yeniden getirir */
+    }
   }
 
   const shift = (iso: string, n: number) => isoDate(addDays(parseIsoDate(iso), n));

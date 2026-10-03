@@ -28,12 +28,23 @@ export function AppList({
   const [titles, setTitles] = useState<UsageTotal[]>([]);
   const max = apps[0]?.seconds ?? 1;
 
+  // Açık uygulamanın süresi dakika olarak değişince yenile (her canlı raporda değil).
+  const openMinutes = Math.floor((apps.find((a) => a.appId === open)?.seconds ?? 0) / 60);
   useEffect(() => {
-    if (open) api.appTitlesBetween(open, start, days).then(setTitles);
-  }, [open, start, days, apps]);
+    setTitles([]);
+    if (!open) return;
+    let current = true;
+    api.appTitlesBetween(open, start, days).then(
+      (t) => current && setTitles(t),
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [open, start, days, openMinutes]);
 
   async function assign(appId: string, tagId: string) {
-    await api.assignAppCategory(appId, tagId === NONE ? null : tagId);
+    await api.assignAppCategory(appId, tagId === NONE ? null : tagId).catch(() => {});
     onChanged();
   }
 

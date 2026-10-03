@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Hourglass } from "lucide-react";
 import { api, type CategoryLimit, type Report, type Tag } from "../api";
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
 import { tagMap } from "../lib/tags";
+import { useTauriEvent } from "../lib/useTauriEvent";
 import { AppList, Legend } from "./Breakdown";
 import { DayCalendar, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
@@ -14,6 +15,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
 export type Mode = "day" | "week" | "month";
+
+/** Süren dönemde raporun canlı yenilenme aralığı. */
+const LIVE_REFRESH_MS = 15_000;
 
 const MODES: { id: Mode; label: string; current: string; summary: string }[] = [
   { id: "day", label: "Gün", current: "Bugün", summary: "Gün" },
@@ -51,42 +55,55 @@ export default function ReportView(p: Props) {
     );
   }, []);
 
+  // Her yükleme bir sıra numarası alır; geç gelen eski yanıt (başka dönem) ekranı ezmez.
+  const seq = useRef(0);
   const load = useCallback(() => {
+    const n = ++seq.current;
     api.report(p.start, days, timeline).then(
       (r) => {
+        if (n !== seq.current) return;
         setReport(r);
         setError(null);
       },
-      (e) => setError(String(e)),
+      (e) => n === seq.current && setError(String(e)),
     );
     const start = parseIsoDate(p.start);
     const prevStart = p.mode === "month" ? addMonths(start, -1) : addDays(start, -days);
-    // Süren dönem önceki dönemin aynı uzunluktaki başıyla kıyaslanır
-    // (ayın 3'ünde geçen ayın tamamıyla değil, ilk 3 günüyle).
-    const elapsed = Math.round((+today() - +start) / 86_400_000) + 1;
     const fullPrev = p.mode === "month" ? daysInMonth(prevStart) : days;
-    const prevDays = elapsed > 0 && elapsed < days ? Math.min(elapsed, fullPrev) : fullPrev;
-    api.report(isoDate(prevStart), prevDays, false).then(setPrevious, () => setPrevious(null));
+    // Süren dönem, önceki dönemin aynı noktasına kadarki kısmıyla kıyaslanır
+    // (bugün 10:00'da dünün 10:00'una kadarı; ayın 3'ünde geçen ayın ilk 3 günü).
+    const elapsed = Date.now() - +start;
+    const live = elapsed > 0 && elapsed < +addDays(start, days) - +start;
+    const until = live ? new Date(+prevStart + elapsed).toISOString() : undefined;
+    api.report(isoDate(prevStart), fullPrev, false, until).then(
+      (r) => n === seq.current && setPrevious(r),
+      () => n === seq.current && setPrevious(null),
+    );
   }, [p.start, p.mode, days, timeline]);
 
   useEffect(load, [load]);
-  useEffect(() => {
-    const unlisten = api.onSync(load);
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, [load]);
+  useTauriEvent(api.onSync, load);
 
   const from = parseIsoDate(p.start);
   const end = addDays(from, days);
   const isLive = new Date() < end && new Date() >= from;
-  useEffect(() => {
-    if (!isLive) return;
-    const unlisten = api.onStatus(() => api.report(p.start, days, timeline).then(setReport));
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, [isLive, p.start, days, timeline]);
+  // Süren dönemde takip durumu her pencere geçişinde gelir; raporu her seferinde
+  // yeniden hesaplamak yerine en çok 15 sn'de bir yenile.
+  const pending = useRef<number | null>(null);
+  useTauriEvent(api.onStatus, () => {
+    if (!isLive || pending.current !== null) return;
+    pending.current = window.setTimeout(() => {
+      pending.current = null;
+      load();
+    }, LIVE_REFRESH_MS);
+  });
+  useEffect(
+    () => () => {
+      if (pending.current !== null) window.clearTimeout(pending.current);
+      pending.current = null;
+    },
+    [load],
+  );
 
   const tags = useMemo(() => tagMap(report?.tags ?? []), [report]);
   const categories = useMemo(() => (report?.tags ?? []).filter((t) => t.kind === "category"), [report]);
@@ -177,6 +194,7 @@ export default function ReportView(p: Props) {
                   </CardContent>
                 )}
                 <CardContent className="px-3">
+                  {p.mode !== "month" && report.totalSeconds === 0 && <Empty future={+from > Date.now()} />}
                   <EditContext.Provider value={editCtx}>
                     {p.mode === "month" ? (
                       <MonthCalendar
@@ -186,8 +204,6 @@ export default function ReportView(p: Props) {
                         dailyHours={dailyHours}
                         onSelectDay={p.onSelectDay}
                       />
-                    ) : report.totalSeconds === 0 ? (
-                      <Empty />
                     ) : p.mode === "day" ? (
                       <DayCalendar
                         from={from}
@@ -248,14 +264,19 @@ export default function ReportView(p: Props) {
   );
 }
 
-function Empty() {
+/** Kayıt yokken takvimin üstünde: ne olacağını ve elle eklemenin yolunu söyler. */
+function Empty({ future }: { future: boolean }) {
   return (
-    <div className="flex flex-col items-center gap-1.5 py-16 text-center">
-      <div className="mb-2 grid size-11 place-items-center rounded-full bg-muted">
-        <Hourglass className="size-5 text-muted-foreground" />
+    <div className="mx-1 mb-3 flex items-center gap-3 rounded-lg bg-muted/60 px-3 py-2.5">
+      <Hourglass className="size-4 shrink-0 text-muted-foreground" />
+      <div className="text-xs">
+        <p className="font-medium">Bu aralık için kayıt yok</p>
+        <p className="text-muted-foreground">
+          {future
+            ? "Kum arka planda çalışırken takvim kendiliğinden dolacak."
+            : "Kum çalışırken takvim kendiliğinden dolar. Bilgisayar dışında geçen süre için boş alana tıkla."}
+        </p>
       </div>
-      <p className="text-[13px] font-medium">Bu aralık için kayıt yok</p>
-      <p className="text-xs text-muted-foreground">Kum arka planda çalışırken takvim kendiliğinden dolacak.</p>
     </div>
   );
 }

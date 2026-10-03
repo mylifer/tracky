@@ -122,21 +122,17 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   setPaused: (paused: boolean) => invoke<void>("set_paused", { paused }),
   completeOnboarding: () => invoke<void>("complete_onboarding"),
-  todayApps: () => invoke<UsageTotal[]>("today_apps"),
-  appTitles: (appId: string) => invoke<UsageTotal[]>("app_titles", { appId }),
-  report: (start: string, days: number, timeline: boolean) =>
-    invoke<Report>("get_report", { start, days, timeline }),
+  /** `until` verilirse rapor o anda kesilir (süren dönemin kıyası için). */
+  report: (start: string, days: number, timeline: boolean, until?: string) =>
+    invoke<Report>("get_report", { start, days, timeline, until: until ?? null }),
   appTitlesBetween: (appId: string, start: string, days: number) =>
     invoke<UsageTotal[]>("app_titles_between", { appId, start, days }),
   taxonomy: () => invoke<Taxonomy>("get_taxonomy"),
-  saveTag: (tag: { id?: string; kind: TagKind; name: string; color: number }) =>
-    invoke<Tag>("save_tag", { tag }),
+  saveTag: (tag: { id?: string; kind: TagKind; name: string; color: number }) => invoke<Tag>("save_tag", { tag }),
   deleteTag: (id: string) => invoke<void>("delete_tag", { id }),
-  addRule: (tagId: string, field: RuleField, pattern: string) =>
-    invoke<void>("add_rule", { tagId, field, pattern }),
+  addRule: (tagId: string, field: RuleField, pattern: string) => invoke<void>("add_rule", { tagId, field, pattern }),
   deleteRule: (id: string) => invoke<void>("delete_rule", { id }),
-  assignAppCategory: (appId: string, tagId: string | null) =>
-    invoke<void>("assign_app_category", { appId, tagId }),
+  assignAppCategory: (appId: string, tagId: string | null) => invoke<void>("assign_app_category", { appId, tagId }),
   knownApps: () => invoke<UsageTotal[]>("known_apps"),
   /** Aralıktaki oturumlara elle kategori; `null` kurallara döndürür. */
   setRangeCategory: (start: string, end: string, categoryId: string | null) =>
@@ -150,15 +146,13 @@ export const api = {
   saveGoals: (goals: Goals) => invoke<void>("save_goals", { goals }),
   exportCsv: () => invoke<string>("export_csv"),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
-  syncConfigure: (url: string, anonKey: string) =>
-    invoke<SyncStatus>("sync_configure", { url, anonKey }),
+  syncConfigure: (url: string, anonKey: string) => invoke<SyncStatus>("sync_configure", { url, anonKey }),
   syncSignIn: (email: string, password: string, signUp: boolean) =>
     invoke<SyncStatus>("sync_sign_in", { email, password, signUp }),
   syncSignOut: () => invoke<SyncStatus>("sync_sign_out"),
   syncDisconnect: () => invoke<SyncStatus>("sync_disconnect"),
   syncNow: () => invoke<void>("sync_now"),
-  onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> =>
-    listen<SyncStatus>("sync", (e) => cb(e.payload)),
+  onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> => listen<SyncStatus>("sync", (e) => cb(e.payload)),
   diagnose: () => invoke<string>("diagnose"),
   startFocus: (minutes: number) => invoke<void>("start_focus", { minutes }),
   stopFocus: () => invoke<void>("stop_focus"),

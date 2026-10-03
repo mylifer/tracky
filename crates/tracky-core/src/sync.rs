@@ -127,10 +127,17 @@ pub fn run(
     // Bir tablodaki hata diğerlerini durdurmaz; ilk hata sonunda bildirilir.
     let mut summary = SyncSummary::default();
     let mut first_error = None;
+    let mut tags_failed = false;
     for table in TABLES {
+        // Etiketleri gönderilemeyen kurallar sunucuya etiketsiz düşer ve diğer
+        // cihazlarda çekimi tıkar; bir sonraki çalıştırmaya bırak.
+        if table.name == "rules" && tags_failed {
+            continue;
+        }
         match push_table(store, remote, table, user_id) {
             Ok(n) => summary.pushed += n,
             Err(e) => {
+                tags_failed |= table.name == "tags";
                 first_error.get_or_insert(e);
             }
         }

@@ -203,6 +203,11 @@ impl Store {
                 title = excluded.title,
                 url = excluded.url,
                 domain = excluded.domain,
+                -- Süren oturum silindiyse (takvimde blok silme, başka cihaz) takip
+                -- sürüyor demektir: kayıt silinme anından itibaren yeniden başlar.
+                started_at = CASE WHEN sessions.deleted_at IS NULL THEN sessions.started_at
+                    ELSE MAX(sessions.started_at, MIN(sessions.deleted_at, excluded.ended_at)) END,
+                deleted_at = NULL,
                 ended_at = excluded.ended_at,
                 updated_at = MAX(excluded.updated_at, sessions.updated_at + 1)",
             params![
@@ -320,21 +325,72 @@ impl Store {
         if let Some(id) = category_id {
             self.require_tag(id, TagKind::Category)?;
         }
-        Ok(self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        self.split_at(from, to)?;
+        let n = self.conn.execute(
             "UPDATE sessions SET category_id = ?3, updated_at = MAX(?4, updated_at + 1)
              WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1
                AND category_id IS NOT ?3",
             params![ms(from), ms(to), category_id, ms(Utc::now())],
-        )?)
+        )?;
+        tx.commit()?;
+        Ok(n)
     }
 
-    /// `[from, to)` ile kesişen oturumları yumuşak siler. Silinen satır sayısı.
+    /// `[from, to)` içindeki süreyi yumuşak siler; sınırı aşan oturumların dışarıda
+    /// kalan kısmı korunur. Silinen satır sayısı.
     pub fn delete_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
-        Ok(self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        self.split_at(from, to)?;
+        let n = self.conn.execute(
             "UPDATE sessions SET deleted_at = ?3, updated_at = MAX(?3, updated_at + 1)
              WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1",
             params![ms(from), ms(to), ms(Utc::now())],
-        )?)
+        )?;
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// `[from, to)` sınırını aşan oturumları sınırlarda böler; sonra aralıkla
+    /// kesişen her oturum tamamen aralığın içindedir. Asıl kimlik en son parçada
+    /// kalır: süren oturumu takip eden motor doğru satırı uzatmaya devam eder.
+    fn split_at(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<()> {
+        let (from, to, now) = (ms(from), ms(to), ms(Utc::now()));
+        let partial: Vec<(String, i64, i64)> = self
+            .conn
+            .prepare(
+                "SELECT id, started_at, ended_at FROM sessions
+                 WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1
+                   AND (started_at < ?1 OR ended_at > ?2)",
+            )?
+            .query_map(params![from, to], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (id, start, end) in partial {
+            let mut parts = Vec::new();
+            if start < from {
+                parts.push((start, from));
+            }
+            parts.push((start.max(from), end.min(to)));
+            if end > to {
+                parts.push((to, end));
+            }
+            let (keep_start, keep_end) = parts.pop().expect("en az bir parça");
+            for (a, b) in parts {
+                self.conn.execute(
+                    "INSERT INTO sessions (id, device_id, app_id, app_name, title, url, domain,
+                         category_id, started_at, ended_at, updated_at)
+                     SELECT ?2, device_id, app_id, app_name, title, url, domain, category_id, ?3, ?4, ?5
+                     FROM sessions WHERE id = ?1",
+                    params![id, Uuid::new_v4().to_string(), a, b, now],
+                )?;
+            }
+            self.conn.execute(
+                "UPDATE sessions SET started_at = ?2, ended_at = ?3, updated_at = MAX(?4, updated_at + 1)
+                 WHERE id = ?1",
+                params![id, keep_start, keep_end, now],
+            )?;
+        }
+        Ok(())
     }
 
     /// Elle kayıt ekler (bilgisayar dışında geçen toplantı, okuma...).
@@ -755,7 +811,7 @@ impl Store {
         // Sütun adları sabit; kullanıcı girdisi değildir.
         let sql = format!(
             "SELECT {key_col}, MAX({label_col}),
-                    SUM(MIN(ended_at, ?2) - MAX(started_at, ?1)) / 1000 AS secs
+                    SUM((MIN(ended_at, ?2) - MAX(started_at, ?1)) / 1000) AS secs
              FROM sessions
              WHERE deleted_at IS NULL AND {key_col} IS NOT NULL
                AND started_at < ?2 AND ended_at > ?1
@@ -1144,5 +1200,57 @@ mod tests {
         store.start_focus(25, t(80 * 60)).unwrap();
         assert!(store.stop_focus(t(80 * 60 + 30)).unwrap().is_none());
         assert_eq!(store.focus_timers_between(t(0), t(7200)).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn range_edits_split_sessions_at_the_boundaries() {
+        let store = Store::open_in_memory().unwrap();
+        let long = session("A", None, 0, 3000);
+        store.upsert_session(&long).unwrap();
+        // Ortadaki 1000–2000 silinir; baş ve son korunur, asıl kimlik sonda kalır.
+        assert_eq!(store.delete_between(t(1000), t(2000)).unwrap(), 1);
+        let left = store.sessions_between(t(0), t(4000)).unwrap();
+        let spans: Vec<_> = left.iter().map(|s| (s.started_at, s.ended_at)).collect();
+        assert_eq!(spans, [(t(0), t(1000)), (t(2000), t(3000))]);
+        assert_eq!(left[1].id, long.id);
+
+        // Kategori ataması da yalnızca aralığın içine uygulanır.
+        let cat = store.tags().unwrap()[0].id.clone();
+        store
+            .set_category_between(t(2500), t(2600), Some(&cat))
+            .unwrap();
+        let all = store.sessions_between(t(0), t(4000)).unwrap();
+        let tagged: Vec<_> = all
+            .iter()
+            .filter(|s| s.category_id.is_some())
+            .map(|s| (s.started_at, s.ended_at))
+            .collect();
+        assert_eq!(tagged, [(t(2500), t(2600))]);
+        assert_eq!(all.len(), 4);
+    }
+
+    #[test]
+    fn running_session_resumes_after_its_block_is_deleted() {
+        let store = Store::open_in_memory().unwrap();
+        let mut running = session("A", None, 0, 600);
+        store.upsert_session(&running).unwrap();
+        store.delete_between(t(0), t(600)).unwrap();
+        assert!(store.sessions_between(t(0), t(4000)).unwrap().is_empty());
+        // Motor aynı oturumu uzatmaya devam eder: silinme anından itibaren geri gelir.
+        let deleted_at: i64 = store
+            .conn
+            .query_row(
+                "SELECT deleted_at FROM sessions WHERE id = ?1",
+                [running.id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        running.ended_at = from_ms(deleted_at) + chrono::Duration::seconds(30);
+        store.upsert_session(&running).unwrap();
+        let back = store
+            .sessions_between(t(0), from_ms(deleted_at + 60_000))
+            .unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].started_at, from_ms(deleted_at));
     }
 }

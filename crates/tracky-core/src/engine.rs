@@ -84,7 +84,8 @@ impl Engine {
         };
         match &mut self.current {
             Some(s) if s.matches(&window) => {
-                s.ended_at = now;
+                // Sistem saati geri alınırsa bitiş başlangıçtan önceye düşmesin.
+                s.ended_at = now.max(s.started_at);
                 None
             }
             _ => {

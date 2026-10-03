@@ -82,21 +82,27 @@ pub struct Rule {
 
 impl Rule {
     pub fn matches(&self, app_id: &str, title: &str) -> bool {
+        self.matches_lower(
+            &self.pattern.to_lowercase(),
+            &app_id.to_lowercase(),
+            &title.to_lowercase(),
+        )
+    }
+
+    /// Desen ve girdiler önceden küçük harfe çevrilmiş olarak (sınıflandırıcı
+    /// desenleri bir kez çevirir, her oturum için değil).
+    fn matches_lower(&self, pattern: &str, app_id: &str, title: &str) -> bool {
         match self.field {
-            RuleField::App => app_matches(&self.pattern, app_id),
-            RuleField::Title => {
-                !self.pattern.is_empty()
-                    && title.to_lowercase().contains(&self.pattern.to_lowercase())
-            }
+            RuleField::App => app_matches(pattern, app_id),
+            RuleField::Title => !pattern.is_empty() && title.contains(pattern),
         }
     }
 }
 
 /// Windows'ta `app_id` tam exe yoludur; desen yalnızca exe adı da olabilir.
-fn app_matches(pattern: &str, app_id: &str) -> bool {
-    let pattern = pattern.to_lowercase();
-    let id = app_id.to_lowercase();
-    let exe = id.rsplit(['\\', '/']).next().unwrap_or(&id);
+/// İkisi de küçük harfli gelir.
+fn app_matches(pattern: &str, id: &str) -> bool {
+    let exe = id.rsplit(['\\', '/']).next().unwrap_or(id);
     match pattern.strip_suffix('*') {
         Some(prefix) if !prefix.is_empty() => id.starts_with(prefix) || exe.starts_with(prefix),
         Some(_) => false,
@@ -114,8 +120,9 @@ pub struct Classification {
 /// Kuralları önceliğe göre dizer: başlık kuralları uygulama kurallarından
 /// daha özeldir ve önce denenir (örn. Safari'de "Google E-Tablolar" → Ofis).
 pub struct Classifier {
-    category_rules: Vec<Rule>,
-    project_rules: Vec<Rule>,
+    /// (kural, küçük harfli desen)
+    category_rules: Vec<(Rule, String)>,
+    project_rules: Vec<(Rule, String)>,
     /// Var olan kategoriler: silinmiş bir kategoriye verilmiş elle atama yok sayılır.
     categories: std::collections::HashSet<String>,
 }
@@ -136,9 +143,18 @@ impl Classifier {
         for list in [&mut category_rules, &mut project_rules] {
             list.sort_by_key(|r| r.field != RuleField::Title);
         }
+        let lowered = |rules: Vec<Rule>| -> Vec<(Rule, String)> {
+            rules
+                .into_iter()
+                .map(|r| {
+                    let pattern = r.pattern.to_lowercase();
+                    (r, pattern)
+                })
+                .collect()
+        };
         Self {
-            category_rules,
-            project_rules,
+            category_rules: lowered(category_rules),
+            project_rules: lowered(project_rules),
             categories: tags
                 .iter()
                 .filter(|t| t.kind == TagKind::Category)
@@ -159,11 +175,12 @@ impl Classifier {
     }
 
     pub fn classify_parts(&self, app_id: &str, title: &str) -> Classification {
-        let first = |rules: &[Rule]| {
+        let (app_id, title) = (app_id.to_lowercase(), title.to_lowercase());
+        let first = |rules: &[(Rule, String)]| {
             rules
                 .iter()
-                .find(|r| r.matches(app_id, title))
-                .map(|r| r.tag_id.clone())
+                .find(|(r, p)| r.matches_lower(p, &app_id, &title))
+                .map(|(r, _)| r.tag_id.clone())
         };
         Classification {
             category: first(&self.category_rules),
@@ -173,10 +190,11 @@ impl Classifier {
 
     /// Uygulamanın kendi kategorisi (yalnızca uygulama kuralları; listede göstermek için).
     pub fn app_category(&self, app_id: &str) -> Option<String> {
+        let app_id = app_id.to_lowercase();
         self.category_rules
             .iter()
-            .find(|r| r.field == RuleField::App && r.matches(app_id, ""))
-            .map(|r| r.tag_id.clone())
+            .find(|(r, p)| r.field == RuleField::App && r.matches_lower(p, &app_id, ""))
+            .map(|(r, _)| r.tag_id.clone())
     }
 }
 

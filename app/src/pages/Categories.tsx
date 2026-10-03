@@ -22,8 +22,9 @@ import { cn } from "../lib/utils";
 
 const KIND_TITLE: Record<TagKind, string> = { category: "Kategoriler", project: "Projeler" };
 const KIND_HINT: Record<TagKind, string> = {
-  category: "Uygulamaları gruplar. Bir oturum tek kategoriye girer; başlık kuralları uygulama kurallarından önce gelir.",
-  project: "Pencere başlığında geçen bir kelimeyle uygulamalar arası işleri toplar (örn. \"fintrack\").",
+  category:
+    "Uygulamaları gruplar. Bir oturum tek kategoriye girer; başlık kuralları uygulama kurallarından önce gelir.",
+  project: 'Pencere başlığında geçen bir kelimeyle uygulamalar arası işleri toplar (örn. "fintrack").',
 };
 
 export default function Categories() {
@@ -148,6 +149,8 @@ function TagRow({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: Usag
   const [field, setField] = useState<RuleField>(tag.kind === "project" ? "title" : "app");
   const [pattern, setPattern] = useState("");
   const [name, setName] = useState(tag.name);
+  // Başka cihazdan gelen yeniden adlandırma eski adla ezilmesin.
+  useEffect(() => setName(tag.name), [tag.name]);
   const appNames = useMemo(() => new Map(apps.map((a) => [a.key, a.label])), [apps]);
   const shown = rules.filter((r) => !foreignRule(r));
   const hidden = rules.filter(foreignRule);
@@ -171,18 +174,28 @@ function TagRow({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: Usag
         />
         <AlertDialog>
           <AlertDialogTrigger asChild>
-            <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive" aria-label="Sil">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground hover:text-destructive"
+              aria-label="Sil"
+            >
               <Trash2 className="size-3.5" />
             </Button>
           </AlertDialogTrigger>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>“{tag.name}” silinsin mi?</AlertDialogTitle>
-              <AlertDialogDescription>Kuralları da silinir. Geçmiş kayıtlar silinmez, kategorisiz görünür.</AlertDialogDescription>
+              <AlertDialogDescription>
+                Kuralları da silinir. Geçmiş kayıtlar silinmez, kategorisiz görünür.
+              </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Vazgeç</AlertDialogCancel>
-              <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={run(() => api.deleteTag(tag.id))}>
+              <AlertDialogAction
+                className="bg-destructive text-white hover:bg-destructive/90"
+                onClick={run(() => api.deleteTag(tag.id))}
+              >
                 Sil
               </AlertDialogAction>
             </AlertDialogFooter>
@@ -191,7 +204,11 @@ function TagRow({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: Usag
       </div>
       <div className="flex flex-wrap items-center gap-1.5 pl-8">
         {shown.map((r) => (
-          <span key={r.id} className="inline-flex h-6 items-center gap-1 rounded-md bg-secondary pr-0.5 pl-2 text-xs" title={r.pattern}>
+          <span
+            key={r.id}
+            className="inline-flex h-6 items-center gap-1 rounded-md bg-secondary pr-0.5 pl-2 text-xs"
+            title={r.pattern}
+          >
             <span className="text-muted-foreground">{r.field === "app" ? "Uygulama" : "Başlıkta"}</span>
             <span className="max-w-48 truncate font-medium">
               {r.field === "app" ? (appNames.get(r.pattern) ?? r.pattern) : `“${r.pattern}”`}
@@ -248,7 +265,12 @@ function TagRow({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: Usag
             </SelectContent>
           </Select>
         ) : (
-          <Input className="h-7 w-52 text-xs" value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="örn. fintrack" />
+          <Input
+            className="h-7 w-52 text-xs"
+            value={pattern}
+            onChange={(e) => setPattern(e.target.value)}
+            placeholder="örn. fintrack"
+          />
         )}
         <Button type="submit" variant="outline" size="sm" disabled={!pattern.trim()}>
           Kural ekle
@@ -275,7 +297,9 @@ function ColorPicker({ value, onChange }: { value: number; onChange: (c: number)
           {[1, 2, 3, 4, 5, 6, 7, 8].map((c) => (
             <button
               key={c}
-              className={cn("grid size-7 place-items-center rounded-full text-white transition-transform hover:scale-110")}
+              className={cn(
+                "grid size-7 place-items-center rounded-full text-white transition-transform hover:scale-110",
+              )}
               style={{ background: `var(--c${c})` }}
               onClick={() => {
                 setOpen(false);

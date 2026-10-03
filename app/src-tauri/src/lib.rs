@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
-use tracky_core::{Store, UsageTotal};
+use tracky_core::Store;
 
 use tracking::{Command, Shared, Status};
 use tray::TrayItems;
@@ -91,20 +91,6 @@ async fn set_paused(app: AppHandle, paused: bool) -> Result<(), String> {
 async fn complete_onboarding(app: AppHandle) -> Result<(), String> {
     lock(&app.state::<Shared>().store)
         .save_setting(ONBOARDED_KEY, &true)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn today_apps(app: AppHandle) -> Result<Vec<UsageTotal>, String> {
-    lock(&app.state::<Shared>().store)
-        .app_totals(tracking::start_of_today(), chrono::Utc::now())
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn app_titles(app: AppHandle, app_id: String) -> Result<Vec<UsageTotal>, String> {
-    lock(&app.state::<Shared>().store)
-        .title_totals(&app_id, tracking::start_of_today(), chrono::Utc::now())
         .map_err(|e| e.to_string())
 }
 
@@ -270,8 +256,6 @@ pub fn run() {
             set_autostart,
             set_paused,
             complete_onboarding,
-            today_apps,
-            app_titles,
             diagnose,
             start_focus,
             stop_focus,
