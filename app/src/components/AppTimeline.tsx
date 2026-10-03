@@ -348,7 +348,7 @@ const clock = (ms: number) => {
 };
 
 /** Görünen aralıkta en çok 12 çizgi olacak en sık adımda (5/10/15/30/60 dk) zaman işaretleri. */
-function timeTicks(start: number, span: number): number[] {
+export function timeTicks(start: number, span: number): number[] {
   const step = [5, 10, 15, 30].map((m) => m * 60_000).find((s) => span / s <= 12) ?? HOUR_MS;
   const out = [];
   for (let t = Math.ceil(start / step) * step; t <= start + span + 1; t += step) out.push(t);
