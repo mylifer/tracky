@@ -80,19 +80,16 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
         s.error = None;
     });
     let result = async {
-        let Some(update) = app
-            .updater()
-            .map_err(|e| e.to_string())?
-            .check()
-            .await
-            .map_err(|e| e.to_string())?
-        else {
-            return Ok::<_, String>(None);
+        let checked = app.updater().map_err(message)?.check().await;
+        let update = match checked {
+            Ok(Some(update)) => update,
+            // Henüz hiç sürüm yayınlanmadıysa latest.json yoktur (404): yeni sürüm yok demektir.
+            Ok(None) | Err(tauri_plugin_updater::Error::ReleaseNotFound) => {
+                return Ok::<_, String>(None);
+            }
+            Err(e) => return Err(message(e)),
         };
-        let bytes = update
-            .download(|_, _| {}, || {})
-            .await
-            .map_err(|e| e.to_string())?;
+        let bytes = update.download(|_, _| {}, || {}).await.map_err(message)?;
         Ok(Some((update, bytes)))
     }
     .await;
@@ -141,6 +138,23 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     let Some((update, bytes)) = lock(&app.state::<UpdateState>().pending).take() else {
         return Err("Kurulacak güncelleme yok".into());
     };
-    update.install(bytes).map_err(|e| e.to_string())?;
+    update.install(bytes).map_err(message)?;
     app.restart();
+}
+
+/// Güncelleyici hatasını kullanıcıya gösterilecek Türkçe metne çevirir.
+fn message(e: tauri_plugin_updater::Error) -> String {
+    use tauri_plugin_updater::Error as E;
+    match e {
+        E::Reqwest(_) | E::Network(_) => {
+            "Güncelleme sunucusuna ulaşılamadı. İnternet bağlantını denetleyip tekrar dene.".into()
+        }
+        E::Minisign(_) | E::Base64(_) | E::SignatureUtf8(_) => {
+            "İndirilen güncellemenin imzası doğrulanamadı; kurulmadı.".into()
+        }
+        E::TargetNotFound(_) | E::TargetsNotFound(_) => {
+            "Yeni sürümde bu sistem için paket yok.".into()
+        }
+        other => format!("Güncelleme denetlenemedi: {other}"),
+    }
 }
