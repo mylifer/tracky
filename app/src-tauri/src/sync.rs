@@ -170,12 +170,16 @@ pub fn run(app: AppHandle, rx: Receiver<SyncCommand>) {
 }
 
 #[tauri::command]
-pub fn sync_status(app: AppHandle) -> SyncStatus {
+pub async fn sync_status(app: AppHandle) -> SyncStatus {
     status(&app)
 }
 
 #[tauri::command]
-pub fn sync_configure(app: AppHandle, url: String, anon_key: String) -> CmdResult<SyncStatus> {
+pub async fn sync_configure(
+    app: AppHandle,
+    url: String,
+    anon_key: String,
+) -> CmdResult<SyncStatus> {
     let url = url.trim().trim_end_matches('/').to_string();
     if !url.starts_with("https://") {
         return Err("Adres https:// ile başlamalı (örn. https://abcd.supabase.co)".into());
@@ -240,7 +244,7 @@ pub async fn sync_sign_in(
 }
 
 #[tauri::command]
-pub fn sync_sign_out(app: AppHandle) -> CmdResult<SyncStatus> {
+pub async fn sync_sign_out(app: AppHandle) -> CmdResult<SyncStatus> {
     clear(&app, AUTH_KEY)?;
     *lock(&app.state::<SyncWorker>().last) = None;
     Ok(status(&app))
@@ -248,7 +252,7 @@ pub fn sync_sign_out(app: AppHandle) -> CmdResult<SyncStatus> {
 
 /// Bağlantıyı tamamen kaldırır (yerel veriler kalır).
 #[tauri::command]
-pub fn sync_disconnect(app: AppHandle) -> CmdResult<SyncStatus> {
+pub async fn sync_disconnect(app: AppHandle) -> CmdResult<SyncStatus> {
     clear(&app, AUTH_KEY)?;
     clear(&app, CONFIG_KEY)?;
     *lock(&app.state::<SyncWorker>().last) = None;

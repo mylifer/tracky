@@ -190,7 +190,7 @@ fn refresh_status(app: &AppHandle) -> Result<(), String> {
 
 /// Kum'un kendi izinleriyle ham gözlem; başlık okunamıyorsa nedenini gösterir.
 #[tauri::command]
-fn diagnose() -> String {
+async fn diagnose() -> String {
     tracky_platform::diagnose()
 }
 
