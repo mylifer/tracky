@@ -19,6 +19,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 11. Odak modu: 25/50/90 dk zamanlayıcı (menü çubuğu ve kenar çubuğu), bitince bildirim, takvimde odak aralığı
 - [x] 12. Kullanım kolaylıkları: takvimde boş alana tıklayarak kayıt, klavye kısayolları (←/→, T, 1/2/3),
       süreli duraklatma, görünüm seçimi (sistem/açık/koyu), hafta/ay öne çıkanları
+- [x] 13. Uygulama çizelgesi: gün görünümünde uygulama ve pencere başlığı bazında Gantt çizelgesi
 
 ## Yapı
 
