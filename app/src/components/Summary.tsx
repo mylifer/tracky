@@ -120,15 +120,23 @@ function activeDays(report: Report, days: number): number {
 }
 
 function Delta({ now, before, unit }: { now: number; before?: number; unit: string }) {
-  if (before === undefined || before === 0) return <div className="mt-1.5 text-[11px] text-muted-foreground">—</div>;
+  // Dönemde henüz kayıt yoksa "-%100" yanıltıcı olur; kıyas gösterilmez.
+  if (before === undefined || before === 0 || now === 0) return <div className="mt-1.5 text-[11px] text-muted-foreground">—</div>;
   const pct = Math.round(((now - before) / before) * 100);
   const up = pct >= 0;
   const Icon = up ? TrendingUp : TrendingDown;
   return (
-    <div className={cn("mt-1.5 flex items-center gap-1 text-[11px] font-medium tabular", up ? "text-success" : "text-destructive")}>
-      <Icon className="size-3.5" />
-      {up ? "+" : ""}
-      {pct}% <span className="font-normal text-muted-foreground">{unit}</span>
+    <div
+      className={cn(
+        "mt-1.5 flex flex-wrap items-center gap-x-1 text-[11px] font-medium tabular",
+        up ? "text-success" : "text-destructive",
+      )}
+    >
+      <span className="flex items-center gap-1 whitespace-nowrap">
+        <Icon className="size-3.5" />
+        {`${up ? "+" : "-"}%${Math.abs(pct)}`}
+      </span>
+      <span className="font-normal whitespace-nowrap text-muted-foreground">{unit}</span>
     </div>
   );
 }
@@ -233,12 +241,12 @@ function Metrics({ parts }: { parts: { label: string; secs: number; color: strin
             <span key={p.label} className="h-full first:rounded-l-full last:rounded-r-full" style={{ flexGrow: p.secs, background: p.color }} />
           ))}
       </div>
-      <ul className="grid grid-cols-3 gap-2">
+      <ul className="flex justify-between gap-2">
         {parts.map((p) => (
-          <li key={p.label} className="min-w-0">
+          <li key={p.label} className="whitespace-nowrap">
             <div className="flex items-center gap-1.5 text-[11px]">
               <i className="size-2 shrink-0 rounded-full" style={{ background: p.color }} />
-              <span className="truncate">{p.label}</span>
+              <span>{p.label}</span>
             </div>
             <div className="mt-0.5 pl-3.5 text-[11px] text-muted-foreground tabular">{formatDuration(p.secs)}</div>
           </li>

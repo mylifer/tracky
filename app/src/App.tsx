@@ -99,7 +99,11 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
 
   function selectMode(m: Mode) {
     if (m === "week") setWeek(isoDate(startOfWeek(dayDate)));
-    if (m === "month") setMonth(isoDate(startOfMonth(view === "week" ? parseIsoDate(week) : dayDate)));
+    if (m === "month") {
+      // Bu hafta seçiliyse bugünün ayı (hafta önceki aydan başlasa bile).
+      const ref = view === "week" ? (week === thisWeek ? today() : parseIsoDate(week)) : dayDate;
+      setMonth(isoDate(startOfMonth(ref)));
+    }
     setView(m);
   }
 

@@ -9,6 +9,11 @@ export function tagColor(tag: Tag | undefined): string {
   return tag ? `var(--c${tag.color})` : "var(--c0)";
 }
 
+/** Etiket renginin üstündeki yazı rengi (sarı/yeşil gibi açık renklerde koyu). */
+export function tagInk(tag: Tag | undefined): string {
+  return `var(--c${tag ? tag.color : 0}-ink)`;
+}
+
 export function tagMap(tags: Tag[]): Map<string, Tag> {
   return new Map(tags.map((t) => [t.id, t]));
 }

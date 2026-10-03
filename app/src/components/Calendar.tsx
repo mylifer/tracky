@@ -3,7 +3,7 @@ import { Zap } from "lucide-react";
 import type { Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
 import { addDays, formatTime, isoDate, today } from "../lib/dates";
-import { UNCATEGORIZED, tagColor } from "../lib/tags";
+import { UNCATEGORIZED, tagColor, tagInk } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
@@ -139,7 +139,20 @@ function blockTitle(b: WorkBlock, tags: Map<string, Tag>) {
 }
 
 /** Takvim.app tarzı etkinlik bloğu; tıklayınca ayrıntı açılır. */
-function Block({ b, tags, top, height }: { b: WorkBlock; tags: Map<string, Tag>; top: number; height: number }) {
+function Block({
+  b,
+  tags,
+  top,
+  height,
+  narrow = false,
+}: {
+  b: WorkBlock;
+  tags: Map<string, Tag>;
+  top: number;
+  height: number;
+  /** Dar sütun (hafta): tek satırlık blokta süre yer kaplamasın, başlık okunsun. */
+  narrow?: boolean;
+}) {
   const { tag, title, apps } = blockTitle(b, tags);
   const color = tagColor(tag);
   const full = height >= FULL_LABEL_PX;
@@ -161,17 +174,21 @@ function Block({ b, tags, top, height }: { b: WorkBlock; tags: Map<string, Tag>;
           aria-label={summary}
         >
           {label && (
-            <span className={cn("flex h-full", full ? "flex-col py-1" : "items-center gap-1.5")}>
-              <span className="truncate text-[11px] leading-tight font-semibold">{title}</span>
+            <span className={cn("flex h-full flex-col", full ? "py-1" : "justify-center")}>
+              <span className="flex items-baseline gap-1.5">
+                <span className="truncate text-[11px] leading-tight font-semibold">{title}</span>
+                {!full && !narrow && (
+                  <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular">
+                    {formatDuration(b.activeSeconds)}
+                  </span>
+                )}
+              </span>
               {full && (
-                <span className="truncate text-[10px] leading-tight text-muted-foreground">
-                  {formatTime(new Date(b.start))} – {formatTime(new Date(b.end))}
+                <span className="truncate text-[10px] leading-tight text-muted-foreground tabular">
+                  {formatDuration(b.activeSeconds)} · {formatTime(new Date(b.start))}–{formatTime(new Date(b.end))}
                   {apps && ` · ${apps}`}
                 </span>
               )}
-              <span className={cn("text-[10px] text-muted-foreground tabular", full ? "mt-auto" : "ml-auto shrink-0")}>
-                {formatDuration(b.activeSeconds)}
-              </span>
             </span>
           )}
         </button>
@@ -227,15 +244,15 @@ export function DayCalendar({
         <Column range={range}>
           {apps.map((s, i) => {
             const { top: t, height: h } = blockGeometry(s, top);
-            const color = tagColor(s.categoryId ? tags.get(s.categoryId) : undefined);
+            const tag = s.categoryId ? tags.get(s.categoryId) : undefined;
             return (
               <span
                 key={i}
-                className="absolute inset-x-0.5 flex items-center overflow-hidden rounded-[4px] px-1.5 text-[10px] font-medium text-white"
-                style={{ top: t, height: h, background: `color-mix(in srgb, ${color} 80%, transparent)` }}
+                className="absolute inset-x-0.5 flex items-center overflow-hidden rounded-[4px] px-1.5 text-[10px] font-medium"
+                style={{ top: t, height: h, background: tagColor(tag), color: tagInk(tag) }}
                 title={`${s.appName}${s.title ? " — " + s.title : ""}\n${formatTime(new Date(s.start))}–${formatTime(new Date(s.end))} · ${formatDuration((+new Date(s.end) - +new Date(s.start)) / 1000)}`}
               >
-                {h >= 18 && <span className="truncate drop-shadow-sm">{s.appName}</span>}
+                {h >= 18 && <span className="truncate">{s.appName}</span>}
               </span>
             );
           })}
@@ -317,7 +334,7 @@ export function WeekCalendar({
               {blocks
                 .filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd)
                 .map((b) => (
-                  <Block key={b.start} b={b} tags={tags} {...blockGeometry(b, top)} />
+                  <Block key={b.start} b={b} tags={tags} narrow {...blockGeometry(b, top)} />
                 ))}
               <NowLine day={d} range={range} />
             </Column>

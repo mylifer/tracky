@@ -67,7 +67,7 @@ export function AppList({
                 </span>
               </button>
               <Select value={a.categoryId ?? NONE} onValueChange={(v) => assign(a.appId, v)}>
-                <SelectTrigger size="sm" className="w-36 shrink-0" aria-label={`${a.appName} kategorisi`}>
+                <SelectTrigger size="sm" className="w-44 shrink-0" aria-label={`${a.appName} kategorisi`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent align="end">

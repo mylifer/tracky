@@ -71,6 +71,20 @@ export default function Categories() {
   );
 }
 
+/**
+ * Başka işletim sisteminin uygulama kuralı mı? Hazır kategoriler hem macOS
+ * bundle kimliklerini hem Windows exe adlarını içerir (senkronizasyonla iki
+ * sistemde de geçerli); listede yalnızca bu sistemi ilgilendirenler gösterilir.
+ */
+function foreignRule(r: Rule): boolean {
+  if (r.field !== "app") return false;
+  const exe = /\.exe$/i.test(r.pattern);
+  const platform = document.documentElement.dataset.platform;
+  if (platform === "macos") return exe;
+  if (platform === "windows") return !exe && r.pattern.includes(".");
+  return false;
+}
+
 type Run = (f: () => Promise<unknown>) => () => Promise<void>;
 
 function TagSection({
@@ -135,6 +149,8 @@ function TagRow({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: Usag
   const [pattern, setPattern] = useState("");
   const [name, setName] = useState(tag.name);
   const appNames = useMemo(() => new Map(apps.map((a) => [a.key, a.label])), [apps]);
+  const shown = rules.filter((r) => !foreignRule(r));
+  const hidden = rules.filter(foreignRule);
 
   const addRule = run(async () => {
     if (!pattern.trim()) return;
@@ -174,7 +190,7 @@ function TagRow({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: Usag
         </AlertDialog>
       </div>
       <div className="flex flex-wrap items-center gap-1.5 pl-8">
-        {rules.map((r) => (
+        {shown.map((r) => (
           <span key={r.id} className="inline-flex h-6 items-center gap-1 rounded-md bg-secondary pr-0.5 pl-2 text-xs" title={r.pattern}>
             <span className="text-muted-foreground">{r.field === "app" ? "Uygulama" : "Başlıkta"}</span>
             <span className="max-w-48 truncate font-medium">
@@ -189,6 +205,11 @@ function TagRow({ tag, rules, apps, run }: { tag: Tag; rules: Rule[]; apps: Usag
             </button>
           </span>
         ))}
+        {hidden.length > 0 && (
+          <span className="px-1 text-xs text-muted-foreground" title={hidden.map((r) => r.pattern).join("\n")}>
+            +{hidden.length} başka sistem için
+          </span>
+        )}
         {rules.length === 0 && <span className="text-xs text-muted-foreground">Kural yok</span>}
       </div>
       <form

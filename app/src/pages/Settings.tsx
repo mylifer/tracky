@@ -187,7 +187,7 @@ function AppPicker({
         onRemove={(id) => onChange(selected.filter((s) => s !== id))}
       />
       <Select value="" onValueChange={(v) => v && onChange([...selected, v])} disabled={available.length === 0}>
-        <SelectTrigger size="sm" className="w-56">
+        <SelectTrigger size="sm" className="w-56 [&>[data-slot=select-value]]:flex-1">
           <Plus className="size-3.5" />
           <SelectValue placeholder="Uygulama ekle…" />
         </SelectTrigger>
