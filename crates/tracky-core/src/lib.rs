@@ -15,6 +15,7 @@ pub mod privacy;
 pub mod report;
 #[cfg(feature = "store")]
 pub mod store;
+pub mod suggest;
 #[cfg(feature = "store")]
 pub mod sync;
 #[cfg(feature = "store")]

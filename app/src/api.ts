@@ -90,6 +90,17 @@ export type Report = {
   focusTimers: FocusTimer[];
 };
 
+export type ProjectSuggestion = { key: string; name: string; seconds: number; apps: string[] };
+export type CategorySuggestion = {
+  key: string;
+  categoryId: string;
+  field: RuleField;
+  pattern: string;
+  label: string;
+  seconds: number;
+};
+export type Suggestions = { projects: ProjectSuggestion[]; categories: CategorySuggestion[] };
+
 export type LastSync = { at: string; ok: boolean; message: string };
 export type SyncStatus = {
   configured: boolean;
@@ -151,6 +162,11 @@ export const api = {
   deleteRule: (id: string) => invoke<void>("delete_rule", { id }),
   assignAppCategory: (appId: string, tagId: string | null) => invoke<void>("assign_app_category", { appId, tagId }),
   knownApps: () => invoke<UsageTotal[]>("known_apps"),
+  suggestions: () => invoke<Suggestions>("get_suggestions"),
+  acceptProject: (name: string) => invoke<Tag>("accept_project_suggestion", { name }),
+  acceptCategory: (s: CategorySuggestion) =>
+    invoke<void>("accept_category_suggestion", { field: s.field, pattern: s.pattern, categoryId: s.categoryId }),
+  dismissSuggestion: (key: string) => invoke<void>("dismiss_suggestion", { key }),
   /** Aralıktaki oturumlara elle kategori; `null` kurallara döndürür. */
   setRangeCategory: (start: string, end: string, categoryId: string | null) =>
     invoke<number>("set_range_category", { start, end, categoryId }),

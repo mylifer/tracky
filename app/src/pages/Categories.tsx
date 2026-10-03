@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Plus, Trash2, X } from "lucide-react";
-import { api, type Rule, type RuleField, type Tag, type TagKind, type UsageTotal } from "../api";
+import { api, type Rule, type RuleField, type Suggestions, type Tag, type TagKind, type UsageTotal } from "../api";
+import { SuggestionsCard } from "../components/SuggestionsCard";
 import { ErrorText, Page } from "../components/settings";
 import {
   AlertDialog,
@@ -27,8 +28,9 @@ const KIND_HINT: Record<TagKind, string> = {
   project: 'Pencere başlığında geçen bir kelimeyle uygulamalar arası işleri toplar (örn. "fintrack").',
 };
 
-export default function Categories() {
+export default function Categories({ onSuggestions }: { onSuggestions?: (count: number) => void }) {
   const [tags, setTags] = useState<Tag[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestions>({ projects: [], categories: [] });
   const [rules, setRules] = useState<Rule[]>([]);
   const [apps, setApps] = useState<UsageTotal[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +39,12 @@ export default function Categories() {
     const t = await api.taxonomy();
     setTags(t.tags);
     setRules(t.rules);
+    // Kural eklenip silindikçe öneriler değişir (örn. proje eklenince önerisi kalkar).
+    const s = await api.suggestions().catch(() => null);
+    if (s) {
+      setSuggestions(s);
+      onSuggestions?.(s.projects.length + s.categories.length);
+    }
   }
 
   useEffect(() => {
@@ -57,6 +65,7 @@ export default function Categories() {
   return (
     <Page title="Kategoriler ve projeler">
       <ErrorText>{error}</ErrorText>
+      <SuggestionsCard suggestions={suggestions} tags={tags} onChanged={load} onError={setError} />
       {(["category", "project"] as TagKind[]).map((kind) => (
         <TagSection
           key={kind}

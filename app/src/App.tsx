@@ -79,6 +79,18 @@ export default function App() {
 
 function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) {
   const [view, setView] = useState<View>("day");
+  // Bekleyen öneri sayısı (kenar çubuğunda); görünüm değişince ve saatte bir yenilenir.
+  const [suggestionCount, setSuggestionCount] = useState(0);
+  useEffect(() => {
+    const refresh = () =>
+      api.suggestions().then(
+        (s) => setSuggestionCount(s.projects.length + s.categories.length),
+        () => {},
+      );
+    refresh();
+    const id = setInterval(refresh, 3600_000);
+    return () => clearInterval(id);
+  }, [view]);
   const [day, setDay] = useState(isoDate(today()));
   const [week, setWeek] = useState(isoDate(startOfWeek(today())));
   const [month, setMonth] = useState(isoDate(startOfMonth(today())));
@@ -174,7 +186,12 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
             ))}
           </NavSection>
           <NavSection title="Düzenle">
-            <NavItem icon={<Tags />} active={view === "categories"} onClick={() => setView("categories")}>
+            <NavItem
+              icon={<Tags />}
+              active={view === "categories"}
+              onClick={() => setView("categories")}
+              badge={suggestionCount}
+            >
               Kategoriler
             </NavItem>
             <NavItem icon={<Settings2 />} active={view === "settings"} onClick={() => setView("settings")}>
@@ -225,7 +242,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           <>
             <Toolbar title={TITLES[view] ?? ""} />
             <div className="flex-1 overflow-y-auto">
-              {view === "categories" && <Categories />}
+              {view === "categories" && <Categories onSuggestions={setSuggestionCount} />}
               {view === "settings" && <Settings status={status} onChange={refresh} />}
             </div>
           </>
@@ -248,11 +265,14 @@ function NavItem({
   icon,
   active,
   onClick,
+  badge,
   children,
 }: {
   icon: ReactNode;
   active: boolean;
   onClick: () => void;
+  /** Sağda küçük sayı (örn. bekleyen öneriler). */
+  badge?: number;
   children: ReactNode;
 }) {
   return (
@@ -266,6 +286,11 @@ function NavItem({
     >
       {icon}
       {children}
+      {!!badge && (
+        <span className="ml-auto rounded-full bg-primary/15 px-1.5 text-[10px] leading-4 font-semibold text-primary tabular">
+          {badge}
+        </span>
+      )}
     </button>
   );
 }

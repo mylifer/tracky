@@ -3,6 +3,7 @@
 use chrono::{DateTime, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use tracky_core::suggest::Suggestions;
 use tracky_core::{Goals, PrivacySettings, Report, Rule, RuleField, Tag, TagKind, UsageTotal};
 
 use crate::lock;
@@ -186,6 +187,40 @@ pub async fn add_manual_entry(
             category_id.as_deref(),
         )
         .map(|_| ())
+        .map_err(err)
+}
+
+/// Başlıklardan bulunan projeler ve tanınan uygulama/sitelerden kategori önerileri.
+#[tauri::command]
+pub async fn get_suggestions(app: AppHandle) -> CmdResult<Suggestions> {
+    lock(&app.state::<Shared>().store)
+        .suggestions(Utc::now())
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn accept_project_suggestion(app: AppHandle, name: String) -> CmdResult<Tag> {
+    lock(&app.state::<Shared>().store)
+        .accept_project_suggestion(&name)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn accept_category_suggestion(
+    app: AppHandle,
+    field: RuleField,
+    pattern: String,
+    category_id: String,
+) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .accept_category_suggestion(field, &pattern, &category_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn dismiss_suggestion(app: AppHandle, key: String) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .dismiss_suggestion(&key)
         .map_err(err)
 }
 

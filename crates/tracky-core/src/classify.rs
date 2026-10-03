@@ -101,7 +101,7 @@ impl Rule {
 
 /// Windows'ta `app_id` tam exe yoludur; desen yalnızca exe adı da olabilir.
 /// İkisi de küçük harfli gelir.
-fn app_matches(pattern: &str, id: &str) -> bool {
+pub(crate) fn app_matches(pattern: &str, id: &str) -> bool {
     let exe = id.rsplit(['\\', '/']).next().unwrap_or(id);
     match pattern.strip_suffix('*') {
         Some(prefix) if !prefix.is_empty() => id.starts_with(prefix) || exe.starts_with(prefix),
@@ -196,6 +196,17 @@ impl Classifier {
             .find(|(r, p)| r.field == RuleField::App && r.matches_lower(p, &app_id, ""))
             .map(|(r, _)| r.tag_id.clone())
     }
+}
+
+/// Varsayılan kayıtlar için ad tabanlı (v5) kimlik; her cihazda aynıdır.
+pub(crate) fn default_id(name: &str) -> String {
+    const NAMESPACE: uuid::Uuid = uuid::Uuid::from_u128(0x6b75_6d00_7472_6163_6b79_0000_0000_0001);
+    uuid::Uuid::new_v5(&NAMESPACE, name.as_bytes()).to_string()
+}
+
+/// Varsayılan kategorinin kimliği (`DEFAULT_CATEGORIES` adıyla).
+pub fn default_category_id(name: &str) -> String {
+    default_id(&format!("category:{name}"))
 }
 
 /// İlk açılışta eklenen kategoriler: (ad, renk yuvası, uygulama desenleri, başlık desenleri).

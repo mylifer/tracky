@@ -1,13 +1,15 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::classify::{Classifier, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind};
+use crate::classify::{Classifier, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind, default_id};
 use crate::model::{MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
+use crate::suggest::{self, Suggestions};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -120,6 +122,10 @@ impl FocusTimer {
 const DEFAULTS_SEEDED_KEY: &str = "default_tags_seeded";
 
 const PRIVACY_KEY: &str = "privacy";
+/// Yoksayılan öneri anahtarları.
+const DISMISSED_SUGGESTIONS_KEY: &str = "dismissed_suggestions";
+/// Öneriler bu kadar günlük geçmişe bakar.
+const SUGGEST_DAYS: i64 = 14;
 
 /// Bir zaman aralığında bir anahtar (uygulama, domain...) için toplam süre.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -616,6 +622,80 @@ impl Store {
         Ok(())
     }
 
+    /// Son iki haftanın oturumlarından proje ve kategori önerileri.
+    pub fn suggestions(&self, now: DateTime<Utc>) -> Result<Suggestions> {
+        let sessions = self.sessions_between(now - chrono::Duration::days(SUGGEST_DAYS), now)?;
+        let dismissed: HashSet<String> = self
+            .setting::<Vec<String>>(DISMISSED_SUGGESTIONS_KEY)?
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        Ok(suggest::suggest(
+            &sessions,
+            &self.tags()?,
+            &self.rules()?,
+            &dismissed,
+        ))
+    }
+
+    /// Öneriyi bir daha gösterme.
+    pub fn dismiss_suggestion(&self, key: &str) -> Result<()> {
+        let mut keys = self
+            .setting::<Vec<String>>(DISMISSED_SUGGESTIONS_KEY)?
+            .unwrap_or_default();
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+            self.save_setting(DISMISSED_SUGGESTIONS_KEY, &keys)?;
+        }
+        Ok(())
+    }
+
+    /// Önerilen projeyi ekler: proje etiketi ve adıyla bir başlık kuralı.
+    pub fn accept_project_suggestion(&self, name: &str) -> Result<Tag> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StoreError::Invalid("proje adı boş olamaz".into()));
+        }
+        let tags = self.tags()?;
+        // Arayüzdeki gibi: önce hiç kullanılmamış, yoksa en az kullanılan renk.
+        let color = (1..=8u8)
+            .min_by_key(|c| tags.iter().filter(|t| t.color == *c).count())
+            .unwrap_or(1);
+        let tag = Tag {
+            id: Uuid::new_v4().to_string(),
+            kind: TagKind::Project,
+            name: name.to_string(),
+            color,
+        };
+        self.upsert_tag(&tag, tags.len() as i64)?;
+        self.upsert_rule(&Rule {
+            id: Uuid::new_v4().to_string(),
+            tag_id: tag.id.clone(),
+            field: RuleField::Title,
+            pattern: name.to_string(),
+        })?;
+        Ok(tag)
+    }
+
+    /// Önerilen kategori kuralını ekler (uygulama ya da başlık).
+    pub fn accept_category_suggestion(
+        &self,
+        field: RuleField,
+        pattern: &str,
+        category_id: &str,
+    ) -> Result<()> {
+        self.require_tag(category_id, TagKind::Category)?;
+        match field {
+            RuleField::App => self.assign_app_category(pattern, Some(category_id)),
+            RuleField::Title => self.upsert_rule(&Rule {
+                id: Uuid::new_v4().to_string(),
+                tag_id: category_id.to_string(),
+                field,
+                pattern: pattern.to_string(),
+            }),
+        }
+    }
+
     /// Tüm oturumların CSV dökümü.
     pub fn export_csv(&self) -> Result<String> {
         let sessions = self.sessions_between(DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC)?;
@@ -866,12 +946,6 @@ fn device_id(conn: &Connection) -> Result<Uuid> {
     }
 }
 
-/// Varsayılan kayıtlar için ad tabanlı (v5) kimlik.
-fn default_id(name: &str) -> String {
-    const NAMESPACE: Uuid = Uuid::from_u128(0x6b75_6d00_7472_6163_6b79_0000_0000_0001);
-    Uuid::new_v5(&NAMESPACE, name.as_bytes()).to_string()
-}
-
 fn ms(t: DateTime<Utc>) -> i64 {
     t.timestamp_millis()
 }
@@ -1048,6 +1122,40 @@ mod tests {
             .assign_app_category("com.microsoft.teams2", None)
             .unwrap();
         assert_eq!(category(&store), None);
+    }
+
+    #[test]
+    fn suggestions_can_be_accepted_or_dismissed() {
+        let store = Store::open_in_memory().unwrap();
+        let mut code = session("x", None, 0, 40 * 60);
+        code.app_id = "com.microsoft.VSCode".into();
+        code.title = "sync.rs — tracky".into();
+        let mut postman = session("Postman", None, 40 * 60, 60 * 60);
+        postman.app_id = "com.postmanlabs.mac".into();
+        store.upsert_session(&code).unwrap();
+        store.upsert_session(&postman).unwrap();
+
+        let now = t(3600);
+        let s = store.suggestions(now).unwrap();
+        assert_eq!(s.projects[0].name, "tracky");
+        assert_eq!(s.categories[0].label, "Postman");
+
+        let tag = store.accept_project_suggestion("tracky").unwrap();
+        let c = &s.categories[0];
+        store
+            .accept_category_suggestion(c.field, &c.pattern, &c.category_id)
+            .unwrap();
+        let after = store.suggestions(now).unwrap();
+        assert!(after.projects.is_empty() && after.categories.is_empty());
+        let report = store.report(t(0), now, &[t(0)], false).unwrap();
+        assert_eq!(report.projects[0].id.as_deref(), Some(tag.id.as_str()));
+
+        // Yoksayılan öneri bir daha gelmez.
+        let other = Store::open_in_memory().unwrap();
+        other.upsert_session(&code).unwrap();
+        other.dismiss_suggestion(&s.projects[0].key).unwrap();
+        other.dismiss_suggestion(&s.projects[0].key).unwrap();
+        assert!(other.suggestions(now).unwrap().projects.is_empty());
     }
 
     #[test]
