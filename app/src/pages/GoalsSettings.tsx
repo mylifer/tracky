@@ -11,10 +11,15 @@ import { tagColor } from "../lib/tags";
 const BREAK_OPTIONS = [30, 45, 50, 60, 75, 90, 120];
 const DEFAULT_BREAK = 60;
 const LIMIT_OPTIONS = [15, 30, 45, 60, 90, 120, 180, 240];
+/** Gün sonu özeti saatleri (16:00–23:00). */
+const SUMMARY_OPTIONS = Array.from({ length: 8 }, (_, i) => (16 + i) * 60);
+const DEFAULT_SUMMARY = 18 * 60;
 
 function minutesLabel(m: number) {
   return m < 60 ? `${m} dk` : m % 60 === 0 ? `${m / 60} sa` : `${Math.floor(m / 60)} sa ${m % 60} dk`;
 }
+
+const clock = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 
 export default function GoalsSettings() {
   const [goals, setGoals] = useState<Goals | null>(null);
@@ -41,6 +46,7 @@ export default function GoalsSettings() {
   }
 
   const breakOn = goals.breakAfterMinutes !== null;
+  const summaryOn = goals.daySummaryAt !== null;
 
   return (
     <SettingsGroup title="Hedefler ve hatırlatıcılar">
@@ -89,6 +95,31 @@ export default function GoalsSettings() {
               {BREAK_OPTIONS.map((m) => (
                 <SelectItem key={m} value={String(m)}>
                   {m} dakika
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingRow>
+      )}
+      <ToggleRow
+        label="Gün sonu özeti"
+        hint="Akşam günün çalışma ve odak süresini, hedefe göre durumunu bildirir."
+        checked={summaryOn}
+        onChange={(v) => save({ ...goals, daySummaryAt: v ? DEFAULT_SUMMARY : null })}
+      />
+      {summaryOn && (
+        <SettingRow label="Özet saati" hint="O gün en az 15 dakika çalışıldıysa, günde bir kez.">
+          <Select
+            value={String(goals.daySummaryAt ?? DEFAULT_SUMMARY)}
+            onValueChange={(v) => save({ ...goals, daySummaryAt: Number(v) })}
+          >
+            <SelectTrigger size="sm" className="w-32">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              {SUMMARY_OPTIONS.map((m) => (
+                <SelectItem key={m} value={String(m)}>
+                  {clock(m)}
                 </SelectItem>
               ))}
             </SelectContent>

@@ -4,11 +4,13 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, Timelike, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
-use tracky_core::{Coach, EngineConfig, Goals, Nudge, PrivacySettings, Store, Tracker, UsageTotal};
+use tracky_core::{
+    Coach, EngineConfig, Goals, Nudge, PrivacySettings, Report, Store, Tracker, UsageTotal,
+};
 
 use crate::tray;
 
@@ -174,14 +176,27 @@ pub fn run(
         };
         // Menü güncellemesi ana iş parçacığında çalışıp sonucunu bekler; burada
         // beklersek kapanışta (ana iş parçacığı bizi beklerken) kilitlenirdik.
-        let today = Local::now().date_naive();
-        if std::mem::take(&mut first_refresh) && status.today_seconds >= goals.daily_seconds() {
-            // Gün içinde yeniden açıldı: hedef bildirimi zaten gösterilmiş olabilir.
-            coach.mark_goal_notified(today);
+        let local = Local::now();
+        let today = local.date_naive();
+        let minute = local.hour() * 60 + local.minute();
+        if std::mem::take(&mut first_refresh) {
+            // Gün içinde yeniden açıldı: bu bildirimler zaten gösterilmiş olabilir.
+            if status.today_seconds >= goals.daily_seconds() {
+                coach.mark_goal_notified(today);
+            }
+            if goals.day_summary_at.is_some_and(|at| minute >= at) {
+                coach.mark_summary_sent(today);
+            }
         }
         let active = status.current.is_some() && !status.paused;
         for nudge in coach.observe(&goals, now, active, today, status.today_seconds) {
             notify(&app, &nudge, &limit_names);
+        }
+        if coach
+            .observe_summary(&goals, today, minute, status.today_seconds)
+            .is_some()
+        {
+            notify_day_summary(&app, &goals, now);
         }
         if let Some(used) = category_totals {
             if std::mem::replace(&mut limits_primed, true) {
@@ -238,10 +253,56 @@ fn notify(app: &AppHandle, nudge: &Nudge, names: &std::collections::HashMap<Stri
             format!("{} limiti doldu", name(category_id)),
             format!("Bugünkü {} sınırına ulaştın.", format_duration(*limit)),
         ),
+        // İçeriği rapordan hazırlanır: notify_day_summary.
+        Nudge::DaySummary => return,
     };
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         eprintln!("bildirim gösterilemedi: {e}");
     }
+}
+
+/// Gün sonu özeti bildirimi; içerik bugünün raporundan.
+fn notify_day_summary(app: &AppHandle, goals: &Goals, now: DateTime<Utc>) {
+    let report = {
+        let shared = app.state::<Shared>();
+        let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+        let start = start_of_today();
+        store.report(start, now, &[start], false)
+    };
+    let result = match report {
+        Ok(r) => app
+            .notification()
+            .builder()
+            .title("Bugünün özeti")
+            .body(day_summary_body(&r, goals))
+            .show(),
+        Err(e) => {
+            eprintln!("gün özeti hazırlanamadı: {e}");
+            return;
+        }
+    };
+    if let Err(e) = result {
+        eprintln!("bildirim gösterilemedi: {e}");
+    }
+}
+
+/// Toplam süre, hedef yüzdesi, odak süresi ve en çok zaman alan kategori.
+fn day_summary_body(report: &Report, goals: &Goals) -> String {
+    let mut first = format!("{} çalıştın", format_duration(report.total_seconds));
+    let target = goals.daily_seconds();
+    if target > 0 {
+        first += &format!(" · hedef %{}", report.total_seconds * 100 / target);
+    }
+    let mut second = format!("Odak: {}", format_duration(report.focus.focus_seconds));
+    if let Some(top) = report.categories.iter().max_by_key(|b| b.seconds) {
+        let name = top
+            .id
+            .as_ref()
+            .and_then(|id| report.tags.iter().find(|t| &t.id == id))
+            .map_or("Kategorisiz", |t| t.name.as_str());
+        second += &format!(" · En çok: {name} ({})", format_duration(top.seconds));
+    }
+    format!("{first}\n{second}")
 }
 
 fn notify_focus_done(app: &AppHandle, minutes: i64) {
@@ -298,7 +359,9 @@ pub fn format_duration(secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_duration;
+    use super::{day_summary_body, format_duration};
+    use tracky_core::report::Bucket;
+    use tracky_core::{Goals, Report, Tag, TagKind};
 
     #[test]
     fn formats_durations() {
@@ -306,5 +369,43 @@ mod tests {
         assert_eq!(format_duration(23 * 60 + 5), "23dk");
         assert_eq!(format_duration(3600), "1sa");
         assert_eq!(format_duration(3600 + 5 * 60), "1sa 5dk");
+    }
+
+    #[test]
+    fn day_summary_names_top_category() {
+        let mut report = Report {
+            total_seconds: 6 * 3600,
+            categories: vec![
+                Bucket {
+                    id: None,
+                    seconds: 600,
+                },
+                Bucket {
+                    id: Some("dev".into()),
+                    seconds: 4 * 3600,
+                },
+            ],
+            tags: vec![Tag {
+                id: "dev".into(),
+                kind: TagKind::Category,
+                name: "Geliştirme".into(),
+                color: 1,
+            }],
+            ..Default::default()
+        };
+        report.focus.focus_seconds = 3 * 3600 + 20 * 60;
+        assert_eq!(
+            day_summary_body(&report, &Goals::default()),
+            "6sa çalıştın · hedef %75\nOdak: 3sa 20dk · En çok: Geliştirme (4sa)"
+        );
+        let no_goal = Goals {
+            daily_hours: 0.0,
+            ..Goals::default()
+        };
+        report.categories.clear();
+        assert_eq!(
+            day_summary_body(&report, &no_goal),
+            "6sa çalıştın\nOdak: 3sa 20dk"
+        );
     }
 }

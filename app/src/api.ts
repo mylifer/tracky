@@ -114,6 +114,8 @@ export type Goals = {
   breakAfterMinutes: number | null;
   /** Kategori başına günlük üst sınır (dakika). */
   limits: CategoryLimit[];
+  /** Gün sonu özeti saati (gece yarısından dakika); `null` = kapalı. */
+  daySummaryAt: number | null;
 };
 export type CategoryLimit = { categoryId: string; minutes: number };
 

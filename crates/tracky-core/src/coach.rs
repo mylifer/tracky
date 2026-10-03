@@ -1,5 +1,6 @@
 //! Hedefler ve hatırlatıcılar: kesintisiz çalışma süresini izleyip mola önerir,
-//! günlük hedefe ulaşılınca haber verir. Saf mantık; bildirimi çağıran gösterir.
+//! günlük hedefe ulaşılınca haber verir, akşam günün özetini ister. Saf mantık;
+//! bildirimi çağıran gösterir.
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,6 +19,8 @@ pub struct Goals {
     pub break_after_minutes: Option<u32>,
     /// Kategori başına günlük üst sınırlar.
     pub limits: Vec<CategoryLimit>,
+    /// Gün sonu özeti saati (yerel gece yarısından dakika); `None` = kapalı.
+    pub day_summary_at: Option<u32>,
 }
 
 /// Bir kategoride günde en fazla `minutes` dakika.
@@ -34,6 +37,9 @@ impl CategoryLimit {
     }
 }
 
+/// Bundan az çalışılan günde özet gösterilmez.
+pub const DAY_SUMMARY_MIN_SECS: i64 = 15 * 60;
+
 /// Limitin bu oranına gelince önceden uyarılır.
 pub const LIMIT_WARN_RATIO: f64 = 0.8;
 
@@ -44,6 +50,7 @@ impl Default for Goals {
             notify_goal: true,
             break_after_minutes: Some(60),
             limits: Vec::new(),
+            day_summary_at: Some(18 * 60),
         }
     }
 }
@@ -71,6 +78,8 @@ pub enum Nudge {
     },
     /// Kategori limiti aşıldı.
     LimitReached { category_id: String, limit: i64 },
+    /// Gün sonu özeti zamanı (içeriği çağıran rapordan hazırlar).
+    DaySummary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -90,6 +99,7 @@ pub struct Coach {
     /// Bugün gösterilen limit uyarıları: (kategori, seviye).
     limits_notified: HashSet<(String, LimitLevel)>,
     limits_day: Option<NaiveDate>,
+    summary_sent_on: Option<NaiveDate>,
 }
 
 impl Coach {
@@ -202,6 +212,32 @@ impl Coach {
         self.observe_limits(goals, today, used);
     }
 
+    /// Gün sonu özeti zamanı geldiyse günde bir kez `DaySummary`. `minute` yerel
+    /// gece yarısından geçen dakika, `today_seconds` günün toplam süresi.
+    pub fn observe_summary(
+        &mut self,
+        goals: &Goals,
+        today: NaiveDate,
+        minute: u32,
+        today_seconds: i64,
+    ) -> Option<Nudge> {
+        let at = goals.day_summary_at?;
+        if minute < at
+            || today_seconds < DAY_SUMMARY_MIN_SECS
+            || self.summary_sent_on == Some(today)
+        {
+            return None;
+        }
+        self.summary_sent_on = Some(today);
+        Some(Nudge::DaySummary)
+    }
+
+    /// Uygulama özet saatinden sonra açıldı: bugünün özetini gösterme
+    /// (önceki oturumda gösterilmiş olabilir).
+    pub fn mark_summary_sent(&mut self, today: NaiveDate) {
+        self.summary_sent_on = Some(today);
+    }
+
     /// Hedefe bugün zaten ulaşıldıysa (uygulama gün içinde yeniden açıldı)
     /// bildirimi tekrarlama.
     pub fn mark_goal_notified(&mut self, today: NaiveDate) {
@@ -228,6 +264,7 @@ mod tests {
             notify_goal: true,
             break_after_minutes: Some(break_after),
             limits: Vec::new(),
+            day_summary_at: Some(18 * 60),
         }
     }
 
@@ -337,5 +374,43 @@ mod tests {
         let mut c = Coach::new();
         c.prime_limits(&g, day(), &used(3700));
         assert!(c.observe_limits(&g, day(), &used(3800)).is_empty());
+    }
+
+    #[test]
+    fn day_summary_once_after_time_with_enough_work() {
+        let (mut c, g) = (Coach::new(), goals(50));
+        let min = DAY_SUMMARY_MIN_SECS;
+        assert_eq!(c.observe_summary(&g, day(), 17 * 60 + 59, min), None);
+        assert_eq!(c.observe_summary(&g, day(), 18 * 60, min - 1), None);
+        assert_eq!(
+            c.observe_summary(&g, day(), 18 * 60 + 5, min),
+            Some(Nudge::DaySummary)
+        );
+        assert_eq!(c.observe_summary(&g, day(), 19 * 60, min), None);
+        let tomorrow = day().succ_opt().unwrap();
+        assert_eq!(
+            c.observe_summary(&g, tomorrow, 18 * 60, min),
+            Some(Nudge::DaySummary)
+        );
+
+        let off = Goals {
+            day_summary_at: None,
+            ..goals(50)
+        };
+        assert_eq!(
+            Coach::new().observe_summary(&off, day(), 23 * 60, min * 10),
+            None
+        );
+
+        let mut c = Coach::new();
+        c.mark_summary_sent(day());
+        assert_eq!(c.observe_summary(&g, day(), 20 * 60, min), None);
+    }
+
+    #[test]
+    fn goals_saved_before_day_summary_get_the_default() {
+        let g: Goals = serde_json::from_str(r#"{"dailyHours":6,"notifyGoal":false}"#).unwrap();
+        assert_eq!(g.day_summary_at, Some(18 * 60));
+        assert_eq!(g.daily_hours, 6.0);
     }
 }

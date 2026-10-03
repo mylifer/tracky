@@ -243,6 +243,7 @@ pub async fn save_goals(app: AppHandle, goals: Goals) -> CmdResult<()> {
     let goals = Goals {
         daily_hours: goals.daily_hours.clamp(0.0, 24.0),
         break_after_minutes: goals.break_after_minutes.map(|m| m.clamp(10, 240)),
+        day_summary_at: goals.day_summary_at.map(|m| m.min(24 * 60 - 1)),
         limits: {
             // Kategori başına tek limit; geçersiz süreler atılır.
             let mut seen = std::collections::HashSet::new();
