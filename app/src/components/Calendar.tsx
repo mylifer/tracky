@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Zap } from "lucide-react";
 import type { FocusTimer, Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
-import { addDays, formatTime, isoDate, today } from "../lib/dates";
+import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
 import { UNCATEGORIZED, tagColor, tagInk } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
@@ -35,7 +35,7 @@ function hourRange(from: Date, spans: { start: string; end: string }[], days = 1
 }
 
 function topFn(dayStart: number, range: Range) {
-  return (t: number) => ((t - (dayStart + range.first * HOUR_MS)) / HOUR_MS) * HOUR_PX;
+  return (t: number) => ((wallMs(t, dayStart) - range.first * HOUR_MS) / HOUR_MS) * HOUR_PX;
 }
 
 function hours(range: Range) {
@@ -69,7 +69,7 @@ function Column({
   range: Range;
   children: React.ReactNode;
   className?: string;
-  /** Boş alana tıklanınca saatin günün başından itibaren ms karşılığı. */
+  /** Boş alana tıklanınca tıklanan duvar saatinin gece yarısından itibaren ms karşılığı. */
   onEmpty?: (offsetMs: number) => void;
 }) {
   return (
@@ -276,7 +276,7 @@ export function gapAround(
   dayStart: number,
 ): [number, number] | null {
   let prevEnd = dayStart;
-  let nextStart = Math.min(dayStart + 24 * HOUR_MS, Date.now());
+  let nextStart = Math.min(+addDays(new Date(dayStart), 1), Date.now());
   for (const s of spans) {
     const a = +new Date(s.start);
     const b = +new Date(s.end);
@@ -364,7 +364,7 @@ export function DayCalendar({
           onEmpty={
             onEmpty &&
             ((offset) => {
-              const gap = gapAround(+from + offset, segments, +from);
+              const gap = gapAround(fromWallMs(offset, +from), segments, +from);
               if (gap) onEmpty(...gap);
             })
           }
@@ -479,7 +479,7 @@ export function WeekCalendar({
               onEmpty={
                 onEmpty &&
                 ((offset) => {
-                  const gap = gapAround(dayStart + offset, blocks, dayStart);
+                  const gap = gapAround(fromWallMs(offset, dayStart), blocks, dayStart);
                   if (gap) onEmpty(...gap);
                 })
               }

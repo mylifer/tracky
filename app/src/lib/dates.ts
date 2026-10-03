@@ -25,6 +25,25 @@ export function startOfWeek(d: Date): Date {
   return addDays(r, -offset);
 }
 
+/** UTC farkının (dk) iki an arasındaki değişimi, ms; yaz saati geçişinde ±1 saat. */
+function shiftMs(t: number, dayStart: number): number {
+  return (new Date(t).getTimezoneOffset() - new Date(dayStart).getTimezoneOffset()) * 60_000;
+}
+
+/**
+ * `t` anının, `dayStart` gece yarısından itibaren duvar saati karşılığı (ms). Geçen süre yerine
+ * bunu kullanmak yaz saati geçiş günlerinde blokları saat etiketleriyle hizalı tutar.
+ */
+export function wallMs(t: number, dayStart: number): number {
+  return t - dayStart - shiftMs(t, dayStart);
+}
+
+/** `wallMs`'in tersi: günün duvar saatinden (ms) ana. */
+export function fromWallMs(ms: number, dayStart: number): number {
+  const t = dayStart + ms;
+  return t + shiftMs(t, dayStart);
+}
+
 export function today(): Date {
   const n = new Date();
   return new Date(n.getFullYear(), n.getMonth(), n.getDate());

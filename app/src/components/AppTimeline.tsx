@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronRight, PenLine } from "lucide-react";
 import { formatDuration, type Tag, type WindowSpan } from "../api";
-import { formatTime, today } from "../lib/dates";
+import { formatTime, today, wallMs } from "../lib/dates";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 
@@ -53,8 +53,8 @@ function hourRange(from: Date, windows: WindowSpan[]) {
   let first = 8;
   let last = 18;
   for (const w of windows) {
-    const a = (+new Date(w.start) - +from) / HOUR_MS;
-    const b = (+new Date(w.end) - +from) / HOUR_MS;
+    const a = wallMs(+new Date(w.start), +from) / HOUR_MS;
+    const b = wallMs(+new Date(w.end), +from) / HOUR_MS;
     first = Math.min(first, Math.floor(Math.max(0, a)));
     last = Math.max(last, Math.ceil(Math.min(24, b)));
   }
@@ -81,15 +81,17 @@ export default function AppTimeline({
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [hover, setHover] = useState<Hover | null>(null);
 
-  const startMs = +from + range.first * HOUR_MS;
+  // Konumlar duvar saatine göre: yaz saati geçişinde de saat etiketleriyle hizalı.
+  const startMs = range.first * HOUR_MS;
   const spanMs = (range.last - range.first) * HOUR_MS;
+  const frac = (t: number) => (wallMs(t, +from) - startMs) / spanMs;
   const pos = (w: WindowSpan) => {
-    const a = Math.max(0, (+new Date(w.start) - startMs) / spanMs);
-    const b = Math.min(1, (+new Date(w.end) - startMs) / spanMs);
+    const a = Math.max(0, frac(+new Date(w.start)));
+    const b = Math.min(1, frac(+new Date(w.end)));
     return { left: `${a * 100}%`, width: `max(2px, ${(b - a) * 100}%)` };
   };
   const hours = Array.from({ length: range.last - range.first + 1 }, (_, i) => range.first + i);
-  const nowFrac = +from === +today() ? (Date.now() - startMs) / spanMs : -1;
+  const nowFrac = +from === +today() ? frac(Date.now()) : -1;
 
   function toggle(key: string) {
     setOpen((s) => {
