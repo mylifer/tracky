@@ -71,6 +71,15 @@ impl<P: ActivityProvider> Tracker<P> {
     }
 
     pub fn observe(&mut self) -> Observation {
+        // Duraklatılmışken pencere ve başlık hiç okunmaz (sonuç zaten atılırdı): hem
+        // gizlilik beklentisi hem de saniyelik Erişilebilirlik çağrılarının maliyeti.
+        if self.privacy.paused {
+            return Observation {
+                window: None,
+                idle: 0,
+                error: None,
+            };
+        }
         let (window, error) = match self.provider.active_window() {
             Ok(w) => (w.and_then(|w| self.privacy.apply(w)), None),
             Err(e) => (None, Some(format!("pencere okunamadı: {e}"))),
@@ -237,5 +246,26 @@ mod tests {
         assert!(tracker.current().is_none());
         let apps = store.app_totals(t0, t0 + Duration::hours(1)).unwrap();
         assert!(apps.is_empty(), "boşta geçen süre sayıldı: {apps:?}");
+    }
+
+    #[test]
+    fn paused_tracker_does_not_read_windows() {
+        let store = Store::open_in_memory().unwrap();
+        let privacy = PrivacySettings {
+            paused: true,
+            ..Default::default()
+        };
+        let mut tracker = Tracker::new(
+            Script::windows([win("A"), win("A")]),
+            EngineConfig::default(),
+            privacy,
+        );
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        for i in 0..2 {
+            tracker.tick(&store, t0 + Duration::seconds(i));
+        }
+        assert!(tracker.current().is_none());
+        // Gözlemler tüketilmedi: sağlayıcıya hiç sorulmadı.
+        assert_eq!(tracker.provider.0.len(), 2);
     }
 }
