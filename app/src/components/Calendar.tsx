@@ -16,6 +16,9 @@ const HOUR_MS = 3600_000;
 const FULL_LABEL_PX = 40;
 /** Bundan alçak bloklarda yazı yok (yalnızca renk; ayrıntı ipucunda). */
 const LABEL_MIN_PX = 15;
+/** Uygulamalar sütunu: bundan yüksek çubukta normal, arada küçük yazı; daha kısada ad sağda etiket. */
+const APP_LABEL_PX = 18;
+const SMALL_LABEL_PX = 9;
 
 /** Gösterilen saatler ve bir saatin piksel yüksekliği (yakınlaştırmayla değişir). */
 type Range = { first: number; last: number; px: number };
@@ -489,17 +492,30 @@ export function DayCalendar({
           {apps.map((s, i) => {
             const { top: t, height: h } = blockGeometry(s, top);
             const tag = s.categoryId ? tags.get(s.categoryId) : undefined;
+            const tip = `${s.appName}${s.title ? " — " + s.title : ""}\n${formatTime(new Date(s.start))}–${formatTime(new Date(s.end))} · ${formatDuration((+new Date(s.end) - +new Date(s.start)) / 1000)}`;
             return (
               <span
                 key={i}
-                className="absolute inset-x-0.5 flex items-center overflow-hidden rounded-[4px] px-1.5 text-[10px] font-medium"
+                className={cn(
+                  "absolute inset-x-0.5 flex items-center overflow-hidden rounded-[4px] px-1.5 font-medium",
+                  h >= APP_LABEL_PX ? "text-[10px]" : "text-[9px] leading-none",
+                )}
                 style={{ top: t, height: h, background: tagColor(tag), color: tagInk(tag) }}
-                title={`${s.appName}${s.title ? " — " + s.title : ""}\n${formatTime(new Date(s.start))}–${formatTime(new Date(s.end))} · ${formatDuration((+new Date(s.end) - +new Date(s.start)) / 1000)}`}
+                title={tip}
               >
-                {h >= 18 && <span className="truncate">{s.appName}</span>}
+                {h >= SMALL_LABEL_PX && <span className="truncate">{s.appName}</span>}
               </span>
             );
           })}
+          {smallLabels(apps, top, range).map((l) => (
+            <span
+              key={l.key}
+              className="pointer-events-none absolute right-1 z-10 max-w-[75%] truncate rounded-[3px] bg-card/90 px-1 text-[9px] leading-[10px] font-medium text-foreground shadow-xs ring-1 ring-border/60"
+              style={{ top: l.y }}
+            >
+              {l.name}
+            </span>
+          ))}
           <NowLine day={from} range={range} />
         </Column>
         <div className="relative col-start-4 row-start-1" style={{ height: (range.last - range.first) * range.px }}>
@@ -617,6 +633,39 @@ export function WeekCalendar({
       </div>
     </div>
   );
+}
+
+/** Etiket yüksekliği ve kendi çubuğundan en çok bu kadar aşağı kayabilir (piksel). */
+const CHIP_PX = 11;
+const CHIP_MAX_SHIFT = 12;
+
+/**
+ * İçine ad sığmayan kısa çubuklar için sağda küçük etiketler: çubuğun hizasına konur, öncekine
+ * çarparsa aşağı kayar; çok kayacaksa ya da bir sonraki adlı çubuğun yazısını örtecekse atlanır
+ * (ad yine üzerine gelince görünür).
+ */
+export function smallLabels(
+  apps: { start: string; end: string; appName: string }[],
+  top: (t: number) => number,
+  range: { first: number; last: number; px: number },
+): { key: number; y: number; name: string }[] {
+  const geo = apps.map((s) => blockGeometry(s, top));
+  const bottom = (range.last - range.first) * range.px;
+  const out: { key: number; y: number; name: string }[] = [];
+  let cursor = -Infinity;
+  geo.forEach(({ top: t, height: h }, i) => {
+    if (h >= SMALL_LABEL_PX) {
+      cursor = Math.max(cursor, t + h);
+      return;
+    }
+    const want = t + h / 2 - CHIP_PX / 2;
+    const y = Math.max(want, cursor);
+    const nextNamed = geo.slice(i + 1).find((g) => g.height >= SMALL_LABEL_PX)?.top ?? bottom;
+    if (y - want > CHIP_MAX_SHIFT || y + CHIP_PX > nextNamed) return;
+    out.push({ key: i, y, name: apps[i].appName });
+    cursor = y + CHIP_PX + 1;
+  });
+  return out;
 }
 
 /** Aynı uygulamanın 2 dakikadan yakın dilimlerini birleştirir. */
