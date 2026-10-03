@@ -23,6 +23,14 @@ export default function SyncSettings() {
   }, []);
   useTauriEvent(api.onSync, setStatus);
 
+  // Başarılı girişten sonra şifre bellekte (bileşen durumunda) tutulmasın.
+  const signIn = (signUp: boolean) =>
+    run(async () => {
+      const s = await api.syncSignIn(email, password, signUp);
+      setPassword("");
+      return s;
+    });
+
   async function run(f: () => Promise<SyncStatus | void>) {
     setBusy(true);
     setError(null);
@@ -72,7 +80,7 @@ export default function SyncSettings() {
           className="space-y-3 px-4 py-3.5"
           onSubmit={(e) => {
             e.preventDefault();
-            run(() => api.syncSignIn(email, password, false));
+            signIn(false);
           }}
         >
           <p className="text-xs text-muted-foreground selectable">Bağlı proje: {status.url}</p>
@@ -104,7 +112,7 @@ export default function SyncSettings() {
               variant="outline"
               size="sm"
               disabled={busy || !email || password.length < 6}
-              onClick={() => run(() => api.syncSignIn(email, password, true))}
+              onClick={() => signIn(true)}
             >
               Hesap oluştur
             </Button>
