@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
@@ -10,6 +10,7 @@ use crate::model::{FocusTimer, MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
 use crate::suggest::{self, Suggestions};
+use crate::timesheet::{self, EntryKind, TimesheetConfig, TimesheetEntry};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -128,7 +129,45 @@ CREATE INDEX sessions_app_ended ON sessions (app_id, ended_at);
 -- Oturuma elle verilen proje (takvimde bloğu ya da aralığı projeye atama, elle kayıt).
 ALTER TABLE sessions ADD COLUMN project_id TEXT;
 "#,
+    r#"
+-- Zaman çizelgesi: onaylanmış iş kayıtları (yalnızca bu cihazda; senkronize edilmez).
+-- Excel'e aktarılınca exported_at dolar ve kayıt bir daha gönderilmez.
+CREATE TABLE timesheet_entries (
+    id          TEXT PRIMARY KEY,
+    date        TEXT NOT NULL,     -- YYYY-MM-DD (yerel)
+    start       TEXT NOT NULL,     -- HH:MM (yerel)
+    hours       REAL NOT NULL CHECK (hours > 0),
+    kind        TEXT NOT NULL CHECK (kind IN ('Working', 'Online', 'F2F')),
+    details     TEXT NOT NULL,
+    party       TEXT NOT NULL,
+    project_id  TEXT NOT NULL,
+    division    TEXT NOT NULL,
+    exported_at INTEGER,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX timesheet_entries_date ON timesheet_entries (date);
+"#,
 ];
+
+/// Onaylanmış zaman çizelgesi kaydı.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedEntry {
+    pub id: String,
+    #[serde(flatten)]
+    pub entry: TimesheetEntry,
+    /// Excel'e aktarıldığı an; doluysa kayıt değiştirilemez.
+    pub exported_at: Option<DateTime<Utc>>,
+}
+
+fn parse_kind(s: &str) -> Option<EntryKind> {
+    match s {
+        "Working" => Some(EntryKind::Working),
+        "Online" => Some(EntryKind::Online),
+        "F2F" => Some(EntryKind::F2F),
+        _ => None,
+    }
+}
 
 /// `[?1, ?2)` ile kesişen oturumlar. Üçüncü koşul sonucu değiştirmez (kesişen her oturum
 /// en uzun oturumdan kısadır), yalnızca indeksin alt sınırıdır.
@@ -138,6 +177,8 @@ const OVERLAPS: &str = "started_at < ?2 AND ended_at > ?1
 const DEFAULTS_SEEDED_KEY: &str = "default_tags_seeded";
 
 const PRIVACY_KEY: &str = "privacy";
+/// Zaman çizelgesi ayarları.
+const TIMESHEET_KEY: &str = "timesheet";
 /// Yoksayılan öneri anahtarları.
 const DISMISSED_SUGGESTIONS_KEY: &str = "dismissed_suggestions";
 /// Öneriler bu kadar günlük geçmişe bakar.
@@ -744,6 +785,162 @@ impl Store {
         Ok(crate::trends::trends(&sessions, &classifier, bounds))
     }
 
+    pub fn timesheet_config(&self) -> Result<TimesheetConfig> {
+        Ok(self.setting(TIMESHEET_KEY)?.unwrap_or_default())
+    }
+
+    pub fn save_timesheet_config(&self, config: &TimesheetConfig) -> Result<()> {
+        self.save_setting(TIMESHEET_KEY, config)
+    }
+
+    /// Günün (`day_start`–`day_end`, yerel gün) oturumlarından iş kaydı önerileri.
+    pub fn propose_timesheet(
+        &self,
+        day_start: DateTime<Utc>,
+        day_end: DateTime<Utc>,
+    ) -> Result<Vec<TimesheetEntry>> {
+        let tags = self.tags()?;
+        let classifier = Classifier::new(&tags, &self.rules()?);
+        let names = tags
+            .iter()
+            .filter(|t| t.kind == TagKind::Project)
+            .map(|t| (t.id.clone(), t.name.clone()))
+            .collect();
+        Ok(timesheet::propose(
+            &self.sessions_between(day_start, day_end)?,
+            &classifier,
+            &names,
+            &self.timesheet_config()?,
+            day_start,
+            day_end,
+        ))
+    }
+
+    /// `[from, to]` tarihleri (dahil) arasındaki onaylanmış kayıtlar, tarih ve saate göre.
+    pub fn timesheet_entries(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<SavedEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, date, start, hours, kind, details, party, project_id, division, exported_at
+             FROM timesheet_entries WHERE date >= ?1 AND date <= ?2 ORDER BY date, start",
+        )?;
+        let rows = stmt.query_map(params![from.to_string(), to.to_string()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, f64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+                r.get::<_, String>(8)?,
+                r.get::<_, Option<i64>>(9)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, date, start, hours, kind, details, party, project_id, division, exported) =
+                row?;
+            let bad = |what: &str| StoreError::Invalid(format!("zaman çizelgesi {what}: {id}"));
+            Ok(SavedEntry {
+                entry: TimesheetEntry {
+                    date: NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+                        .map_err(|_| bad("tarihi"))?,
+                    start: NaiveTime::parse_from_str(&start, "%H:%M").map_err(|_| bad("saati"))?,
+                    hours,
+                    kind: parse_kind(&kind).ok_or_else(|| bad("türü"))?,
+                    details,
+                    party,
+                    project_id,
+                    division,
+                },
+                exported_at: exported.map(from_ms),
+                id,
+            })
+        })
+        .collect()
+    }
+
+    /// Günün aktarılmamış kayıtlarını verilenlerle değiştirir (onaylama, yeniden öneri).
+    /// Excel'e aktarılmış kayıtlara dokunulmaz.
+    pub fn replace_timesheet_day(&self, date: NaiveDate, entries: &[TimesheetEntry]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn.execute(
+            "DELETE FROM timesheet_entries WHERE date = ?1 AND exported_at IS NULL",
+            [date.to_string()],
+        )?;
+        for e in entries {
+            self.insert_entry(&Uuid::new_v4().to_string(), e)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Kaydı ekler ya da (aynı kimlikle) günceller; aktarılmış kayıt değiştirilemez.
+    pub fn save_timesheet_entry(&self, id: Option<&str>, entry: &TimesheetEntry) -> Result<String> {
+        if !(entry.hours > 0.0 && entry.hours <= 24.0) {
+            return Err(StoreError::Invalid("saat 0 ile 24 arasında olmalı".into()));
+        }
+        let id = id.map_or_else(|| Uuid::new_v4().to_string(), str::to_string);
+        let exported: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT exported_at FROM timesheet_entries WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if matches!(exported, Some(Some(_))) {
+            return Err(StoreError::Invalid(
+                "Excel'e aktarılmış kayıt değiştirilemez".into(),
+            ));
+        }
+        self.conn
+            .execute("DELETE FROM timesheet_entries WHERE id = ?1", [&id])?;
+        self.insert_entry(&id, entry)?;
+        Ok(id)
+    }
+
+    pub fn delete_timesheet_entry(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM timesheet_entries WHERE id = ?1 AND exported_at IS NULL",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    /// Excel'e aktarılan kayıtları işaretler.
+    pub fn mark_timesheet_exported(&self, ids: &[String], at: DateTime<Utc>) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            self.conn.execute(
+                "UPDATE timesheet_entries SET exported_at = ?2 WHERE id = ?1",
+                params![id, ms(at)],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn insert_entry(&self, id: &str, e: &TimesheetEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO timesheet_entries
+                (id, date, start, hours, kind, details, party, project_id, division, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                id,
+                e.date.to_string(),
+                e.start.format("%H:%M").to_string(),
+                e.hours,
+                e.kind.label(),
+                e.details.trim(),
+                e.party.trim(),
+                e.project_id,
+                e.division.trim(),
+                ms(Utc::now()),
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Son iki haftanın oturumlarından proje ve kategori önerileri.
     pub fn suggestions(&self, now: DateTime<Utc>) -> Result<Suggestions> {
         let sessions = self.sessions_between(now - chrono::Duration::days(SUGGEST_DAYS), now)?;
@@ -1337,6 +1534,70 @@ mod tests {
             ]
         );
         assert_eq!(store.known_apps(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn timesheet_day_can_be_approved_edited_and_exported() {
+        let store = Store::open_in_memory().unwrap();
+        let mut work = session("Figma", None, 0, 3600);
+        work.title = "Trumore Loyalty UI/UX — Figma".into();
+        store.upsert_session(&work).unwrap();
+        let p = store.accept_project_suggestion("Trumore").unwrap();
+        store
+            .save_timesheet_config(&TimesheetConfig {
+                default_party: "ADBA".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let proposed = store.propose_timesheet(t(-36_000), t(36_000)).unwrap();
+        assert_eq!(proposed.len(), 1);
+        assert_eq!(
+            (proposed[0].division.as_str(), proposed[0].party.as_str()),
+            ("Trumore", "ADBA")
+        );
+        assert_eq!(proposed[0].project_id, p.id);
+        let day = proposed[0].date;
+
+        // Onayla, düzenle, ekle.
+        store.replace_timesheet_day(day, &proposed).unwrap();
+        let saved = store.timesheet_entries(day, day).unwrap();
+        let mut edited = saved[0].entry.clone();
+        edited.details = "Loyalty ekranları".into();
+        store
+            .save_timesheet_entry(Some(&saved[0].id), &edited)
+            .unwrap();
+        let mut extra = edited.clone();
+        extra.kind = EntryKind::F2F;
+        extra.hours = 0.5;
+        let extra_id = store.save_timesheet_entry(None, &extra).unwrap();
+        assert_eq!(store.timesheet_entries(day, day).unwrap().len(), 2);
+        assert!(
+            store
+                .save_timesheet_entry(
+                    None,
+                    &TimesheetEntry {
+                        hours: 0.0,
+                        ..extra.clone()
+                    }
+                )
+                .is_err()
+        );
+
+        // Aktarılan kayıt korunur: değiştirilemez, gün yeniden önerilince silinmez.
+        store
+            .mark_timesheet_exported(&[saved[0].id.clone()], Utc::now())
+            .unwrap();
+        assert!(
+            store
+                .save_timesheet_entry(Some(&saved[0].id), &edited)
+                .is_err()
+        );
+        store.replace_timesheet_day(day, &[]).unwrap();
+        let left = store.timesheet_entries(day, day).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].entry.details, "Loyalty ekranları");
+        assert!(left[0].exported_at.is_some());
+        assert!(left.iter().all(|e| e.id != extra_id));
     }
 
     #[test]

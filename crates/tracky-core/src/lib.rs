@@ -19,6 +19,7 @@ pub mod store;
 pub mod suggest;
 #[cfg(feature = "store")]
 pub mod sync;
+pub mod timesheet;
 #[cfg(feature = "store")]
 pub mod tracker;
 pub mod trends;
@@ -32,6 +33,6 @@ pub use platform::ActivityProvider;
 pub use privacy::PrivacySettings;
 pub use report::Report;
 #[cfg(feature = "store")]
-pub use store::{Store, StoreError, UsageTotal};
+pub use store::{SavedEntry, Store, StoreError, UsageTotal};
 #[cfg(feature = "store")]
 pub use tracker::{TickOutcome, Tracker};
