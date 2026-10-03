@@ -28,6 +28,11 @@ const HID_SYSTEM_STATE: i32 = 1;
 /// `kCGAnyInputEventType`
 const ANY_INPUT_EVENT: u32 = !0;
 
+/// Yanıt vermeyen bir uygulamaya yapılan AX çağrısı en çok bu kadar bekler (saniye).
+/// Sistem varsayılanı 6 sn: donmuş bir uygulama öndeyken saniyelik takip döngüsü ve
+/// menü çubuğu her öznitelik için bu kadar takılırdı.
+const AX_TIMEOUT_SECS: f32 = 1.0;
+
 /// Ekran kilitli / ekran koruyucu açıkken öne gelen sistem süreçleri.
 const IGNORED_BUNDLES: &[&str] = &["com.apple.loginwindow", "com.apple.ScreenSaver.Engine"];
 
@@ -41,6 +46,7 @@ unsafe extern "C" {
         value: *mut CFTypeRef,
     ) -> AXError;
     fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> AXError;
+    fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> AXError;
     fn AXIsProcessTrusted() -> u8;
     fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> u8;
     static kAXTrustedCheckOptionPrompt: CFStringRef;
@@ -79,10 +85,22 @@ impl ActivityProvider for SystemProvider {
     }
 }
 
+/// Sistem geneli öğeye verilen zaman aşımı tüm AX çağrıları için geçerlidir; bir kez yeter.
+fn set_ax_timeout() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: Create kuralı; sistem geneli öğe geçerli.
+        let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+        // SAFETY: Geçerli öğe; başarısızlık önemsiz (varsayılan süre kalır).
+        unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), AX_TIMEOUT_SECS) };
+    });
+}
+
 fn active_window() -> Result<Option<ActiveWindow>, PlatformError> {
     if !is_trusted() {
         return Err(PlatformError::PermissionDenied);
     }
+    set_ax_timeout();
     let Some(pid) = focused_pid()? else {
         return Ok(None);
     };
