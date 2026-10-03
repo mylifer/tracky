@@ -151,6 +151,10 @@ impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // WAL'da önerilen ayar: çökmede veri kaybı ve bozulma olmaz, yalnızca elektrik
+        // kesintisinde son birkaç saniye gidebilir. Takip birkaç saniyede bir yazdığı için
+        // FULL her yazmada diske zorlama (fsync) yapıp pili ve diski boşuna yorardı.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         Self::init(conn)
     }
 
@@ -991,7 +995,13 @@ mod tests {
     #[test]
     fn device_id_persists_across_reopen() {
         let dir = std::env::temp_dir().join(format!("tracky-test-{}.db", Uuid::new_v4()));
-        let first = Store::open(&dir).unwrap().device_id();
+        let first = Store::open(&dir).unwrap();
+        let sync: i64 = first
+            .conn()
+            .pragma_query_value(None, "synchronous", |r| r.get(0))
+            .unwrap();
+        assert_eq!(sync, 1, "WAL ile synchronous=NORMAL");
+        let first = first.device_id();
         let second = Store::open(&dir).unwrap().device_id();
         assert_eq!(first, second);
         let _ = std::fs::remove_file(&dir);
