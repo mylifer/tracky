@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
-use chrono::{DateTime, Local, Timelike, Utc};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Timelike, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
@@ -51,6 +51,12 @@ pub struct Current {
 pub const GOALS_KEY: &str = "goals";
 /// Süreli duraklatmanın bitişi (yoksa süresiz).
 pub const PAUSE_UNTIL_KEY: &str = "pause_until";
+/// Haftalık özetin en son gösterildiği haftanın pazartesisi.
+const WEEKLY_SENT_KEY: &str = "weekly_summary_week";
+/// Yeni haftada bu kadar çalışılınca geçen haftanın özeti gösterilir.
+const WEEKLY_AFTER_SECS: i64 = 5 * 60;
+/// Geçen hafta bundan az çalışıldıysa özet gösterilmez (örn. ilk kurulum).
+const WEEKLY_MIN_SECS: i64 = 60 * 60;
 
 pub enum Command {
     SetPrivacy(PrivacySettings),
@@ -86,6 +92,11 @@ pub fn run(
         privacy,
     );
     let mut coach = Coach::new();
+    let mut weekly_sent: Option<NaiveDate> = {
+        let shared = app.state::<Shared>();
+        let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.setting(WEEKLY_SENT_KEY).ok().flatten()
+    };
     let mut first_refresh = true;
     let mut limits_primed = false;
     let mut ticks = 0u32;
@@ -198,6 +209,14 @@ pub fn run(
         {
             notify_day_summary(&app, &goals, now);
         }
+        let week = week_start(today);
+        if goals.weekly_summary
+            && status.today_seconds >= WEEKLY_AFTER_SECS
+            && weekly_sent != Some(week)
+        {
+            weekly_sent = Some(week);
+            notify_week_summary(&app, week);
+        }
         if let Some(used) = category_totals {
             if std::mem::replace(&mut limits_primed, true) {
                 for nudge in coach.observe_limits(&goals, today, &used) {
@@ -305,6 +324,95 @@ fn day_summary_body(report: &Report, goals: &Goals) -> String {
     format!("{first}\n{second}")
 }
 
+/// Haftanın pazartesisi.
+fn week_start(day: NaiveDate) -> NaiveDate {
+    day - Days::new(u64::from(day.weekday().num_days_from_monday()))
+}
+
+/// Geçen haftanın (`week`'ten önceki 7 gün) özeti; gösterildiği hafta kaydedilir.
+fn notify_week_summary(app: &AppHandle, week: NaiveDate) {
+    let reports = {
+        let shared = app.state::<Shared>();
+        let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+        // Uygulama yeniden açılınca aynı hafta için tekrar gösterilmesin.
+        let _ = store.save_setting(WEEKLY_SENT_KEY, &week);
+        let range = |first: NaiveDate| {
+            let starts: Vec<_> = (0..7u64)
+                .map(|i| local_midnight(first + Days::new(i)))
+                .collect();
+            store.report(
+                starts[0],
+                local_midnight(first + Days::new(7)),
+                &starts,
+                false,
+            )
+        };
+        range(week - Days::new(7)).and_then(|last| Ok((last, range(week - Days::new(14))?)))
+    };
+    let (last, before) = match reports {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("haftalık özet hazırlanamadı: {e}");
+            return;
+        }
+    };
+    if last.total_seconds < WEEKLY_MIN_SECS {
+        return;
+    }
+    let result = app
+        .notification()
+        .builder()
+        .title("Geçen haftanın özeti")
+        .body(week_summary_body(&last, before.total_seconds))
+        .show();
+    if let Err(e) = result {
+        eprintln!("bildirim gösterilemedi: {e}");
+    }
+}
+
+const WEEKDAYS: [&str; 7] = [
+    "Pazartesi",
+    "Salı",
+    "Çarşamba",
+    "Perşembe",
+    "Cuma",
+    "Cumartesi",
+    "Pazar",
+];
+
+/// Toplam, önceki haftaya göre değişim, odak, en çok kategori ve en yoğun gün.
+fn week_summary_body(report: &Report, previous_seconds: i64) -> String {
+    let mut first = format!("{} çalıştın", format_duration(report.total_seconds));
+    if previous_seconds > 0 {
+        let pct = (report.total_seconds - previous_seconds) * 100 / previous_seconds;
+        let sign = if pct >= 0 { "+" } else { "-" };
+        first += &format!(" · önceki haftaya göre {sign}%{}", pct.abs());
+    }
+    let mut second = format!("Odak: {}", format_duration(report.focus.focus_seconds));
+    if let Some(top) = report.categories.iter().max_by_key(|b| b.seconds) {
+        let name = top
+            .id
+            .as_ref()
+            .and_then(|id| report.tags.iter().find(|t| &t.id == id))
+            .map_or("Kategorisiz", |t| t.name.as_str());
+        second += &format!(" · En çok: {name} ({})", format_duration(top.seconds));
+    }
+    if let Some(busiest) = report
+        .days
+        .iter()
+        .filter(|d| d.seconds > 0)
+        .max_by_key(|d| d.seconds)
+    {
+        let day = busiest
+            .start
+            .with_timezone(&Local)
+            .weekday()
+            .num_days_from_monday();
+        second += &format!(" · En yoğun gün: {}", WEEKDAYS[day as usize]);
+    }
+    format!("{first}\n{second}")
+}
+
 fn notify_focus_done(app: &AppHandle, minutes: i64) {
     let result = app
         .notification()
@@ -359,8 +467,10 @@ pub fn format_duration(secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{day_summary_body, format_duration};
+    use super::{day_summary_body, format_duration, week_start, week_summary_body};
+    use chrono::{Local, NaiveDate, TimeZone, Utc};
     use tracky_core::report::Bucket;
+    use tracky_core::report::DayBucket;
     use tracky_core::{Goals, Report, Tag, TagKind};
 
     #[test]
@@ -407,5 +517,44 @@ mod tests {
             day_summary_body(&report, &no_goal),
             "6sa çalıştın\nOdak: 3sa 20dk"
         );
+    }
+
+    #[test]
+    fn week_starts_on_monday() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        assert_eq!(week_start(d(2026, 10, 3)), d(2026, 9, 28)); // cumartesi
+        assert_eq!(week_start(d(2026, 9, 28)), d(2026, 9, 28)); // pazartesi
+        assert_eq!(week_start(d(2026, 10, 4)), d(2026, 9, 28)); // pazar
+    }
+
+    #[test]
+    fn week_summary_compares_and_names_busiest_day() {
+        let day = |d: u32, secs: i64| DayBucket {
+            // Yerel öğle: hangi saat diliminde çalışırsa çalışsın aynı güne düşer.
+            start: Local
+                .with_ymd_and_hms(2026, 9, d, 12, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            seconds: secs,
+            categories: vec![],
+            focus_score: 0,
+            focus_seconds: 0,
+        };
+        let mut report = Report {
+            total_seconds: 30 * 3600,
+            days: vec![day(21, 4 * 3600), day(22, 9 * 3600), day(23, 0)],
+            ..Default::default()
+        };
+        report.focus.focus_seconds = 12 * 3600;
+        assert_eq!(
+            week_summary_body(&report, 25 * 3600),
+            "30sa çalıştın · önceki haftaya göre +%20\nOdak: 12sa · En yoğun gün: Salı"
+        );
+        assert_eq!(
+            week_summary_body(&report, 40 * 3600),
+            "30sa çalıştın · önceki haftaya göre -%25\nOdak: 12sa · En yoğun gün: Salı"
+        );
+        report.days.clear();
+        assert_eq!(week_summary_body(&report, 0), "30sa çalıştın\nOdak: 12sa");
     }
 }

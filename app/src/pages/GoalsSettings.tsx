@@ -126,6 +126,12 @@ export default function GoalsSettings() {
           </Select>
         </SettingRow>
       )}
+      <ToggleRow
+        label="Haftalık özet"
+        hint="Yeni haftada ilk çalışmaya başlayınca geçen haftanın süresini, değişimini ve en yoğun gününü bildirir."
+        checked={goals.weeklySummary}
+        onChange={(v) => save({ ...goals, weeklySummary: v })}
+      />
       <LimitsBlock goals={goals} categories={categories} onChange={save} />
       {error && (
         <div className="px-4 py-2">

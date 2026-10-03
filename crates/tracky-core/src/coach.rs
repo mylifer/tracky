@@ -21,6 +21,8 @@ pub struct Goals {
     pub limits: Vec<CategoryLimit>,
     /// Gün sonu özeti saati (yerel gece yarısından dakika); `None` = kapalı.
     pub day_summary_at: Option<u32>,
+    /// Yeni haftanın ilk çalışmasında geçen haftanın özeti.
+    pub weekly_summary: bool,
 }
 
 /// Bir kategoride günde en fazla `minutes` dakika.
@@ -51,6 +53,7 @@ impl Default for Goals {
             break_after_minutes: Some(60),
             limits: Vec::new(),
             day_summary_at: Some(18 * 60),
+            weekly_summary: true,
         }
     }
 }
@@ -265,6 +268,7 @@ mod tests {
             break_after_minutes: Some(break_after),
             limits: Vec::new(),
             day_summary_at: Some(18 * 60),
+            weekly_summary: true,
         }
     }
 
@@ -411,6 +415,7 @@ mod tests {
     fn goals_saved_before_day_summary_get_the_default() {
         let g: Goals = serde_json::from_str(r#"{"dailyHours":6,"notifyGoal":false}"#).unwrap();
         assert_eq!(g.day_summary_at, Some(18 * 60));
+        assert!(g.weekly_summary);
         assert_eq!(g.daily_hours, 6.0);
     }
 }
