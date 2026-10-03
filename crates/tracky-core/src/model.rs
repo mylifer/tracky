@@ -28,6 +28,9 @@ pub struct Session {
     /// Kullanıcının elle verdiği kategori; varsa kurallardan önce gelir.
     #[serde(default)]
     pub category_id: Option<String>,
+    /// Kullanıcının elle verdiği proje; varsa kurallardan önce gelir.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// Bir odak zamanlayıcısı. `end` boşsa hâlâ sürüyor. Depo (`store` özelliği) kapalıyken
@@ -72,6 +75,7 @@ impl Session {
             started_at: at,
             ended_at: at,
             category_id: None,
+            project_id: None,
         }
     }
 

@@ -94,6 +94,7 @@ const TABLES: &[Table] = &[
             ("started_at", Col::Time),
             ("ended_at", Col::Time),
             ("category_id", Col::OptText),
+            ("project_id", Col::OptText),
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
         ],
@@ -248,6 +249,11 @@ fn push_table(
             if e.contains("category_id") {
                 SyncError::Remote(format!(
                     "Supabase şeması güncel değil: supabase/migrations/0002_session_category.sql \
+                     dosyasını SQL Editor'da çalıştırın ({e})"
+                ))
+            } else if e.contains("project_id") {
+                SyncError::Remote(format!(
+                    "Supabase şeması güncel değil: supabase/migrations/0004_session_project.sql \
                      dosyasını SQL Editor'da çalıştırın ({e})"
                 ))
             } else {
@@ -563,6 +569,7 @@ mod tests {
             started_at: t0,
             ended_at: t0 + Duration::seconds(secs),
             category_id: None,
+            project_id: None,
         }
     }
 
@@ -827,5 +834,22 @@ mod tests {
         run(&b, &mut remote, "u1").unwrap();
         assert_eq!(totals(&b), vec![("Code".to_string(), 60)]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn manual_project_syncs_between_devices() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let s = session("Code", 600);
+        lock(&a).upsert_session(&s).unwrap();
+        let project = lock(&a).accept_project_suggestion("Trumore").unwrap();
+        lock(&a)
+            .set_project_between(s.started_at, s.ended_at, Some(&project.id))
+            .unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        let got = lock(&b).sessions_between(s.started_at, s.ended_at).unwrap();
+        assert_eq!(got[0].project_id.as_deref(), Some(project.id.as_str()));
     }
 }

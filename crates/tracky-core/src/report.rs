@@ -290,6 +290,7 @@ mod tests {
             started_at: t(a),
             ended_at: t(b),
             category_id: None,
+            project_id: None,
         }
     }
 

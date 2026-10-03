@@ -111,6 +111,7 @@ export default function ReportView(p: Props) {
 
   const tags = useMemo(() => tagMap(report?.tags ?? []), [report]);
   const categories = useMemo(() => (report?.tags ?? []).filter((t) => t.kind === "category"), [report]);
+  const projects = useMemo(() => (report?.tags ?? []).filter((t) => t.kind === "project"), [report]);
   const order = useMemo(() => {
     const present = new Set((report?.categories ?? []).map((c) => c.id));
     const ids: (string | null)[] = categories.map((c) => c.id).filter((id) => present.has(id));
@@ -138,7 +139,7 @@ export default function ReportView(p: Props) {
     setDraft((d) => ({ date: isoDate(a), from: hm(a), to, seq: (d?.seq ?? 0) + 1 }));
     setPreview([start, end]);
   }, []);
-  const editCtx = useMemo(() => ({ categories, onChanged: load }), [categories, load]);
+  const editCtx = useMemo(() => ({ categories, projects, onChanged: load }), [categories, projects, load]);
   // Hafta görünümünde elle kayıt varsayılan olarak bugüne (haftadaysa) ya da haftanın ilk gününe.
   const todayIso = isoDate(today());
   const manualDay =
@@ -277,6 +278,7 @@ export default function ReportView(p: Props) {
                       <ManualEntry
                         day={p.mode === "day" ? p.start : manualDay}
                         categories={categories}
+                        projects={projects}
                         onChanged={load}
                         draft={draft}
                         onClose={() => setPreview(null)}
@@ -337,6 +339,7 @@ export default function ReportView(p: Props) {
                       <RangeMenu
                         selection={selection}
                         categories={categories}
+                        projects={projects}
                         onAddEntry={openDraft}
                         onChanged={load}
                         onClose={closeSelection}

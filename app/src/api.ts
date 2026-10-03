@@ -201,8 +201,11 @@ export const api = {
   setRangeCategory: (start: string, end: string, categoryId: string | null) =>
     invoke<number>("set_range_category", { start, end, categoryId }),
   deleteRange: (start: string, end: string) => invoke<number>("delete_range", { start, end }),
-  addManualEntry: (label: string, start: string, end: string, categoryId: string | null) =>
-    invoke<void>("add_manual_entry", { label, start, end, categoryId }),
+  addManualEntry: (label: string, start: string, end: string, categoryId: string | null, projectId: string | null) =>
+    invoke<void>("add_manual_entry", { label, start, end, categoryId, projectId }),
+  /** Aralıktaki oturumlara elle proje; `null` kurallara döndürür. */
+  setRangeProject: (start: string, end: string, projectId: string | null) =>
+    invoke<number>("set_range_project", { start, end, projectId }),
   privacy: () => invoke<PrivacySettings>("get_privacy"),
   savePrivacy: (settings: PrivacySettings) => invoke<void>("save_privacy", { settings }),
   goals: () => invoke<Goals>("get_goals"),

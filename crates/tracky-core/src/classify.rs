@@ -125,6 +125,8 @@ pub struct Classifier {
     project_rules: Vec<(Rule, String)>,
     /// Var olan kategoriler: silinmiş bir kategoriye verilmiş elle atama yok sayılır.
     categories: std::collections::HashSet<String>,
+    /// Var olan projeler: silinmiş bir projeye verilmiş elle atama yok sayılır.
+    projects: std::collections::HashSet<String>,
 }
 
 impl Classifier {
@@ -160,16 +162,26 @@ impl Classifier {
                 .filter(|t| t.kind == TagKind::Category)
                 .map(|t| t.id.clone())
                 .collect(),
+            projects: tags
+                .iter()
+                .filter(|t| t.kind == TagKind::Project)
+                .map(|t| t.id.clone())
+                .collect(),
         }
     }
 
-    /// Elle verilen kategori (hâlâ varsa) kurallardan önce gelir.
+    /// Elle verilen kategori ve proje (hâlâ varsa) kurallardan önce gelir.
     pub fn classify(&self, session: &Session) -> Classification {
         let mut class = self.classify_parts(&session.app_id, &session.title);
         if let Some(id) = &session.category_id
             && self.categories.contains(id)
         {
             class.category = Some(id.clone());
+        }
+        if let Some(id) = &session.project_id
+            && self.projects.contains(id)
+        {
+            class.project = Some(id.clone());
         }
         class
     }

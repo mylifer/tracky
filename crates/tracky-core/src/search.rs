@@ -146,6 +146,7 @@ mod tests {
             started_at: from,
             ended_at: to,
             category_id: None,
+            project_id: None,
         }
     }
 

@@ -91,6 +91,7 @@ mod tests {
             started_at: t(from),
             ended_at: t(to),
             category_id: None,
+            project_id: None,
         }
     }
 

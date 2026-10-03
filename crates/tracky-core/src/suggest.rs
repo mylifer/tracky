@@ -675,6 +675,7 @@ mod tests {
             started_at: t0,
             ended_at: t0 + Duration::minutes(mins),
             category_id: None,
+            project_id: None,
         }
     }
 

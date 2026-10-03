@@ -124,6 +124,10 @@ END;
 -- uygulama başına tek indeks aramasıyla çıkar; uygulamanın başlık dökümü de hızlanır.
 CREATE INDEX sessions_app_ended ON sessions (app_id, ended_at);
 "#,
+    r#"
+-- Oturuma elle verilen proje (takvimde bloğu ya da aralığı projeye atama, elle kayıt).
+ALTER TABLE sessions ADD COLUMN project_id TEXT;
+"#,
 ];
 
 /// `[?1, ?2)` ile kesişen oturumlar. Üçüncü koşul sonucu değiştirmez (kesişen her oturum
@@ -264,7 +268,8 @@ impl Store {
     /// `[from, to)` ile kesişen oturumlar, başlangıca göre sıralı.
     pub fn sessions_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, app_id, app_name, title, url, domain, started_at, ended_at, category_id
+            "SELECT id, app_id, app_name, title, url, domain, started_at, ended_at, category_id,
+                    project_id
              FROM sessions
              WHERE deleted_at IS NULL AND {OVERLAPS}
              ORDER BY started_at"
@@ -282,6 +287,7 @@ impl Store {
                     started_at: from_ms(r.get(6)?),
                     ended_at: from_ms(r.get(7)?),
                     category_id: r.get(8)?,
+                    project_id: r.get(9)?,
                 },
             ))
         })?;
@@ -374,6 +380,31 @@ impl Store {
         Ok(n)
     }
 
+    /// `[from, to)` aralığındaki oturumlara elle proje verir (sınırda bölünür);
+    /// `None` kurallara döndürür. Değişen satır sayısı.
+    pub fn set_project_between(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        project_id: Option<&str>,
+    ) -> Result<usize> {
+        if let Some(id) = project_id {
+            self.require_tag(id, TagKind::Project)?;
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        self.split_at(from, to)?;
+        let n = self.conn.execute(
+            &format!(
+                "UPDATE sessions SET project_id = ?3, updated_at = MAX(?4, updated_at + 1)
+                 WHERE deleted_at IS NULL AND {OVERLAPS}
+                   AND project_id IS NOT ?3"
+            ),
+            params![ms(from), ms(to), project_id, ms(Utc::now())],
+        )?;
+        tx.commit()?;
+        Ok(n)
+    }
+
     /// `[from, to)` içindeki süreyi yumuşak siler; sınırı aşan oturumların dışarıda
     /// kalan kısmı korunur. Silinen satır sayısı.
     pub fn delete_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
@@ -417,8 +448,9 @@ impl Store {
             for (a, b) in parts {
                 self.conn.execute(
                     "INSERT INTO sessions (id, device_id, app_id, app_name, title, url, domain,
-                         category_id, started_at, ended_at, updated_at)
-                     SELECT ?2, device_id, app_id, app_name, title, url, domain, category_id, ?3, ?4, ?5
+                         category_id, project_id, started_at, ended_at, updated_at)
+                     SELECT ?2, device_id, app_id, app_name, title, url, domain, category_id,
+                         project_id, ?3, ?4, ?5
                      FROM sessions WHERE id = ?1",
                     params![id, Uuid::new_v4().to_string(), a, b, now],
                 )?;
@@ -439,6 +471,7 @@ impl Store {
         from: DateTime<Utc>,
         to: DateTime<Utc>,
         category_id: Option<&str>,
+        project_id: Option<&str>,
     ) -> Result<Session> {
         let label = label.trim();
         if label.is_empty() {
@@ -451,6 +484,9 @@ impl Store {
         }
         if let Some(id) = category_id {
             self.require_tag(id, TagKind::Category)?;
+        }
+        if let Some(id) = project_id {
+            self.require_tag(id, TagKind::Project)?;
         }
         // Takip edilen süreyle çakışırsa aynı dakikalar iki kez sayılırdı.
         if !self.sessions_between(from, to)?.is_empty() {
@@ -468,11 +504,16 @@ impl Store {
             started_at: from,
             ended_at: to,
             category_id: category_id.map(Into::into),
+            project_id: project_id.map(Into::into),
         };
         self.upsert_session(&session)?;
         self.conn.execute(
-            "UPDATE sessions SET category_id = ?2 WHERE id = ?1",
-            params![session.id.to_string(), session.category_id],
+            "UPDATE sessions SET category_id = ?2, project_id = ?3 WHERE id = ?1",
+            params![
+                session.id.to_string(),
+                session.category_id,
+                session.project_id
+            ],
         )?;
         Ok(session)
     }
@@ -1087,6 +1128,7 @@ mod tests {
             started_at: t(start),
             ended_at: t(end),
             category_id: None,
+            project_id: None,
         }
     }
 
@@ -1298,6 +1340,53 @@ mod tests {
     }
 
     #[test]
+    fn manual_project_overrides_rules_and_splits_at_range() {
+        let store = Store::open_in_memory().unwrap();
+        let mut code = session("Code", None, 0, 3600);
+        code.title = "sync.rs — tracky".into();
+        store.upsert_session(&code).unwrap();
+        let kum = store.accept_project_suggestion("tracky").unwrap(); // kural: "tracky"
+        let togg = Tag {
+            id: Uuid::new_v4().to_string(),
+            kind: TagKind::Project,
+            name: "Trumore".into(),
+            color: 2,
+        };
+        store.upsert_tag(&togg, 9).unwrap();
+        let projects = |from: i64, to: i64| {
+            let r = store.report(t(from), t(to), &[t(from)], false).unwrap();
+            r.projects
+                .into_iter()
+                .map(|b| (b.id, b.seconds))
+                .collect::<Vec<_>>()
+        };
+        // Son yarım saat elle Trumore'a: kural yalnızca ilk yarıda kalır.
+        assert_eq!(
+            store
+                .set_project_between(t(1800), t(3600), Some(&togg.id))
+                .unwrap(),
+            1
+        );
+        let mut got = projects(0, 3600);
+        got.sort();
+        let mut want = vec![(Some(kum.id.clone()), 1800), (Some(togg.id.clone()), 1800)];
+        want.sort();
+        assert_eq!(got, want);
+        // Kurallara döndürünce yine tamamı kurala göre.
+        store.set_project_between(t(0), t(3600), None).unwrap();
+        assert_eq!(projects(0, 3600), [(Some(kum.id.clone()), 3600)]);
+        // Kategori kimliği proje olarak verilemez.
+        let cat = store.tags().unwrap()[0].id.clone();
+        assert!(store.set_project_between(t(0), t(10), Some(&cat)).is_err());
+        // Elle kayıt projeyle eklenebilir.
+        let m = store
+            .add_manual_session("Toplantı", t(4000), t(5800), None, Some(&togg.id))
+            .unwrap();
+        assert_eq!(m.project_id.as_deref(), Some(togg.id.as_str()));
+        assert_eq!(projects(4000, 5800), [(Some(togg.id.clone()), 1800)]);
+    }
+
+    #[test]
     fn long_sessions_are_found_by_range_queries() {
         // Aralık sorguları "en uzun oturum" alt sınırını kullanır; sonradan uzatılan
         // (takip) ya da uzaktan gelen uzun oturumlar da bulunmalı.
@@ -1466,17 +1555,17 @@ mod tests {
         // Çakışan elle kayıt reddedilir, boş aralığa eklenir.
         assert!(
             store
-                .add_manual_session("Toplantı", t(800), t(1200), None)
+                .add_manual_session("Toplantı", t(800), t(1200), None, None)
                 .is_err()
         );
         assert!(
             store
-                .add_manual_session("  ", t(1000), t(1200), None)
+                .add_manual_session("  ", t(1000), t(1200), None, None)
                 .is_err()
         );
         let cat = store.tags().unwrap()[0].id.clone();
         let s = store
-            .add_manual_session("Toplantı", t(1000), t(1600), Some(&cat))
+            .add_manual_session("Toplantı", t(1000), t(1600), Some(&cat), None)
             .unwrap();
         let back = store.sessions_between(t(0), t(3600)).unwrap();
         let manual = back.iter().find(|x| x.id == s.id).unwrap();

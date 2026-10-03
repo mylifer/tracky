@@ -264,6 +264,7 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
           end={block.end}
           categoryId={block.categoryId}
           categories={edit.categories}
+          projects={edit.projects}
           onChanged={edit.onChanged}
         />
       )}

@@ -200,6 +200,23 @@ pub async fn set_range_category(
         .map_err(err)
 }
 
+/// Takvimdeki bir bloğu ya da aralığı projeye atar; `None` kurallara döndürür.
+#[tauri::command]
+pub async fn set_range_project(
+    app: AppHandle,
+    start: String,
+    end: String,
+    project_id: Option<String>,
+) -> CmdResult<usize> {
+    lock(&app.state::<Shared>().store)
+        .set_project_between(
+            parse_time(&start)?,
+            parse_time(&end)?,
+            project_id.as_deref(),
+        )
+        .map_err(err)
+}
+
 #[tauri::command]
 pub async fn delete_range(app: AppHandle, start: String, end: String) -> CmdResult<usize> {
     lock(&app.state::<Shared>().store)
@@ -214,6 +231,7 @@ pub async fn add_manual_entry(
     start: String,
     end: String,
     category_id: Option<String>,
+    project_id: Option<String>,
 ) -> CmdResult<()> {
     lock(&app.state::<Shared>().store)
         .add_manual_session(
@@ -221,6 +239,7 @@ pub async fn add_manual_entry(
             parse_time(&start)?,
             parse_time(&end)?,
             category_id.as_deref(),
+            project_id.as_deref(),
         )
         .map(|_| ())
         .map_err(err)

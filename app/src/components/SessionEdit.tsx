@@ -15,7 +15,36 @@ function message(e: unknown) {
 }
 
 /** Takvimdeki blokların düzenleme bağlamı (kategoriler ve yenileme). */
-export const EditContext = createContext<{ categories: Tag[]; onChanged: () => void } | null>(null);
+export const EditContext = createContext<{ categories: Tag[]; projects: Tag[]; onChanged: () => void } | null>(null);
+
+/** Projeye atama seçicisi; proje yoksa nereden ekleneceğini söyler. */
+function ProjectAssign({
+  projects,
+  onChange,
+  className,
+}: {
+  projects: Tag[];
+  onChange: (id: string | null) => void;
+  className?: string;
+}) {
+  if (projects.length === 0)
+    return (
+      <p className="text-[11px] text-muted-foreground">
+        Projeye atamak için önce Kategoriler ve projeler → Projeler'den bir proje ekle.
+      </p>
+    );
+  return (
+    <CategorySelect
+      value={null}
+      onChange={onChange}
+      categories={projects}
+      noneLabel="Projeyi kaldır (kurallara göre)"
+      placeholder="Projeye ata…"
+      className={className}
+      aria-label="Proje"
+    />
+  );
+}
 export const useEdit = () => useContext(EditContext);
 
 /** Takvimde sürükleyerek seçilen aralık ve menünün açılacağı nokta. */
@@ -28,12 +57,14 @@ export type RangeSelection = { start: number; end: number; x: number; y: number 
 export function RangeMenu({
   selection,
   categories,
+  projects,
   onAddEntry,
   onChanged,
   onClose,
 }: {
   selection: RangeSelection;
   categories: Tag[];
+  projects: Tag[];
   onAddEntry: (start: number, end: number) => void;
   onChanged: () => void;
   onClose: () => void;
@@ -84,6 +115,13 @@ export function RangeMenu({
             <X />
           </Button>
         </div>
+        {end > start && (
+          <ProjectAssign
+            projects={projects}
+            onChange={(id) => run(() => api.setRangeProject(iso(start), iso(end), id))}
+            className="w-full"
+          />
+        )}
         {end > start && (
           <CategorySelect
             value={null}
@@ -137,12 +175,14 @@ export function BlockActions({
   end,
   categoryId,
   categories,
+  projects,
   onChanged,
 }: {
   start: string;
   end: string;
   categoryId: string | null;
   categories: Tag[];
+  projects: Tag[];
   onChanged: () => void;
 }) {
   const [confirm, setConfirm] = useState(false);
@@ -151,6 +191,11 @@ export function BlockActions({
 
   return (
     <div className="space-y-2 border-t pt-3">
+      <ProjectAssign
+        projects={projects}
+        onChange={(id) => run(() => api.setRangeProject(start, end, id))}
+        className="w-full"
+      />
       <div className="flex items-center gap-2">
         <CategorySelect
           value={categoryId}
@@ -190,6 +235,7 @@ export type EntryDraft = { date: string; from: string; to: string; seq: number }
 export function ManualEntry({
   day,
   categories,
+  projects,
   onChanged,
   draft,
   onClose,
@@ -197,6 +243,7 @@ export function ManualEntry({
   /** Varsayılan tarih (YYYY-MM-DD). */
   day: string;
   categories: Tag[];
+  projects: Tag[];
   onChanged: () => void;
   draft?: EntryDraft | null;
   /** Form kapanınca (takvimdeki önizlemeyi kaldırmak için). */
@@ -208,6 +255,7 @@ export function ManualEntry({
   const [from, setFrom] = useState("09:00");
   const [to, setTo] = useState("10:00");
   const [category, setCategory] = useState<string | null>(null);
+  const [project, setProject] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -233,7 +281,7 @@ export function ManualEntry({
     if (+end <= +start) return setError("Bitiş başlangıçtan sonra olmalı.");
     if (+end > Date.now()) return setError("Henüz gelmemiş bir zaman için kayıt eklenemez.");
     try {
-      await api.addManualEntry(label, start.toISOString(), end.toISOString(), category);
+      await api.addManualEntry(label, start.toISOString(), end.toISOString(), category, project);
       setOpen(false);
       onClose?.();
       setLabel("");
@@ -320,6 +368,19 @@ export function ManualEntry({
               aria-label="Kategori"
             />
           </div>
+          {projects.length > 0 && (
+            <div className="space-y-1.5">
+              <Label>Proje</Label>
+              <CategorySelect
+                value={project}
+                onChange={setProject}
+                categories={projects}
+                noneLabel="Projesiz"
+                className="w-full"
+                aria-label="Proje"
+              />
+            </div>
+          )}
           {error && <p className="text-xs text-destructive selectable">{error}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
