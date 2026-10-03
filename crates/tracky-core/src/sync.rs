@@ -7,9 +7,10 @@
 //! - `synced_at < updated_at` olan yerel satırlar gönderilmeyi bekler.
 //! - Uzak taraf her satıra sunucu saatiyle `server_updated_at` verir; çekme
 //!   bu imleçten sonrasını ister.
-//! - Gönderilen satırlar `writer` (cihaz kimliği) taşır; çekme, sunucudaki son
-//!   sürümü bu cihazın yazdığı satırları atlar. Sütunu olmayan eski şemada
-//!   (0003 öncesi) filtre olmadan çalışılır.
+//! - Gönderilen satırlar `writer` (bu açılışın kimliği) taşır; çekme, sunucudaki
+//!   son sürümü bu kurulumun yazdığı satırları atlar ve sonunda imleci en yeni
+//!   sunucu zamanına taşır (kendi satırları çekilmese de imleç onları geçer).
+//!   Sütunu olmayan eski şemada (0003 öncesi) filtre olmadan çalışılır.
 //!
 //! Ağ çağrıları sırasında depo kilidi tutulmaz; takip sürerken senkronizasyon
 //! yapılabilir.
@@ -35,6 +36,8 @@ pub trait Remote {
         skip_writer: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>, String>;
+    /// `since`'den (hariç) sonra değişen satırların en yeni `server_updated_at`'i.
+    fn latest(&mut self, table: &str, since: Option<&str>) -> Result<Option<String>, String>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,7 +140,7 @@ pub fn run(
     let mut summary = SyncSummary::default();
     let mut first_error = None;
     let mut tags_failed = false;
-    let device = lock(store).device_id().to_string();
+    let device = lock(store).instance_id().to_string();
     // Sunucuda `writer` sütunu yoksa ilk hatada kapanır.
     let mut writer = Some(device.as_str());
     for table in TABLES {
@@ -310,6 +313,19 @@ fn pull_table(
             break;
         }
         since = newest;
+    }
+    // Kendi satırları filtrelendiyse imleç onların gerisinde kaldı: her şey çekildikten
+    // sonra en yeni sunucu zamanına taşınır. Bu arada yazılmış bir satır kaçarsa bir
+    // sonraki çalıştırmanın imleç örtüşmesi onu yine çeker.
+    if writer.is_some() {
+        let newest = remote
+            .latest(table.name, cursor.as_deref())
+            .map_err(SyncError::Remote)?;
+        if let Some(newest) = newest
+            && cursor.as_deref().is_none_or(|c| later(&newest, c))
+        {
+            lock(store).save_setting(&key, &newest)?;
+        }
     }
     Ok((total, skipped))
 }
@@ -519,6 +535,19 @@ mod tests {
             rows.sort_by_key(|r| r["server_updated_at"].as_str().unwrap().to_string());
             rows.truncate(limit);
             Ok(rows)
+        }
+
+        fn latest(&mut self, table: &str, since: Option<&str>) -> Result<Option<String>, String> {
+            let since = since.map(|s| parse_time(s).unwrap());
+            Ok(self
+                .rows
+                .get(table)
+                .into_iter()
+                .flat_map(|t| t.values())
+                .filter_map(|r| r["server_updated_at"].as_str())
+                .filter(|t| since.is_none_or(|s| parse_time(t).unwrap() > s))
+                .max()
+                .map(str::to_string))
         }
     }
 
@@ -762,5 +791,41 @@ mod tests {
         assert_eq!(run(&b, &mut remote, "u1").unwrap().skipped, 2);
         assert_eq!(totals(&b), vec![("Code".to_string(), 60)]);
         assert!(run(&b, &mut remote, "u1").is_ok());
+    }
+
+    #[test]
+    fn cursor_moves_past_own_rows() {
+        // Tek cihaz: kendi satırları çekilmese de imleç onların ötesine geçmeli; yoksa
+        // her eşitleme ilk günden beri yazılan tüm satırları sunucuda yeniden tarar.
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        lock(&a).upsert_session(&session("Code", 60)).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        let newest = remote.rows["sessions"]
+            .values()
+            .filter_map(|r| r["server_updated_at"].as_str())
+            .max()
+            .unwrap()
+            .to_string();
+        let cursor: Option<String> = lock(&a).setting("sync_cursor:sessions").unwrap();
+        assert_eq!(cursor.as_deref(), Some(newest.as_str()));
+    }
+
+    #[test]
+    fn copied_databases_still_sync_with_each_other() {
+        // Taşıma Yardımcısı gibi kopyalama: iki kurulum aynı veritabanından açılır.
+        let dir = std::env::temp_dir().join(format!("kum-clone-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("a.db");
+        drop(Store::open(&original).unwrap());
+        std::fs::copy(&original, dir.join("b.db")).unwrap();
+        let a = Mutex::new(Store::open(&original).unwrap());
+        let b = Mutex::new(Store::open(dir.join("b.db")).unwrap());
+        let mut remote = FakeRemote::default();
+        lock(&a).upsert_session(&session("Code", 60)).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        assert_eq!(totals(&b), vec![("Code".to_string(), 60)]);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

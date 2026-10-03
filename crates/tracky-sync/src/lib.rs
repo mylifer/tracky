@@ -191,6 +191,38 @@ impl Remote for SupabaseRemote<'_> {
             .read_json::<Vec<Value>>()
             .map_err(|e| e.to_string())
     }
+
+    fn latest(
+        &mut self,
+        table: &str,
+        since: Option<&str>,
+    ) -> std::result::Result<Option<String>, String> {
+        let mut req = self
+            .client
+            .agent
+            .get(self.rest(table))
+            .query("select", "server_updated_at")
+            .query("order", "server_updated_at.desc")
+            .query("limit", "1")
+            .header("apikey", &self.client.config.anon_key)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.session.access_token),
+            );
+        if let Some(since) = since {
+            req = req.query("server_updated_at", format!("gt.{}", utc_z(since)));
+        }
+        let mut resp = req.call().map_err(|e| e.to_string())?;
+        self.check(&mut resp)?;
+        let rows = resp
+            .body_mut()
+            .read_json::<Vec<Value>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows
+            .first()
+            .and_then(|r| r["server_updated_at"].as_str())
+            .map(str::to_string))
+    }
 }
 
 fn session_from(body: &Value) -> Result<AuthSession> {
@@ -345,6 +377,34 @@ mod tests {
             "{path}"
         );
         assert!(headers.contains("authorization: bearer tok"));
+    }
+
+    #[test]
+    fn latest_asks_for_newest_server_time() {
+        let (url, rx) = serve_once(
+            200,
+            r#"[{"server_updated_at":"2026-10-03T10:00:00.5+00:00"}]"#,
+        );
+        let c = client(url);
+        let session = AuthSession {
+            access_token: "tok".into(),
+            refresh_token: "r".into(),
+            expires_at: u64::MAX,
+            user_id: "u1".into(),
+            email: String::new(),
+        };
+        let latest = c
+            .remote(&session)
+            .latest("tags", Some("2026-10-02T12:00:00+00:00"))
+            .unwrap();
+        assert_eq!(latest.as_deref(), Some("2026-10-03T10:00:00.5+00:00"));
+        let (path, _, _) = rx.recv().unwrap();
+        assert!(path.starts_with("/rest/v1/tags?"), "{path}");
+        assert!(
+            path.contains("order=server_updated_at.desc") && path.contains("limit=1"),
+            "{path}"
+        );
+        assert!(path.contains("server_updated_at=gt."), "{path}");
     }
 
     #[test]

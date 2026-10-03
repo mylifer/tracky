@@ -150,6 +150,10 @@ pub struct UsageTotal {
 pub struct Store {
     conn: Connection,
     device_id: Uuid,
+    /// Bu açılışa özgü, diske yazılmayan kimlik (eşitlemede satırı yazanı tanımak için).
+    /// Kopyalanan bir veritabanı (örn. Taşıma Yardımcısı) cihaz kimliğini de taşır;
+    /// kalıcı kimlik kullanılsaydı iki kurulum birbirinin satırlarını hiç çekmezdi.
+    instance_id: Uuid,
 }
 
 impl Store {
@@ -171,7 +175,11 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&mut conn)?;
         let device_id = device_id(&conn)?;
-        let store = Self { conn, device_id };
+        let store = Self {
+            conn,
+            device_id,
+            instance_id: Uuid::new_v4(),
+        };
         store.seed_default_tags()?;
         Ok(store)
     }
@@ -184,6 +192,11 @@ impl Store {
     /// Bu kurulumun kalıcı kimliği; senkronizasyonda kayıtların kaynağını belirtir.
     pub fn device_id(&self) -> Uuid {
         self.device_id
+    }
+
+    /// Bu açılışa özgü kimlik; her açılışta yenidir.
+    pub fn instance_id(&self) -> Uuid {
+        self.instance_id
     }
 
     /// Kayıtlı gizlilik ayarları; hiç kaydedilmediyse varsayılanlar.
