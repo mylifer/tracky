@@ -669,6 +669,30 @@ impl Store {
         ))
     }
 
+    /// Aramayla eşleşen oturumların CSV dökümü; oturumlar aralığa kırpılır.
+    pub fn export_search_csv(
+        &self,
+        query: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<String> {
+        let needle = crate::search::fold(query.trim());
+        let sessions: Vec<Session> = self
+            .sessions_between(from, to)?
+            .into_iter()
+            .filter(|s| !needle.is_empty() && crate::search::matches(s, &needle))
+            .map(|mut s| {
+                s.started_at = s.started_at.max(from);
+                s.ended_at = s.ended_at.min(to);
+                s
+            })
+            .filter(|s| s.ended_at > s.started_at)
+            .collect();
+        let tags = self.tags()?;
+        let classifier = Classifier::new(&tags, &self.rules()?);
+        Ok(crate::export::sessions_csv(&sessions, &tags, &classifier))
+    }
+
     /// Son iki haftanın oturumlarından proje ve kategori önerileri.
     pub fn suggestions(&self, now: DateTime<Utc>) -> Result<Suggestions> {
         let sessions = self.sessions_between(now - chrono::Duration::days(SUGGEST_DAYS), now)?;
@@ -1190,6 +1214,30 @@ mod tests {
             .assign_app_category("com.microsoft.teams2", None)
             .unwrap();
         assert_eq!(category(&store), None);
+    }
+
+    #[test]
+    fn search_export_keeps_matching_sessions_clipped_to_range() {
+        let store = Store::open_in_memory().unwrap();
+        let mut hit = session("Code", None, 0, 7200);
+        hit.title = "sync.rs — Tracky".into();
+        let miss = session("Slack", None, 0, 600);
+        store.upsert_session(&hit).unwrap();
+        store.upsert_session(&miss).unwrap();
+        let csv = store
+            .export_search_csv("tracky", t(3600), t(10_000))
+            .unwrap();
+        let rows: Vec<&str> = csv.lines().skip(1).collect();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains(",3600,Code,"), "{}", rows[0]);
+        assert_eq!(
+            store
+                .export_search_csv("  ", t(0), t(10_000))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
     }
 
     #[test]

@@ -326,12 +326,55 @@ pub async fn export_csv(app: AppHandle) -> CmdResult<String> {
     let csv = lock(&app.state::<Shared>().store)
         .export_csv()
         .map_err(err)?;
+    save_download(&app, "kum", &csv)
+}
+
+/// Aramayla eşleşen oturumları (`start`'tan itibaren `days` gün) İndirilenler'e CSV yazar.
+#[tauri::command]
+pub async fn export_search(
+    app: AppHandle,
+    query: String,
+    start: String,
+    days: u32,
+) -> CmdResult<String> {
+    let first = NaiveDate::parse_from_str(&start, "%Y-%m-%d").map_err(err)?;
+    let from = local_midnight(first);
+    let to = local_midnight(first + Days::new(days.clamp(1, 366).into())).min(Utc::now());
+    let csv = lock(&app.state::<Shared>().store)
+        .export_search_csv(&query, from, to.max(from))
+        .map_err(err)?;
+    save_download(&app, &format!("kum-{}", file_slug(&query)), &csv)
+}
+
+/// Dosya adına uygun kısa ad: harf ve rakamlar, gerisi tire ("Müşteri X" → "müşteri-x").
+fn file_slug(s: &str) -> String {
+    let slug: String = tracky_core::search::fold(s)
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug: String = slug.chars().take(40).collect();
+    if slug.is_empty() {
+        "arama".into()
+    } else {
+        slug
+    }
+}
+
+/// İndirilenler'e (yoksa ev dizinine) `ad-tarih.csv` yazar ve dosyayı gösterir.
+fn save_download(app: &AppHandle, name: &str, csv: &str) -> CmdResult<String> {
     let dir = app
         .path()
         .download_dir()
         .or_else(|_| app.path().home_dir())
         .map_err(err)?;
-    let path = dir.join(format!("kum-{}.csv", Local::now().format("%Y-%m-%d-%H%M")));
+    let path = dir.join(format!(
+        "{name}-{}.csv",
+        Local::now().format("%Y-%m-%d-%H%M")
+    ));
     std::fs::write(&path, csv).map_err(err)?;
     reveal(&path);
     Ok(path.display().to_string())
@@ -350,4 +393,17 @@ fn reveal(path: &std::path::Path) {
         .spawn();
     #[cfg(not(any(target_os = "macos", windows)))]
     let _ = path;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_slug;
+
+    #[test]
+    fn file_slugs_are_safe() {
+        assert_eq!(file_slug("Müşteri X"), "müşteri-x");
+        assert_eq!(file_slug("İSTANBUL / Proje #2"), "istanbul-proje-2");
+        assert_eq!(file_slug("../../etc"), "etc");
+        assert_eq!(file_slug("  ***  "), "arama");
+    }
 }

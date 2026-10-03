@@ -54,6 +54,11 @@ pub fn fold(s: &str) -> String {
         .collect()
 }
 
+/// Oturumun başlığında ya da uygulama adında `needle` (önceden `fold` edilmiş) geçiyor mu?
+pub fn matches(session: &Session, needle: &str) -> bool {
+    fold(&session.title).contains(needle) || fold(&session.app_name).contains(needle)
+}
+
 /// `[from, to)` aralığında `query` geçen oturumların dökümü. `day_starts` artan
 /// sıralı yerel gün başlarıdır (ilk öğe `from`). Boş sorgu boş sonuç verir.
 pub fn search(
@@ -74,7 +79,7 @@ pub fn search(
     let mut apps: HashMap<&str, (&str, i64)> = HashMap::new();
     let mut titles: HashMap<(&str, &str), i64> = HashMap::new();
     for s in sessions {
-        if !fold(&s.title).contains(&needle) && !fold(&s.app_name).contains(&needle) {
+        if !matches(s, &needle) {
             continue;
         }
         let (start, end) = (s.started_at.max(from), s.ended_at.min(to));

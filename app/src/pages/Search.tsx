@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Search as SearchIcon } from "lucide-react";
+import { FileDown, Search as SearchIcon } from "lucide-react";
 import { api, formatDuration, type SearchResult } from "../api";
 import { ErrorText, Page } from "../components/settings";
+import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { addDays, formatDate, isoDate, today } from "../lib/dates";
@@ -92,7 +93,12 @@ export default function Search({
           Son {state.days} günde “{state.query.trim()}” geçen bir kayıt yok.
         </p>
       ) : result ? (
-        <Results result={result} start={start} onSelectDay={onSelectDay} />
+        <Results
+          result={result}
+          start={start}
+          onSelectDay={onSelectDay}
+          onExport={() => api.exportSearch(state.query.trim(), isoDate(start), state.days)}
+        />
       ) : null}
     </Page>
   );
@@ -102,11 +108,21 @@ function Results({
   result,
   start,
   onSelectDay,
+  onExport,
 }: {
   result: SearchResult;
   start: Date;
   onSelectDay: (iso: string) => void;
+  /** CSV'yi yazar, dosya yolunu döndürür. */
+  onExport: () => Promise<string>;
 }) {
+  const [saved, setSaved] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  // Başka bir arama için eski "Kaydedildi" mesajı kalmasın.
+  useEffect(() => {
+    setSaved(null);
+    setExportError(null);
+  }, [result]);
   const active = result.days.filter((s) => s > 0).length;
   const maxApp = result.apps[0]?.seconds || 1;
   return (
@@ -120,6 +136,32 @@ function Results({
           </span>
         </div>
         <Bars days={result.days} start={start} onSelectDay={onSelectDay} />
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t pt-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              onExport().then(
+                (path) => {
+                  setSaved(path);
+                  setExportError(null);
+                },
+                (e) => setExportError(String(e)),
+              )
+            }
+          >
+            <FileDown /> CSV olarak dışa aktar
+          </Button>
+          <span className="min-w-0 truncate text-xs text-muted-foreground selectable" title={saved ?? undefined}>
+            {exportError ? (
+              <span className="text-destructive">{exportError}</span>
+            ) : saved ? (
+              `Kaydedildi: ${saved}`
+            ) : (
+              "Eşleşen oturumlar; faturalama ya da Excel için"
+            )}
+          </span>
+        </div>
       </section>
 
       <section className="space-y-2">

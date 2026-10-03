@@ -175,6 +175,8 @@ export const api = {
   suggestions: () => invoke<Suggestions>("get_suggestions"),
   /** `start` (YYYY-MM-DD) gününden itibaren `days` günde `query` geçen süre. */
   search: (query: string, start: string, days: number) => invoke<SearchResult>("search", { query, start, days }),
+  /** Aramayla eşleşen oturumları İndirilenler'e CSV yazar; dosya yolunu döndürür. */
+  exportSearch: (query: string, start: string, days: number) => invoke<string>("export_search", { query, start, days }),
   acceptProject: (name: string) => invoke<Tag>("accept_project_suggestion", { name }),
   acceptCategory: (s: CategorySuggestion) =>
     invoke<void>("accept_category_suggestion", { field: s.field, pattern: s.pattern, categoryId: s.categoryId }),
