@@ -109,6 +109,14 @@ export type SearchResult = {
   titles: { appName: string; title: string; seconds: number }[];
 };
 
+export type Trends = {
+  /** Hafta başları (eskiden yeniye); son hafta sürüyor. */
+  periods: string[];
+  categories: TrendSeries[];
+  projects: TrendSeries[];
+};
+export type TrendSeries = { id: string | null; seconds: number[] };
+
 export type LastSync = { at: string; ok: boolean; message: string };
 export type SyncStatus = {
   configured: boolean;
@@ -179,6 +187,7 @@ export const api = {
   suggestions: () => invoke<Suggestions>("get_suggestions"),
   /** `start` (YYYY-MM-DD) gününden itibaren `days` günde `query` geçen süre. */
   search: (query: string, start: string, days: number) => invoke<SearchResult>("search", { query, start, days }),
+  trends: (weeks: number) => invoke<Trends>("get_trends", { weeks }),
   /** Aramayla eşleşen oturumları İndirilenler'e CSV yazar; dosya yolunu döndürür. */
   exportSearch: (query: string, start: string, days: number) => invoke<string>("export_search", { query, start, days }),
   acceptProject: (name: string) => invoke<Tag>("accept_project_suggestion", { name }),

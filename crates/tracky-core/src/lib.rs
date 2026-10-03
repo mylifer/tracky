@@ -21,6 +21,7 @@ pub mod suggest;
 pub mod sync;
 #[cfg(feature = "store")]
 pub mod tracker;
+pub mod trends;
 pub mod url_util;
 
 pub use classify::{Classifier, Rule, RuleField, Tag, TagKind};

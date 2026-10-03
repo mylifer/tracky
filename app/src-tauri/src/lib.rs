@@ -353,6 +353,7 @@ pub fn run() {
             commands::known_apps,
             commands::get_suggestions,
             commands::search,
+            commands::get_trends,
             commands::export_search,
             commands::accept_project_suggestion,
             commands::accept_category_suggestion,

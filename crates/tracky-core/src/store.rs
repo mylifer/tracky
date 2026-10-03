@@ -693,6 +693,16 @@ impl Store {
         Ok(crate::export::sessions_csv(&sessions, &tags, &classifier))
     }
 
+    /// Ardışık dönemlerde proje ve kategori süreleri; `bounds` dönem sınırları (n + 1 öğe).
+    pub fn trends(&self, bounds: &[DateTime<Utc>]) -> Result<crate::trends::Trends> {
+        let (Some(first), Some(last)) = (bounds.first(), bounds.last()) else {
+            return Ok(Default::default());
+        };
+        let sessions = self.sessions_between(*first, *last)?;
+        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        Ok(crate::trends::trends(&sessions, &classifier, bounds))
+    }
+
     /// Son iki haftanın oturumlarından proje ve kategori önerileri.
     pub fn suggestions(&self, now: DateTime<Utc>) -> Result<Suggestions> {
         let sessions = self.sessions_between(now - chrono::Duration::days(SUGGEST_DAYS), now)?;

@@ -6,6 +6,7 @@ import {
   Pause,
   Play,
   Search as SearchIcon,
+  TrendingUp,
   Settings2,
   Tags,
 } from "lucide-react";
@@ -35,11 +36,12 @@ import { cn } from "./lib/utils";
 import Onboarding from "./Onboarding";
 import Categories from "./pages/Categories";
 import Search, { type SearchState } from "./pages/Search";
+import Trends from "./pages/Trends";
 import Settings from "./pages/Settings";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
 type Mode = "day" | "week" | "month";
-type View = Mode | "search" | "categories" | "settings";
+type View = Mode | "trends" | "search" | "categories" | "settings";
 
 const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
   { id: "day", label: "Gün", icon: <CalendarDays /> },
@@ -48,6 +50,7 @@ const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
 ];
 
 const TITLES: Partial<Record<View, string>> = {
+  trends: "Eğilimler",
   search: "Ara",
   categories: "Kategoriler ve projeler",
   settings: "Ayarlar",
@@ -193,6 +196,9 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                 {r.label}
               </NavItem>
             ))}
+            <NavItem icon={<TrendingUp />} active={view === "trends"} onClick={() => setView("trends")}>
+              Eğilimler
+            </NavItem>
             <NavItem icon={<SearchIcon />} active={view === "search"} onClick={() => setView("search")}>
               Ara
             </NavItem>
@@ -243,6 +249,14 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           <>
             <Toolbar title={TITLES[view] ?? ""} />
             <div className="flex-1 overflow-y-auto">
+              {view === "trends" && (
+                <Trends
+                  onSearch={(query) => {
+                    setSearch({ query, days: 30 });
+                    setView("search");
+                  }}
+                />
+              )}
               {view === "search" && (
                 <Search
                   state={search}

@@ -1,10 +1,11 @@
 //! Raporlar, kategoriler ve gizlilik ayarları için arayüz komutları.
 
-use chrono::{DateTime, Days, Local, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tracky_core::search::SearchResult;
 use tracky_core::suggest::Suggestions;
+use tracky_core::trends::Trends;
 use tracky_core::{Goals, PrivacySettings, Report, Rule, RuleField, Tag, TagKind, UsageTotal};
 
 use crate::lock;
@@ -55,6 +56,22 @@ pub async fn search(
     let to = local_midnight(first + Days::new(starts.len() as u64)).min(Utc::now());
     lock(&app.state::<Shared>().store)
         .search(&query, starts[0], to.max(starts[0]), &starts)
+        .map_err(err)
+}
+
+/// Son `weeks` haftanın (pazartesiden; bu hafta dahil, şimdiye kadar) eğilimleri.
+#[tauri::command]
+pub async fn get_trends(app: AppHandle, weeks: u32) -> CmdResult<Trends> {
+    let today = Local::now().date_naive();
+    let this_week = today - Days::new(u64::from(today.weekday().num_days_from_monday()));
+    let weeks = u64::from(weeks.clamp(1, 52));
+    let mut bounds: Vec<_> = (0..weeks)
+        .rev()
+        .map(|i| local_midnight(this_week - Days::new(7 * i)))
+        .collect();
+    bounds.push(Utc::now().max(*bounds.last().expect("en az bir hafta")));
+    lock(&app.state::<Shared>().store)
+        .trends(&bounds)
         .map_err(err)
 }
 
