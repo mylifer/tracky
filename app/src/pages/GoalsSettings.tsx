@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, X } from "lucide-react";
+import { Check, Plus, X } from "lucide-react";
 import { api, type Goals, type Tag } from "../api";
 import { CategorySelect } from "../components/CategorySelect";
 import { ErrorText, SettingRow, SettingsGroup, ToggleRow } from "../components/settings";
@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { tagColor } from "../lib/tags";
+import { cn } from "../lib/utils";
 
 const BREAK_OPTIONS = [30, 45, 50, 60, 75, 90, 120];
 const DEFAULT_BREAK = 60;
@@ -132,6 +133,42 @@ export default function GoalsSettings() {
         checked={goals.weeklySummary}
         onChange={(v) => save({ ...goals, weeklySummary: v })}
       />
+      <ToggleRow
+        label="Odak koruması"
+        hint="Odak zamanlayıcısı sürerken dikkat dağıtıcı bir kategorideki uygulamaya geçince uyarır."
+        checked={goals.focusGuard}
+        onChange={(v) => save({ ...goals, focusGuard: v })}
+      />
+      {goals.focusGuard && (
+        <div className="space-y-2 px-4 py-3">
+          <div className="text-[13px]">Dikkat dağıtıcı kategoriler</div>
+          <div className="flex flex-wrap gap-1.5">
+            {categories.map((c) => {
+              const on = goals.distracting.includes(c.id);
+              return (
+                <button
+                  key={c.id}
+                  aria-pressed={on}
+                  onClick={() =>
+                    save({
+                      ...goals,
+                      distracting: on ? goals.distracting.filter((id) => id !== c.id) : [...goals.distracting, c.id],
+                    })
+                  }
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    on ? "border-primary/40 bg-primary/12 font-medium" : "text-muted-foreground hover:bg-accent",
+                  )}
+                >
+                  <i className="size-2 rounded-full" style={{ background: tagColor(c) }} />
+                  {c.name}
+                  {on && <Check className="size-3 text-primary" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <LimitsBlock goals={goals} categories={categories} onChange={save} />
       {error && (
         <div className="px-4 py-2">

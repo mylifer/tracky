@@ -137,6 +137,10 @@ export type Goals = {
   daySummaryAt: number | null;
   /** Yeni haftanın ilk çalışmasında geçen haftanın özeti. */
   weeklySummary: boolean;
+  /** Odak zamanlayıcısı sürerken dikkat dağıtıcı kategoriye geçince uyar. */
+  focusGuard: boolean;
+  /** Odak korumasının dikkat dağıtıcı saydığı kategori kimlikleri. */
+  distracting: string[];
 };
 export type CategoryLimit = { categoryId: string; minutes: number };
 

@@ -9,7 +9,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tracky_core::{
-    Coach, EngineConfig, Goals, Nudge, PrivacySettings, Report, Store, Tracker, UsageTotal,
+    Classifier, Coach, EngineConfig, Goals, Nudge, PrivacySettings, Report, Store, Tracker,
+    UsageTotal,
 };
 
 use crate::tray;
@@ -92,6 +93,8 @@ pub fn run(
         privacy,
     );
     let mut coach = Coach::new();
+    // Odak korumasının en son baktığı oturum (her pencere geçişinde bir kez sınıflandırılır).
+    let mut guard_seen: Option<uuid::Uuid> = None;
     let mut weekly_sent: Option<NaiveDate> = {
         let shared = app.state::<Shared>();
         let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -200,6 +203,31 @@ pub fn run(
             }
         }
         let active = status.current.is_some() && !status.paused;
+        match (&status.focus, tracker.current()) {
+            (Some(focus), Some(session)) if goals.focus_guard && guard_seen != Some(session.id) => {
+                guard_seen = Some(session.id);
+                let category = {
+                    let shared = app.state::<Shared>();
+                    let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+                    let (tags, rules) = (
+                        store.tags().unwrap_or_default(),
+                        store.rules().unwrap_or_default(),
+                    );
+                    Classifier::new(&tags, &rules).classify(session).category
+                };
+                if let Some(nudge) = coach.observe_switch(
+                    &goals,
+                    now,
+                    Some(focus.ends_at),
+                    &session.app_name,
+                    category.as_deref(),
+                ) {
+                    notify(&app, &nudge, &limit_names);
+                }
+            }
+            (None, _) => guard_seen = None,
+            _ => {}
+        }
         for nudge in coach.observe(&goals, now, active, today, status.today_seconds) {
             notify(&app, &nudge, &limit_names);
         }
@@ -274,6 +302,15 @@ fn notify(app: &AppHandle, nudge: &Nudge, names: &std::collections::HashMap<Stri
         ),
         // İçeriği rapordan hazırlanır: notify_day_summary.
         Nudge::DaySummary => return,
+        Nudge::Distraction {
+            app_name,
+            minutes_left,
+        } => (
+            "Odak süresindesin".to_string(),
+            format!(
+                "{app_name} dikkat dağıtıcı olarak işaretli. {minutes_left} dk kaldı, odağa dön."
+            ),
+        ),
     };
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         eprintln!("bildirim gösterilemedi: {e}");

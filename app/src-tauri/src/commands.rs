@@ -309,6 +309,14 @@ pub async fn save_goals(app: AppHandle, goals: Goals) -> CmdResult<()> {
                 })
                 .collect()
         },
+        distracting: {
+            let mut seen = std::collections::HashSet::new();
+            goals
+                .distracting
+                .into_iter()
+                .filter(|id| seen.insert(id.clone()))
+                .collect()
+        },
         ..goals
     };
     lock(&app.state::<Shared>().store)
