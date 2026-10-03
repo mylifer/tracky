@@ -25,7 +25,7 @@ export function AppList({
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const [titles, setTitles] = useState<UsageTotal[]>([]);
-  const max = apps[0]?.seconds ?? 1;
+  const max = apps[0]?.seconds || 1;
 
   // Açık uygulamanın süresi dakika olarak değişince yenile (her canlı raporda değil).
   const openMinutes = Math.floor((apps.find((a) => a.appId === open)?.seconds ?? 0) / 60);
