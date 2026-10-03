@@ -128,7 +128,14 @@ fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) {
         Ok(Some(summary)) => LastSync {
             at: Utc::now(),
             ok: true,
-            message: format!("{} gönderildi, {} alındı", summary.pushed, summary.pulled),
+            message: if summary.skipped > 0 {
+                format!(
+                    "{} gönderildi, {} alındı; {} kayıt bu sürümde okunamadığı için atlandı (Kum'u güncelle)",
+                    summary.pushed, summary.pulled, summary.skipped
+                )
+            } else {
+                format!("{} gönderildi, {} alındı", summary.pushed, summary.pulled)
+            },
             summary: Some(summary),
         },
         Err(message) => LastSync {

@@ -111,6 +111,8 @@ const WRITER: &str = "writer";
 pub struct SyncSummary {
     pub pushed: usize,
     pub pulled: usize,
+    /// Bu sürümün kabul etmediği (geçersiz ya da kısıtı ihlal eden) uzak satırlar.
+    pub skipped: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -161,7 +163,10 @@ pub fn run(
             result = pull_table(store, remote, table, &mut writer);
         }
         match result {
-            Ok(n) => summary.pulled += n,
+            Ok((n, skipped)) => {
+                summary.pulled += n;
+                summary.skipped += skipped;
+            }
             Err(e) => {
                 first_error.get_or_insert(e);
             }
@@ -170,6 +175,21 @@ pub fn run(
     match first_error {
         Some(e) => Err(e),
         None => Ok(summary),
+    }
+}
+
+/// Satırı atlamak eşitlemeyi kurtarır mı? Ayrıştırılamayan ya da CHECK gibi bir kısıtı
+/// ihlal eden satır (örn. sonraki bir sürümün yeni değeri) tekrar denense de uygulanamaz;
+/// atlanmazsa imleç hiç ilerlemez ve bu cihazın eşitlemesi kalıcı olarak takılır.
+/// Yabancı anahtar hatası atlanmaz: etiketler yeniden çekilince çözülebilir.
+fn is_unappliable(e: &SyncError) -> bool {
+    match e {
+        SyncError::Invalid(_) => true,
+        SyncError::Sqlite(rusqlite::Error::SqliteFailure(f, _)) => {
+            f.code == rusqlite::ErrorCode::ConstraintViolation
+                && f.extended_code != rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY
+        }
+        _ => false,
     }
 }
 
@@ -246,11 +266,11 @@ fn pull_table(
     remote: &mut dyn Remote,
     table: &Table,
     writer: &mut Option<&str>,
-) -> Result<usize, SyncError> {
+) -> Result<(usize, usize), SyncError> {
     let key = format!("sync_cursor:{}", table.name);
     let mut cursor: Option<String> = lock(store).setting(&key)?;
     let mut since = cursor.as_deref().map(overlap);
-    let mut total = 0;
+    let (mut total, mut skipped) = (0, 0);
     for _ in 0..MAX_BATCHES {
         let mut result = remote.pull(table.name, since.as_deref(), *writer, PULL_BATCH);
         if writer.is_some() && result.as_ref().is_err_and(|e| missing_writer(e)) {
@@ -271,7 +291,11 @@ fn pull_table(
             // Tek işlem: bin satır için bin ayrı diske yazma yerine bir tane.
             let tx = store.conn().unchecked_transaction()?;
             for row in &rows {
-                total += apply_remote(&store, table, row)?;
+                match apply_remote(&store, table, row) {
+                    Ok(n) => total += n,
+                    Err(e) if is_unappliable(&e) => skipped += 1,
+                    Err(e) => return Err(e),
+                }
             }
             if let Some(newest) = &newest
                 && cursor.as_deref().is_none_or(|c| later(newest, c))
@@ -287,7 +311,7 @@ fn pull_table(
         }
         since = newest;
     }
-    Ok(total)
+    Ok((total, skipped))
 }
 
 /// Gönderilmeyi bekleyen satır: (JSON, id, updated_at ms).
@@ -714,5 +738,29 @@ mod tests {
                 .values()
                 .all(|r| r.get(WRITER).is_none())
         );
+    }
+
+    #[test]
+    fn invalid_remote_rows_do_not_block_sync() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        run(&a, &mut remote, "u1").unwrap();
+        // Gelecekteki bir sürümün yazdığı, bu sürümün kabul etmediği satırlar.
+        let mut bad = remote.rows["tags"].values().next().unwrap().clone();
+        bad["id"] = Value::String(Uuid::new_v4().to_string());
+        bad["color"] = Value::from(42);
+        remote.push("tags", &[bad]).unwrap();
+        let mut odd = remote.rows["tags"].values().next().unwrap().clone();
+        odd["id"] = Value::String(Uuid::new_v4().to_string());
+        odd["updated_at"] = Value::String("dün".into());
+        remote.push("tags", &[odd]).unwrap_or(());
+        lock(&a).upsert_session(&session("Code", 60)).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+
+        // B geçersiz satırları atlar, geri kalanını alır ve sonraki çalıştırmalar da işler.
+        assert_eq!(run(&b, &mut remote, "u1").unwrap().skipped, 2);
+        assert_eq!(totals(&b), vec![("Code".to_string(), 60)]);
+        assert!(run(&b, &mut remote, "u1").is_ok());
     }
 }
