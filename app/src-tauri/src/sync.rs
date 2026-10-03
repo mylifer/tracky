@@ -31,6 +31,9 @@ pub enum SyncCommand {
 pub struct SyncWorker {
     pub tx: Mutex<Sender<SyncCommand>>,
     pub last: Mutex<Option<LastSync>>,
+    /// Bir eşitleme sürerken tutulur: hesap değişince imleç sıfırlama, süren
+    /// eşitlemenin (eski hesabın) imleçleri yazmasını bekler.
+    pub gate: Mutex<()>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -148,7 +151,11 @@ pub fn run(app: AppHandle, rx: Receiver<SyncCommand>) {
             Ok(SyncCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(SyncCommand::Now) | Err(RecvTimeoutError::Timeout) => {}
         }
-        record(&app, sync_once(&app));
+        {
+            let worker = app.state::<SyncWorker>();
+            let _gate = lock(&worker.gate);
+            record(&app, sync_once(&app));
+        }
         wait = INTERVAL;
     }
     // Kapanışta beklemeyiz (ağ yavaşsa uygulama kapanmaz gibi görünür);
@@ -206,13 +213,21 @@ pub async fn sync_sign_in(
     // Başka hesap ya da proje: eski imleçler ve "gönderildi" işaretleri bu hesap için
     // anlamsız; her şeyi yeniden gönder ve baştan çek.
     let owner = format!("{url}|{}", auth.user_id);
-    if load::<String>(&app, OWNER_KEY).as_deref() != Some(owner.as_str()) {
-        lock(&app.state::<Shared>().store)
-            .reset_sync_state()
-            .map_err(|e| e.to_string())?;
-        save(&app, OWNER_KEY, &owner)?;
-    }
-    save(&app, AUTH_KEY, &auth)?;
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> CmdResult<()> {
+        let app = handle;
+        let worker = app.state::<SyncWorker>();
+        let _gate = lock(&worker.gate);
+        if load::<String>(&app, OWNER_KEY).as_deref() != Some(owner.as_str()) {
+            lock(&app.state::<Shared>().store)
+                .reset_sync_state()
+                .map_err(|e| e.to_string())?;
+            save(&app, OWNER_KEY, &owner)?;
+        }
+        save(&app, AUTH_KEY, &auth)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     sync_now(app.clone());
     Ok(status(&app))
 }
@@ -249,6 +264,7 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
     app.manage(SyncWorker {
         tx: Mutex::new(tx),
         last: Mutex::new(None),
+        gate: Mutex::new(()),
     });
     let handle = app.handle().clone();
     std::thread::Builder::new()
