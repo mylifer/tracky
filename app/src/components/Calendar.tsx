@@ -9,17 +9,19 @@ import { Badge } from "./ui/badge";
 import { BlockActions, useEdit } from "./SessionEdit";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
-const HOUR_PX = 52;
+/** Yakınlaştırılmamış takvimde bir saatin yüksekliği. */
+export const HOUR_PX = 52;
 const HOUR_MS = 3600_000;
 /** Bu yükseklikten küçük bloklarda yalnızca başlık gösterilir. */
 const FULL_LABEL_PX = 40;
 /** Bundan alçak bloklarda yazı yok (yalnızca renk; ayrıntı ipucunda). */
 const LABEL_MIN_PX = 15;
 
-type Range = { first: number; last: number };
+/** Gösterilen saatler ve bir saatin piksel yüksekliği (yakınlaştırmayla değişir). */
+type Range = { first: number; last: number; px: number };
 
 /** Etkinliğe göre gösterilecek saat aralığı (en az 08–18). */
-function hourRange(from: Date, spans: { start: string; end: string }[], days = 1): Range {
+function hourRange(from: Date, spans: { start: string; end: string }[], px: number, days = 1): Range {
   let first = 8;
   let last = 18;
   for (const s of spans) {
@@ -31,11 +33,11 @@ function hourRange(from: Date, spans: { start: string; end: string }[], days = 1
     const endHour = en.getHours() + (en.getMinutes() > 0 ? 1 : 0);
     last = Math.max(last, en.getDate() !== st.getDate() ? 24 : endHour);
   }
-  return { first, last: Math.min(24, Math.max(last, first + 6)) };
+  return { first, last: Math.min(24, Math.max(last, first + 6)), px };
 }
 
 function topFn(dayStart: number, range: Range) {
-  return (t: number) => ((wallMs(t, dayStart) - range.first * HOUR_MS) / HOUR_MS) * HOUR_PX;
+  return (t: number) => ((wallMs(t, dayStart) - range.first * HOUR_MS) / HOUR_MS) * range.px;
 }
 
 function hours(range: Range) {
@@ -44,16 +46,35 @@ function hours(range: Range) {
   return out;
 }
 
+/** Yakınlaştıkça saat aralarına yarım ve çeyrek saat çizgileri/etiketleri eklenir (dakika). */
+function subMarks(px: number, forLabels: boolean): number[] {
+  const step = forLabels ? (px >= 300 ? 15 : px >= 150 ? 30 : 0) : px >= 200 ? 15 : px >= 100 ? 30 : 0;
+  return step ? Array.from({ length: 60 / step - 1 }, (_, i) => (i + 1) * step) : [];
+}
+
 function HourRail({ range }: { range: Range }) {
+  const marks = subMarks(range.px, true);
   return (
-    <div className="relative" style={{ height: (range.last - range.first) * HOUR_PX }}>
+    // Yakınlaştırmada kaydırma bu ızgaranın üst kenarına göre sabitlenir.
+    <div data-zoom-grid className="relative" style={{ height: (range.last - range.first) * range.px }}>
       {hours(range).map((h) => (
-        <span
-          key={h}
-          className="absolute right-1 -translate-y-1/2 text-[10px] text-muted-foreground tabular"
-          style={{ top: (h - range.first) * HOUR_PX }}
-        >
-          {String(h % 24).padStart(2, "0")}:00
+        <span key={h}>
+          <span
+            className="absolute right-1 -translate-y-1/2 text-[10px] text-muted-foreground tabular"
+            style={{ top: (h - range.first) * range.px }}
+          >
+            {String(h % 24).padStart(2, "0")}:00
+          </span>
+          {h < range.last &&
+            marks.map((m) => (
+              <span
+                key={m}
+                className="absolute right-1 -translate-y-1/2 text-[9px] text-muted-foreground/70 tabular"
+                style={{ top: (h - range.first + m / 60) * range.px }}
+              >
+                :{m}
+              </span>
+            ))}
         </span>
       ))}
     </div>
@@ -75,23 +96,32 @@ function Column({
   return (
     <div
       className={cn("relative", onEmpty && "cursor-cell", className)}
-      style={{ height: (range.last - range.first) * HOUR_PX }}
+      style={{ height: (range.last - range.first) * range.px }}
       title={onEmpty ? "Boş alana tıkla: bu saate elle kayıt ekle" : undefined}
       onClick={
         onEmpty &&
         ((e) => {
           if ((e.target as HTMLElement).closest("button")) return;
           const y = e.clientY - e.currentTarget.getBoundingClientRect().top;
-          onEmpty(range.first * HOUR_MS + (y / HOUR_PX) * HOUR_MS);
+          onEmpty(range.first * HOUR_MS + (y / range.px) * HOUR_MS);
         })
       }
     >
       {hours(range).map((h) => (
-        <span
-          key={h}
-          className="absolute inset-x-0 border-t border-border/70"
-          style={{ top: (h - range.first) * HOUR_PX }}
-        />
+        <span key={h}>
+          <span
+            className="absolute inset-x-0 border-t border-border/70"
+            style={{ top: (h - range.first) * range.px }}
+          />
+          {h < range.last &&
+            subMarks(range.px, false).map((m) => (
+              <span
+                key={m}
+                className="absolute inset-x-0 border-t border-dashed border-border/40"
+                style={{ top: (h - range.first + m / 60) * range.px }}
+              />
+            ))}
+        </span>
       ))}
       {children}
     </div>
@@ -101,7 +131,7 @@ function Column({
 function NowLine({ day, range }: { day: Date; range: Range }) {
   if (+day !== +today()) return null;
   const top = topFn(+day, range)(Date.now());
-  if (top < 0 || top > (range.last - range.first) * HOUR_PX) return null;
+  if (top < 0 || top > (range.last - range.first) * range.px) return null;
   return (
     <span className="pointer-events-none absolute inset-x-0 z-10 h-px bg-destructive" style={{ top }}>
       <span className="absolute -top-[3px] -left-[3px] size-[7px] rounded-full bg-destructive" />
@@ -322,6 +352,7 @@ export function DayCalendar({
   timers = [],
   onEmpty,
   preview,
+  hourPx = HOUR_PX,
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -330,8 +361,10 @@ export function DayCalendar({
   timers?: FocusTimer[];
   onEmpty?: (start: number, end: number) => void;
   preview?: [number, number] | null;
+  /** Bir saatin yüksekliği (yakınlaştırma). */
+  hourPx?: number;
 }) {
-  const range = useMemo(() => hourRange(from, [...blocks, ...segments]), [from, blocks, segments]);
+  const range = useMemo(() => hourRange(from, [...blocks, ...segments], hourPx), [from, blocks, segments, hourPx]);
   const top = topFn(+from, range);
   // Kısa uygulama dilimlerini aynı uygulamanın komşularıyla birleştir (takvimde okunur kalsın).
   const apps = useMemo(() => mergeSegments(segments), [segments]);
@@ -339,7 +372,9 @@ export function DayCalendar({
 
   return (
     <div>
-      <div className={cn(grid, "pb-2 text-[11px] font-medium text-muted-foreground")}>
+      <div
+        className={cn(grid, "sticky top-(--cal-head) z-20 bg-card pb-2 text-[11px] font-medium text-muted-foreground")}
+      >
         <span />
         <span>Oturumlar</span>
         <span>Uygulamalar</span>
@@ -354,7 +389,7 @@ export function DayCalendar({
         {/* Odak zamanlayıcıları iki sütunun arkasında; bloklar arasındaki boşluklarda görünür. */}
         <div
           className="relative col-span-2 col-start-2 row-start-1 -mx-1"
-          style={{ height: (range.last - range.first) * HOUR_PX }}
+          style={{ height: (range.last - range.first) * range.px }}
         >
           <FocusBands timers={timers} top={top} />
         </div>
@@ -392,7 +427,7 @@ export function DayCalendar({
           })}
           <NowLine day={from} range={range} />
         </Column>
-        <div className="relative col-start-4 row-start-1" style={{ height: (range.last - range.first) * HOUR_PX }}>
+        <div className="relative col-start-4 row-start-1" style={{ height: (range.last - range.first) * range.px }}>
           {blocks.map((b) => {
             const g = blockGeometry(b, top);
             return (
@@ -419,6 +454,7 @@ export function WeekCalendar({
   timers = [],
   onEmpty,
   preview,
+  hourPx = HOUR_PX,
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -428,8 +464,9 @@ export function WeekCalendar({
   timers?: FocusTimer[];
   onEmpty?: (start: number, end: number) => void;
   preview?: [number, number] | null;
+  hourPx?: number;
 }) {
-  const range = useMemo(() => hourRange(from, blocks, 7), [from, blocks]);
+  const range = useMemo(() => hourRange(from, blocks, hourPx, 7), [from, blocks, hourPx]);
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
   const weekday = new Intl.DateTimeFormat("tr-TR", { weekday: "short" });
   const grid = "grid grid-cols-[40px_repeat(7,minmax(0,1fr))] gap-x-1";
@@ -437,7 +474,7 @@ export function WeekCalendar({
 
   return (
     <div>
-      <div className={cn(grid, "pb-2")}>
+      <div className={cn(grid, "sticky top-(--cal-head) z-20 bg-card pb-2")}>
         <span />
         {days.map((d, i) => {
           const isToday = +d === +now;

@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ChevronRight, PenLine } from "lucide-react";
 import { formatDuration, type Tag, type WindowSpan } from "../api";
 import { addDays, formatTime, isoDate, today, wallMs } from "../lib/dates";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
+import { clampZoom, useZoomGestures } from "../lib/zoom";
 
 const HOUR_MS = 3600_000;
 /** Bir uygulama açıldığında en çok bu kadar pencere ayrı satırda; kalanı "diğer". */
@@ -84,6 +85,7 @@ type Hover = { span: WindowSpan; x: number; y: number };
  * Uygulama çizelgesi: her uygulama bir şerit, kullanıldığı saatler çubuk.
  * Satıra tıklayınca pencere başlıkları ayrı şeritlerde açılır. Birden çok günde
  * yatay eksen günlere bölünür; her günün diliminde aynı saat aralığı gösterilir.
+ * Yakınlaştırınca (`zoom`) bu aralığın bir bölümü gösterilir; yatay kaydırmayla gezilir.
  */
 export default function AppTimeline({
   from,
@@ -91,12 +93,16 @@ export default function AppTimeline({
   windows,
   tags,
   onSelectDay,
+  zoom = 1,
+  onZoom,
 }: {
   from: Date;
   days?: number;
   windows: WindowSpan[];
   tags: Map<string, Tag>;
   onSelectDay?: (iso: string) => void;
+  zoom?: number;
+  onZoom?: (zoom: number) => void;
 }) {
   const dates = useMemo(() => Array.from({ length: days + 1 }, (_, i) => addDays(from, i)), [from, days]);
   const starts = useMemo(() => dates.map(Number), [dates]);
@@ -106,12 +112,60 @@ export default function AppTimeline({
   const [hover, setHover] = useState<Hover | null>(null);
 
   // Konumlar duvar saatine göre: yaz saati geçişinde de saat etiketleriyle hizalı.
-  const startMs = range.first * HOUR_MS;
-  const spanMs = (range.last - range.first) * HOUR_MS;
+  // Görünen pencere: tüm aralığın 1/zoom'u, ortası `center` (tüm aralığa oranla).
+  const fullStart = range.first * HOUR_MS;
+  const fullSpan = (range.last - range.first) * HOUR_MS;
+  const [center, setCenter] = useState(0.5);
+  const windowAt = (z: number, c: number) => {
+    const span = fullSpan / z;
+    const start = fullStart + Math.min(fullSpan - span, Math.max(0, c * fullSpan - span / 2));
+    return { start, span };
+  };
+  const { start: startMs, span: spanMs } = windowAt(zoom, center);
   const clamp = (x: number) => Math.min(1, Math.max(0, x));
   /** Günün `day` dilimindeki duvar saatinin (ms) şerit üzerindeki yeri (0–1). */
   const x = (day: number, wall: number) => (day + clamp((wall - startMs) / spanMs)) / days;
-  const hours = Array.from({ length: range.last - range.first + 1 }, (_, i) => range.first + i);
+  const ticks = timeTicks(startMs, spanMs);
+
+  // Hareketler art arda gelir; son değerler çizimi beklemeden zincirlensin.
+  const [root, setRoot] = useState<HTMLDivElement | null>(null);
+  const live = useRef({ zoom, center });
+  live.current = { zoom, center };
+  /** İmlecin şeritteki yeri: günün dilimi içinde 0–1 ve dilimin piksel genişliği. */
+  const pointer = (clientX: number) => {
+    const track = root?.querySelector("[data-track]")?.getBoundingClientRect();
+    if (!track) return null;
+    const fx = clamp((clientX - track.left) / track.width) * days;
+    return { frac: days === 1 ? fx : fx - Math.min(days - 1, Math.floor(fx)), slotPx: track.width / days };
+  };
+  useZoomGestures(
+    root,
+    (factor, clientX) => {
+      if (!onZoom) return;
+      const at = pointer(clientX);
+      const cur = live.current;
+      const z = clampZoom(cur.zoom * factor);
+      const before = windowAt(cur.zoom, cur.center);
+      // İmlecin altındaki saat yerinde kalsın.
+      const t = before.start + (at?.frac ?? 0.5) * before.span;
+      const span = fullSpan / z;
+      const c = (t - (at?.frac ?? 0.5) * span - fullStart + span / 2) / fullSpan;
+      live.current = { zoom: z, center: c };
+      setCenter(c);
+      onZoom(z);
+    },
+    (dx) => {
+      const at = pointer(0);
+      const cur = live.current;
+      if (!at || cur.zoom <= 1) return;
+      const span = fullSpan / cur.zoom;
+      const before = windowAt(cur.zoom, cur.center);
+      const start = Math.min(fullStart + fullSpan - span, Math.max(fullStart, before.start + (dx / at.slotPx) * span));
+      const c = (start - fullStart + span / 2) / fullSpan;
+      live.current = { ...cur, center: c };
+      setCenter(c);
+    },
+  );
   const todayIndex = starts.indexOf(+today());
   // Şimdi çizgisi: bugün gösteriliyorsa ve saat aralığın içindeyse.
   const nowWall = todayIndex >= 0 && todayIndex < days ? wallMs(Date.now(), starts[todayIndex]) : NaN;
@@ -132,6 +186,7 @@ export default function AppTimeline({
   const bars = (lane: Lane, muted = false) =>
     lane.spans.flatMap((w, i) =>
       pieces(w, starts).map((p) => {
+        if (p.b <= startMs || p.a >= startMs + spanMs) return null;
         const a = x(p.day, p.a);
         const b = x(p.day, p.b);
         return (
@@ -150,11 +205,14 @@ export default function AppTimeline({
   const grid = (
     <>
       {days === 1
-        ? hours.map((h) => (
+        ? ticks.map((t) => (
             <span
-              key={h}
-              className="absolute inset-y-0 border-l border-border/60"
-              style={{ left: `${((h - range.first) / (range.last - range.first)) * 100}%` }}
+              key={t}
+              className={cn(
+                "absolute inset-y-0 border-l",
+                t % HOUR_MS === 0 ? "border-border/60" : "border-dashed border-border/40",
+              )}
+              style={{ left: `${x(0, t) * 100}%` }}
             />
           ))
         : dates
@@ -175,23 +233,27 @@ export default function AppTimeline({
   const row = "grid grid-cols-[minmax(0,190px)_minmax(0,1fr)] items-center gap-3";
 
   return (
-    <div className="relative" onMouseLeave={() => setHover(null)}>
+    <div ref={setRoot} className="relative" onMouseLeave={() => setHover(null)}>
       <div className={cn(row, "pb-1.5 text-[10px] text-muted-foreground tabular")}>
-        <span className="text-[11px] font-medium">Uygulama</span>
+        <span className="truncate text-[11px] font-medium">
+          Uygulama
+          {days > 1 && zoom > 1 && (
+            <span className="font-normal text-muted-foreground">
+              {" "}
+              · her gün {clock(startMs)}–{clock(startMs + spanMs)}
+            </span>
+          )}
+        </span>
         {days === 1 ? (
           <div className="relative h-4">
-            {hours.map((h) => (
-              <span
-                key={h}
-                className="absolute -translate-x-1/2"
-                style={{ left: `${((h - range.first) / (range.last - range.first)) * 100}%` }}
-              >
-                {String(h % 24).padStart(2, "0")}
+            {ticks.map((t) => (
+              <span key={t} className="absolute -translate-x-1/2" style={{ left: `${x(0, t) * 100}%` }}>
+                {zoom > 1 || t % HOUR_MS ? clock(t) : pad(t / HOUR_MS)}
               </span>
             ))}
           </div>
         ) : (
-          <div className="flex" title={`Her gün ${pad(range.first)}:00–${pad(range.last)}:00`}>
+          <div className="flex" title={`Her gün ${clock(startMs)}–${clock(startMs + spanMs)}`}>
             {dates.slice(0, days).map((d, i) => (
               <button
                 key={i}
@@ -235,7 +297,7 @@ export default function AppTimeline({
                   <span className="min-w-0 flex-1 truncate font-medium">{app.label}</span>
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular">{formatDuration(app.secs)}</span>
                 </span>
-                <span className="relative block h-7">
+                <span data-track className="relative block h-7 overflow-hidden">
                   {grid}
                   {bars(app)}
                 </span>
@@ -248,7 +310,7 @@ export default function AppTimeline({
                         <span className="min-w-0 flex-1 truncate text-muted-foreground">{t.label}</span>
                         <span className="shrink-0 text-muted-foreground tabular">{formatDuration(t.secs)}</span>
                       </span>
-                      <span className="relative block h-5">
+                      <span className="relative block h-5 overflow-hidden">
                         {grid}
                         {bars(t, true)}
                       </span>
@@ -265,7 +327,7 @@ export default function AppTimeline({
               <span className="min-w-0 flex-1 truncate">{rest.label}</span>
               <span className="shrink-0 text-[11px] tabular">{formatDuration(rest.secs)}</span>
             </span>
-            <span className="relative block h-6">
+            <span className="relative block h-6 overflow-hidden">
               {grid}
               {bars(rest, true)}
             </span>
@@ -279,6 +341,19 @@ export default function AppTimeline({
 }
 
 const pad = (h: number) => String(h % 24).padStart(2, "0");
+/** Günün duvar saati (ms) → "09:30". */
+const clock = (ms: number) => {
+  const m = Math.round(ms / 60_000);
+  return `${pad(Math.floor(m / 60))}:${String(m % 60).padStart(2, "0")}`;
+};
+
+/** Görünen aralıkta en çok 12 çizgi olacak en sık adımda (5/10/15/30/60 dk) zaman işaretleri. */
+function timeTicks(start: number, span: number): number[] {
+  const step = [5, 10, 15, 30].map((m) => m * 60_000).find((s) => span / s <= 12) ?? HOUR_MS;
+  const out = [];
+  for (let t = Math.ceil(start / step) * step; t <= start + span + 1; t += step) out.push(t);
+  return out;
+}
 
 function HoverCard({ hover, tags }: { hover: Hover; tags: Map<string, Tag> }) {
   const w = hover.span;

@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Hourglass } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Hourglass, ZoomIn, ZoomOut } from "lucide-react";
 import { api, type CategoryLimit, type Report, type Tag } from "../api";
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
 import { tagMap } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
+import { clampZoom, stepZoom, useZoomGestures } from "../lib/zoom";
 import { AppList, Legend } from "./Breakdown";
 import AppTimeline from "./AppTimeline";
-import { DayCalendar, WeekCalendar } from "./Calendar";
+import { DayCalendar, HOUR_PX, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
 import { EditContext, type EntryDraft, ManualEntry } from "./SessionEdit";
 import Summary from "./Summary";
@@ -135,6 +136,68 @@ export default function ReportView(p: Props) {
   const manualDay =
     todayIso >= p.start && todayIso < isoDate(addDays(parseIsoDate(p.start), days)) ? todayIso : p.start;
 
+  // Yakınlaştırma: takvimde saat yüksekliği, uygulama çizelgesinde gösterilen saat aralığı.
+  const appsView = p.mode !== "month" && dayView === "apps" && !!report && report.totalSeconds > 0;
+  const zoomable = p.mode !== "month" && !!report && report.totalSeconds > 0;
+  const [calZoom, setCalZoom] = useState(1);
+  const [appZoom, setAppZoom] = useState(1);
+  const scroller = useRef<HTMLDivElement>(null);
+  const [calendarArea, setCalendarArea] = useState<HTMLDivElement | null>(null);
+  // Takvim yakınlaşırken imlecin altındaki saat yerinde kalsın: imlecin saat ızgarasındaki
+  // konumu (son çizimdeki ölçekle) saklanır, çizimden sonra kaydırma buna göre düzeltilir.
+  const rendered = useRef(1);
+  const anchor = useRef<number | null>(null);
+  function zoomCalendar(next: (z: number) => number, clientY?: number) {
+    const grid = calendarArea?.querySelector("[data-zoom-grid]");
+    const box = scroller.current?.getBoundingClientRect();
+    if (grid && box && anchor.current === null) {
+      const y = clientY ?? box.top + box.height / 2;
+      anchor.current = Math.max(0, y - grid.getBoundingClientRect().top);
+    }
+    setCalZoom((z) => clampZoom(next(z)));
+  }
+  useLayoutEffect(() => {
+    if (anchor.current !== null && scroller.current) {
+      scroller.current.scrollTop += anchor.current * (calZoom / rendered.current - 1);
+    }
+    anchor.current = null;
+    rendered.current = calZoom;
+  }, [calZoom]);
+  useZoomGestures(calendarArea, (factor, _x, y) => {
+    if (!appsView) zoomCalendar((z) => z * factor, y);
+  });
+  const zoom = appsView ? appZoom : calZoom;
+  // Yapışkan kart başlığının yüksekliği: takvim sütun başlıkları onun altına yapışır.
+  const [head, setHead] = useState<HTMLDivElement | null>(null);
+  const [headHeight, setHeadHeight] = useState(0);
+  useEffect(() => {
+    if (!head) return;
+    const ro = new ResizeObserver(() => setHeadHeight(head.offsetHeight));
+    ro.observe(head);
+    return () => ro.disconnect();
+  }, [head]);
+  const setZoom = (next: (z: number) => number) =>
+    appsView ? setAppZoom((z) => clampZoom(next(z))) : zoomCalendar(next);
+
+  // Klavye: +/− yakınlaştır, 0 sıfırla (⌘ ile ya da tek başına).
+  const zoomKeys = useRef(setZoom);
+  zoomKeys.current = setZoom;
+  useEffect(() => {
+    if (!zoomable) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.altKey || e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable], [role=dialog], [role=listbox], [role=menu]"))
+        return;
+      const dir = e.key === "+" || e.key === "=" ? 1 : e.key === "-" ? -1 : e.key === "0" ? 0 : null;
+      if (dir === null) return;
+      e.preventDefault();
+      zoomKeys.current((z) => (dir === 0 ? 1 : stepZoom(z, dir)));
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [zoomable]);
+
   return (
     <>
       <Toolbar title={p.title}>
@@ -173,14 +236,18 @@ export default function ReportView(p: Props) {
         </div>
       </Toolbar>
 
-      <div className="@container flex-1 overflow-y-auto px-5 pb-6">
+      <div ref={scroller} className="@container flex-1 overflow-y-auto px-5 pb-6">
         {error && <p className="pb-3 text-xs text-destructive selectable">{error}</p>}
         {report && (
           <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
             <div className="min-w-0 space-y-4">
-              <Card className="gap-3 py-3">
+              <Card className="gap-3 py-3" style={{ ["--cal-head" as string]: `${headHeight}px` }}>
                 {(order.length > 0 || p.mode !== "month") && (
-                  <CardContent className="flex items-start gap-3">
+                  // Yakınlaşınca uzun takvimde başlık ve düğmeler görünür kalsın.
+                  <CardContent
+                    ref={setHead}
+                    className="sticky top-0 z-30 -mt-3 flex items-start gap-3 rounded-t-xl bg-card pt-3 pb-1"
+                  >
                     <div className="min-w-0 flex-1">
                       <Legend order={order} tags={tags} />
                     </div>
@@ -196,6 +263,7 @@ export default function ReportView(p: Props) {
                         </TabsList>
                       </Tabs>
                     )}
+                    {zoomable && <ZoomControl zoom={zoom} onZoom={setZoom} />}
                     {p.mode !== "month" && (
                       <ManualEntry
                         day={p.mode === "day" ? p.start : manualDay}
@@ -209,46 +277,52 @@ export default function ReportView(p: Props) {
                 )}
                 <CardContent className="px-3">
                   {p.mode !== "month" && report.totalSeconds === 0 && <Empty future={+from > Date.now()} />}
-                  <EditContext.Provider value={editCtx}>
-                    {p.mode === "month" ? (
-                      <MonthCalendar
-                        from={from}
-                        days={report.days}
-                        tags={tags}
-                        dailyHours={dailyHours}
-                        onSelectDay={p.onSelectDay}
-                      />
-                    ) : dayView === "apps" && report.totalSeconds > 0 ? (
-                      <AppTimeline
-                        from={from}
-                        days={days}
-                        windows={report.windows}
-                        tags={tags}
-                        onSelectDay={p.onSelectDay}
-                      />
-                    ) : p.mode === "day" ? (
-                      <DayCalendar
-                        from={from}
-                        blocks={report.focus.blocks}
-                        segments={report.timeline}
-                        timers={report.focusTimers}
-                        tags={tags}
-                        onEmpty={openDraft}
-                        preview={preview}
-                      />
-                    ) : (
-                      <WeekCalendar
-                        from={from}
-                        blocks={report.focus.blocks}
-                        dayTotals={report.days.map((d) => d.seconds)}
-                        timers={report.focusTimers}
-                        tags={tags}
-                        onSelectDay={p.onSelectDay}
-                        onEmpty={openDraft}
-                        preview={preview}
-                      />
-                    )}
-                  </EditContext.Provider>
+                  <div ref={setCalendarArea}>
+                    <EditContext.Provider value={editCtx}>
+                      {p.mode === "month" ? (
+                        <MonthCalendar
+                          from={from}
+                          days={report.days}
+                          tags={tags}
+                          dailyHours={dailyHours}
+                          onSelectDay={p.onSelectDay}
+                        />
+                      ) : appsView ? (
+                        <AppTimeline
+                          from={from}
+                          days={days}
+                          windows={report.windows}
+                          tags={tags}
+                          onSelectDay={p.onSelectDay}
+                          zoom={appZoom}
+                          onZoom={(z) => setAppZoom(clampZoom(z))}
+                        />
+                      ) : p.mode === "day" ? (
+                        <DayCalendar
+                          from={from}
+                          blocks={report.focus.blocks}
+                          segments={report.timeline}
+                          timers={report.focusTimers}
+                          tags={tags}
+                          onEmpty={openDraft}
+                          preview={preview}
+                          hourPx={HOUR_PX * calZoom}
+                        />
+                      ) : (
+                        <WeekCalendar
+                          from={from}
+                          blocks={report.focus.blocks}
+                          dayTotals={report.days.map((d) => d.seconds)}
+                          timers={report.focusTimers}
+                          tags={tags}
+                          onSelectDay={p.onSelectDay}
+                          onEmpty={openDraft}
+                          preview={preview}
+                          hourPx={HOUR_PX * calZoom}
+                        />
+                      )}
+                    </EditContext.Provider>
+                  </div>
                 </CardContent>
               </Card>
               {report.apps.length > 0 && (
@@ -299,6 +373,43 @@ function Empty({ future }: { future: boolean }) {
             : "Kum çalışırken takvim kendiliğinden dolar. Bilgisayar dışında geçen süre için boş alana tıkla."}
         </p>
       </div>
+    </div>
+  );
+}
+
+/** −  %100  + : yakınlaştırma düğmeleri; ortadaki değer sıfırlar. */
+function ZoomControl({ zoom, onZoom }: { zoom: number; onZoom: (next: (z: number) => number) => void }) {
+  return (
+    <div className="flex h-7 items-center rounded-md border" role="group" aria-label="Yakınlaştırma">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="size-6.5"
+        onClick={() => onZoom((z) => stepZoom(z, -1))}
+        disabled={zoom <= 1}
+        aria-label="Uzaklaştır"
+        title="Uzaklaştır (−)"
+      >
+        <ZoomOut />
+      </Button>
+      <button
+        className="w-10 text-center text-[11px] text-muted-foreground tabular hover:text-foreground"
+        onClick={() => onZoom(() => 1)}
+        title="Sığdır (0) · ⌘ + kaydırma ya da iki parmakla da yakınlaşır"
+      >
+        %{Math.round(zoom * 100)}
+      </button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="size-6.5"
+        onClick={() => onZoom((z) => stepZoom(z, 1))}
+        disabled={zoom >= 8}
+        aria-label="Yakınlaştır"
+        title="Yakınlaştır (+)"
+      >
+        <ZoomIn />
+      </Button>
     </div>
   );
 }
