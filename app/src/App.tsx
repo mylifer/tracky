@@ -120,15 +120,9 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   return (
     <div className="flex h-full">
       <aside className="flex w-[216px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground material:bg-transparent">
-        {/* macOS'ta pencere düğmeleri bu şeridin üstünde durur. */}
-        <div data-tauri-drag-region className="flex h-[52px] shrink-0 items-center gap-2 px-4">
-          {!isMac && (
-            <>
-              <img src="/icon.png" alt="" className="pointer-events-none size-5" />
-              <span className="pointer-events-none text-[13px] font-semibold">Kum</span>
-            </>
-          )}
-        </div>
+        {/* macOS'ta pencere düğmeleri bu şeridin üstünde durur; Windows'ta yerel başlık
+            çubuğu ad ve simgeyi zaten gösterir, burada tekrarlanmaz. */}
+        <div data-tauri-drag-region className={cn("shrink-0", isMac ? "h-[52px]" : "h-3.5")} />
         <nav className="flex flex-1 flex-col gap-5 overflow-y-auto px-2.5 pt-1">
           <NavSection title="Raporlar">
             {REPORTS.map((r) => (

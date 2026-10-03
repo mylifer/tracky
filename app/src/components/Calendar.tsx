@@ -216,7 +216,15 @@ function Block({
 }
 
 /** Odak zamanlayıcısı aralıkları: blokların arkasında hafif mor şerit. */
-function FocusBands({ timers, top }: { timers: FocusTimer[]; top: (t: number) => number }) {
+function FocusBands({
+  timers,
+  top,
+  className = "inset-x-0",
+}: {
+  timers: FocusTimer[];
+  top: (t: number) => number;
+  className?: string;
+}) {
   return (
     <>
       {timers.map((f) => {
@@ -227,7 +235,7 @@ function FocusBands({ timers, top }: { timers: FocusTimer[]; top: (t: number) =>
         return (
           <span
             key={f.id}
-            className="pointer-events-none absolute inset-x-0 rounded-md bg-focus/12 ring-1 ring-focus/40"
+            className={cn("pointer-events-none absolute rounded-md bg-focus/12 ring-1 ring-focus/40", className)}
             style={{ top: t - 1, height: h + 2 }}
             title={`Odak zamanlayıcısı · ${mins} dk`}
           />
@@ -386,6 +394,7 @@ export function WeekCalendar({
               <FocusBands
                 timers={timers.filter((f) => +new Date(f.start) >= dayStart && +new Date(f.start) < dayEnd)}
                 top={top}
+                className="-inset-x-0.5"
               />
               {blocks
                 .filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd)
