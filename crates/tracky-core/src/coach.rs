@@ -27,6 +27,8 @@ pub struct Goals {
     pub focus_guard: bool,
     /// Odak korumasının dikkat dağıtıcı saydığı kategoriler.
     pub distracting: Vec<String>,
+    /// Proje başına haftalık hedefler.
+    pub project_goals: Vec<ProjectGoal>,
 }
 
 /// Bir kategoride günde en fazla `minutes` dakika.
@@ -38,6 +40,20 @@ pub struct CategoryLimit {
 }
 
 impl CategoryLimit {
+    pub fn seconds(&self) -> i64 {
+        i64::from(self.minutes) * 60
+    }
+}
+
+/// Bir projede haftada hedeflenen `minutes` dakika.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectGoal {
+    pub project_id: String,
+    pub minutes: u32,
+}
+
+impl ProjectGoal {
     pub fn seconds(&self) -> i64 {
         i64::from(self.minutes) * 60
     }
@@ -63,6 +79,7 @@ impl Default for Goals {
             weekly_summary: true,
             focus_guard: true,
             distracting: vec![crate::classify::default_category_id("Sosyal & Eğlence")],
+            project_goals: Vec::new(),
         }
     }
 }
@@ -94,6 +111,8 @@ pub enum Nudge {
     DaySummary,
     /// Odak sırasında dikkat dağıtıcı uygulamaya geçildi.
     Distraction { app_name: String, minutes_left: i64 },
+    /// Projenin haftalık hedefi (`target` saniye) doldu.
+    ProjectGoalReached { project_id: String, target: i64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -113,6 +132,9 @@ pub struct Coach {
     /// Bugün gösterilen limit uyarıları: (kategori, seviye).
     limits_notified: HashSet<(String, LimitLevel)>,
     limits_day: Option<NaiveDate>,
+    /// Bu hafta hedefi dolduğu bildirilen projeler.
+    goals_notified: HashSet<String>,
+    goals_week: Option<NaiveDate>,
     summary_sent_on: Option<NaiveDate>,
     last_distraction: Option<DateTime<Utc>>,
 }
@@ -245,6 +267,41 @@ impl Coach {
         }
         self.summary_sent_on = Some(today);
         Some(Nudge::DaySummary)
+    }
+
+    /// Proje hedeflerini denetler. `week` haftanın pazartesisi, `used` bu haftaki proje
+    /// süreleri (saniye). Her proje için haftada en çok bir bildirim.
+    pub fn observe_project_goals(
+        &mut self,
+        goals: &Goals,
+        week: NaiveDate,
+        used: &HashMap<String, i64>,
+    ) -> Vec<Nudge> {
+        if self.goals_week != Some(week) {
+            self.goals_week = Some(week);
+            self.goals_notified.clear();
+        }
+        goals
+            .project_goals
+            .iter()
+            .filter(|g| g.minutes > 0)
+            .filter(|g| used.get(&g.project_id).copied().unwrap_or(0) >= g.seconds())
+            .filter(|g| self.goals_notified.insert(g.project_id.clone()))
+            .map(|g| Nudge::ProjectGoalReached {
+                project_id: g.project_id.clone(),
+                target: g.seconds(),
+            })
+            .collect()
+    }
+
+    /// Hafta içinde yeniden açıldı: zaten dolmuş hedefleri sessizce işaretle.
+    pub fn prime_project_goals(
+        &mut self,
+        goals: &Goals,
+        week: NaiveDate,
+        used: &HashMap<String, i64>,
+    ) {
+        self.observe_project_goals(goals, week, used);
     }
 
     /// Odak zamanlayıcısı sürerken (`focus_ends`) yeni bir pencereye geçildiğinde çağrılır;
@@ -502,5 +559,33 @@ mod tests {
             Coach::new().observe_switch(&off, t(1), ends, "YouTube", Some(&fun)),
             None
         );
+    }
+
+    #[test]
+    fn project_goals_notify_once_per_week() {
+        let mut c = Coach::new();
+        let g = Goals {
+            project_goals: vec![ProjectGoal {
+                project_id: "kum".into(),
+                minutes: 120,
+            }],
+            ..goals(50)
+        };
+        let used = |secs: i64| HashMap::from([("kum".to_string(), secs)]);
+        assert!(c.observe_project_goals(&g, day(), &used(7199)).is_empty());
+        assert_eq!(
+            c.observe_project_goals(&g, day(), &used(7200)),
+            [Nudge::ProjectGoalReached {
+                project_id: "kum".into(),
+                target: 7200
+            }]
+        );
+        assert!(c.observe_project_goals(&g, day(), &used(9000)).is_empty());
+        let next_week = day() + Duration::days(7);
+        assert_eq!(c.observe_project_goals(&g, next_week, &used(7200)).len(), 1);
+
+        let mut c = Coach::new();
+        c.prime_project_goals(&g, day(), &used(8000));
+        assert!(c.observe_project_goals(&g, day(), &used(9000)).is_empty());
     }
 }

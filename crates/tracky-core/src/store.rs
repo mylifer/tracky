@@ -909,11 +909,29 @@ impl Store {
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> Result<std::collections::HashMap<String, i64>> {
+        self.tag_totals(from, to, |c| c.category)
+    }
+
+    /// Proje başına toplam süre (saniye); projesiz süre dahil edilmez.
+    pub fn project_totals(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<std::collections::HashMap<String, i64>> {
+        self.tag_totals(from, to, |c| c.project)
+    }
+
+    fn tag_totals(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        pick: fn(crate::classify::Classification) -> Option<String>,
+    ) -> Result<std::collections::HashMap<String, i64>> {
         let classifier = Classifier::new(&self.tags()?, &self.rules()?);
         let mut out = std::collections::HashMap::new();
         for s in self.sessions_between(from, to)? {
             let secs = (s.ended_at.min(to) - s.started_at.max(from)).num_seconds();
-            if let (Some(id), true) = (classifier.classify(&s).category, secs > 0) {
+            if let (Some(id), true) = (pick(classifier.classify(&s)), secs > 0) {
                 *out.entry(id).or_default() += secs;
             }
         }

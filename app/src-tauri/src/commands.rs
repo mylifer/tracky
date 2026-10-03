@@ -326,6 +326,17 @@ pub async fn save_goals(app: AppHandle, goals: Goals) -> CmdResult<()> {
                 })
                 .collect()
         },
+        project_goals: {
+            // Proje başına tek hedef; haftada en çok 100 saat.
+            let mut seen = std::collections::HashSet::new();
+            goals
+                .project_goals
+                .into_iter()
+                .filter(|g| {
+                    (1..=100 * 60).contains(&g.minutes) && seen.insert(g.project_id.clone())
+                })
+                .collect()
+        },
         distracting: {
             let mut seen = std::collections::HashSet::new();
             goals

@@ -102,6 +102,7 @@ pub fn run(
     };
     let mut first_refresh = true;
     let mut limits_primed = false;
+    let mut project_goals_primed = false;
     let mut ticks = 0u32;
     loop {
         let mut force = false;
@@ -164,16 +165,25 @@ pub fn run(
                 .category_totals(start_of_today(), now)
                 .unwrap_or_default()
         });
-        let limit_names: std::collections::HashMap<String, String> = if check_limits {
+        let check_projects = !goals.project_goals.is_empty()
+            && (!project_goals_primed || ticks.is_multiple_of(LIMITS_EVERY));
+        let project_totals = check_projects.then(|| {
+            let week = week_start(Local::now().date_naive());
             store
-                .tags()
+                .project_totals(local_midnight(week), now)
                 .unwrap_or_default()
-                .into_iter()
-                .map(|t| (t.id, t.name))
-                .collect()
-        } else {
-            Default::default()
-        };
+        });
+        let limit_names: std::collections::HashMap<String, String> =
+            if check_limits || check_projects {
+                store
+                    .tags()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| (t.id, t.name))
+                    .collect()
+            } else {
+                Default::default()
+            };
         drop(store);
         let status = Status {
             paused: tracker.privacy().paused,
@@ -245,6 +255,16 @@ pub fn run(
             weekly_sent = Some(week);
             notify_week_summary(&app, week);
         }
+        if let Some(used) = project_totals {
+            if std::mem::replace(&mut project_goals_primed, true) {
+                for nudge in coach.observe_project_goals(&goals, week, &used) {
+                    notify(&app, &nudge, &limit_names);
+                }
+            } else {
+                // Hafta içinde yeniden açıldı: dolmuş hedefleri tekrar bildirme.
+                coach.prime_project_goals(&goals, week, &used);
+            }
+        }
         if let Some(used) = category_totals {
             if std::mem::replace(&mut limits_primed, true) {
                 for nudge in coach.observe_limits(&goals, today, &used) {
@@ -302,6 +322,10 @@ fn notify(app: &AppHandle, nudge: &Nudge, names: &std::collections::HashMap<Stri
         ),
         // İçeriği rapordan hazırlanır: notify_day_summary.
         Nudge::DaySummary => return,
+        Nudge::ProjectGoalReached { project_id, target } => (
+            format!("{} haftalık hedefi doldu", name(project_id)),
+            format!("Bu hafta {} çalıştın. Tebrikler!", format_duration(*target)),
+        ),
         Nudge::Distraction {
             app_name,
             minutes_left,

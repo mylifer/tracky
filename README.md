@@ -29,6 +29,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 16. Yakınlaştırma: gün/hafta takviminde ve uygulama çizelgesinde ⌘ + kaydırma, kıstırma, +/− ve 0
 - [x] 17. Arama: başlıkta ya da uygulama adında geçen ifadeye göre süre, günlük dağılım, uygulamalar, pencereler (`/`)
 - [x] 18. Eğilimler: proje ve kategorilerin son 8/12/26 haftadaki haftalık süresi, bu hafta ve haftalık ortalama
+- [x] 19. Proje hedefleri: proje başına haftalık saat; hafta özeti ve eğilimlerde ilerleme, dolunca bildirim
 
 ## Yapı
 

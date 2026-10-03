@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Hourglass, ZoomIn, ZoomOut } from "lucide-react";
-import { api, type CategoryLimit, type Report, type Tag } from "../api";
+import { api, type CategoryLimit, type ProjectGoal, type Report, type Tag } from "../api";
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
 import { tagMap } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
@@ -47,11 +47,13 @@ export default function ReportView(p: Props) {
   const [error, setError] = useState<string | null>(null);
   const [dailyHours, setDailyHours] = useState(8);
   const [limits, setLimits] = useState<CategoryLimit[]>([]);
+  const [projectGoals, setProjectGoals] = useState<ProjectGoal[]>([]);
   useEffect(() => {
     api.goals().then(
       (g) => {
         setDailyHours(g.dailyHours);
         setLimits(g.limits ?? []);
+        setProjectGoals(g.projectGoals ?? []);
       },
       () => {},
     );
@@ -368,6 +370,7 @@ export default function ReportView(p: Props) {
               days={days}
               dailyHours={dailyHours}
               limits={p.mode === "day" ? limits : []}
+              projectGoals={p.mode === "week" ? projectGoals : []}
               mode={p.mode}
               title={isLive ? mode.current : mode.summary}
             />

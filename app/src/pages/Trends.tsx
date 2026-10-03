@@ -22,12 +22,15 @@ export default function Trends({ onSearch }: { onSearch: (query: string) => void
   const [tags, setTags] = useState<Map<string, Tag>>(new Map());
   // Proje → aranacak sözcük: ilk başlık kuralının deseni (proje adı kuralla aynı olmayabilir).
   const [patterns, setPatterns] = useState<Map<string, string>>(new Map());
+  // Proje → haftalık hedef (saniye).
+  const [targets, setTargets] = useState<Map<string, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
-    Promise.all([api.trends(weeks), api.taxonomy()]).then(
-      ([d, t]) => {
+    Promise.all([api.trends(weeks), api.taxonomy(), api.goals()]).then(
+      ([d, t, g]) => {
+        setTargets(new Map((g.projectGoals ?? []).map((x) => [x.projectId, x.minutes * 60])));
         if (!live) return;
         setData(d);
         setTags(new Map(t.tags.map((x) => [x.id, x])));
@@ -88,7 +91,7 @@ export default function Trends({ onSearch }: { onSearch: (query: string) => void
               <span>bu hafta</span>
             </span>
             <span className="text-right">Bu hafta</span>
-            <span className="text-right" title="Tamamlanmış haftaların ortalaması">
+            <span className="text-right" title="İlk kayıttan bu yana tamamlanmış haftaların ortalaması">
               Haftalık ort.
             </span>
           </div>
@@ -104,6 +107,7 @@ export default function Trends({ onSearch }: { onSearch: (query: string) => void
                   seconds={s.seconds}
                   periods={data.periods}
                   max={max}
+                  target={shownKind === "projects" && s.id ? targets.get(s.id) : undefined}
                   // Kategoriler uygulama kurallarıyla tanımlı: adlarıyla aramak bir şey bulmaz.
                   onSearch={tag?.kind === "project" ? () => onSearch(patterns.get(tag.id) ?? tag.name) : undefined}
                 />
@@ -126,6 +130,7 @@ function Row({
   seconds,
   periods,
   max,
+  target,
   onSearch,
 }: {
   name: string;
@@ -133,11 +138,16 @@ function Row({
   seconds: number[];
   periods: string[];
   max: number;
+  /** Projenin haftalık hedefi (saniye): "bu hafta" sütununda ilerleme gösterilir. */
+  target?: number;
   onSearch?: () => void;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const last = seconds.length - 1;
-  const done = seconds.slice(0, last);
+  // Ortalama, ilk süre görülen haftadan itibaren tamamlanmış haftalar: proje sonradan
+  // başladıysa öncesindeki boş haftalar ortalamayı düşürmesin.
+  const firstActive = seconds.findIndex((v) => v > 0);
+  const done = firstActive < 0 ? [] : seconds.slice(firstActive, last);
   const avg = done.length ? done.reduce((a, b) => a + b, 0) / done.length : 0;
   const weekLabel = (i: number) => {
     const start = new Date(periods[i]);
@@ -187,7 +197,20 @@ function Row({
         </span>
       ) : (
         <>
-          <span className="text-right text-[13px] tabular">{formatDuration(seconds[last] ?? 0)}</span>
+          <span className="text-right text-[13px] tabular">
+            {formatDuration(seconds[last] ?? 0)}
+            {target ? (
+              <span className="block" title={`Haftalık hedef: ${formatDuration(target)}`}>
+                <span className="text-[11px] text-muted-foreground">/ {formatDuration(target)}</span>
+                <span className="mt-0.5 ml-auto block h-1 w-14 overflow-hidden rounded-full bg-muted">
+                  <span
+                    className="block h-full rounded-full"
+                    style={{ width: `${Math.min(100, ((seconds[last] ?? 0) / target) * 100)}%`, background: color }}
+                  />
+                </span>
+              </span>
+            ) : null}
+          </span>
           <span className="text-right text-[13px] text-muted-foreground tabular">
             {formatDuration(Math.round(avg))}
           </span>

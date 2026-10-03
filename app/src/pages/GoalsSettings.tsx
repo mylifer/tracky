@@ -12,6 +12,8 @@ import { cn } from "../lib/utils";
 const BREAK_OPTIONS = [30, 45, 50, 60, 75, 90, 120];
 const DEFAULT_BREAK = 60;
 const LIMIT_OPTIONS = [15, 30, 45, 60, 90, 120, 180, 240];
+/** Proje hedefi seçenekleri (saat/hafta). */
+const PROJECT_GOAL_HOURS = [2, 5, 10, 15, 20, 25, 30, 40];
 /** Gün sonu özeti saatleri (16:00–23:00). */
 const SUMMARY_OPTIONS = Array.from({ length: 8 }, (_, i) => (16 + i) * 60);
 const DEFAULT_SUMMARY = 18 * 60;
@@ -27,6 +29,7 @@ export default function GoalsSettings() {
   const [error, setError] = useState<string | null>(null);
   const [hours, setHours] = useState("");
   const [categories, setCategories] = useState<Tag[]>([]);
+  const [projects, setProjects] = useState<Tag[]>([]);
 
   useEffect(() => {
     api.goals().then(
@@ -36,7 +39,10 @@ export default function GoalsSettings() {
       },
       (e) => setError(String(e)),
     );
-    api.taxonomy().then((t) => setCategories(t.tags.filter((x) => x.kind === "category")));
+    api.taxonomy().then((t) => {
+      setCategories(t.tags.filter((x) => x.kind === "category"));
+      setProjects(t.tags.filter((x) => x.kind === "project"));
+    });
   }, []);
 
   if (!goals) return <ErrorText>{error}</ErrorText>;
@@ -170,6 +176,7 @@ export default function GoalsSettings() {
         </div>
       )}
       <LimitsBlock goals={goals} categories={categories} onChange={save} />
+      <ProjectGoalsBlock goals={goals} projects={projects} onChange={save} />
       {error && (
         <div className="px-4 py-2">
           <ErrorText>{error}</ErrorText>
@@ -247,6 +254,84 @@ function LimitsBlock({
           onChange={(id) => id && set([...limits, { categoryId: id, minutes: 60 }])}
           categories={free}
           placeholder="Limit ekle…"
+          icon={<Plus className="size-3.5" />}
+          className="w-56"
+        />
+      )}
+    </div>
+  );
+}
+
+/** Proje hedefleri: her satırda proje, haftalık saat ve kaldırma. */
+function ProjectGoalsBlock({
+  goals,
+  projects,
+  onChange,
+}: {
+  goals: Goals;
+  projects: Tag[];
+  onChange: (g: Goals) => void;
+}) {
+  const rows = goals.projectGoals.filter((g) => projects.some((p) => p.id === g.projectId));
+  const free = projects.filter((p) => !rows.some((g) => g.projectId === p.id));
+  const set = (next: Goals["projectGoals"]) => onChange({ ...goals, projectGoals: next });
+
+  return (
+    <div className="space-y-2.5 px-4 py-3">
+      <div>
+        <div className="text-[13px]">Proje hedefleri</div>
+        <p className="text-xs text-muted-foreground">
+          {projects.length === 0
+            ? "Önce Kategoriler sayfasından bir proje ekle."
+            : "Hafta içinde hedef dolunca bildirim gösterilir; ilerleme Eğilimler ve hafta özetinde görünür."}
+        </p>
+      </div>
+      {rows.length > 0 && (
+        <ul className="space-y-1.5">
+          {rows.map((g) => {
+            const tag = projects.find((p) => p.id === g.projectId);
+            return (
+              <li key={g.projectId} className="flex items-center gap-2">
+                <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(tag) }} />
+                <span className="min-w-0 flex-1 truncate">{tag?.name}</span>
+                <span className="text-xs text-muted-foreground">haftada</span>
+                <Select
+                  value={String(g.minutes)}
+                  onValueChange={(v) =>
+                    set(rows.map((x) => (x.projectId === g.projectId ? { ...x, minutes: Number(v) } : x)))
+                  }
+                >
+                  <SelectTrigger size="sm" className="w-28" aria-label={`${tag?.name} hedefi`}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    {PROJECT_GOAL_HOURS.map((h) => (
+                      <SelectItem key={h} value={String(h * 60)}>
+                        {h} sa
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground"
+                  onClick={() => set(rows.filter((x) => x.projectId !== g.projectId))}
+                  aria-label="Hedefi kaldır"
+                >
+                  <X className="size-3.5" />
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {free.length > 0 && (
+        <CategorySelect
+          value={null}
+          onChange={(id) => id && set([...rows, { projectId: id, minutes: 10 * 60 }])}
+          categories={free}
+          placeholder="Hedef ekle…"
           icon={<Plus className="size-3.5" />}
           className="w-56"
         />

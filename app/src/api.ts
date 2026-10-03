@@ -149,7 +149,10 @@ export type Goals = {
   focusGuard: boolean;
   /** Odak korumasının dikkat dağıtıcı saydığı kategori kimlikleri. */
   distracting: string[];
+  /** Proje başına haftalık hedef (dakika). */
+  projectGoals: ProjectGoal[];
 };
+export type ProjectGoal = { projectId: string; minutes: number };
 export type CategoryLimit = { categoryId: string; minutes: number };
 
 export type UpdateStatus = {

@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { TrendingDown, TrendingUp } from "lucide-react";
-import type { CategoryLimit, Report, Tag } from "../api";
+import { Check, TrendingDown, TrendingUp } from "lucide-react";
+import type { CategoryLimit, ProjectGoal, Report, Tag } from "../api";
 import { formatDuration } from "../api";
 import { NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
@@ -20,10 +20,22 @@ type Props = {
   dailyHours: number;
   /** Gösterilecek kategori limitleri (yalnızca gün görünümünde). */
   limits: CategoryLimit[];
+  /** Hafta görünümünde proje hedefleri. */
+  projectGoals: ProjectGoal[];
 };
 
 /** Sağ panel: süre, hedef, kırılım ve odak metrikleri. */
-export default function Summary({ report, previous, tags, days, mode, title, dailyHours, limits }: Props) {
+export default function Summary({
+  report,
+  previous,
+  tags,
+  days,
+  mode,
+  title,
+  dailyHours,
+  limits,
+  projectGoals,
+}: Props) {
   const f = report.focus;
   const target = dailyHours * 3600 * activeDays(report, days);
   const ratio = target ? report.totalSeconds / target : 0;
@@ -62,6 +74,7 @@ export default function Summary({ report, previous, tags, days, mode, title, dai
       <BreakdownCard report={report} tags={tags} />
 
       <LimitsCard report={report} tags={tags} limits={limits} />
+      <ProjectGoalsCard report={report} tags={tags} goals={projectGoals} />
 
       {mode !== "day" && <Highlights report={report} dailyHours={dailyHours} />}
 
@@ -264,6 +277,47 @@ function Metrics({ parts }: { parts: { label: string; secs: number; color: strin
         ))}
       </ul>
     </>
+  );
+}
+
+/** Proje hedefleri: bu haftaki süre / hedef; dolunca onay işareti. */
+function ProjectGoalsCard({ report, tags, goals }: { report: Report; tags: Map<string, Tag>; goals: ProjectGoal[] }) {
+  const rows = goals.flatMap((g) => {
+    const tag = tags.get(g.projectId);
+    if (!tag) return [];
+    const used = report.projects.find((p) => p.id === g.projectId)?.seconds ?? 0;
+    return [{ tag, used, target: g.minutes * 60 }];
+  });
+  if (rows.length === 0) return null;
+  return (
+    <Card className="gap-3">
+      <CardContent className="space-y-3">
+        <Label>Proje hedefleri</Label>
+        <ul className="space-y-2.5">
+          {rows.map(({ tag, used, target }) => {
+            const ratio = used / target;
+            return (
+              <li key={tag.id} className="space-y-1">
+                <div className="flex items-center gap-2 text-xs">
+                  <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(tag) }} />
+                  <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+                  {ratio >= 1 && <Check className="size-3.5 text-success" aria-label="Hedef doldu" />}
+                  <span className={cn("tabular", ratio >= 1 ? "font-medium" : "text-muted-foreground")}>
+                    {formatDuration(used)} / {formatDuration(target)}
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: `${Math.min(100, ratio * 100)}%`, background: tagColor(tag) }}
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 
