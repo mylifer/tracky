@@ -4,6 +4,7 @@ mod commands;
 mod sync;
 mod tracking;
 mod tray;
+mod updater;
 
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Sender};
@@ -198,6 +199,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         handle: Mutex::new(Some(worker)),
     });
     sync::start(app)?;
+    updater::start(app);
 
     // Karşılama tamamlanmadıysa ya da izin eksikse pencereyi göster;
     // otomatik başlatmada (--hidden) yalnızca menü çubuğunda kal.
@@ -215,6 +217,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![HIDDEN_ARG]),
@@ -247,6 +250,9 @@ pub fn run() {
             sync::sync_sign_out,
             sync::sync_disconnect,
             sync::sync_now,
+            updater::update_status,
+            updater::check_update,
+            updater::install_update,
         ])
         .setup(setup)
         .on_window_event(|window, event| {

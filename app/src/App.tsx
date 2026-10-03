@@ -6,6 +6,7 @@ import { addDays, formatWeek, isoDate, parseIsoDate, startOfWeek, today } from "
 import Onboarding from "./Onboarding";
 import Categories from "./pages/Categories";
 import Settings from "./pages/Settings";
+import { useUpdate } from "./lib/useUpdate";
 
 type View = "day" | "week" | "categories" | "settings";
 
@@ -43,6 +44,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   const [day, setDay] = useState(isoDate(today()));
   const [week, setWeek] = useState(isoDate(startOfWeek(today())));
   const [tracking, setTracking] = useState<TrackingStatus>(status.tracking);
+  const [update] = useUpdate();
 
   useEffect(() => {
     const unlisten = api.onStatus(setTracking);
@@ -91,6 +93,12 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
             Ayarlar
           </button>
         </div>
+        {update?.ready && (
+          <button className="update-banner" onClick={() => setView("settings")}>
+            <strong>Güncelleme hazır</strong>
+            <span>Kum {update.available} · yüklemek için tıkla</span>
+          </button>
+        )}
         <LiveCard tracking={tracking} onToggle={togglePause} />
       </nav>
       <main className="content">

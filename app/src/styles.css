@@ -183,6 +183,22 @@ small {
 }
 
 /* Canlı takip kartı */
+.update-banner {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  margin-bottom: 8px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  font-size: 12px;
+}
+
+.update-banner span {
+  color: var(--muted);
+}
+
 .live-card {
   background: var(--surface);
   border: 1px solid var(--border);

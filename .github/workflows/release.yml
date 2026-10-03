@@ -1,7 +1,7 @@
 name: Sürüm
 
 # `v0.2.0` gibi bir etiket push'landığında Mac ve Windows paketlerini
-# derleyip bir GitHub Release'e ekler (taslak olarak; yayınlamak elle).
+# derleyip imzalı güncelleme dosyalarıyla bir GitHub Release'e ekler.
 on:
   push:
     tags: ["v*"]
@@ -18,10 +18,8 @@ jobs:
         include:
           - os: macos-latest
             bundles: app,dmg
-            files: target/release/bundle/dmg/*.dmg
           - os: windows-latest
             bundles: nsis
-            files: target/release/bundle/nsis/*.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -43,13 +41,23 @@ jobs:
             exit 1
           fi
 
-      - name: Paketle
+      - name: Arayüz bağımlılıkları
         working-directory: app
-        run: |
-          npm ci
-          npm run tauri build -- --bundles ${{ matrix.bundles }}
+        run: npm ci
 
-      - uses: softprops/action-gh-release@v2
+      # Paketleri derler, güncelleme imzalarını üretir ve `latest.json` ile
+      # birlikte Release'e yükler. Uygulama içi güncelleyici bu dosyayı okur;
+      # bu yüzden Release taslak değil, yayınlanmış olmalı.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          draft: true
-          files: ${{ matrix.files }}
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: Kum ${{ github.ref_name }}
+          releaseBody: Güncellemeler uygulama içinden otomatik indirilir.
+          releaseDraft: false
+          prerelease: false
+          args: --bundles ${{ matrix.bundles }}

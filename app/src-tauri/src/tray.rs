@@ -24,6 +24,7 @@ pub struct Items {
     current: MenuItem<Wry>,
     pause: MenuItem<Wry>,
     pub autostart: CheckMenuItem<Wry>,
+    update: MenuItem<Wry>,
 }
 
 pub struct TrayItems(pub Mutex<Option<Items>>);
@@ -49,6 +50,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         autostart,
         None::<&str>,
     )?;
+    let update = MenuItem::with_id(app, "update", "Kum güncel", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Kum'dan Çık", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -60,6 +62,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
             &open,
             &PredefinedMenuItem::separator(app)?,
             &autostart_item,
+            &update,
             &quit,
         ],
     )?;
@@ -81,6 +84,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         current,
         pause,
         autostart: autostart_item,
+        update,
     });
     Ok(())
 }
@@ -105,6 +109,11 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 .unwrap_or(false);
             if let Err(e) = crate::set_autostart_inner(app, enabled) {
                 eprintln!("otomatik başlatma değiştirilemedi: {e}");
+            }
+        }
+        "update" => {
+            if let Err(e) = crate::updater::install(app) {
+                eprintln!("güncelleme kurulamadı: {e}");
             }
         }
         "quit" => app.exit(0),
@@ -137,6 +146,21 @@ pub fn update(app: &AppHandle, status: &Status) {
     } else {
         "Duraklat"
     });
+}
+
+/// Güncelleme menü öğesi: hazırsa tıklanabilir.
+pub fn set_update(app: &AppHandle, status: &crate::updater::UpdateStatus) {
+    let Some(items) = items(app) else { return };
+    match (&status.available, status.ready) {
+        (Some(v), true) => {
+            let _ = items.update.set_text(format!("Güncellemeyi Yükle (v{v})"));
+            let _ = items.update.set_enabled(true);
+        }
+        _ => {
+            let _ = items.update.set_text("Kum güncel");
+            let _ = items.update.set_enabled(false);
+        }
+    }
 }
 
 fn label(status: &Status) -> String {

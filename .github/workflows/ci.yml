@@ -72,7 +72,9 @@ jobs:
       - name: Kum uygulamasını paketle
         if: matrix.app
         working-directory: app
-        run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+        # Güncelleme imzası yalnızca sürüm iş akışında (gizli anahtarla) üretilir.
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }} --config "${{ github.workspace }}/app/src-tauri/tauri.ci.conf.json"
+
       - uses: actions/upload-artifact@v4
         if: matrix.app
         with:

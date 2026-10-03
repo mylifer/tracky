@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Kum",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.kum.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -47,6 +47,18 @@
     "macOS": {
       "minimumSystemVersion": "11.0",
       "signingIdentity": "-"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFFRjFEM0RFODIwOEU4RTYKUldUbTZBaUMzdFB4SHM0ZGhWaktYWmt3M0UzTUduTGdqUXpYSWdsQkxYUEpsMTJpOHZ1Mzl4c2wK",
+      "endpoints": [
+        "https://github.com/mylifer/tracky/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

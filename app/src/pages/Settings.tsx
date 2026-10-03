@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type AppStatus, type PrivacySettings, type UsageTotal } from "../api";
 import SyncSettings from "./SyncSettings";
+import UpdateSettings from "./UpdateSettings";
 
 export default function Settings({ status, onChange }: { status: AppStatus; onChange: () => void }) {
   const [privacy, setPrivacy] = useState<PrivacySettings | null>(null);
@@ -101,6 +102,8 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
       )}
 
       <SyncSettings />
+
+      <UpdateSettings />
 
       <section className="card settings">
         <h2>Veriler</h2>

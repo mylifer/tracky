@@ -12,7 +12,8 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 4. Arayüz: gün (zaman çizelgesi) ve hafta raporları, uygulama/başlık dökümü, ayarlar
 - [x] 5. Kategoriler / projeler: uygulama ve başlık kuralları, hazır kategoriler, geçmişe dönük sınıflandırma
 - [x] 6. Supabase senkronizasyonu: e-posta/şifre ile giriş, 5 dakikada bir eşitleme, son yazan kazanır
-- [x] 7. Paketleme ve CI: her push'ta Mac/Windows paketleri, `v*` etiketiyle taslak sürüm (Apple imzası henüz yok)
+- [x] 7. Paketleme ve CI: her push'ta Mac/Windows paketleri, `v*` etiketiyle sürüm (Apple imzası henüz yok)
+- [x] 8. Otomatik güncelleme: 6 saatte bir denetim, arka planda indirme, imza doğrulama, tek tıkla kurulum
 
 ## Yapı
 
@@ -100,9 +101,24 @@ kendi verisini görür. Bağlantı bilgileri ve oturum yalnızca o cihazda sakla
 
 ## Sürüm çıkarmak
 
-1. `app/src-tauri/tauri.conf.json` ve `app/package.json` içindeki `version` alanını artır (örn. `0.2.0`).
-2. Commit'le, sonra etiketle ve push'la: `git tag v0.2.0 && git push origin v0.2.0`
-3. GitHub **Releases** sayfasında taslak sürüm oluşur; .dmg ve .exe ekli gelir. Notları yazıp **Publish** de.
+**Bir kerelik kurulum:** güncelleme imzalama anahtarını GitHub'da
+*Settings → Secrets and variables → Actions → New repository secret* ile
+`TAURI_SIGNING_PRIVATE_KEY` adıyla ekle (anahtar dosyasının içeriği). Anahtarın şifresi
+yoksa `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` gerekmez. Anahtarı yedekle: kaybolursa
+kurulu uygulamalar yeni sürümleri kabul etmez (açık anahtar `tauri.conf.json` içinde).
+
+1. `app/src-tauri/tauri.conf.json`, `app/package.json` ve `app/src-tauri/Cargo.toml` içindeki sürümü artır.
+2. Commit'le, sonra etiketle ve push'la: `git tag v0.3.0 && git push origin v0.3.0`
+3. İş akışı Mac/Windows paketlerini imzalar ve `latest.json` ile birlikte yayınlanmış bir
+   Release'e yükler.
+
+### Otomatik güncelleme
+
+Kum açılıştan 30 sn sonra ve sonra 6 saatte bir
+`releases/latest/download/latest.json` dosyasını denetler. Yeni sürüm varsa arka planda
+indirir ve imzasını doğrular; kurulum kullanıcı onayıyla yapılır (menü çubuğunda
+**Güncellemeyi Yükle**, kenar çubuğundaki bildirim ya da *Ayarlar → Güncellemeler*).
+Kurulumdan sonra uygulama yeniden başlar.
 
 macOS paketi ad-hoc imzalıdır. Apple Developer hesabıyla (yıllık ücretli) imzalanıp
 notarize edilene kadar ilk açılışta "geliştirici doğrulanamadı" uyarısı çıkar ve her yeni sürümde

@@ -89,6 +89,16 @@ export type PrivacySettings = {
   title_suffixes: string[];
 };
 
+export type UpdateStatus = {
+  current: string;
+  available: string | null;
+  notes: string | null;
+  ready: boolean;
+  checking: boolean;
+  lastChecked: string | null;
+  error: string | null;
+};
+
 export const api = {
   status: () => invoke<AppStatus>("get_status"),
   requestAccessibility: () => invoke<boolean>("request_accessibility"),
@@ -126,6 +136,11 @@ export const api = {
   onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> =>
     listen<SyncStatus>("sync", (e) => cb(e.payload)),
   diagnose: () => invoke<string>("diagnose"),
+  updateStatus: () => invoke<UpdateStatus>("update_status"),
+  checkUpdate: () => invoke<UpdateStatus>("check_update"),
+  installUpdate: () => invoke<void>("install_update"),
+  onUpdate: (cb: (s: UpdateStatus) => void): Promise<UnlistenFn> =>
+    listen<UpdateStatus>("update", (e) => cb(e.payload)),
   onStatus: (cb: (s: TrackingStatus) => void): Promise<UnlistenFn> =>
     listen<TrackingStatus>("status", (e) => cb(e.payload)),
 };
