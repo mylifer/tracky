@@ -5,3 +5,7 @@ dist/
 *.db-journal
 .DS_Store
 app/src-tauri/gen/
+
+# Kullanıcının zaman çizelgesi şablonu (kişisel veri)
+sablon.xlsx
+*.yedek-*.xlsx
