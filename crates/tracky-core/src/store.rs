@@ -119,6 +119,11 @@ CREATE TRIGGER sessions_max_duration_update AFTER UPDATE OF started_at, ended_at
     WHERE id = 1 AND max_duration < NEW.ended_at - NEW.started_at;
 END;
 "#,
+    r#"
+-- Uygulama başına son kullanım: bilinen uygulamalar listesi tabloyu taramadan,
+-- uygulama başına tek indeks aramasıyla çıkar; uygulamanın başlık dökümü de hızlanır.
+CREATE INDEX sessions_app_ended ON sessions (app_id, ended_at);
+"#,
 ];
 
 /// `[?1, ?2)` ile kesişen oturumlar. Üçüncü koşul sonucu değiştirmez (kesişen her oturum
@@ -854,12 +859,26 @@ impl Store {
         Ok(out)
     }
 
-    /// Son kullanılan uygulamalar (kural ve gizlilik seçicileri için), en yeni önce.
+    /// Son kullanılan uygulamalar (kural ve gizlilik seçicileri için), en yeni önce; ad en
+    /// son kullanıldığı haliyle. Süre hesaplanmaz (`seconds` 0): tüm geçmişi toplamak her
+    /// sayfa açılışında tabloyu tarardı. Uygulamalar (app_id, ended_at) indeksinde atlayarak
+    /// bulunur ("loose index scan"): uygulama başına bir arama.
     pub fn known_apps(&self, limit: usize) -> Result<Vec<UsageTotal>> {
         let mut stmt = self.conn.prepare(
-            "SELECT app_id, MAX(app_name), SUM(ended_at - started_at) / 1000
-             FROM sessions WHERE deleted_at IS NULL
-             GROUP BY app_id ORDER BY MAX(ended_at) DESC LIMIT ?1",
+            "WITH RECURSIVE ids(id) AS (
+                 SELECT MIN(app_id) FROM sessions
+                 UNION ALL
+                 SELECT (SELECT MIN(app_id) FROM sessions WHERE app_id > ids.id)
+                 FROM ids WHERE ids.id IS NOT NULL
+             ), latest(r) AS (
+                 SELECT (SELECT rowid FROM sessions
+                         WHERE app_id = ids.id AND deleted_at IS NULL
+                         ORDER BY ended_at DESC LIMIT 1)
+                 FROM ids WHERE ids.id IS NOT NULL
+             )
+             SELECT s.app_id, s.app_name, 0
+             FROM latest JOIN sessions s ON s.rowid = latest.r
+             ORDER BY s.ended_at DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map([limit as i64], |r| {
             Ok(UsageTotal {
@@ -1144,6 +1163,35 @@ mod tests {
             .assign_app_category("com.microsoft.teams2", None)
             .unwrap();
         assert_eq!(category(&store), None);
+    }
+
+    #[test]
+    fn known_apps_are_listed_by_last_use_with_latest_name() {
+        let store = Store::open_in_memory().unwrap();
+        let mut a_old = session("a", None, 0, 60);
+        a_old.app_name = "Eski Ad".into();
+        let mut a_new = session("a", None, 500, 560);
+        a_new.app_name = "Yeni Ad".into();
+        let b = session("b", None, 200, 260);
+        let deleted = session("c", None, 900, 960);
+        for s in [&a_old, &a_new, &b, &deleted] {
+            store.upsert_session(s).unwrap();
+        }
+        store.delete_session(&deleted.id).unwrap();
+        let apps: Vec<_> = store
+            .known_apps(10)
+            .unwrap()
+            .into_iter()
+            .map(|u| (u.key, u.label))
+            .collect();
+        assert_eq!(
+            apps,
+            [
+                ("com.test.a".to_string(), "Yeni Ad".to_string()),
+                ("com.test.b".to_string(), "b".to_string())
+            ]
+        );
+        assert_eq!(store.known_apps(1).unwrap().len(), 1);
     }
 
     #[test]
