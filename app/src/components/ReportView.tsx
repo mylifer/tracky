@@ -5,6 +5,7 @@ import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from ".
 import { tagMap } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { AppList, Legend } from "./Breakdown";
+import AppTimeline from "./AppTimeline";
 import { DayCalendar, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
 import { EditContext, type EntryDraft, ManualEntry } from "./SessionEdit";
@@ -116,6 +117,7 @@ export default function ReportView(p: Props) {
 
   const mode = MODES.find((m) => m.id === p.mode) ?? MODES[0];
   const [draft, setDraft] = useState<EntryDraft | null>(null);
+  const [dayView, setDayView] = useDayView();
   const [preview, setPreview] = useState<[number, number] | null>(null);
   const openDraft = useCallback((start: number, end: number) => {
     const hm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -182,6 +184,18 @@ export default function ReportView(p: Props) {
                     <div className="min-w-0 flex-1">
                       <Legend order={order} tags={tags} />
                     </div>
+                    {p.mode === "day" && report.totalSeconds > 0 && (
+                      <Tabs value={dayView} onValueChange={(v) => setDayView(v as DayView)}>
+                        <TabsList className="h-7">
+                          <TabsTrigger value="calendar" className="px-2.5 text-xs">
+                            Takvim
+                          </TabsTrigger>
+                          <TabsTrigger value="apps" className="px-2.5 text-xs">
+                            Uygulamalar
+                          </TabsTrigger>
+                        </TabsList>
+                      </Tabs>
+                    )}
                     {p.mode !== "month" && (
                       <ManualEntry
                         day={p.mode === "day" ? p.start : manualDay}
@@ -204,6 +218,8 @@ export default function ReportView(p: Props) {
                         dailyHours={dailyHours}
                         onSelectDay={p.onSelectDay}
                       />
+                    ) : p.mode === "day" && dayView === "apps" && report.totalSeconds > 0 ? (
+                      <AppTimeline from={from} windows={report.windows} tags={tags} />
                     ) : p.mode === "day" ? (
                       <DayCalendar
                         from={from}
@@ -279,4 +295,29 @@ function Empty({ future }: { future: boolean }) {
       </div>
     </div>
   );
+}
+
+type DayView = "calendar" | "apps";
+const DAY_VIEW_KEY = "kum.dayView";
+
+/** Gün görünümünde takvim mi uygulama çizelgesi mi; tercih bu cihazda hatırlanır. */
+function useDayView(): [DayView, (v: DayView) => void] {
+  const [view, setView] = useState<DayView>(() => {
+    try {
+      return localStorage.getItem(DAY_VIEW_KEY) === "apps" ? "apps" : "calendar";
+    } catch {
+      return "calendar";
+    }
+  });
+  return [
+    view,
+    (v) => {
+      setView(v);
+      try {
+        localStorage.setItem(DAY_VIEW_KEY, v);
+      } catch {
+        /* depolama kapalıysa yalnızca bu oturumda */
+      }
+    },
+  ];
 }

@@ -67,6 +67,14 @@ export type Segment = {
   title: string;
   categoryId: string | null;
 };
+export type WindowSpan = {
+  start: string;
+  end: string;
+  appId: string;
+  appName: string;
+  title: string;
+  categoryId: string | null;
+};
 export type Report = {
   from: string;
   to: string;
@@ -76,6 +84,7 @@ export type Report = {
   apps: AppBucket[];
   days: DayBucket[];
   timeline: Segment[];
+  windows: WindowSpan[];
   tags: Tag[];
   focus: FocusStats;
   focusTimers: FocusTimer[];

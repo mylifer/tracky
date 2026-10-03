@@ -49,6 +49,18 @@ pub struct Segment {
     pub category_id: Option<String>,
 }
 
+/// Uygulama çizelgesi için: aynı uygulama ve pencere başlığında kesintisiz geçen süre.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSpan {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub app_id: String,
+    pub app_name: String,
+    pub title: String,
+    pub category_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
@@ -60,6 +72,8 @@ pub struct Report {
     pub apps: Vec<AppBucket>,
     pub days: Vec<DayBucket>,
     pub timeline: Vec<Segment>,
+    /// Pencere başlığı düzeyinde zaman çizelgesi (yalnızca zaman çizelgesi istenince).
+    pub windows: Vec<WindowSpan>,
     pub tags: Vec<Tag>,
     /// Tüm aralığın odak analizi (bloklar yalnızca zaman çizelgesi istenince doldurulur).
     pub focus: FocusStats,
@@ -90,6 +104,7 @@ pub fn build(
     let mut days: Vec<(i64, HashMap<Option<String>, i64>)> =
         day_starts.iter().map(|_| (0, HashMap::new())).collect();
     let mut timeline: Vec<Segment> = Vec::new();
+    let mut windows: Vec<WindowSpan> = Vec::new();
     let mut total = 0;
     // Odak analizi için kırpılmış etkinlikler: (başlangıç, bitiş, oturum, kategori).
     let mut spans: Vec<Span> = Vec::new();
@@ -122,6 +137,24 @@ pub fn build(
         }
 
         if with_timeline {
+            match windows.last_mut() {
+                Some(last)
+                    if last.app_id == s.app_id
+                        && last.title == s.title
+                        && last.category_id == class.category
+                        && start - last.end <= Duration::seconds(MERGE_GAP_SECS) =>
+                {
+                    last.end = last.end.max(end);
+                }
+                _ => windows.push(WindowSpan {
+                    start,
+                    end,
+                    app_id: s.app_id.clone(),
+                    app_name: s.app_name.clone(),
+                    title: s.title.clone(),
+                    category_id: class.category.clone(),
+                }),
+            }
             match timeline.last_mut() {
                 Some(last)
                     if last.app_name == s.app_name
@@ -184,6 +217,7 @@ pub fn build(
             })
             .collect(),
         timeline,
+        windows,
         tags: tags.to_vec(),
         focus: {
             // Çok günlü aralıkta günler ayrı analiz edilip birleştirilir
@@ -339,5 +373,36 @@ mod tests {
         );
         assert_eq!(r.total_seconds, 30);
         assert!(r.timeline.is_empty());
+    }
+
+    #[test]
+    fn windows_keep_title_changes_that_the_timeline_merges() {
+        let sessions = vec![
+            s("Code", "a.rs", 0, 60),
+            s("Code", "b.rs", 61, 120),
+            s("Code", "b.rs", 121, 180),
+            s("Mail", "Gelen", 180, 240),
+        ];
+        let c = Classifier::new(&[], &[]);
+        let r = build(&sessions, &[], &c, t(0), t(3600), &[t(0)], true);
+        assert_eq!(r.timeline.len(), 2);
+        let w: Vec<_> = r
+            .windows
+            .iter()
+            .map(|w| (w.title.as_str(), w.start, w.end))
+            .collect();
+        assert_eq!(
+            w,
+            [
+                ("a.rs", t(0), t(60)),
+                ("b.rs", t(61), t(180)),
+                ("Gelen", t(180), t(240))
+            ]
+        );
+        assert!(
+            build(&sessions, &[], &c, t(0), t(3600), &[t(0)], false)
+                .windows
+                .is_empty()
+        );
     }
 }
