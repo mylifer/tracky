@@ -101,7 +101,30 @@ CREATE TABLE focus_timers (
 );
 CREATE INDEX focus_timers_start ON focus_timers (started_at);
 "#,
+    r#"
+-- En uzun oturumun süresi (ms). Aralık sorguları "başlangıç - en uzun süre" alt sınırıyla
+-- started_at indeksini iki yönden kullanır; yoksa son haftanın raporu tüm geçmişi tarar.
+-- Tetikleyiciler her yazma yolunu (takip, düzenleme, eşitleme) kapsar; değer yalnızca büyür.
+CREATE TABLE session_stats (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    max_duration INTEGER NOT NULL
+);
+INSERT INTO session_stats VALUES (1, (SELECT COALESCE(MAX(ended_at - started_at), 0) FROM sessions));
+CREATE TRIGGER sessions_max_duration_insert AFTER INSERT ON sessions BEGIN
+    UPDATE session_stats SET max_duration = NEW.ended_at - NEW.started_at
+    WHERE id = 1 AND max_duration < NEW.ended_at - NEW.started_at;
+END;
+CREATE TRIGGER sessions_max_duration_update AFTER UPDATE OF started_at, ended_at ON sessions BEGIN
+    UPDATE session_stats SET max_duration = NEW.ended_at - NEW.started_at
+    WHERE id = 1 AND max_duration < NEW.ended_at - NEW.started_at;
+END;
+"#,
 ];
+
+/// `[?1, ?2)` ile kesişen oturumlar. Üçüncü koşul sonucu değiştirmez (kesişen her oturum
+/// en uzun oturumdan kısadır), yalnızca indeksin alt sınırıdır.
+const OVERLAPS: &str = "started_at < ?2 AND ended_at > ?1
+    AND started_at >= ?1 - (SELECT max_duration FROM session_stats)";
 
 /// Bir odak zamanlayıcısı. `end` boşsa hâlâ sürüyor.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -234,12 +257,12 @@ impl Store {
 
     /// `[from, to)` ile kesişen oturumlar, başlangıca göre sıralı.
     pub fn sessions_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Session>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT id, app_id, app_name, title, url, domain, started_at, ended_at, category_id
              FROM sessions
-             WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1
-             ORDER BY started_at",
-        )?;
+             WHERE deleted_at IS NULL AND {OVERLAPS}
+             ORDER BY started_at"
+        ))?;
         let rows = stmt.query_map(params![ms(from), ms(to)], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -334,9 +357,11 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
-            "UPDATE sessions SET category_id = ?3, updated_at = MAX(?4, updated_at + 1)
-             WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1
-               AND category_id IS NOT ?3",
+            &format!(
+                "UPDATE sessions SET category_id = ?3, updated_at = MAX(?4, updated_at + 1)
+                 WHERE deleted_at IS NULL AND {OVERLAPS}
+                   AND category_id IS NOT ?3"
+            ),
             params![ms(from), ms(to), category_id, ms(Utc::now())],
         )?;
         tx.commit()?;
@@ -349,8 +374,10 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
-            "UPDATE sessions SET deleted_at = ?3, updated_at = MAX(?3, updated_at + 1)
-             WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1",
+            &format!(
+                "UPDATE sessions SET deleted_at = ?3, updated_at = MAX(?3, updated_at + 1)
+                 WHERE deleted_at IS NULL AND {OVERLAPS}"
+            ),
             params![ms(from), ms(to), ms(Utc::now())],
         )?;
         tx.commit()?;
@@ -364,11 +391,11 @@ impl Store {
         let (from, to, now) = (ms(from), ms(to), ms(Utc::now()));
         let partial: Vec<(String, i64, i64)> = self
             .conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT id, started_at, ended_at FROM sessions
-                 WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1
-                   AND (started_at < ?1 OR ended_at > ?2)",
-            )?
+                 WHERE deleted_at IS NULL AND {OVERLAPS}
+                   AND (started_at < ?1 OR ended_at > ?2)"
+            ))?
             .query_map(params![from, to], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
         for (id, start, end) in partial {
@@ -894,7 +921,7 @@ impl Store {
                     SUM((MIN(ended_at, ?2) - MAX(started_at, ?1)) / 1000) AS secs
              FROM sessions
              WHERE deleted_at IS NULL AND {key_col} IS NOT NULL
-               AND started_at < ?2 AND ended_at > ?1
+               AND {OVERLAPS}
              GROUP BY {key_col}
              ORDER BY secs DESC, 2"
         );
@@ -1122,6 +1149,33 @@ mod tests {
             .assign_app_category("com.microsoft.teams2", None)
             .unwrap();
         assert_eq!(category(&store), None);
+    }
+
+    #[test]
+    fn long_sessions_are_found_by_range_queries() {
+        // Aralık sorguları "en uzun oturum" alt sınırını kullanır; sonradan uzatılan
+        // (takip) ya da uzaktan gelen uzun oturumlar da bulunmalı.
+        let store = Store::open_in_memory().unwrap();
+        let day = 86_400;
+        store.upsert_session(&session("kisa", None, 0, 60)).unwrap();
+        let mut long = session("uzun", None, 0, 60);
+        store.upsert_session(&long).unwrap();
+        long.ended_at = t(30 * day);
+        store.upsert_session(&long).unwrap();
+        let found = store.sessions_between(t(20 * day), t(21 * day)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].app_name, "uzun");
+        assert_eq!(
+            store.app_totals(t(20 * day), t(21 * day)).unwrap()[0].seconds,
+            day
+        );
+        assert_eq!(store.delete_between(t(20 * day), t(21 * day)).unwrap(), 1);
+        assert!(
+            store
+                .sessions_between(t(20 * day), t(21 * day))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
