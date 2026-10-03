@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::classify::{Classifier, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind, default_id};
-use crate::model::{MANUAL_APP_ID, Session};
+use crate::model::{FocusTimer, MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
 use crate::suggest::{self, Suggestions};
@@ -125,22 +125,6 @@ END;
 /// en uzun oturumdan kısadır), yalnızca indeksin alt sınırıdır.
 const OVERLAPS: &str = "started_at < ?2 AND ended_at > ?1
     AND started_at >= ?1 - (SELECT max_duration FROM session_stats)";
-
-/// Bir odak zamanlayıcısı. `end` boşsa hâlâ sürüyor.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FocusTimer {
-    pub id: String,
-    pub start: DateTime<Utc>,
-    pub planned_end: DateTime<Utc>,
-    pub end: Option<DateTime<Utc>>,
-}
-
-impl FocusTimer {
-    pub fn planned_minutes(&self) -> i64 {
-        (self.planned_end - self.start).num_minutes()
-    }
-}
 
 const DEFAULTS_SEEDED_KEY: &str = "default_tags_seeded";
 

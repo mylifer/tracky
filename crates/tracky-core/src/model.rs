@@ -30,6 +30,23 @@ pub struct Session {
     pub category_id: Option<String>,
 }
 
+/// Bir odak zamanlayıcısı. `end` boşsa hâlâ sürüyor. Depo (`store` özelliği) kapalıyken
+/// de raporda kullanıldığı için modelde durur.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusTimer {
+    pub id: String,
+    pub start: DateTime<Utc>,
+    pub planned_end: DateTime<Utc>,
+    pub end: Option<DateTime<Utc>>,
+}
+
+impl FocusTimer {
+    pub fn planned_minutes(&self) -> i64 {
+        (self.planned_end - self.start).num_minutes()
+    }
+}
+
 /// Elle eklenen kayıtların uygulama kimliği öneki: `kum.manual/<ad>`. Her ad ayrı
 /// bir "uygulama" sayılır; böylece aynı adlı kayıtlar bir kuralla kategorilenebilir.
 pub const MANUAL_APP_ID: &str = "kum.manual";
