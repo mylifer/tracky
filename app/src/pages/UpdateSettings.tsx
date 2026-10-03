@@ -52,7 +52,9 @@ export default function UpdateSettings() {
       {(error || (status.ready && status.notes)) && (
         <div className="space-y-1 px-4 py-2.5">
           <ErrorText>{error}</ErrorText>
-          {status.ready && status.notes && <p className="text-xs whitespace-pre-wrap text-muted-foreground">{status.notes}</p>}
+          {status.ready && status.notes && (
+            <p className="text-xs whitespace-pre-wrap text-muted-foreground">{status.notes}</p>
+          )}
         </div>
       )}
     </SettingsGroup>

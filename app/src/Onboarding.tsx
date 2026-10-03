@@ -45,8 +45,8 @@ export default function Onboarding({ status, onChange }: Props) {
           <img src="/icon.png" alt="" className="mx-auto size-14" />
           <h1 className="text-lg font-semibold">Kum'a hoş geldin</h1>
           <p className="text-[13px] text-muted-foreground">
-            Kum, hangi uygulamada ve pencerede ne kadar zaman geçirdiğini sessizce kaydeder. Veriler yalnızca bu bilgisayarda
-            tutulur.
+            Kum, hangi uygulamada ve pencerede ne kadar zaman geçirdiğini sessizce kaydeder. Veriler yalnızca bu
+            bilgisayarda tutulur.
           </p>
         </div>
 
@@ -72,7 +72,11 @@ export default function Onboarding({ status, onChange }: Props) {
               </div>
             )}
           </Step>
-          <Step done title="Bilgisayar açılınca başlat" action={<Switch checked={autostart} onCheckedChange={toggleAutostart} />}>
+          <Step
+            done
+            title="Bilgisayar açılınca başlat"
+            action={<Switch checked={autostart} onCheckedChange={toggleAutostart} />}
+          >
             <p>Takip arka planda, menü çubuğunda devam eder.</p>
           </Step>
         </div>
@@ -85,7 +89,17 @@ export default function Onboarding({ status, onChange }: Props) {
   );
 }
 
-function Step({ done, title, action, children }: { done: boolean; title: string; action?: ReactNode; children: ReactNode }) {
+function Step({
+  done,
+  title,
+  action,
+  children,
+}: {
+  done: boolean;
+  title: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
   const Icon = done ? CheckCircle2 : Circle;
   return (
     <div className="flex gap-3 p-4">

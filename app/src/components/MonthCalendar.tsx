@@ -62,7 +62,9 @@ export default function MonthCalendar({
             </span>
             {d.seconds > 0 && (
               <>
-                <span className="mt-auto max-w-full truncate text-[14px] font-semibold tabular">{compact(d.seconds)}</span>
+                <span className="mt-auto max-w-full truncate text-[14px] font-semibold tabular">
+                  {compact(d.seconds)}
+                </span>
                 {d.focusSeconds > 0 && (
                   <span className="flex max-w-full items-center gap-1 truncate text-[11px] text-muted-foreground tabular">
                     <i className="size-1.5 shrink-0 rounded-full bg-focus" />
@@ -71,7 +73,10 @@ export default function MonthCalendar({
                 )}
                 <span className="absolute inset-x-0 bottom-0 flex h-[3px]">
                   {d.categories.map((c) => (
-                    <i key={c.id ?? "none"} style={{ flexGrow: c.seconds, background: tagColor(c.id ? tags.get(c.id) : undefined) }} />
+                    <i
+                      key={c.id ?? "none"}
+                      style={{ flexGrow: c.seconds, background: tagColor(c.id ? tags.get(c.id) : undefined) }}
+                    />
                   ))}
                 </span>
               </>

@@ -54,7 +54,12 @@ export default function SyncSettings() {
           }}
         >
           <Field id="sync-url" label="Proje adresi">
-            <Input id="sync-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://abcd.supabase.co" />
+            <Input
+              id="sync-url"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://abcd.supabase.co"
+            />
           </Field>
           <Field id="sync-key" label="Anon (publishable) anahtar">
             <Input id="sync-key" value={key} onChange={(e) => setKey(e.target.value)} placeholder="eyJhbGciOi…" />
@@ -74,7 +79,13 @@ export default function SyncSettings() {
         >
           <p className="text-xs text-muted-foreground selectable">Bağlı proje: {status.url}</p>
           <Field id="sync-email" label="E-posta">
-            <Input id="sync-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" />
+            <Input
+              id="sync-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
+            />
           </Field>
           <Field id="sync-password" label="Şifre">
             <Input
@@ -100,7 +111,13 @@ export default function SyncSettings() {
               Hesap oluştur
             </Button>
             <div className="flex-1" />
-            <Button type="button" variant="ghost" size="sm" className="text-muted-foreground" onClick={() => run(api.syncDisconnect)}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => run(api.syncDisconnect)}
+            >
               Bağlantıyı kaldır
             </Button>
           </div>

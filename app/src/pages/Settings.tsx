@@ -109,7 +109,10 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
       <SettingsGroup title="Veriler">
         <SettingRow
           label="CSV olarak dışa aktar"
-          hint={exported ?? "Tüm kayıtlar (başlangıç, bitiş, uygulama, başlık, kategori, proje) İndirilenler klasörüne yazılır."}
+          hint={
+            exported ??
+            "Tüm kayıtlar (başlangıç, bitiş, uygulama, başlık, kategori, proje) İndirilenler klasörüne yazılır."
+          }
         >
           <Button
             variant="outline"
@@ -145,7 +148,13 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
   );
 }
 
-function Chips({ items, onRemove }: { items: { key: string; label: string; title?: string }[]; onRemove: (key: string) => void }) {
+function Chips({
+  items,
+  onRemove,
+}: {
+  items: { key: string; label: string; title?: string }[];
+  onRemove: (key: string) => void;
+}) {
   if (items.length === 0) return <p className="text-xs text-muted-foreground">Yok</p>;
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -210,7 +219,10 @@ function SuffixEditor({ suffixes, onChange }: { suffixes: string[]; onChange: (s
       label="Başlıklardan kaldırılacak ekler"
       hint="Bazı uygulamalar başlığın sonuna sabit bir şey ekler (örn. Firefox profil adı “— Kaan”). Buraya yazdığın ek başlıklardan silinir."
     >
-      <Chips items={suffixes.map((s) => ({ key: s, label: s }))} onRemove={(s) => onChange(suffixes.filter((x) => x !== s))} />
+      <Chips
+        items={suffixes.map((s) => ({ key: s, label: s }))}
+        onRemove={(s) => onChange(suffixes.filter((x) => x !== s))}
+      />
       <form
         className="flex max-w-sm gap-2"
         onSubmit={(e) => {
