@@ -6,7 +6,7 @@ import { tagMap } from "../lib/tags";
 import { AppList, Legend } from "./Breakdown";
 import { DayCalendar, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
-import { EditContext, ManualEntry } from "./SessionEdit";
+import { EditContext, type EntryDraft, ManualEntry } from "./SessionEdit";
 import Summary from "./Summary";
 import Toolbar from "./Toolbar";
 import { Button } from "./ui/button";
@@ -98,6 +98,18 @@ export default function ReportView(p: Props) {
   }, [report, categories]);
 
   const mode = MODES.find((m) => m.id === p.mode) ?? MODES[0];
+  const [draft, setDraft] = useState<EntryDraft | null>(null);
+  const [preview, setPreview] = useState<[number, number] | null>(null);
+  const openDraft = useCallback((start: number, end: number) => {
+    const hm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    // Form dakika hassasiyetinde: başlangıç yukarı, bitiş aşağı yuvarlanır ki komşu oturumlarla çakışmasın.
+    const a = new Date(Math.ceil(start / 60_000) * 60_000);
+    const b = new Date(Math.floor(end / 60_000) * 60_000);
+    // Gece yarısını aşan boşluk günün sonunda kesilir (saat alanı 24:00 alamaz).
+    const to = isoDate(b) === isoDate(a) ? hm(b) : "23:59";
+    setDraft((d) => ({ date: isoDate(a), from: hm(a), to, seq: (d?.seq ?? 0) + 1 }));
+    setPreview([start, end]);
+  }, []);
   const editCtx = useMemo(() => ({ categories, onChanged: load }), [categories, load]);
   // Hafta görünümünde elle kayıt varsayılan olarak bugüne (haftadaysa) ya da haftanın ilk gününe.
   const todayIso = isoDate(today());
@@ -109,21 +121,34 @@ export default function ReportView(p: Props) {
       <Toolbar title={p.title}>
         <Tabs value={p.mode} onValueChange={(v) => p.onMode(v as Mode)}>
           <TabsList aria-label="Görünüm">
-            {MODES.map((m) => (
-              <TabsTrigger key={m.id} value={m.id} className="px-3.5">
+            {MODES.map((m, i) => (
+              <TabsTrigger key={m.id} value={m.id} className="px-3.5" title={`${m.label} (${i + 1})`}>
                 {m.label}
               </TabsTrigger>
             ))}
           </TabsList>
         </Tabs>
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon-sm" onClick={p.onPrev} aria-label="Önceki">
+          <Button variant="ghost" size="icon-sm" onClick={p.onPrev} aria-label="Önceki" title="Önceki (←)">
             <ChevronLeft />
           </Button>
-          <Button variant="outline" size="sm" onClick={p.onToday ?? undefined} disabled={!p.onToday}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={p.onToday ?? undefined}
+            disabled={!p.onToday}
+            title="Bugüne dön (T)"
+          >
             {mode.current}
           </Button>
-          <Button variant="ghost" size="icon-sm" onClick={p.onNext} disabled={isLive} aria-label="Sonraki">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={p.onNext}
+            disabled={isLive}
+            aria-label="Sonraki"
+            title="Sonraki (→)"
+          >
             <ChevronRight />
           </Button>
         </div>
@@ -145,6 +170,8 @@ export default function ReportView(p: Props) {
                         day={p.mode === "day" ? p.start : manualDay}
                         categories={categories}
                         onChanged={load}
+                        draft={draft}
+                        onClose={() => setPreview(null)}
                       />
                     )}
                   </CardContent>
@@ -168,6 +195,8 @@ export default function ReportView(p: Props) {
                         segments={report.timeline}
                         timers={report.focusTimers}
                         tags={tags}
+                        onEmpty={openDraft}
+                        preview={preview}
                       />
                     ) : (
                       <WeekCalendar
@@ -177,6 +206,8 @@ export default function ReportView(p: Props) {
                         timers={report.focusTimers}
                         tags={tags}
                         onSelectDay={p.onSelectDay}
+                        onEmpty={openDraft}
+                        preview={preview}
                       />
                     )}
                   </EditContext.Provider>

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { api, type Tag } from "../api";
 import { isoDate, parseIsoDate } from "../lib/dates";
@@ -92,15 +92,23 @@ export function BlockActions({
 }
 
 /** "Kayıt ekle": bilgisayar dışında geçen süreyi (toplantı, okuma) elle ekler. */
+/** Takvimdeki boş alana tıklanınca formu o aralıkla açma isteği. */
+export type EntryDraft = { date: string; from: string; to: string; seq: number };
+
 export function ManualEntry({
   day,
   categories,
   onChanged,
+  draft,
+  onClose,
 }: {
   /** Varsayılan tarih (YYYY-MM-DD). */
   day: string;
   categories: Tag[];
   onChanged: () => void;
+  draft?: EntryDraft | null;
+  /** Form kapanınca (takvimdeki önizlemeyi kaldırmak için). */
+  onClose?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState("");
@@ -109,6 +117,15 @@ export function ManualEntry({
   const [to, setTo] = useState("10:00");
   const [category, setCategory] = useState(AUTO);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!draft) return;
+    setDate(draft.date);
+    setFrom(draft.from);
+    setTo(draft.to);
+    setError(null);
+    setOpen(true);
+  }, [draft]);
 
   function at(time: string) {
     const [h, m] = time.split(":").map(Number);
@@ -126,6 +143,7 @@ export function ManualEntry({
     try {
       await api.addManualEntry(label, start.toISOString(), end.toISOString(), category === AUTO ? null : category);
       setOpen(false);
+      onClose?.();
       setLabel("");
       setError(null);
       onChanged();
@@ -139,6 +157,7 @@ export function ManualEntry({
       open={open}
       onOpenChange={(o) => {
         setOpen(o);
+        if (!o) onClose?.();
         if (o) {
           setDate(day);
           setError(null);
@@ -182,7 +201,7 @@ export function ManualEntry({
               <Input
                 id="manual-from"
                 type="time"
-               
+
                 value={from}
                 onChange={(e) => setFrom(e.target.value)}
               />
@@ -192,7 +211,7 @@ export function ManualEntry({
               <Input
                 id="manual-to"
                 type="time"
-               
+
                 value={to}
                 onChange={(e) => setTo(e.target.value)}
               />

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, PenLine } from "lucide-react";
 import { api, formatDuration, type AppBucket, type Tag, type UsageTotal } from "../api";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
@@ -45,24 +45,34 @@ export function AppList({
         const isOpen = open === a.appId;
         return (
           <li key={a.appId}>
-            <div className={cn("group flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-accent/60", isOpen && "bg-accent/60")}>
+            <div
+              className={cn(
+                "group flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-accent/60",
+                isOpen && "bg-accent/60",
+              )}
+            >
               <button
                 className="flex min-w-0 flex-1 items-center gap-3 text-left"
                 onClick={() => setOpen(isOpen ? null : a.appId)}
                 aria-expanded={isOpen}
                 title={a.appId}
               >
-                <ChevronRight className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-90")} />
+                <ChevronRight
+                  className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-90")}
+                />
                 <span
                   className="grid size-7 shrink-0 place-items-center rounded-[7px] text-xs font-semibold"
                   style={{ background: `color-mix(in srgb, ${color} 18%, transparent)`, color }}
                 >
-                  {initial(a.appName)}
+                  {a.appId.startsWith("kum.manual/") ? <PenLine className="size-3.5" /> : initial(a.appName)}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] font-medium">{a.appName}</span>
                   <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
-                    <span className="block h-full rounded-full" style={{ width: `${Math.max(2, (a.seconds / max) * 100)}%`, background: color }} />
+                    <span
+                      className="block h-full rounded-full"
+                      style={{ width: `${Math.max(2, (a.seconds / max) * 100)}%`, background: color }}
+                    />
                   </span>
                 </span>
               </button>

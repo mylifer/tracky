@@ -365,8 +365,8 @@ impl Store {
         }
         let session = Session {
             id: Uuid::new_v4(),
-            app_id: MANUAL_APP_ID.into(),
-            app_name: "Elle eklenen".into(),
+            app_id: format!("{MANUAL_APP_ID}/{label}"),
+            app_name: label.into(),
             title: label.into(),
             url: None,
             domain: None,
@@ -1116,7 +1116,8 @@ mod tests {
             .unwrap();
         let back = store.sessions_between(t(0), t(3600)).unwrap();
         let manual = back.iter().find(|x| x.id == s.id).unwrap();
-        assert_eq!(manual.app_id, MANUAL_APP_ID);
+        assert!(manual.is_manual());
+        assert_eq!(manual.app_name, "Toplantı");
         assert_eq!(manual.category_id.as_deref(), Some(&*cat));
     }
 

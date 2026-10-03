@@ -101,11 +101,49 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   const thisMonth = isoDate(startOfMonth(today()));
   const dayDate = parseIsoDate(day);
 
+  // Seçili dönem bugünü içeriyor mu? (İleri gidilemez, "Bugün" düğmesi pasif.)
+  const atCurrent =
+    view === "day"
+      ? day === todayIso
+      : view === "week"
+        ? week === thisWeek
+        : view === "month"
+          ? month === thisMonth
+          : true;
+
   function step(n: number) {
+    if (n > 0 && atCurrent) return;
     if (view === "day") setDay(shift(day, n));
     else if (view === "week") setWeek(shift(week, 7 * n));
-    else setMonth(isoDate(addMonths(parseIsoDate(month), n)));
+    else if (view === "month") setMonth(isoDate(addMonths(parseIsoDate(month), n)));
   }
+
+  function goToday() {
+    if (view === "day") setDay(todayIso);
+    else if (view === "week") setWeek(thisWeek);
+    else if (view === "month") setMonth(thisMonth);
+  }
+
+  // Klavye: ←/→ önceki/sonraki dönem, T bugün, 1/2/3 Gün/Hafta/Ay.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable], [role=dialog], [role=listbox], [role=menu]"))
+        return;
+      const report = view === "day" || view === "week" || view === "month";
+      if (e.key === "1") selectMode("day");
+      else if (e.key === "2") selectMode("week");
+      else if (e.key === "3") selectMode("month");
+      else if (report && e.key === "ArrowLeft") step(-1);
+      else if (report && e.key === "ArrowRight") step(1);
+      else if (report && (e.key === "t" || e.key === "T")) goToday();
+      else return;
+      e.preventDefault();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   function selectMode(m: Mode) {
     if (m === "week") setWeek(isoDate(startOfWeek(dayDate)));
@@ -173,19 +211,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
             onMode={selectMode}
             onPrev={() => step(-1)}
             onNext={() => step(1)}
-            onToday={
-              view === "day"
-                ? day === todayIso
-                  ? null
-                  : () => setDay(todayIso)
-                : view === "week"
-                  ? week === thisWeek
-                    ? null
-                    : () => setWeek(thisWeek)
-                  : month === thisMonth
-                    ? null
-                    : () => setMonth(thisMonth)
-            }
+            onToday={atCurrent ? null : goToday}
             onSelectDay={(iso) => {
               setDay(iso);
               setView("day");

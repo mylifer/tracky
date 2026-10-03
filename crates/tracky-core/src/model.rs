@@ -30,8 +30,17 @@ pub struct Session {
     pub category_id: Option<String>,
 }
 
-/// Elle eklenen kayıtların uygulama kimliği.
+/// Elle eklenen kayıtların uygulama kimliği öneki: `kum.manual/<ad>`. Her ad ayrı
+/// bir "uygulama" sayılır; böylece aynı adlı kayıtlar bir kuralla kategorilenebilir.
 pub const MANUAL_APP_ID: &str = "kum.manual";
+
+impl Session {
+    pub fn is_manual(&self) -> bool {
+        self.app_id
+            .strip_prefix(MANUAL_APP_ID)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }
+}
 
 impl Session {
     pub fn start(window: ActiveWindow, at: DateTime<Utc>) -> Self {

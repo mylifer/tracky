@@ -60,9 +60,32 @@ function HourRail({ range }: { range: Range }) {
   );
 }
 
-function Column({ range, children, className }: { range: Range; children: React.ReactNode; className?: string }) {
+function Column({
+  range,
+  children,
+  className,
+  onEmpty,
+}: {
+  range: Range;
+  children: React.ReactNode;
+  className?: string;
+  /** Boş alana tıklanınca saatin günün başından itibaren ms karşılığı. */
+  onEmpty?: (offsetMs: number) => void;
+}) {
   return (
-    <div className={cn("relative", className)} style={{ height: (range.last - range.first) * HOUR_PX }}>
+    <div
+      className={cn("relative", onEmpty && "cursor-cell", className)}
+      style={{ height: (range.last - range.first) * HOUR_PX }}
+      title={onEmpty ? "Boş alana tıkla: bu saate elle kayıt ekle" : undefined}
+      onClick={
+        onEmpty &&
+        ((e) => {
+          if ((e.target as HTMLElement).closest("button")) return;
+          const y = e.clientY - e.currentTarget.getBoundingClientRect().top;
+          onEmpty(range.first * HOUR_MS + (y / HOUR_PX) * HOUR_MS);
+        })
+      }
+    >
       {hours(range).map((h) => (
         <span
           key={h}
@@ -245,6 +268,46 @@ function FocusBands({
   );
 }
 
+const MIN = 60_000;
+/** Tıklanan anı çevreleyen boşluk: 2 saate kadarsa tamamı, değilse tıklanan çeyrekten 1 saat. */
+export function gapAround(
+  t: number,
+  spans: { start: string; end: string }[],
+  dayStart: number,
+): [number, number] | null {
+  let prevEnd = dayStart;
+  let nextStart = Math.min(dayStart + 24 * HOUR_MS, Date.now());
+  for (const s of spans) {
+    const a = +new Date(s.start);
+    const b = +new Date(s.end);
+    if (a <= t && t < b) return null;
+    if (b <= t) prevEnd = Math.max(prevEnd, b);
+    if (a > t) nextStart = Math.min(nextStart, a);
+  }
+  if (t >= nextStart) return null;
+  let start = prevEnd;
+  let end = nextStart;
+  if (end - start > 2 * HOUR_MS) {
+    start = Math.max(prevEnd, Math.floor(t / (15 * MIN)) * 15 * MIN);
+    end = Math.min(nextStart, start + HOUR_MS);
+  }
+  return end - start >= 5 * MIN ? [start, end] : null;
+}
+
+/** Eklenmek üzere seçilen aralık: kesik çizgili hayalet blok. */
+function Preview({ range, top }: { range?: [number, number] | null; top: (t: number) => number }) {
+  if (!range) return null;
+  const t = top(range[0]);
+  return (
+    <span
+      className="pointer-events-none absolute inset-x-0.5 z-10 grid place-items-center rounded-[5px] border-2 border-dashed border-primary/60 bg-primary/10 text-[11px] font-medium text-primary"
+      style={{ top: t, height: Math.max(14, top(range[1]) - t - 2) }}
+    >
+      {formatTime(new Date(range[0]))} – {formatTime(new Date(range[1]))}
+    </span>
+  );
+}
+
 function blockGeometry(b: { start: string; end: string }, top: (t: number) => number) {
   const t = top(+new Date(b.start));
   return { top: t, height: Math.max(3, top(+new Date(b.end)) - t - 2) };
@@ -257,12 +320,16 @@ export function DayCalendar({
   segments,
   tags,
   timers = [],
+  onEmpty,
+  preview,
 }: {
   from: Date;
   blocks: WorkBlock[];
   segments: Segment[];
   tags: Map<string, Tag>;
   timers?: FocusTimer[];
+  onEmpty?: (start: number, end: number) => void;
+  preview?: [number, number] | null;
 }) {
   const range = useMemo(() => hourRange(from, [...blocks, ...segments]), [from, blocks, segments]);
   const top = topFn(+from, range);
@@ -291,10 +358,21 @@ export function DayCalendar({
         >
           <FocusBands timers={timers} top={top} />
         </div>
-        <Column range={range} className="col-start-2 row-start-1">
+        <Column
+          range={range}
+          className="col-start-2 row-start-1"
+          onEmpty={
+            onEmpty &&
+            ((offset) => {
+              const gap = gapAround(+from + offset, segments, +from);
+              if (gap) onEmpty(...gap);
+            })
+          }
+        >
           {blocks.map((b) => (
             <Block key={b.start} b={b} tags={tags} {...blockGeometry(b, top)} />
           ))}
+          <Preview range={preview} top={top} />
           <NowLine day={from} range={range} />
         </Column>
         <Column range={range} className="col-start-3 row-start-1">
@@ -339,6 +417,8 @@ export function WeekCalendar({
   tags,
   onSelectDay,
   timers = [],
+  onEmpty,
+  preview,
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -346,6 +426,8 @@ export function WeekCalendar({
   tags: Map<string, Tag>;
   onSelectDay: (iso: string) => void;
   timers?: FocusTimer[];
+  onEmpty?: (start: number, end: number) => void;
+  preview?: [number, number] | null;
 }) {
   const range = useMemo(() => hourRange(from, blocks, 7), [from, blocks]);
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
@@ -390,7 +472,18 @@ export function WeekCalendar({
           const dayEnd = +addDays(d, 1);
           const top = topFn(dayStart, range);
           return (
-            <Column key={i} range={range} className={cn(+d === +now && "bg-primary/[0.04]")}>
+            <Column
+              key={i}
+              range={range}
+              className={cn(+d === +now && "bg-primary/[0.04]")}
+              onEmpty={
+                onEmpty &&
+                ((offset) => {
+                  const gap = gapAround(dayStart + offset, blocks, dayStart);
+                  if (gap) onEmpty(...gap);
+                })
+              }
+            >
               <FocusBands
                 timers={timers.filter((f) => +new Date(f.start) >= dayStart && +new Date(f.start) < dayEnd)}
                 top={top}
@@ -401,6 +494,7 @@ export function WeekCalendar({
                 .map((b) => (
                   <Block key={b.start} b={b} tags={tags} narrow {...blockGeometry(b, top)} />
                 ))}
+              <Preview range={preview && preview[0] >= dayStart && preview[0] < dayEnd ? preview : null} top={top} />
               <NowLine day={d} range={range} />
             </Column>
           );
