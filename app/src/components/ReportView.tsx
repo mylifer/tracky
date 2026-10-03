@@ -118,7 +118,7 @@ export default function ReportView(p: Props) {
 
   const mode = MODES.find((m) => m.id === p.mode) ?? MODES[0];
   const [draft, setDraft] = useState<EntryDraft | null>(null);
-  const [dayView, setDayView] = useDayView();
+  const [calendarView, setCalendarView] = useCalendarView();
   const [preview, setPreview] = useState<[number, number] | null>(null);
   const openDraft = useCallback((start: number, end: number) => {
     const hm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -137,7 +137,7 @@ export default function ReportView(p: Props) {
     todayIso >= p.start && todayIso < isoDate(addDays(parseIsoDate(p.start), days)) ? todayIso : p.start;
 
   // Yakınlaştırma: takvimde saat yüksekliği, uygulama çizelgesinde gösterilen saat aralığı.
-  const appsView = p.mode !== "month" && dayView === "apps" && !!report && report.totalSeconds > 0;
+  const appsView = p.mode !== "month" && calendarView === "apps" && !!report && report.totalSeconds > 0;
   const zoomable = p.mode !== "month" && !!report && report.totalSeconds > 0;
   const [calZoom, setCalZoom] = useState(1);
   const [appZoom, setAppZoom] = useState(1);
@@ -252,7 +252,7 @@ export default function ReportView(p: Props) {
                       <Legend order={order} tags={tags} />
                     </div>
                     {p.mode !== "month" && report.totalSeconds > 0 && (
-                      <Tabs value={dayView} onValueChange={(v) => setDayView(v as DayView)}>
+                      <Tabs value={calendarView} onValueChange={(v) => setCalendarView(v as CalendarView)}>
                         <TabsList className="h-7">
                           <TabsTrigger value="calendar" className="px-2.5 text-xs">
                             Takvim
@@ -414,14 +414,15 @@ function ZoomControl({ zoom, onZoom }: { zoom: number; onZoom: (next: (z: number
   );
 }
 
-type DayView = "calendar" | "apps";
-const DAY_VIEW_KEY = "kum.dayView";
+type CalendarView = "calendar" | "apps";
+// Anahtar eski adıyla kalır: kayıtlı tercih korunsun.
+const CALENDAR_VIEW_KEY = "kum.dayView";
 
 /** Gün ve hafta görünümünde takvim mi uygulama çizelgesi mi; tercih bu cihazda hatırlanır. */
-function useDayView(): [DayView, (v: DayView) => void] {
-  const [view, setView] = useState<DayView>(() => {
+function useCalendarView(): [CalendarView, (v: CalendarView) => void] {
+  const [view, setView] = useState<CalendarView>(() => {
     try {
-      return localStorage.getItem(DAY_VIEW_KEY) === "apps" ? "apps" : "calendar";
+      return localStorage.getItem(CALENDAR_VIEW_KEY) === "apps" ? "apps" : "calendar";
     } catch {
       return "calendar";
     }
@@ -431,7 +432,7 @@ function useDayView(): [DayView, (v: DayView) => void] {
     (v) => {
       setView(v);
       try {
-        localStorage.setItem(DAY_VIEW_KEY, v);
+        localStorage.setItem(CALENDAR_VIEW_KEY, v);
       } catch {
         /* depolama kapalıysa yalnızca bu oturumda */
       }
