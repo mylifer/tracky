@@ -13,9 +13,12 @@ export default function UpdateSettings() {
   if (!status) return null;
 
   const describe = () => {
-    if (status.checking) return "Denetleniyor…";
+    if (status.checking) return status.available ? `Kum ${status.available} indiriliyor…` : "Denetleniyor…";
     if (status.ready) return `Kum ${status.available} indirildi, kuruluma hazır.`;
-    if (status.error) return `Denetlenemedi: ${status.error}`;
+    if (status.error)
+      return status.available
+        ? `Kum ${status.available} indirilemedi: ${status.error}`
+        : `Denetlenemedi: ${status.error}`;
     if (status.lastChecked) return `Güncel · son denetim ${time.format(new Date(status.lastChecked))}`;
     return "Güncellemeler arka planda otomatik denetlenir.";
   };

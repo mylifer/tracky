@@ -1,16 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import {
-  CalendarDays,
-  CalendarRange,
-  Calendar as CalendarIcon,
-  Download,
-  Pause,
-  Play,
-  Settings2,
-  Tags,
-} from "lucide-react";
+import { CalendarDays, CalendarRange, Calendar as CalendarIcon, Pause, Play, Settings2, Tags } from "lucide-react";
 import { api, formatDuration, type AppStatus, type TrackingStatus } from "./api";
 import FocusCard from "./components/FocusCard";
+import { UpdateCard } from "./components/UpdateCard";
 import ReportView from "./components/ReportView";
 import Toolbar from "./components/Toolbar";
 import { Button } from "./components/ui/button";
@@ -95,7 +87,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   const [week, setWeek] = useState(isoDate(startOfWeek(today())));
   const [month, setMonth] = useState(isoDate(startOfMonth(today())));
   const [tracking, setTracking] = useState<TrackingStatus>(status.tracking);
-  const [update] = useUpdate();
+  const [update, setUpdate] = useUpdate();
   const isMac = status.platform === "macos";
 
   useTauriEvent(api.onStatus, setTracking);
@@ -200,18 +192,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           </NavSection>
         </nav>
         <div className="space-y-2 p-2.5">
-          {update?.ready && (
-            <button
-              onClick={() => setView("settings")}
-              className="flex w-full items-center gap-2.5 rounded-lg bg-primary/12 px-2.5 py-2 text-left text-xs transition-colors hover:bg-primary/18"
-            >
-              <Download className="size-4 shrink-0 text-primary" />
-              <span className="min-w-0">
-                <span className="block font-medium">Güncelleme hazır</span>
-                <span className="block text-muted-foreground">Kum {update.available} · yüklemek için tıkla</span>
-              </span>
-            </button>
-          )}
+          <UpdateCard status={update} onStatus={setUpdate} />
           <FocusCard focus={tracking.focus} />
           <LiveCard tracking={tracking} onToggle={togglePause} />
         </div>

@@ -96,6 +96,12 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
             }
             Err(e) => return Err(message(e)),
         };
+        // İndirme sürerken de arayüz ve menü çubuğu yeni sürümü göstersin.
+        set(app, |s| {
+            s.available = Some(update.version.clone());
+            s.notes = update.body.clone();
+            s.ready = false;
+        });
         let bytes = update.download(|_, _| {}, || {}).await.map_err(message)?;
         Ok(Some((update, bytes)))
     }
@@ -116,6 +122,8 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
         Ok(None) => set(app, |s| {
             s.checking = false;
             s.last_checked = Some(Utc::now());
+            s.available = None;
+            s.notes = None;
         }),
         Err(e) => set(app, |s| {
             s.checking = false;

@@ -226,6 +226,12 @@ pub fn set_update(app: &AppHandle, status: &crate::updater::UpdateStatus) {
             let _ = items.update.set_text(format!("Güncellemeyi Yükle (v{v})"));
             let _ = items.update.set_enabled(true);
         }
+        (Some(v), false) if status.checking => {
+            let _ = items
+                .update
+                .set_text(format!("Güncelleme indiriliyor (v{v})"));
+            let _ = items.update.set_enabled(false);
+        }
         _ => {
             let _ = items.update.set_text("Kum güncel");
             let _ = items.update.set_enabled(false);
