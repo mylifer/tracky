@@ -55,6 +55,10 @@ jobs:
       - name: Biçim
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
+      - name: Arayüz biçimi
+        if: runner.os == 'Linux'
+        working-directory: app
+        run: npm run format:check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       # Çalışma alanında özellikler birleşir; çekirdeğin depo olmadan derlendiğini ayrıca denetle.
