@@ -184,7 +184,7 @@ export default function ReportView(p: Props) {
                     <div className="min-w-0 flex-1">
                       <Legend order={order} tags={tags} />
                     </div>
-                    {p.mode === "day" && report.totalSeconds > 0 && (
+                    {p.mode !== "month" && report.totalSeconds > 0 && (
                       <Tabs value={dayView} onValueChange={(v) => setDayView(v as DayView)}>
                         <TabsList className="h-7">
                           <TabsTrigger value="calendar" className="px-2.5 text-xs">
@@ -218,8 +218,14 @@ export default function ReportView(p: Props) {
                         dailyHours={dailyHours}
                         onSelectDay={p.onSelectDay}
                       />
-                    ) : p.mode === "day" && dayView === "apps" && report.totalSeconds > 0 ? (
-                      <AppTimeline from={from} windows={report.windows} tags={tags} />
+                    ) : dayView === "apps" && report.totalSeconds > 0 ? (
+                      <AppTimeline
+                        from={from}
+                        days={days}
+                        windows={report.windows}
+                        tags={tags}
+                        onSelectDay={p.onSelectDay}
+                      />
                     ) : p.mode === "day" ? (
                       <DayCalendar
                         from={from}
@@ -300,7 +306,7 @@ function Empty({ future }: { future: boolean }) {
 type DayView = "calendar" | "apps";
 const DAY_VIEW_KEY = "kum.dayView";
 
-/** Gün görünümünde takvim mi uygulama çizelgesi mi; tercih bu cihazda hatırlanır. */
+/** Gün ve hafta görünümünde takvim mi uygulama çizelgesi mi; tercih bu cihazda hatırlanır. */
 function useDayView(): [DayView, (v: DayView) => void] {
   const [view, setView] = useState<DayView>(() => {
     try {

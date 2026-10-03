@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronRight, PenLine } from "lucide-react";
 import { formatDuration, type Tag, type WindowSpan } from "../api";
-import { formatTime, today, wallMs } from "../lib/dates";
+import { addDays, formatTime, isoDate, today, wallMs } from "../lib/dates";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 
@@ -48,15 +48,32 @@ function group(windows: WindowSpan[]): { apps: AppLane[]; rest: Lane | null } {
   };
 }
 
-/** Gösterilecek saat aralığı: etkinliğe göre, en az 08–18. */
-function hourRange(from: Date, windows: WindowSpan[]) {
+/** Bir pencere aralığının bir güne düşen parçası: günün duvar saatiyle (ms). */
+type Piece = { day: number; a: number; b: number };
+
+/** Aralığı gün sınırlarından böler; `starts` gün başları + son günün bitişi. */
+function pieces(w: WindowSpan, starts: number[]): Piece[] {
+  const t0 = +new Date(w.start);
+  const t1 = +new Date(w.end);
+  const out: Piece[] = [];
+  for (let d = 0; d < starts.length - 1; d++) {
+    const ds = starts[d];
+    const de = starts[d + 1];
+    if (t1 <= ds || t0 >= de) continue;
+    out.push({ day: d, a: wallMs(Math.max(t0, ds), ds), b: wallMs(Math.min(t1, de), ds) });
+  }
+  return out;
+}
+
+/** Gösterilecek saat aralığı (her gün için aynı): etkinliğe göre, en az 08–18. */
+function hourRange(windows: WindowSpan[], starts: number[]) {
   let first = 8;
   let last = 18;
   for (const w of windows) {
-    const a = wallMs(+new Date(w.start), +from) / HOUR_MS;
-    const b = wallMs(+new Date(w.end), +from) / HOUR_MS;
-    first = Math.min(first, Math.floor(Math.max(0, a)));
-    last = Math.max(last, Math.ceil(Math.min(24, b)));
+    for (const p of pieces(w, starts)) {
+      first = Math.min(first, Math.floor(Math.max(0, p.a / HOUR_MS)));
+      last = Math.max(last, Math.ceil(Math.min(24, p.b / HOUR_MS)));
+    }
   }
   return { first, last };
 }
@@ -65,33 +82,41 @@ type Hover = { span: WindowSpan; x: number; y: number };
 
 /**
  * Uygulama çizelgesi: her uygulama bir şerit, kullanıldığı saatler çubuk.
- * Satıra tıklayınca pencere başlıkları ayrı şeritlerde açılır.
+ * Satıra tıklayınca pencere başlıkları ayrı şeritlerde açılır. Birden çok günde
+ * yatay eksen günlere bölünür; her günün diliminde aynı saat aralığı gösterilir.
  */
 export default function AppTimeline({
   from,
+  days = 1,
   windows,
   tags,
+  onSelectDay,
 }: {
   from: Date;
+  days?: number;
   windows: WindowSpan[];
   tags: Map<string, Tag>;
+  onSelectDay?: (iso: string) => void;
 }) {
+  const dates = useMemo(() => Array.from({ length: days + 1 }, (_, i) => addDays(from, i)), [from, days]);
+  const starts = useMemo(() => dates.map(Number), [dates]);
   const { apps, rest } = useMemo(() => group(windows), [windows]);
-  const range = useMemo(() => hourRange(from, windows), [from, windows]);
+  const range = useMemo(() => hourRange(windows, starts), [windows, starts]);
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [hover, setHover] = useState<Hover | null>(null);
 
   // Konumlar duvar saatine göre: yaz saati geçişinde de saat etiketleriyle hizalı.
   const startMs = range.first * HOUR_MS;
   const spanMs = (range.last - range.first) * HOUR_MS;
-  const frac = (t: number) => (wallMs(t, +from) - startMs) / spanMs;
-  const pos = (w: WindowSpan) => {
-    const a = Math.max(0, frac(+new Date(w.start)));
-    const b = Math.min(1, frac(+new Date(w.end)));
-    return { left: `${a * 100}%`, width: `max(2px, ${(b - a) * 100}%)` };
-  };
+  const clamp = (x: number) => Math.min(1, Math.max(0, x));
+  /** Günün `day` dilimindeki duvar saatinin (ms) şerit üzerindeki yeri (0–1). */
+  const x = (day: number, wall: number) => (day + clamp((wall - startMs) / spanMs)) / days;
   const hours = Array.from({ length: range.last - range.first + 1 }, (_, i) => range.first + i);
-  const nowFrac = +from === +today() ? frac(Date.now()) : -1;
+  const todayIndex = starts.indexOf(+today());
+  // Şimdi çizgisi: bugün gösteriliyorsa ve saat aralığın içindeyse.
+  const nowWall = todayIndex >= 0 && todayIndex < days ? wallMs(Date.now(), starts[todayIndex]) : NaN;
+  const nowFrac = nowWall >= startMs && nowWall <= startMs + spanMs ? x(todayIndex, nowWall) : -1;
+  const weekday = new Intl.DateTimeFormat("tr-TR", { weekday: "short" });
 
   function toggle(key: string) {
     setOpen((s) => {
@@ -105,26 +130,42 @@ export default function AppTimeline({
   // Her çubuk kendi penceresinin kategorisinde (örn. Chrome'da GitHub ile YouTube farklı renk).
   const spanColor = (w: WindowSpan) => tagColor(w.categoryId ? tags.get(w.categoryId) : undefined);
   const bars = (lane: Lane, muted = false) =>
-    lane.spans.map((w, i) => (
-      <span
-        key={i}
-        className={cn("absolute inset-y-1 rounded-[3px]", muted && "opacity-70")}
-        style={{ ...pos(w), background: spanColor(w) }}
-        onMouseEnter={(e) => setHover({ span: w, x: e.clientX, y: e.clientY })}
-        onMouseMove={(e) => setHover({ span: w, x: e.clientX, y: e.clientY })}
-        onMouseLeave={() => setHover(null)}
-      />
-    ));
+    lane.spans.flatMap((w, i) =>
+      pieces(w, starts).map((p) => {
+        const a = x(p.day, p.a);
+        const b = x(p.day, p.b);
+        return (
+          <span
+            key={`${i}:${p.day}`}
+            className={cn("absolute inset-y-1 rounded-[3px]", muted && "opacity-70")}
+            style={{ left: `${a * 100}%`, width: `max(2px, ${(b - a) * 100}%)`, background: spanColor(w) }}
+            onMouseEnter={(e) => setHover({ span: w, x: e.clientX, y: e.clientY })}
+            onMouseMove={(e) => setHover({ span: w, x: e.clientX, y: e.clientY })}
+            onMouseLeave={() => setHover(null)}
+          />
+        );
+      }),
+    );
 
   const grid = (
     <>
-      {hours.map((h) => (
-        <span
-          key={h}
-          className="absolute inset-y-0 border-l border-border/60"
-          style={{ left: `${((h - range.first) / (range.last - range.first)) * 100}%` }}
-        />
-      ))}
+      {days === 1
+        ? hours.map((h) => (
+            <span
+              key={h}
+              className="absolute inset-y-0 border-l border-border/60"
+              style={{ left: `${((h - range.first) / (range.last - range.first)) * 100}%` }}
+            />
+          ))
+        : dates
+            .slice(0, days)
+            .map((_, i) => (
+              <span
+                key={i}
+                className={cn("absolute inset-y-0 border-l border-border", i === todayIndex && "bg-primary/[0.04]")}
+                style={{ left: `${(i / days) * 100}%`, width: `${100 / days}%` }}
+              />
+            ))}
       {nowFrac >= 0 && nowFrac <= 1 && (
         <span className="absolute inset-y-0 z-10 w-px bg-destructive" style={{ left: `${nowFrac * 100}%` }} />
       )}
@@ -137,17 +178,34 @@ export default function AppTimeline({
     <div className="relative" onMouseLeave={() => setHover(null)}>
       <div className={cn(row, "pb-1.5 text-[10px] text-muted-foreground tabular")}>
         <span className="text-[11px] font-medium">Uygulama</span>
-        <div className="relative h-4">
-          {hours.map((h) => (
-            <span
-              key={h}
-              className="absolute -translate-x-1/2"
-              style={{ left: `${((h - range.first) / (range.last - range.first)) * 100}%` }}
-            >
-              {String(h % 24).padStart(2, "0")}
-            </span>
-          ))}
-        </div>
+        {days === 1 ? (
+          <div className="relative h-4">
+            {hours.map((h) => (
+              <span
+                key={h}
+                className="absolute -translate-x-1/2"
+                style={{ left: `${((h - range.first) / (range.last - range.first)) * 100}%` }}
+              >
+                {String(h % 24).padStart(2, "0")}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div className="flex" title={`Her gün ${pad(range.first)}:00–${pad(range.last)}:00`}>
+            {dates.slice(0, days).map((d, i) => (
+              <button
+                key={i}
+                className={cn(
+                  "min-w-0 flex-1 truncate rounded-sm py-0.5 text-[11px] hover:bg-accent",
+                  i === todayIndex ? "font-semibold text-foreground" : "text-muted-foreground",
+                )}
+                onClick={() => onSelectDay?.(isoDate(d))}
+              >
+                {weekday.format(d)} {d.getDate()}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <ul className="divide-y divide-border/60">
@@ -219,6 +277,8 @@ export default function AppTimeline({
     </div>
   );
 }
+
+const pad = (h: number) => String(h % 24).padStart(2, "0");
 
 function HoverCard({ hover, tags }: { hover: Hover; tags: Map<string, Tag> }) {
   const w = hover.span;
