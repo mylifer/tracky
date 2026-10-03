@@ -30,6 +30,8 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 17. Arama: başlıkta ya da uygulama adında geçen ifadeye göre süre, günlük dağılım, uygulamalar, pencereler (`/`)
 - [x] 18. Eğilimler: proje ve kategorilerin son 8/12/26 haftadaki haftalık süresi, bu hafta ve haftalık ortalama
 - [x] 19. Proje hedefleri: proje başına haftalık saat; hafta özeti ve eğilimlerde ilerleme, dolunca bildirim
+- [x] 20. Zaman çizelgesi: projeye atanan süreden günlük iş kayıtları (başlangıç, saat, Working/Online/F2F,
+      açıklama, taraf, birim), gözden geçirip onaylama ve firmanın Excel dosyasına biçimini koruyarak ekleme
 
 ## Yapı
 

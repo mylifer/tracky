@@ -55,6 +55,8 @@ pub struct TimesheetConfig {
     pub projects: Vec<ProjectMapping>,
     /// Çevrim içi toplantı sayılan uygulamalar (kimlik ya da exe adı, `*` öneki olabilir).
     pub meeting_apps: Vec<String>,
+    /// Bir adam-günün saati (adam-gün = saat / bu değer).
+    pub day_hours: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +77,7 @@ impl Default for TimesheetConfig {
             file_path: None,
             default_party: String::new(),
             projects: Vec::new(),
+            day_hours: 8.0,
             meeting_apps: [
                 "us.zoom.xos",
                 "zoom.exe",

@@ -117,6 +117,38 @@ export type Trends = {
 };
 export type TrendSeries = { id: string | null; seconds: number[] };
 
+export type EntryKind = "Working" | "Online" | "F2F";
+export type TimesheetEntry = {
+  date: string;
+  /** Yerel başlangıç saati, "HH:MM:SS". */
+  start: string;
+  hours: number;
+  kind: EntryKind;
+  details: string;
+  party: string;
+  projectId: string;
+  division: string;
+};
+export type EntryView = TimesheetEntry & { id: string | null; exported: boolean };
+export type TimesheetDay = {
+  date: string;
+  approved: boolean;
+  entries: EntryView[];
+  /** Projeye atanmamış takip edilen süre (saniye). */
+  unassignedSeconds: number;
+};
+export type ProjectMapping = { projectId: string; division: string; party: string | null };
+export type TimesheetConfig = {
+  company: string;
+  consultant: string;
+  filePath: string | null;
+  defaultParty: string;
+  projects: ProjectMapping[];
+  meetingApps: string[];
+  /** Bir adam-günün saati. */
+  dayHours: number;
+};
+
 export type LastSync = { at: string; ok: boolean; message: string };
 export type SyncStatus = {
   configured: boolean;
@@ -191,6 +223,22 @@ export const api = {
   /** `start` (YYYY-MM-DD) gününden itibaren `days` günde `query` geçen süre. */
   search: (query: string, start: string, days: number) => invoke<SearchResult>("search", { query, start, days }),
   trends: (weeks: number) => invoke<Trends>("get_trends", { weeks }),
+  timesheetConfig: () => invoke<TimesheetConfig>("get_timesheet_config"),
+  saveTimesheetConfig: (config: TimesheetConfig) => invoke<void>("save_timesheet_config", { config }),
+  timesheetDays: (start: string, days: number) => invoke<TimesheetDay[]>("timesheet_days", { start, days }),
+  approveTimesheetDay: (date: string) => invoke<void>("approve_timesheet_day", { date }),
+  saveTimesheetEntry: (id: string | null, entry: TimesheetEntry) =>
+    invoke<string>("save_timesheet_entry", { id, entry }),
+  deleteTimesheetEntry: (id: string) => invoke<void>("delete_timesheet_entry", { id }),
+  timesheetDetails: () => invoke<string[]>("timesheet_details"),
+  pickTimesheetFile: () => invoke<string | null>("pick_timesheet_file"),
+  importTimesheetTemplate: (path: string) =>
+    invoke<{ config: TimesheetConfig; created: string[]; details: number }>("import_timesheet_template", { path }),
+  exportTimesheet: (start: string, days: number) =>
+    invoke<{ rows: number; filled: number; inserted: number; backup: string; path: string }>("export_timesheet", {
+      start,
+      days,
+    }),
   /** Aramayla eşleşen oturumları İndirilenler'e CSV yazar; dosya yolunu döndürür. */
   exportSearch: (query: string, start: string, days: number) => invoke<string>("export_search", { query, start, days }),
   acceptProject: (name: string) => invoke<Tag>("accept_project_suggestion", { name }),

@@ -3,6 +3,7 @@
 mod commands;
 mod effects;
 mod sync;
+mod timesheet;
 mod tracking;
 mod tray;
 mod updater;
@@ -326,6 +327,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![HIDDEN_ARG]),
@@ -354,6 +356,16 @@ pub fn run() {
             commands::get_suggestions,
             commands::search,
             commands::set_range_project,
+            timesheet::get_timesheet_config,
+            timesheet::save_timesheet_config,
+            timesheet::timesheet_days,
+            timesheet::approve_timesheet_day,
+            timesheet::save_timesheet_entry,
+            timesheet::delete_timesheet_entry,
+            timesheet::timesheet_details,
+            timesheet::pick_timesheet_file,
+            timesheet::import_timesheet_template,
+            timesheet::export_timesheet,
             commands::get_trends,
             commands::export_search,
             commands::accept_project_suggestion,

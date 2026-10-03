@@ -5,6 +5,7 @@ import {
   Calendar as CalendarIcon,
   Pause,
   Play,
+  FileSpreadsheet,
   Search as SearchIcon,
   TrendingUp,
   Settings2,
@@ -37,11 +38,12 @@ import Onboarding from "./Onboarding";
 import Categories from "./pages/Categories";
 import Search, { type SearchState } from "./pages/Search";
 import Trends from "./pages/Trends";
+import Timesheet from "./pages/Timesheet";
 import Settings from "./pages/Settings";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
 type Mode = "day" | "week" | "month";
-type View = Mode | "trends" | "search" | "categories" | "settings";
+type View = Mode | "timesheet" | "trends" | "search" | "categories" | "settings";
 
 const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
   { id: "day", label: "Gün", icon: <CalendarDays /> },
@@ -50,6 +52,7 @@ const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
 ];
 
 const TITLES: Partial<Record<View, string>> = {
+  timesheet: "Zaman çizelgesi",
   trends: "Eğilimler",
   search: "Ara",
   categories: "Kategoriler ve projeler",
@@ -192,6 +195,11 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
             çubuğu ad ve simgeyi zaten gösterir, burada tekrarlanmaz. */}
         <div data-tauri-drag-region className={cn("shrink-0", isMac ? "h-[52px]" : "h-3.5")} />
         <nav className="flex flex-1 flex-col gap-5 overflow-y-auto px-2.5 pt-1">
+          <NavSection title="İş">
+            <NavItem icon={<FileSpreadsheet />} active={view === "timesheet"} onClick={() => setView("timesheet")}>
+              Zaman çizelgesi
+            </NavItem>
+          </NavSection>
           <NavSection title="Raporlar">
             {REPORTS.map((r) => (
               <NavItem key={r.id} icon={r.icon} active={view === r.id} onClick={() => selectMode(r.id)}>
@@ -254,6 +262,14 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           <>
             <Toolbar title={TITLES[view] ?? ""} />
             <div className="flex-1 overflow-y-auto">
+              {view === "timesheet" && (
+                <Timesheet
+                  onOpenDay={(iso) => {
+                    setDay(iso);
+                    setView("day");
+                  }}
+                />
+              )}
               {view === "trends" && (
                 <Trends
                   onAddProject={() => {
