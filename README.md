@@ -17,6 +17,8 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 9. Oturum düzenleme: takvimdeki bloğu kategoriye atama ya da silme, elle kayıt ekleme
 - [x] 10. Kategori limitleri: günlük sınır, %80'de ve dolunca bildirim, özette limit çubukları
 - [x] 11. Odak modu: 25/50/90 dk zamanlayıcı (menü çubuğu ve kenar çubuğu), bitince bildirim, takvimde odak aralığı
+- [x] 12. Kullanım kolaylıkları: takvimde boş alana tıklayarak kayıt, klavye kısayolları (←/→, T, 1/2/3),
+      süreli duraklatma, görünüm seçimi (sistem/açık/koyu), hafta/ay öne çıkanları
 
 ## Yapı
 
