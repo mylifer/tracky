@@ -1,0 +1,12 @@
+[package]
+name = "tracky-xlsx"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.45"
+thiserror = "2.0.21"
+umya-spreadsheet = "2.3.3"
+
+[dev-dependencies]
+uuid = { version = "1.27.0", features = ["v4"] }
