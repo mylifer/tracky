@@ -164,7 +164,8 @@ export default function ReportView(p: Props) {
     rendered.current = calZoom;
   }, [calZoom]);
   useZoomGestures(calendarArea, (factor, _x, y) => {
-    if (!appsView) zoomCalendar((z) => z * factor, y);
+    // Ay görünümünde yakınlaştırma yok: gizlice değişip gün görünümüne taşınmasın.
+    if (zoomable && !appsView) zoomCalendar((z) => z * factor, y);
   });
   const zoom = appsView ? appZoom : calZoom;
   // Yapışkan kart başlığının yüksekliği: takvim sütun başlıkları onun altına yapışır.
