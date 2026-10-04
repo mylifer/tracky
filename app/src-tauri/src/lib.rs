@@ -1,5 +1,6 @@
 //! Kum masaüstü uygulaması: menü çubuğunda yaşayan zaman takipçisi.
 
+mod ai;
 mod backup;
 mod calendar;
 mod client_report;
@@ -411,6 +412,10 @@ pub fn run() {
             timesheet::sheet_script,
             timesheet::connect_sheet,
             timesheet::disconnect_sheet,
+            ai::get_ai_settings,
+            ai::save_ai_settings,
+            ai::test_ai_connection,
+            ai::ai_write_details,
             calendar::calendar_status,
             calendar::set_calendar_url,
             calendar::refresh_calendar,

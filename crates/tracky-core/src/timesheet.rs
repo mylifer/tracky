@@ -191,10 +191,10 @@ pub fn meeting_project(
     }
 }
 
-type Interval = (DateTime<Utc>, DateTime<Utc>);
+pub(crate) type Interval = (DateTime<Utc>, DateTime<Utc>);
 
 /// `pieces`'ten `cut` aralığını çıkarır.
-fn subtract(pieces: Vec<Interval>, cut: Interval) -> Vec<Interval> {
+pub(crate) fn subtract(pieces: Vec<Interval>, cut: Interval) -> Vec<Interval> {
     let mut out = Vec::with_capacity(pieces.len() + 1);
     for (a, b) in pieces {
         if cut.1 <= a || cut.0 >= b {
@@ -214,7 +214,7 @@ fn subtract(pieces: Vec<Interval>, cut: Interval) -> Vec<Interval> {
 /// Tarayıcıda Google Meet / Teams sekmesi de toplantıdır.
 const MEETING_TITLES: &[&str] = &["google meet", "meet - ", "microsoft teams", "zoom meeting"];
 
-fn kind_of(session: &Session, config: &TimesheetConfig) -> EntryKind {
+pub(crate) fn kind_of(session: &Session, config: &TimesheetConfig) -> EntryKind {
     // Elle eklenen ve projeye atanan boşta süre bilgisayar dışında geçmiştir.
     if session.is_manual() || session.is_idle() {
         return EntryKind::F2F;
@@ -234,7 +234,7 @@ fn kind_of(session: &Session, config: &TimesheetConfig) -> EntryKind {
 }
 
 /// Pencere başlığından açıklama önerisi: uygulama ve tarayıcı ekleri atılır.
-fn clean_title(title: &str, app_name: &str) -> String {
+pub(crate) fn clean_title(title: &str, app_name: &str) -> String {
     let mut t = title
         .trim()
         .trim_start_matches(['●', '•', '*'])
@@ -264,7 +264,7 @@ const DETAIL_SHARE: f64 = 0.2;
 /// Açıklamanın en uzun hali (karakter).
 const MAX_DETAILS: usize = 160;
 /// Açıklama sayılmayan başlıklar (küçük harf).
-const GENERIC_TITLES: &[&str] = &[
+pub(crate) const GENERIC_TITLES: &[&str] = &[
     "new tab",
     "yeni sekme",
     "untitled",

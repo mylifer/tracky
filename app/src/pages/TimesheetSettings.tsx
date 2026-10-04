@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { CalendarDays, Check, Copy, FileSpreadsheet, RefreshCw, Sheet } from "lucide-react";
-import { api, type CalendarStatus, type Tag, type TimesheetConfig } from "../api";
-import { ErrorText, SettingBlock, SettingRow, SettingsGroup } from "../components/settings";
+import { CalendarDays, Check, Copy, FileSpreadsheet, Loader2, RefreshCw, Sheet, Sparkles } from "lucide-react";
+import { api, type AiStatus, type CalendarStatus, type Tag, type TimesheetConfig } from "../api";
+import { ErrorText, SettingBlock, SettingRow, SettingsGroup, ToggleRow } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { tagColor } from "../lib/tags";
@@ -12,6 +12,7 @@ import { friendlyError } from "../lib/feedback";
 /** Ayarlar sayfasındaki bölüm kimlikleri (başka sayfalardan doğrudan açmak için). */
 export const CONNECTIONS_SECTION = "baglantilar";
 export const TIMESHEET_SECTION = "zaman-cizelgesi";
+export const AI_SECTION = "yapay-zeka";
 
 const timeFmt = new Intl.DateTimeFormat("tr-TR", { hour: "2-digit", minute: "2-digit" });
 
@@ -67,6 +68,7 @@ export function TimesheetSections() {
         />
       )}
       <ErrorText>{error}</ErrorText>
+      <AiSettings />
     </>
   );
 }
@@ -487,5 +489,111 @@ export function SheetConnect({
         hesabındaysa Apps Script ya da "Herkes" erişimi kapatılmış olabilir; o zaman Excel dosyasını kullan.
       </p>
     </div>
+  );
+}
+
+/**
+ * Yapay zekâyla açıklama yazma: isteğe bağlı, varsayılan kapalı. Kullanıcının kendi Anthropic API
+ * anahtarı bu cihazda saklanır (eşitlenmez); istek yalnızca zaman çizelgesindeki düğmeyle gider.
+ */
+function AiSettings() {
+  const [status, setStatus] = useState<AiStatus | null>(null);
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => {
+    api.aiSettings().then(setStatus, (e) => setResult({ ok: false, text: friendlyError(e) }));
+  }, []);
+  if (!status) return result ? <ErrorText>{result.text}</ErrorText> : null;
+
+  const save = async (enabled: boolean, apiKey?: string) => {
+    try {
+      setStatus(await api.saveAiSettings(enabled, apiKey));
+      if (apiKey !== undefined) setKey("");
+      setResult(null);
+    } catch (e) {
+      setResult({ ok: false, text: friendlyError(e) });
+    }
+  };
+  const test = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      setResult({ ok: true, text: await api.testAi(key.trim() || undefined) });
+    } catch (e) {
+      setResult({ ok: false, text: friendlyError(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsGroup
+      id={AI_SECTION}
+      title="Yapay zekâ"
+      description="Zaman çizelgesi açıklamalarını Claude'a yazdır. İsteğe bağlı; kendi Anthropic API anahtarınla çalışır."
+    >
+      <ToggleRow
+        label="Yapay zekâyla yaz"
+        hint="Gün kartında ve dönem denetiminde “Yapay zekâyla yaz” düğmesi görünür."
+        checked={status.enabled}
+        onChange={(v) => save(v)}
+      />
+      <SettingBlock
+        label="Anthropic API anahtarı"
+        hint={
+          status.hasKey
+            ? `Kayıtlı (${status.keyHint ?? "…"}). Değiştirmek için yenisini yaz.`
+            : "console.anthropic.com → API Keys'ten oluştur. Yalnızca bu bilgisayarda saklanır, eşitlenmez."
+        }
+      >
+        <form
+          className="flex flex-wrap gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (key.trim()) save(status.enabled, key.trim());
+          }}
+        >
+          <Input
+            type="password"
+            className="h-8 w-72 text-sm"
+            placeholder={status.hasKey ? "••••••••" : "sk-ant-…"}
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            aria-label="Anthropic API anahtarı"
+          />
+          <Button type="submit" size="sm" variant="outline" disabled={!key.trim()}>
+            Kaydet
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={busy || (!key.trim() && !status.hasKey)}
+            onClick={test}
+          >
+            {busy ? <Loader2 className="animate-spin" /> : <Sparkles />} Bağlantıyı dene
+          </Button>
+          {status.hasKey && (
+            <Button type="button" size="sm" variant="ghost" onClick={() => save(false, "")}>
+              Anahtarı sil
+            </Button>
+          )}
+        </form>
+        {result && (
+          <p className={cn("text-xs selectable", result.ok ? "text-success" : "text-destructive")}>{result.text}</p>
+        )}
+        <div className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <b className="font-medium text-foreground">Gizlilik.</b> Hiçbir şey kendiliğinden gönderilmez. Yalnızca “Yapay
+          zekâyla yaz” düğmesine bastığında, yazılacak satırlar için Anthropic'e (api.anthropic.com) şunlar gider: proje
+          ve müşteri adı, tür, saat ve başlangıç; o satırın süresindeki pencere başlıkları, iş anahtarları ve site
+          adları ya da toplantı konusu; üslup örneği olarak o projelere daha önce yazdığın en çok 10'ar açıklama
+          (projede hiç yoksa diğer projelerinden 5). Gün başına bir istek yapılır; ücreti API anahtarının hesabından
+          düşer ({status.model}).
+        </div>
+      </SettingBlock>
+    </SettingsGroup>
   );
 }
