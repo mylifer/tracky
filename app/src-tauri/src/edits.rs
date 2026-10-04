@@ -64,8 +64,8 @@ impl UndoLog {
         Some(log.list.remove(i).1)
     }
 
-    /// Geri alma yarıda kaldıysa uygulanmamış işlemleri aynı numarayla yerine koyar; kullanıcı
-    /// "Geri al"ı yeniden deneyebilir.
+    /// Geri alma başarısız olduysa (hiçbiri uygulanmadı) işlemleri aynı numarayla yerine koyar;
+    /// kullanıcı "Geri al"ı yeniden deneyebilir.
     fn put_back(&self, id: u64, ops: Vec<UndoOp>) {
         let mut log = lock(&self.0);
         let i = log.list.partition_point(|(n, _)| *n < id);
@@ -104,26 +104,16 @@ pub async fn undo(app: AppHandle, id: u64) -> CmdResult<()> {
     let ops = log.take(id).ok_or("Bu değişiklik artık geri alınamıyor.")?;
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    undo_ops(&store, ops).map_err(|(rest, e)| {
-        log.put_back(id, rest);
+    undo_ops(&store, &ops).map_err(|e| {
+        log.put_back(id, ops);
         err(e)
     })
 }
 
-/// İşlemleri sondan başa uygular. Biri başarısız olursa henüz uygulanmamış olanlar (o da
-/// dahil) hatayla döner. Tek bir işleme alınamaz: depo işlemlerinin bazıları kendi işlemini
-/// (transaction) açar; uygulananlar bu yüzden yeniden denenmez.
-fn undo_ops(
-    store: &Store,
-    mut ops: Vec<UndoOp>,
-) -> Result<(), (Vec<UndoOp>, tracky_core::StoreError)> {
-    while let Some(op) = ops.last() {
-        if let Err(e) = apply(store, op) {
-            return Err((ops, e));
-        }
-        ops.pop();
-    }
-    Ok(())
+/// İşlemleri sondan başa, tek işlemde (transaction) uygular: biri başarısız olursa hiçbiri
+/// kalmaz.
+fn undo_ops(store: &Store, ops: &[UndoOp]) -> tracky_core::store::Result<()> {
+    store.atomic(|store| ops.iter().rev().try_for_each(|op| apply(store, op)))
 }
 
 fn range(start: &str, days: u32) -> CmdResult<(DateTime<Utc>, DateTime<Utc>)> {
@@ -158,43 +148,53 @@ pub async fn assign_unassigned(
     let (from, to) = range(&start, days)?;
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    let mut ops = Vec::new();
-    if let (Some(project), Some((field, pattern))) = (&project_id, rule) {
-        let id = uuid::Uuid::new_v4().to_string();
-        store
-            .upsert_rule(&Rule {
-                id: id.clone(),
-                tag_id: project.clone(),
-                field,
-                pattern,
-            })
-            .map_err(err)?;
-        ops.push(UndoOp::AddedRule(id));
-    }
-    let assigned = store
-        .unassigned_sessions(from, to, &key, title.as_deref())
-        .and_then(|ids| {
-            let snap = store.snapshot_sessions(&ids)?;
-            let changed = store.set_project_for(&ids, project_id.as_deref())?;
-            Ok((snap, changed))
-        });
-    let (snap, changed) = match assigned {
-        Ok(done) => done,
-        Err(e) => {
-            // Oturumlar atanamadı: az önce eklenen kural da kalmasın (yarım düzenleme olmasın).
-            // Tek işleme alınamaz; `set_project_for` kendi işlemini açar.
-            if let Err(e) = undo_ops(&store, ops) {
-                eprintln!("eklenen kural geri alınamadı: {}", e.1);
-            }
-            return Err(err(e));
-        }
-    };
-    ops.push(UndoOp::Sessions(snap));
+    let (changed, ops) = store
+        .atomic(|store| {
+            assign(
+                store,
+                from,
+                to,
+                &key,
+                title.as_deref(),
+                project_id.as_deref(),
+                rule,
+            )
+        })
+        .map_err(err)?;
     drop(store);
     Ok(Edited {
         changed,
         undo: record(&app, ops),
     })
+}
+
+/// [`assign_unassigned`]'ın depo tarafı; çağıran tek işlemde çalıştırır (kural eklenip
+/// oturumlar atanamazsa kural da kalmaz).
+fn assign(
+    store: &Store,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    key: &str,
+    title: Option<&str>,
+    project_id: Option<&str>,
+    rule: Option<(RuleField, String)>,
+) -> tracky_core::store::Result<(usize, Vec<UndoOp>)> {
+    let mut ops = Vec::new();
+    if let (Some(project), Some((field, pattern))) = (project_id, rule) {
+        let id = uuid::Uuid::new_v4().to_string();
+        store.upsert_rule(&Rule {
+            id: id.clone(),
+            tag_id: project.to_string(),
+            field,
+            pattern,
+        })?;
+        ops.push(UndoOp::AddedRule(id));
+    }
+    let ids = store.unassigned_sessions(from, to, key, title)?;
+    let snap = store.snapshot_sessions(&ids)?;
+    let changed = store.set_project_for(&ids, project_id)?;
+    ops.push(UndoOp::Sessions(snap));
+    Ok((changed, ops))
 }
 
 /// Grubu atanmamış listesinde gösterme ya da yeniden göster.
@@ -235,29 +235,124 @@ pub async fn preview_rule(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracky_core::{Session, Tag, TagKind};
+
+    fn t(min: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000 + min * 60, 0).unwrap()
+    }
+
+    fn tag(store: &Store, kind: TagKind) -> String {
+        let tag = Tag {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind,
+            name: "kum".into(),
+            color: 1,
+        };
+        store.upsert_tag(&tag, 0).unwrap();
+        tag.id
+    }
+
+    fn session(title: &str, from: i64, to: i64) -> Session {
+        Session {
+            id: uuid::Uuid::new_v4(),
+            app_id: "com.apple.Safari".into(),
+            app_name: "Safari".into(),
+            title: title.into(),
+            url: None,
+            domain: None,
+            started_at: t(from),
+            ended_at: t(to),
+            category_id: None,
+            project_id: None,
+        }
+    }
+
+    fn projects(store: &Store) -> Vec<Option<String>> {
+        let mut v: Vec<_> = store
+            .sessions_between(t(-10), t(100))
+            .unwrap()
+            .into_iter()
+            .map(|s| s.project_id)
+            .collect();
+        v.sort();
+        v
+    }
 
     #[test]
-    fn failed_undo_keeps_the_rest_for_retry() {
+    fn failed_undo_changes_nothing_and_can_be_retried() {
         let store = Store::open_in_memory().unwrap();
+        let p = tag(&store, TagKind::Project);
         let rule = store.rules().unwrap()[0].clone();
-        // Sondan başa: kural silinir, var olmayan etiketin geri getirilmesi başarısız olur.
+        store.upsert_session(&session("Plan", 0, 30)).unwrap();
+        let ids: Vec<_> = store
+            .sessions_between(t(0), t(30))
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        let snap = store.snapshot_sessions(&ids).unwrap();
+        store.set_project_for(&ids, Some(&p)).unwrap();
+
+        // Sondan başa: kural silinir, oturum geri döner, sonra var olmayan etiketin geri
+        // getirilmesi başarısız olur. Hiçbiri kalmamalı.
         let ops = vec![
             UndoOp::DeletedTag {
                 id: "yok".into(),
                 at: Utc::now(),
             },
+            UndoOp::Sessions(snap),
             UndoOp::AddedRule(rule.id.clone()),
         ];
-        let (rest, _) = undo_ops(&store, ops).unwrap_err();
-        assert!(matches!(rest.as_slice(), [UndoOp::DeletedTag { .. }]));
+        assert!(undo_ops(&store, &ops).is_err());
+        assert!(store.rules().unwrap().iter().any(|r| r.id == rule.id));
+        assert_eq!(projects(&store), vec![Some(p.clone())]);
+
+        // Sorunlu işlem olmadan yeniden denenince hepsi uygulanır.
+        assert!(undo_ops(&store, &ops[1..]).is_ok());
         assert!(store.rules().unwrap().iter().all(|r| r.id != rule.id));
+        assert_eq!(projects(&store), vec![None]);
 
         let log = UndoLog::default();
         let (older, newer) = (log.push(Vec::new()), log.push(Vec::new()));
         let failed = log.push(Vec::new());
+        let taken = log.take(failed).unwrap();
+        log.put_back(failed, taken);
         assert!(log.take(failed).is_some());
-        log.put_back(failed, rest);
-        assert!(log.take(failed).is_some_and(|ops| ops.len() == 1));
         assert!(log.take(older).is_some() && log.take(newer).is_some());
+    }
+
+    #[test]
+    fn failed_assign_does_not_leave_the_rule() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_session(&session("Plan", 0, 30)).unwrap();
+        let rules = store.rules().unwrap().len();
+        // Kategoriye kural eklenebilir ama oturumlara proje olarak verilemez: atama başarısız
+        // olur, kural da geri alınmalı.
+        let category = tag(&store, TagKind::Category);
+        let rule = Some((RuleField::Title, "LOY-".to_string()));
+        let out = store.atomic(|s| {
+            assign(
+                s,
+                t(0),
+                t(60),
+                "app:com.apple.Safari",
+                None,
+                Some(&category),
+                rule.clone(),
+            )
+        });
+        assert!(out.is_err());
+        assert_eq!(store.rules().unwrap().len(), rules);
+
+        let p = tag(&store, TagKind::Project);
+        let (changed, ops) = store
+            .atomic(|s| assign(s, t(0), t(60), "app:com.apple.Safari", None, Some(&p), rule))
+            .unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(store.rules().unwrap().len(), rules + 1);
+        assert_eq!(projects(&store), vec![Some(p)]);
+        undo_ops(&store, &ops).unwrap();
+        assert_eq!(store.rules().unwrap().len(), rules);
+        assert_eq!(projects(&store), vec![None]);
     }
 }

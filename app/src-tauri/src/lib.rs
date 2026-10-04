@@ -2,6 +2,7 @@
 
 mod backup;
 mod calendar;
+mod client_report;
 mod commands;
 #[cfg(target_os = "macos")]
 mod dock;
@@ -384,6 +385,8 @@ pub fn run() {
             edits::ignore_unassigned,
             edits::ignored_unassigned,
             edits::preview_rule,
+            client_report::client_report,
+            client_report::export_client_report,
             timesheet::get_timesheet_config,
             timesheet::save_timesheet_config,
             timesheet::timesheet_days,
