@@ -5,7 +5,6 @@ import { api, formatDuration } from "../api";
 import { clientColor, NO_CLIENT, NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import type { Mode } from "./ReportView";
-import { ScoreRing, scoreLabel } from "./Stats";
 import { Card, CardContent } from "./ui/card";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
@@ -24,7 +23,7 @@ type Props = {
   projectGoals: ProjectGoal[];
 };
 
-/** Sağ panel: süre, hedef, kırılım ve odak metrikleri. */
+/** Sağ panel: süre, hedef, kırılım ve mola metrikleri. */
 export default function Summary({
   report,
   previous,
@@ -40,7 +39,6 @@ export default function Summary({
   const target = dailyHours * 3600 * activeDays(report, days);
   const ratio = target ? report.totalSeconds / target : 0;
   const breakSecs = f.breakSeconds;
-  const otherWork = Math.max(0, report.totalSeconds - f.focusSeconds);
 
   return (
     <aside className="min-w-0 space-y-3">
@@ -78,25 +76,6 @@ export default function Summary({
 
       {mode !== "day" && <Highlights report={report} dailyHours={dailyHours} />}
 
-      <div className="grid grid-cols-2 gap-3">
-        <Card className="gap-2 py-3.5">
-          <CardContent className="px-3.5">
-            <Label>Odak skoru</Label>
-            <div className="mt-2 flex items-center gap-2.5">
-              <ScoreRing score={f.score} size={46} />
-              <span className="text-xs leading-tight font-medium">{scoreLabel(f.score)}</span>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="gap-2 py-3.5">
-          <CardContent className="px-3.5">
-            <Label>Odak süresi</Label>
-            <div className="mt-1.5 text-[17px] font-semibold tabular">{formatDuration(f.focusSeconds)}</div>
-            <Delta now={f.focusSeconds} before={previous?.focus.focusSeconds} unit={DELTA_SHORT[mode]} />
-          </CardContent>
-        </Card>
-      </div>
-
       <Card className="gap-3">
         <CardContent className="space-y-3">
           <div className="flex items-center justify-between">
@@ -107,14 +86,16 @@ export default function Summary({
           </div>
           <Metrics
             parts={[
-              { label: "Odak", secs: f.focusSeconds, color: "var(--focus)" },
-              { label: "Diğer çalışma", secs: otherWork, color: "color-mix(in srgb, var(--primary) 45%, transparent)" },
+              {
+                label: "Çalışma",
+                secs: report.totalSeconds,
+                color: "color-mix(in srgb, var(--primary) 45%, transparent)",
+              },
               { label: "Mola", secs: breakSecs, color: "color-mix(in srgb, var(--muted-foreground) 35%, transparent)" },
             ]}
           />
           <div className="text-[11px] text-muted-foreground">
-            {(f.switchesPerHourX10 / 10).toLocaleString("tr-TR")} geçiş/sa · en uzun odak{" "}
-            {formatDuration(f.longestFocusSeconds)}
+            {(f.switchesPerHourX10 / 10).toLocaleString("tr-TR")} uygulama geçişi/sa
           </div>
         </CardContent>
       </Card>
@@ -127,7 +108,6 @@ const DELTA_UNIT: Record<Mode, string> = {
   week: "geçen haftaya göre",
   month: "geçen aya göre",
 };
-const DELTA_SHORT: Record<Mode, string> = { day: "dün", week: "geçen hafta", month: "geçen ay" };
 
 function Label({ children }: { children: React.ReactNode }) {
   return <div className="text-[11px] font-medium text-muted-foreground">{children}</div>;
@@ -398,19 +378,17 @@ function LimitsCard({ report, tags, limits }: { report: Report; tags: Map<string
 
 const weekdayFmt = new Intl.DateTimeFormat("tr-TR", { weekday: "long", day: "numeric", month: "short" });
 
-/** Hafta/ay için öne çıkanlar: en yoğun ve en odaklı gün, ortalama, hedef günleri, en çok kullanılan uygulama. */
+/** Hafta/ay için öne çıkanlar: en yoğun gün, ortalama, hedef günleri, en çok kullanılan uygulama. */
 function Highlights({ report, dailyHours }: { report: Report; dailyHours: number }) {
   const active = report.days.filter((d) => d.seconds > 0);
   if (active.length < 2) return null;
   const busiest = active.reduce((a, b) => (b.seconds > a.seconds ? b : a));
-  const focused = active.reduce((a, b) => (b.focusScore > a.focusScore ? b : a));
   const goalDays = active.filter((d) => d.seconds >= dailyHours * 3600).length;
   const average = Math.round(active.reduce((s, d) => s + d.seconds, 0) / active.length);
   const topApp = report.apps[0];
   const day = (iso: string) => weekdayFmt.format(new Date(iso));
   const rows: [string, string, string?][] = [
     ["En yoğun gün", formatDuration(busiest.seconds), day(busiest.start)],
-    ["En odaklı gün", `skor ${focused.focusScore}`, day(focused.start)],
     ["Günlük ortalama", formatDuration(average), `${active.length} aktif gün`],
     ["Hedef tutan gün", `${goalDays} / ${active.length}`, `günde ${dailyHours} sa`],
   ];

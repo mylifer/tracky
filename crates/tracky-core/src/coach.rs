@@ -23,10 +23,6 @@ pub struct Goals {
     pub day_summary_at: Option<u32>,
     /// Yeni haftanın ilk çalışmasında geçen haftanın özeti.
     pub weekly_summary: bool,
-    /// Odak zamanlayıcısı sürerken dikkat dağıtıcı kategoriye geçince uyar.
-    pub focus_guard: bool,
-    /// Odak korumasının dikkat dağıtıcı saydığı kategoriler.
-    pub distracting: Vec<String>,
     /// Proje başına haftalık hedefler.
     pub project_goals: Vec<ProjectGoal>,
 }
@@ -62,9 +58,6 @@ impl ProjectGoal {
 /// Bundan az çalışılan günde özet gösterilmez.
 pub const DAY_SUMMARY_MIN_SECS: i64 = 15 * 60;
 
-/// Odak korumasının iki uyarısı arasındaki en kısa süre.
-pub const DISTRACTION_COOLDOWN: Duration = Duration::minutes(3);
-
 /// Limitin bu oranına gelince önceden uyarılır.
 pub const LIMIT_WARN_RATIO: f64 = 0.8;
 
@@ -77,8 +70,6 @@ impl Default for Goals {
             limits: Vec::new(),
             day_summary_at: Some(18 * 60),
             weekly_summary: true,
-            focus_guard: true,
-            distracting: vec![crate::classify::default_category_id("Sosyal & Eğlence")],
             project_goals: Vec::new(),
         }
     }
@@ -109,8 +100,6 @@ pub enum Nudge {
     LimitReached { category_id: String, limit: i64 },
     /// Gün sonu özeti zamanı (içeriği çağıran rapordan hazırlar).
     DaySummary,
-    /// Odak sırasında dikkat dağıtıcı uygulamaya geçildi.
-    Distraction { app_name: String, minutes_left: i64 },
     /// Projenin haftalık hedefi (`target` saniye) doldu.
     ProjectGoalReached { project_id: String, target: i64 },
 }
@@ -136,7 +125,6 @@ pub struct Coach {
     goals_notified: HashSet<String>,
     goals_week: Option<NaiveDate>,
     summary_sent_on: Option<NaiveDate>,
-    last_distraction: Option<DateTime<Utc>>,
 }
 
 impl Coach {
@@ -302,34 +290,6 @@ impl Coach {
         used: &HashMap<String, i64>,
     ) {
         self.observe_project_goals(goals, week, used);
-    }
-
-    /// Odak zamanlayıcısı sürerken (`focus_ends`) yeni bir pencereye geçildiğinde çağrılır;
-    /// pencerenin kategorisi dikkat dağıtıcıysa ve son uyarıdan beri yeterince geçtiyse uyarır.
-    pub fn observe_switch(
-        &mut self,
-        goals: &Goals,
-        now: DateTime<Utc>,
-        focus_ends: Option<DateTime<Utc>>,
-        app_name: &str,
-        category: Option<&str>,
-    ) -> Option<Nudge> {
-        let ends = focus_ends.filter(|e| *e > now)?;
-        let distracting = category.is_some_and(|c| goals.distracting.iter().any(|d| d == c));
-        if !goals.focus_guard
-            || !distracting
-            || self
-                .last_distraction
-                .is_some_and(|t| now - t < DISTRACTION_COOLDOWN)
-        {
-            return None;
-        }
-        self.last_distraction = Some(now);
-        Some(Nudge::Distraction {
-            app_name: app_name.to_string(),
-            // Son dakikada "0 dk" yerine yukarı yuvarla.
-            minutes_left: ((ends - now).num_seconds() + 59) / 60,
-        })
     }
 
     /// Uygulama özet saatinden sonra açıldı: bugünün özetini gösterme
@@ -515,50 +475,6 @@ mod tests {
         assert_eq!(g.day_summary_at, Some(18 * 60));
         assert!(g.weekly_summary);
         assert_eq!(g.daily_hours, 6.0);
-    }
-
-    #[test]
-    fn focus_guard_warns_on_distracting_switch_with_cooldown() {
-        let mut c = Coach::new();
-        let g = goals(50);
-        let fun = crate::classify::default_category_id("Sosyal & Eğlence");
-        let ends = Some(t(25));
-        // Odak yokken ya da kategori dikkat dağıtıcı değilken sessiz.
-        assert_eq!(
-            c.observe_switch(&g, t(0), None, "YouTube", Some(&fun)),
-            None
-        );
-        assert_eq!(c.observe_switch(&g, t(0), ends, "Code", Some("dev")), None);
-        assert_eq!(c.observe_switch(&g, t(0), ends, "Bilinmeyen", None), None);
-        assert_eq!(
-            c.observe_switch(&g, t(1), ends, "YouTube", Some(&fun)),
-            Some(Nudge::Distraction {
-                app_name: "YouTube".into(),
-                minutes_left: 24
-            })
-        );
-        // 3 dakika dolmadan tekrar uyarmaz, sonra uyarır.
-        assert_eq!(
-            c.observe_switch(&g, t(3), ends, "Instagram", Some(&fun)),
-            None
-        );
-        assert!(
-            c.observe_switch(&g, t(4), ends, "Instagram", Some(&fun))
-                .is_some()
-        );
-        // Süre dolduysa ya da kapalıysa sessiz.
-        assert_eq!(
-            c.observe_switch(&g, t(30), ends, "YouTube", Some(&fun)),
-            None
-        );
-        let off = Goals {
-            focus_guard: false,
-            ..goals(50)
-        };
-        assert_eq!(
-            Coach::new().observe_switch(&off, t(1), ends, "YouTube", Some(&fun)),
-            None
-        );
     }
 
     #[test]

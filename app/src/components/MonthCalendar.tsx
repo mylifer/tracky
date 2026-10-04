@@ -6,7 +6,7 @@ import { cn } from "../lib/utils";
 
 const WEEKDAYS = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
 
-/** Ay takvimi: her gün toplam süre, odak süresi, hedefe göre yoğunluk ve kategori şeridi. */
+/** Ay takvimi: her gün toplam süre, hedefe göre yoğunluk ve kategori şeridi. */
 export default function MonthCalendar({
   from,
   days,
@@ -44,11 +44,7 @@ export default function MonthCalendar({
           <button
             key={i}
             onClick={() => onSelectDay(isoDate(date))}
-            title={
-              d.seconds
-                ? `${formatDuration(d.seconds)} çalışma · ${formatDuration(d.focusSeconds)} odak · skor ${d.focusScore}`
-                : undefined
-            }
+            title={d.seconds ? `${formatDuration(d.seconds)} çalışma` : undefined}
             className={cn(
               "relative flex min-h-[84px] flex-col items-start overflow-hidden rounded-lg border p-2 text-left transition-colors hover:border-primary/60",
               future && "opacity-50",
@@ -68,12 +64,6 @@ export default function MonthCalendar({
                 <span className="mt-auto max-w-full truncate text-[14px] font-semibold tabular">
                   {compact(d.seconds)}
                 </span>
-                {d.focusSeconds > 0 && (
-                  <span className="flex max-w-full items-center gap-1 truncate text-[11px] text-muted-foreground tabular">
-                    <i className="size-1.5 shrink-0 rounded-full bg-focus" />
-                    {compact(d.focusSeconds)}
-                  </span>
-                )}
                 <span className="absolute inset-x-0 bottom-0 flex h-[3px]">
                   {d.categories.map((c) => (
                     <i

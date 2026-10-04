@@ -34,8 +34,6 @@ pub struct DayBucket {
     pub start: DateTime<Utc>,
     pub seconds: i64,
     pub categories: Vec<Bucket>,
-    pub focus_score: u8,
-    pub focus_seconds: i64,
 }
 
 /// Zaman çizelgesindeki kesintisiz bir blok.
@@ -77,8 +75,6 @@ pub struct Report {
     pub tags: Vec<Tag>,
     /// Tüm aralığın odak analizi (bloklar yalnızca zaman çizelgesi istenince doldurulur).
     pub focus: FocusStats,
-    /// Aralıktaki odak zamanlayıcıları (zaman çizelgesiyle birlikte).
-    pub focus_timers: Vec<crate::model::FocusTimer>,
 }
 
 /// Kırpılmış oturum dilimi: (başlangıç, bitiş, oturum, kategori, proje).
@@ -213,13 +209,10 @@ pub fn build(
         days: day_starts
             .iter()
             .zip(days)
-            .zip(&per_day)
-            .map(|((start, (seconds, cats)), day)| DayBucket {
+            .map(|(start, (seconds, cats))| DayBucket {
                 start: *start,
                 seconds,
                 categories: sorted(cats),
-                focus_score: day.score,
-                focus_seconds: day.focus_seconds,
             })
             .collect(),
         timeline,
@@ -238,7 +231,6 @@ pub fn build(
             }
             stats
         },
-        focus_timers: Vec::new(),
     }
 }
 

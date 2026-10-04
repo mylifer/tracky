@@ -160,38 +160,6 @@ async fn complete_onboarding(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// `minutes` dakikalık odak zamanlayıcısı başlatır.
-#[tauri::command]
-async fn start_focus(app: AppHandle, minutes: u32) -> Result<(), String> {
-    start_focus_inner(&app, minutes)
-}
-
-#[tauri::command]
-async fn stop_focus(app: AppHandle) -> Result<(), String> {
-    stop_focus_inner(&app)
-}
-
-pub(crate) fn start_focus_inner(app: &AppHandle, minutes: u32) -> Result<(), String> {
-    lock(&app.state::<Shared>().store)
-        .start_focus(minutes, chrono::Utc::now())
-        .map_err(|e| e.to_string())?;
-    refresh_status(app)
-}
-
-pub(crate) fn stop_focus_inner(app: &AppHandle) -> Result<(), String> {
-    lock(&app.state::<Shared>().store)
-        .stop_focus(chrono::Utc::now())
-        .map_err(|e| e.to_string())?;
-    refresh_status(app)
-}
-
-fn refresh_status(app: &AppHandle) -> Result<(), String> {
-    app.state::<Worker>()
-        .tx
-        .send(tracking::Command::Refresh)
-        .map_err(|e| e.to_string())
-}
-
 /// Kum'un kendi izinleriyle ham gözlem; başlık okunamıyorsa nedenini gösterir.
 #[tauri::command]
 async fn diagnose() -> String {
@@ -348,9 +316,7 @@ pub fn run() {
             pause_for,
             complete_onboarding,
             diagnose,
-            start_focus,
             set_theme,
-            stop_focus,
             commands::get_report,
             commands::app_titles_between,
             commands::get_taxonomy,

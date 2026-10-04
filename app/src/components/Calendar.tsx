@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
-import { Briefcase, CalendarDays, Shapes, Video, Zap } from "lucide-react";
-import type { CalendarMeeting, FocusTimer, Segment, Tag, WorkBlock } from "../api";
+import { Briefcase, CalendarDays, Shapes, Video } from "lucide-react";
+import type { CalendarMeeting, Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
@@ -234,11 +234,6 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
             <span className="truncate">{project.name}</span>
           </Badge>
         )}
-        {block.focus && (
-          <Badge variant="outline" className="gap-1 border-focus/30 text-focus">
-            <Zap /> Odak
-          </Badge>
-        )}
       </div>
       <div>
         <div className="flex items-baseline justify-between gap-3">
@@ -355,36 +350,6 @@ function Block({
   );
 }
 
-/** Odak zamanlayıcısı aralıkları: blokların arkasında hafif mor şerit. */
-function FocusBands({
-  timers,
-  top,
-  className = "inset-x-0",
-}: {
-  timers: FocusTimer[];
-  top: (t: number) => number;
-  className?: string;
-}) {
-  return (
-    <>
-      {timers.map((f) => {
-        const end = f.end ?? (Date.now() < +new Date(f.plannedEnd) ? new Date().toISOString() : f.plannedEnd);
-        const t = top(+new Date(f.start));
-        const h = Math.max(4, top(+new Date(end)) - t);
-        const mins = Math.round((+new Date(end) - +new Date(f.start)) / 60000);
-        return (
-          <span
-            key={f.id}
-            className={cn("pointer-events-none absolute rounded-md bg-focus/12 ring-1 ring-focus/40", className)}
-            style={{ top: t - 1, height: h + 2 }}
-            title={`Odak zamanlayıcısı · ${mins} dk`}
-          />
-        );
-      })}
-    </>
-  );
-}
-
 const MIN = 60_000;
 /** Tıklanan anı çevreleyen boşluk: 2 saate kadarsa tamamı, değilse tıklanan çeyrekten 1 saat. */
 export function gapAround(
@@ -430,13 +395,12 @@ function blockGeometry(b: { start: string; end: string }, top: (t: number) => nu
   return { top: t, height: Math.max(3, top(+new Date(b.end)) - t - 2) };
 }
 
-/** Gün takvimi: Oturumlar · Toplantılar (takvim bağlıysa) · Kategori şeridi · Odak şeridi. */
+/** Gün takvimi: Oturumlar · Toplantılar (takvim bağlıysa) · Kategori şeridi. */
 export function DayCalendar({
   from,
   blocks,
   segments,
   tags,
-  timers = [],
   meetings = null,
   onMeeting,
   onEmpty,
@@ -448,7 +412,6 @@ export function DayCalendar({
   blocks: WorkBlock[];
   segments: Segment[];
   tags: Map<string, Tag>;
-  timers?: FocusTimer[];
   /** Takvim toplantıları; `null`: takvim bağlı değil (sütun gösterilmez). */
   meetings?: CalendarMeeting[] | null;
   /** Toplantıya tıklanınca (projeye atama menüsü) ve tıklanan nokta. */
@@ -481,12 +444,9 @@ export function DayCalendar({
   const showMeetings = meetings !== null;
   const grid = cn(
     "grid gap-x-2",
-    showMeetings
-      ? "grid-cols-[40px_minmax(0,1fr)_minmax(0,0.6fr)_10px_8px]"
-      : "grid-cols-[40px_minmax(0,1fr)_10px_8px]",
+    showMeetings ? "grid-cols-[40px_minmax(0,1fr)_minmax(0,0.6fr)_10px]" : "grid-cols-[40px_minmax(0,1fr)_10px]",
   );
   const strip = showMeetings ? "col-start-4" : "col-start-3";
-  const focus = showMeetings ? "col-start-5" : "col-start-4";
 
   return (
     <div>
@@ -499,20 +459,10 @@ export function DayCalendar({
         <span title="Kategori: her aralıkta en çok süren">
           <Shapes className="size-3" />
         </span>
-        <span title="Odak blokları">
-          <Zap className="size-3 text-focus" />
-        </span>
       </div>
       <div className={cn(grid, "pt-1.5")}>
         <div className="col-start-1 row-start-1">
           <HourRail range={range} />
-        </div>
-        {/* Odak zamanlayıcıları oturumların arkasında; bloklar arasındaki boşluklarda görünür. */}
-        <div
-          className="relative col-start-2 row-start-1 -mx-1"
-          style={{ height: (range.last - range.first) * range.px }}
-        >
-          <FocusBands timers={timers} top={top} />
         </div>
         <Column
           range={range}
@@ -572,18 +522,6 @@ export function DayCalendar({
                 title={onRange ? `${tip}\nTıkla: kategoriye ya da projeye ata` : tip}
                 aria-label={tip}
                 onClick={(e) => onRange?.(b.start, b.end, e.clientX, e.clientY)}
-              />
-            );
-          })}
-        </div>
-        <div className={cn("relative row-start-1", focus)} style={{ height: (range.last - range.first) * range.px }}>
-          {blocks.map((b) => {
-            const g = blockGeometry(b, top);
-            return (
-              <span
-                key={b.start}
-                className={cn("absolute inset-x-0 rounded-full", b.focus ? "bg-focus" : "bg-muted")}
-                style={{ top: g.top, height: Math.max(3, g.height - 1) }}
               />
             );
           })}
@@ -681,7 +619,6 @@ export function WeekCalendar({
   dayTotals,
   tags,
   onSelectDay,
-  timers = [],
   onEmpty,
   onRange,
   preview,
@@ -692,7 +629,6 @@ export function WeekCalendar({
   dayTotals: number[];
   tags: Map<string, Tag>;
   onSelectDay: (iso: string) => void;
-  timers?: FocusTimer[];
   onEmpty?: (start: number, end: number) => void;
   onRange?: (start: number, end: number, x: number, y: number) => void;
   preview?: [number, number] | null;
@@ -754,11 +690,6 @@ export function WeekCalendar({
               }
               onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, dayStart), fromWallMs(b, dayStart), x, y))}
             >
-              <FocusBands
-                timers={timers.filter((f) => +new Date(f.start) >= dayStart && +new Date(f.start) < dayEnd)}
-                top={top}
-                className="-inset-x-0.5"
-              />
               {blocks
                 .filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd)
                 .map((b) => (

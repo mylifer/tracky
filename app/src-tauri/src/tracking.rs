@@ -9,8 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tracky_core::{
-    Classifier, Coach, EngineConfig, Goals, Nudge, PrivacySettings, Report, Store, Tracker,
-    UsageTotal,
+    Coach, EngineConfig, Goals, Nudge, PrivacySettings, Report, Store, Tracker, UsageTotal,
 };
 
 use crate::tray;
@@ -27,16 +26,6 @@ pub struct Status {
     pub error: Option<String>,
     /// Süreli duraklatmanın bitişi.
     pub paused_until: Option<DateTime<Utc>>,
-    /// Süren odak zamanlayıcısı.
-    pub focus: Option<FocusState>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FocusState {
-    pub started_at: DateTime<Utc>,
-    pub ends_at: DateTime<Utc>,
-    pub minutes: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,8 +51,6 @@ const WEEKLY_MIN_SECS: i64 = 60 * 60;
 pub enum Command {
     SetPrivacy(PrivacySettings),
     SetGoals(Goals),
-    /// Durumu hemen yeniden hesapla (örn. odak zamanlayıcısı değişti).
-    Refresh,
     /// Süreli duraklatma: bu anda takip kendiliğinden sürer.
     PauseUntil(Option<DateTime<Utc>>),
     Shutdown,
@@ -93,8 +80,6 @@ pub fn run(
         privacy,
     );
     let mut coach = Coach::new();
-    // Odak korumasının en son baktığı oturum (her pencere geçişinde bir kez sınıflandırılır).
-    let mut guard_seen: Option<uuid::Uuid> = None;
     let mut weekly_sent: Option<NaiveDate> = {
         let shared = app.state::<Shared>();
         let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -109,7 +94,6 @@ pub fn run(
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(Command::SetPrivacy(p)) => tracker.set_privacy(p),
             Ok(Command::SetGoals(g)) => goals = g,
-            Ok(Command::Refresh) => force = true,
             Ok(Command::PauseUntil(until)) => {
                 pause_until = until;
                 force = true;
@@ -139,11 +123,6 @@ pub fn run(
         let now = Utc::now();
         let outcome = tracker.record(&store, now, observation);
         ticks = ticks.wrapping_add(1);
-        let focus_done = store.complete_due_focus(now).ok().flatten();
-        if let Some(timer) = &focus_done {
-            notify_focus_done(&app, timer.planned_minutes());
-            force = true;
-        }
         if !force
             && !outcome.changed
             && outcome.error.is_none()
@@ -151,12 +130,6 @@ pub fn run(
         {
             continue;
         }
-        let focus = store.active_focus().ok().flatten().map(|t| FocusState {
-            started_at: t.start,
-            ends_at: t.planned_end,
-            minutes: t.planned_minutes(),
-        });
-
         let totals = store.app_totals(start_of_today(), now).unwrap_or_default();
         let check_limits =
             !goals.limits.is_empty() && (!limits_primed || ticks.is_multiple_of(LIMITS_EVERY));
@@ -196,7 +169,6 @@ pub fn run(
             needs_permission: !tracky_platform::permissions().all_granted(),
             error: outcome.error,
             paused_until: pause_until.filter(|_| tracker.privacy().paused),
-            focus,
         };
         // Menü güncellemesi ana iş parçacığında çalışıp sonucunu bekler; burada
         // beklersek kapanışta (ana iş parçacığı bizi beklerken) kilitlenirdik.
@@ -213,31 +185,6 @@ pub fn run(
             }
         }
         let active = status.current.is_some() && !status.paused;
-        match (&status.focus, tracker.current()) {
-            (Some(focus), Some(session)) if goals.focus_guard && guard_seen != Some(session.id) => {
-                guard_seen = Some(session.id);
-                let category = {
-                    let shared = app.state::<Shared>();
-                    let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
-                    let (tags, rules) = (
-                        store.tags().unwrap_or_default(),
-                        store.rules().unwrap_or_default(),
-                    );
-                    Classifier::new(&tags, &rules).classify(session).category
-                };
-                if let Some(nudge) = coach.observe_switch(
-                    &goals,
-                    now,
-                    Some(focus.ends_at),
-                    &session.app_name,
-                    category.as_deref(),
-                ) {
-                    notify(&app, &nudge, &limit_names);
-                }
-            }
-            (None, _) => guard_seen = None,
-            _ => {}
-        }
         for nudge in coach.observe(&goals, now, active, today, status.today_seconds) {
             notify(&app, &nudge, &limit_names);
         }
@@ -326,15 +273,6 @@ fn notify(app: &AppHandle, nudge: &Nudge, names: &std::collections::HashMap<Stri
             format!("{} haftalık hedefi doldu", name(project_id)),
             format!("Bu hafta {} çalıştın. Tebrikler!", format_duration(*target)),
         ),
-        Nudge::Distraction {
-            app_name,
-            minutes_left,
-        } => (
-            "Odak süresindesin".to_string(),
-            format!(
-                "{app_name} dikkat dağıtıcı olarak işaretli. {minutes_left} dk kaldı, odağa dön."
-            ),
-        ),
     };
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         eprintln!("bildirim gösterilemedi: {e}");
@@ -366,23 +304,35 @@ fn notify_day_summary(app: &AppHandle, goals: &Goals, now: DateTime<Utc>) {
     }
 }
 
-/// Toplam süre, hedef yüzdesi, odak süresi ve en çok zaman alan kategori.
+/// Toplam süre, hedef yüzdesi ve en çok zaman alan kategori.
 fn day_summary_body(report: &Report, goals: &Goals) -> String {
     let mut first = format!("{} çalıştın", format_duration(report.total_seconds));
     let target = goals.daily_seconds();
     if target > 0 {
         first += &format!(" · hedef %{}", report.total_seconds * 100 / target);
     }
-    let mut second = format!("Odak: {}", format_duration(report.focus.focus_seconds));
-    if let Some(top) = report.categories.iter().max_by_key(|b| b.seconds) {
-        let name = top
-            .id
-            .as_ref()
-            .and_then(|id| report.tags.iter().find(|t| &t.id == id))
-            .map_or("Kategorisiz", |t| t.name.as_str());
-        second += &format!(" · En çok: {name} ({})", format_duration(top.seconds));
+    let second = top_category(report);
+    join_lines(first, second.into_iter().collect())
+}
+
+/// "En çok: Geliştirme (4sa)"
+fn top_category(report: &Report) -> Option<String> {
+    let top = report.categories.iter().max_by_key(|b| b.seconds)?;
+    let name = top
+        .id
+        .as_ref()
+        .and_then(|id| report.tags.iter().find(|t| &t.id == id))
+        .map_or("Kategorisiz", |t| t.name.as_str());
+    Some(format!("En çok: {name} ({})", format_duration(top.seconds)))
+}
+
+/// İlk satır ve (varsa) ` · ` ile birleştirilmiş ikinci satır.
+fn join_lines(first: String, second: Vec<String>) -> String {
+    if second.is_empty() {
+        first
+    } else {
+        format!("{first}\n{}", second.join(" · "))
     }
-    format!("{first}\n{second}")
 }
 
 /// Haftanın pazartesisi.
@@ -441,7 +391,7 @@ const WEEKDAYS: [&str; 7] = [
     "Pazar",
 ];
 
-/// Toplam, önceki haftaya göre değişim, odak, en çok kategori ve en yoğun gün.
+/// Toplam, önceki haftaya göre değişim, en çok kategori ve en yoğun gün.
 fn week_summary_body(report: &Report, previous_seconds: i64) -> String {
     let mut first = format!("{} çalıştın", format_duration(report.total_seconds));
     if previous_seconds > 0 {
@@ -449,15 +399,7 @@ fn week_summary_body(report: &Report, previous_seconds: i64) -> String {
         let sign = if pct >= 0 { "+" } else { "-" };
         first += &format!(" · önceki haftaya göre {sign}%{}", pct.abs());
     }
-    let mut second = format!("Odak: {}", format_duration(report.focus.focus_seconds));
-    if let Some(top) = report.categories.iter().max_by_key(|b| b.seconds) {
-        let name = top
-            .id
-            .as_ref()
-            .and_then(|id| report.tags.iter().find(|t| &t.id == id))
-            .map_or("Kategorisiz", |t| t.name.as_str());
-        second += &format!(" · En çok: {name} ({})", format_duration(top.seconds));
-    }
+    let mut second: Vec<String> = top_category(report).into_iter().collect();
     if let Some(busiest) = report
         .days
         .iter()
@@ -469,24 +411,9 @@ fn week_summary_body(report: &Report, previous_seconds: i64) -> String {
             .with_timezone(&Local)
             .weekday()
             .num_days_from_monday();
-        second += &format!(" · En yoğun gün: {}", WEEKDAYS[day as usize]);
+        second.push(format!("En yoğun gün: {}", WEEKDAYS[day as usize]));
     }
-    format!("{first}\n{second}")
-}
-
-fn notify_focus_done(app: &AppHandle, minutes: i64) {
-    let result = app
-        .notification()
-        .builder()
-        .title("Odak süresi bitti")
-        .body(format!(
-            "{} odaklandın. Kısa bir mola iyi gelir.",
-            format_duration(minutes * 60)
-        ))
-        .show();
-    if let Err(e) = result {
-        eprintln!("bildirim gösterilemedi: {e}");
-    }
+    join_lines(first, second)
 }
 
 fn app_seconds(totals: &[UsageTotal], app_id: &str) -> i64 {
@@ -564,20 +491,16 @@ mod tests {
             }],
             ..Default::default()
         };
-        report.focus.focus_seconds = 3 * 3600 + 20 * 60;
         assert_eq!(
             day_summary_body(&report, &Goals::default()),
-            "6sa çalıştın · hedef %75\nOdak: 3sa 20dk · En çok: Geliştirme (4sa)"
+            "6sa çalıştın · hedef %75\nEn çok: Geliştirme (4sa)"
         );
         let no_goal = Goals {
             daily_hours: 0.0,
             ..Goals::default()
         };
         report.categories.clear();
-        assert_eq!(
-            day_summary_body(&report, &no_goal),
-            "6sa çalıştın\nOdak: 3sa 20dk"
-        );
+        assert_eq!(day_summary_body(&report, &no_goal), "6sa çalıştın");
     }
 
     #[test]
@@ -598,24 +521,21 @@ mod tests {
                 .with_timezone(&Utc),
             seconds: secs,
             categories: vec![],
-            focus_score: 0,
-            focus_seconds: 0,
         };
         let mut report = Report {
             total_seconds: 30 * 3600,
             days: vec![day(21, 4 * 3600), day(22, 9 * 3600), day(23, 0)],
             ..Default::default()
         };
-        report.focus.focus_seconds = 12 * 3600;
         assert_eq!(
             week_summary_body(&report, 25 * 3600),
-            "30sa çalıştın · önceki haftaya göre +%20\nOdak: 12sa · En yoğun gün: Salı"
+            "30sa çalıştın · önceki haftaya göre +%20\nEn yoğun gün: Salı"
         );
         assert_eq!(
             week_summary_body(&report, 40 * 3600),
-            "30sa çalıştın · önceki haftaya göre -%25\nOdak: 12sa · En yoğun gün: Salı"
+            "30sa çalıştın · önceki haftaya göre -%25\nEn yoğun gün: Salı"
         );
         report.days.clear();
-        assert_eq!(week_summary_body(&report, 0), "30sa çalıştın\nOdak: 12sa");
+        assert_eq!(week_summary_body(&report, 0), "30sa çalıştın");
     }
 }

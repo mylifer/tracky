@@ -29,7 +29,7 @@ pub mod url_util;
 pub use classify::{Classifier, Client, NO_PROJECT, Rule, RuleField, Tag, TagKind};
 pub use coach::{CategoryLimit, Coach, Goals, Nudge, ProjectGoal};
 pub use engine::{Engine, EngineConfig};
-pub use model::{ActiveWindow, FocusTimer, MANUAL_APP_ID, Session};
+pub use model::{ActiveWindow, MANUAL_APP_ID, Session};
 pub use platform::ActivityProvider;
 pub use privacy::PrivacySettings;
 pub use report::Report;

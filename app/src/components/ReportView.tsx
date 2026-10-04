@@ -352,7 +352,6 @@ export default function ReportView(p: Props) {
                           from={from}
                           blocks={report.focus.blocks}
                           segments={report.timeline}
-                          timers={report.focusTimers}
                           tags={tags}
                           meetings={meetings}
                           onMeeting={(meeting, x, y) => setMeetingSel({ meeting, x, y })}
@@ -366,7 +365,6 @@ export default function ReportView(p: Props) {
                           from={from}
                           blocks={report.focus.blocks}
                           dayTotals={report.days.map((d) => d.seconds)}
-                          timers={report.focusTimers}
                           tags={tags}
                           onSelectDay={p.onSelectDay}
                           onEmpty={openDraft}

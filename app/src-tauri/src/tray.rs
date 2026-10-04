@@ -10,8 +10,6 @@ use tauri::{AppHandle, Manager, Wry};
 use crate::tracking::{Status, format_duration};
 
 const TRAY_ID: &str = "main";
-/// Menü çubuğundan başlatılabilen odak süreleri (dakika).
-const FOCUS_MINUTES: [u32; 3] = [25, 50, 90];
 /// Menü çubuğunda yer kaplamaması için uygulama adı bu uzunlukta kesilir.
 const MAX_NAME: usize = 18;
 
@@ -26,8 +24,6 @@ pub struct Items {
     current: MenuItem<Wry>,
     pause: MenuItem<Wry>,
     pause_for: Submenu<Wry>,
-    focus_start: Submenu<Wry>,
-    focus_stop: MenuItem<Wry>,
     pub autostart: CheckMenuItem<Wry>,
     update: MenuItem<Wry>,
 }
@@ -58,24 +54,6 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         ],
     )?;
     let open = MenuItem::with_id(app, "open", "Raporu Aç", true, None::<&str>)?;
-    let focus_items = FOCUS_MINUTES
-        .iter()
-        .map(|m| {
-            MenuItem::with_id(
-                app,
-                format!("focus_{m}"),
-                format!("{m} dakika"),
-                true,
-                None::<&str>,
-            )
-        })
-        .collect::<tauri::Result<Vec<_>>>()?;
-    let focus_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = focus_items
-        .iter()
-        .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
-        .collect();
-    let focus_start = Submenu::with_id_and_items(app, "focus", "Odak Başlat", true, &focus_refs)?;
-    let focus_stop = MenuItem::with_id(app, "focus_stop", "Odağı Bitir", false, None::<&str>)?;
     let autostart_item = CheckMenuItem::with_id(
         app,
         "autostart",
@@ -91,9 +69,6 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         &[
             &today,
             &current,
-            &PredefinedMenuItem::separator(app)?,
-            &focus_start,
-            &focus_stop,
             &PredefinedMenuItem::separator(app)?,
             &pause,
             &pause_for,
@@ -122,8 +97,6 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         current,
         pause,
         pause_for,
-        focus_start,
-        focus_stop,
         autostart: autostart_item,
         update,
     });
@@ -168,18 +141,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 eprintln!("duraklatılamadı: {e}");
             }
         }
-        "focus_stop" => {
-            if let Err(e) = crate::stop_focus_inner(app) {
-                eprintln!("odak bitirilemedi: {e}");
-            }
-        }
-        id => {
-            if let Some(minutes) = id.strip_prefix("focus_").and_then(|m| m.parse().ok())
-                && let Err(e) = crate::start_focus_inner(app, minutes)
-            {
-                eprintln!("odak başlatılamadı: {e}");
-            }
-        }
+        _ => {}
     }
 }
 
@@ -202,13 +164,6 @@ pub fn update(app: &AppHandle, status: &Status) {
         Some(c) if c.title.is_empty() => c.app_name.clone(),
         Some(c) => format!("{} — {}", c.app_name, truncate(&c.title, 40)),
         None => label.clone(),
-    });
-    let focusing = status.focus.is_some();
-    let _ = items.focus_stop.set_enabled(focusing);
-    let _ = items.focus_start.set_text(if focusing {
-        "Yeni Odak Başlat"
-    } else {
-        "Odak Başlat"
     });
     let _ = items.pause_for.set_enabled(!status.paused);
     let _ = items.pause.set_text(if status.paused {
@@ -240,11 +195,6 @@ pub fn set_update(app: &AppHandle, status: &crate::updater::UpdateStatus) {
 }
 
 fn label(status: &Status) -> String {
-    if let Some(focus) = &status.focus {
-        let left = (focus.ends_at - chrono::Utc::now()).num_seconds().max(0);
-        // Son dakikada "<1dk" yerine yukarı yuvarla: "1dk kaldı".
-        return format!("Odak · {} kaldı", format_duration((left + 59) / 60 * 60));
-    }
     match (&status.current, status.paused) {
         (Some(c), _) => format!(
             "{} · {}",

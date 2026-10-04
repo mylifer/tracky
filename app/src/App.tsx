@@ -14,7 +14,6 @@ import {
   Building2,
 } from "lucide-react";
 import { api, formatDuration, type AppStatus, type Suggestions, type TrackingStatus } from "./api";
-import FocusCard from "./components/FocusCard";
 import { UpdateCard } from "./components/UpdateCard";
 import ReportView from "./components/ReportView";
 import Toolbar from "./components/Toolbar";
@@ -249,7 +248,6 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
         </nav>
         <div className="space-y-2 p-2.5">
           <UpdateCard status={update} onStatus={setUpdate} />
-          <FocusCard focus={tracking.focus} />
           <LiveCard tracking={tracking} onToggle={togglePause} />
         </div>
       </aside>

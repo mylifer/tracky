@@ -10,10 +10,7 @@ export type TrackingStatus = {
   error: string | null;
   /** Süreli duraklatmanın bitişi. */
   pausedUntil: string | null;
-  focus: FocusState | null;
 };
-export type FocusState = { startedAt: string; endsAt: string; minutes: number };
-export type FocusTimer = { id: string; start: string; plannedEnd: string; end: string | null };
 export type AppStatus = {
   platform: string;
   /** Pencere malzemesi: "vibrancy" (macOS), "mica" (Windows 11) ya da "none". */
@@ -47,8 +44,6 @@ export type DayBucket = {
   start: string;
   seconds: number;
   categories: Bucket[];
-  focusScore: number;
-  focusSeconds: number;
 };
 export type WorkBlock = {
   start: string;
@@ -57,18 +52,15 @@ export type WorkBlock = {
   categoryId: string | null;
   /** Bloğun en az yarısını kaplayan proje. */
   projectId: string | null;
-  focus: boolean;
   switches: number;
   topApps: { appName: string; seconds: number }[];
 };
-export type FocusStats = {
-  score: number;
+/** Çalışma blokları ve molalar (çekirdekte `FocusStats`). */
+export type WorkStats = {
   activeSeconds: number;
-  focusSeconds: number;
   breakSeconds: number;
   switches: number;
   switchesPerHourX10: number;
-  longestFocusSeconds: number;
   blocks: WorkBlock[];
 };
 export type Segment = {
@@ -97,8 +89,7 @@ export type Report = {
   timeline: Segment[];
   windows: WindowSpan[];
   tags: Tag[];
-  focus: FocusStats;
-  focusTimers: FocusTimer[];
+  focus: WorkStats;
 };
 
 export type ProjectSuggestion = { key: string; name: string; seconds: number; apps: string[] };
@@ -234,10 +225,6 @@ export type Goals = {
   daySummaryAt: number | null;
   /** Yeni haftanın ilk çalışmasında geçen haftanın özeti. */
   weeklySummary: boolean;
-  /** Odak zamanlayıcısı sürerken dikkat dağıtıcı kategoriye geçince uyar. */
-  focusGuard: boolean;
-  /** Odak korumasının dikkat dağıtıcı saydığı kategori kimlikleri. */
-  distracting: string[];
   /** Proje başına haftalık hedef (dakika). */
   projectGoals: ProjectGoal[];
 };
@@ -340,8 +327,6 @@ export const api = {
   syncNow: () => invoke<void>("sync_now"),
   onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> => listen<SyncStatus>("sync", (e) => cb(e.payload)),
   diagnose: () => invoke<string>("diagnose"),
-  startFocus: (minutes: number) => invoke<void>("start_focus", { minutes }),
-  stopFocus: () => invoke<void>("stop_focus"),
   updateStatus: () => invoke<UpdateStatus>("update_status"),
   checkUpdate: () => invoke<UpdateStatus>("check_update"),
   installUpdate: () => invoke<void>("install_update"),

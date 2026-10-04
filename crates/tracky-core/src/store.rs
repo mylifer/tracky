@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::classify::{
     Classifier, Client, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind, default_id,
 };
-use crate::model::{FocusTimer, MANUAL_APP_ID, Session};
+use crate::model::{MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
 use crate::suggest::{self, Suggestions};
@@ -171,6 +171,10 @@ CREATE TABLE clients (
     synced_at  INTEGER
 );
 ALTER TABLE tags ADD COLUMN client_id TEXT;
+"#,
+    r#"
+-- Odak zamanlayıcısı kaldırıldı.
+DROP TABLE focus_timers;
 "#,
 ];
 
@@ -1287,7 +1291,7 @@ impl Store {
         let sessions = self.merged_sessions_between(from, to)?;
         let tags = self.tags()?;
         let classifier = Classifier::new(&tags, &self.rules()?);
-        let mut report = report::build(
+        Ok(report::build(
             &sessions,
             &tags,
             &classifier,
@@ -1295,103 +1299,7 @@ impl Store {
             to,
             day_starts,
             with_timeline,
-        );
-        if with_timeline {
-            report.focus_timers = self.focus_timers_between(from, to)?;
-        }
-        Ok(report)
-    }
-
-    /// Yeni odak zamanlayıcısı başlatır; süren varsa şimdi bitirilir.
-    pub fn start_focus(&self, minutes: u32, now: DateTime<Utc>) -> Result<FocusTimer> {
-        if !(1..=8 * 60).contains(&minutes) {
-            return Err(StoreError::Invalid(format!(
-                "odak süresi geçersiz: {minutes}"
-            )));
-        }
-        self.stop_focus(now)?;
-        let timer = FocusTimer {
-            id: Uuid::new_v4().to_string(),
-            start: now,
-            planned_end: now + chrono::Duration::minutes(i64::from(minutes)),
-            end: None,
-        };
-        self.conn.execute(
-            "INSERT INTO focus_timers (id, started_at, planned_end) VALUES (?1, ?2, ?3)",
-            params![timer.id, ms(timer.start), ms(timer.planned_end)],
-        )?;
-        Ok(timer)
-    }
-
-    /// Süren zamanlayıcıyı erken bitirir (kısa denemeler kayıt bırakmaz).
-    pub fn stop_focus(&self, now: DateTime<Utc>) -> Result<Option<FocusTimer>> {
-        let Some(mut timer) = self.active_focus()? else {
-            return Ok(None);
-        };
-        if now - timer.start < chrono::Duration::minutes(1) {
-            self.conn
-                .execute("DELETE FROM focus_timers WHERE id = ?1", [&timer.id])?;
-            return Ok(None);
-        }
-        let end = now.min(timer.planned_end);
-        self.conn.execute(
-            "UPDATE focus_timers SET ended_at = ?2 WHERE id = ?1",
-            params![timer.id, ms(end)],
-        )?;
-        timer.end = Some(end);
-        Ok(Some(timer))
-    }
-
-    /// Süresi dolmuş zamanlayıcıyı planlanan bitişte kapatır ve döndürür
-    /// (bildirim için). Uygulama kapalıyken dolduysa da kapatılır.
-    pub fn complete_due_focus(&self, now: DateTime<Utc>) -> Result<Option<FocusTimer>> {
-        match self.active_focus()? {
-            Some(mut t) if t.planned_end <= now => {
-                self.conn.execute(
-                    "UPDATE focus_timers SET ended_at = planned_end WHERE id = ?1",
-                    [&t.id],
-                )?;
-                t.end = Some(t.planned_end);
-                Ok(Some(t))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    pub fn active_focus(&self) -> Result<Option<FocusTimer>> {
-        Ok(self
-            .focus_query(
-                "WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
-                params![],
-            )?
-            .pop())
-    }
-
-    /// `[from, to)` ile kesişen zamanlayıcılar (sürenler dahil).
-    pub fn focus_timers_between(
-        &self,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
-    ) -> Result<Vec<FocusTimer>> {
-        self.focus_query(
-            "WHERE started_at < ?2 AND COALESCE(ended_at, planned_end) > ?1 ORDER BY started_at",
-            params![ms(from), ms(to)],
-        )
-    }
-
-    fn focus_query(&self, filter: &str, args: &[&dyn rusqlite::ToSql]) -> Result<Vec<FocusTimer>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, started_at, planned_end, ended_at FROM focus_timers {filter}"
-        ))?;
-        let rows = stmt.query_map(args, |r| {
-            Ok(FocusTimer {
-                id: r.get(0)?,
-                start: from_ms(r.get(1)?),
-                planned_end: from_ms(r.get(2)?),
-                end: r.get::<_, Option<i64>>(3)?.map(from_ms),
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        ))
     }
 
     /// Kategori başına toplam süre (saniye); kategorisiz süre dahil edilmez.
@@ -2236,31 +2144,6 @@ mod tests {
         assert!(manual.is_manual());
         assert_eq!(manual.app_name, "Toplantı");
         assert_eq!(manual.category_id.as_deref(), Some(&*cat));
-    }
-
-    #[test]
-    fn focus_timers_start_stop_and_complete() {
-        let store = Store::open_in_memory().unwrap();
-        assert!(store.start_focus(0, t(0)).is_err());
-        let a = store.start_focus(25, t(0)).unwrap();
-        assert_eq!(store.active_focus().unwrap(), Some(a.clone()));
-        assert!(store.complete_due_focus(t(24 * 60)).unwrap().is_none());
-
-        // Yenisi başlayınca önceki o anda biter.
-        let b = store.start_focus(50, t(10 * 60)).unwrap();
-        let all = store.focus_timers_between(t(0), t(7200)).unwrap();
-        assert_eq!(all[0].end, Some(t(10 * 60)));
-        assert_eq!(all[1].id, b.id);
-
-        // Süresi dolunca planlanan bitişte kapanır.
-        let done = store.complete_due_focus(t(70 * 60)).unwrap().unwrap();
-        assert_eq!(done.end, Some(t(60 * 60)));
-        assert!(store.active_focus().unwrap().is_none());
-
-        // Bir dakikadan kısa deneme kayıt bırakmaz.
-        store.start_focus(25, t(80 * 60)).unwrap();
-        assert!(store.stop_focus(t(80 * 60 + 30)).unwrap().is_none());
-        assert_eq!(store.focus_timers_between(t(0), t(7200)).unwrap().len(), 2);
     }
 
     #[test]
