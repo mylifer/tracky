@@ -95,6 +95,7 @@ export default function AppTimeline({
   onSelectDay,
   zoom = 1,
   onZoom,
+  onSelectSpan,
 }: {
   from: Date;
   days?: number;
@@ -103,6 +104,8 @@ export default function AppTimeline({
   onSelectDay?: (iso: string) => void;
   zoom?: number;
   onZoom?: (zoom: number) => void;
+  /** Çubuğa tıklanınca o pencerenin aralığı (atama menüsü için) ve tıklanan nokta. */
+  onSelectSpan?: (start: number, end: number, x: number, y: number) => void;
 }) {
   const dates = useMemo(() => Array.from({ length: days + 1 }, (_, i) => addDays(from, i)), [from, days]);
   const starts = useMemo(() => dates.map(Number), [dates]);
@@ -192,11 +195,18 @@ export default function AppTimeline({
         return (
           <span
             key={`${i}:${p.day}`}
-            className={cn("absolute inset-y-1 rounded-[3px]", muted && "opacity-70")}
+            className={cn("absolute inset-y-1 rounded-[3px]", muted && "opacity-70", onSelectSpan && "cursor-pointer")}
             style={{ left: `${a * 100}%`, width: `max(2px, ${(b - a) * 100}%)`, background: spanColor(w) }}
             onMouseEnter={(e) => setHover({ span: w, x: e.clientX, y: e.clientY })}
             onMouseMove={(e) => setHover({ span: w, x: e.clientX, y: e.clientY })}
             onMouseLeave={() => setHover(null)}
+            onClick={(e) => {
+              if (!onSelectSpan) return;
+              // Satırın açılıp kapanmasını tetiklemesin.
+              e.stopPropagation();
+              setHover(null);
+              onSelectSpan(+new Date(w.start), +new Date(w.end), e.clientX, e.clientY);
+            }}
           />
         );
       }),

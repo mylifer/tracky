@@ -307,6 +307,7 @@ export default function ReportView(p: Props) {
                           onSelectDay={p.onSelectDay}
                           zoom={appZoom}
                           onZoom={(z) => setAppZoom(clampZoom(z))}
+                          onSelectSpan={selectRange}
                         />
                       ) : p.mode === "day" ? (
                         <DayCalendar

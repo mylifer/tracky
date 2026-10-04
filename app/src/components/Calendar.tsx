@@ -494,18 +494,23 @@ export function DayCalendar({
             const { top: t, height: h } = blockGeometry(s, top);
             const tag = s.categoryId ? tags.get(s.categoryId) : undefined;
             const tip = `${s.appName}${s.title ? " — " + s.title : ""}\n${formatTime(new Date(s.start))}–${formatTime(new Date(s.end))} · ${formatDuration((+new Date(s.end) - +new Date(s.start)) / 1000)}`;
+            // Tıklayınca bu uygulama diliminin aralığı için atama menüsü (projeye/kategoriye ata).
             return (
-              <span
+              <button
                 key={i}
+                type="button"
+                disabled={!onRange}
                 className={cn(
-                  "absolute inset-x-0.5 flex items-center overflow-hidden rounded-[4px] px-1.5 font-medium",
+                  "absolute inset-x-0.5 flex items-center overflow-hidden rounded-[4px] px-1.5 text-left font-medium enabled:cursor-pointer enabled:hover:brightness-95 dark:enabled:hover:brightness-125",
                   h >= APP_LABEL_PX ? "text-[10px]" : "text-[9px] leading-none",
                 )}
                 style={{ top: t, height: h, background: tagColor(tag), color: tagInk(tag) }}
-                title={tip}
+                title={onRange ? `${tip}\nTıkla: projeye ya da kategoriye ata` : tip}
+                aria-label={`${s.appName} ${formatTime(new Date(s.start))}–${formatTime(new Date(s.end))}`}
+                onClick={(e) => onRange?.(+new Date(s.start), +new Date(s.end), e.clientX, e.clientY)}
               >
                 {h >= SMALL_LABEL_PX && <span className="truncate">{s.appName}</span>}
-              </span>
+              </button>
             );
           })}
           {smallLabels(apps, top, range).map((l) => (
