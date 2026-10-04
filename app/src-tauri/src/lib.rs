@@ -2,6 +2,8 @@
 
 mod calendar;
 mod commands;
+#[cfg(target_os = "macos")]
+mod dock;
 mod effects;
 mod sync;
 mod timesheet;
@@ -267,6 +269,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Regular);
     effects::apply(app);
+    #[cfg(target_os = "macos")]
+    dock::install(app.handle());
 
     let dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&dir)?;
@@ -324,7 +328,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
@@ -400,7 +404,13 @@ pub fn run() {
             updater::check_update,
             updater::install_update,
         ])
-        .setup(setup)
+        .setup(setup);
+    // macOS: "Küçült" (⌘M) pencereyi Dock'a değil Kum'un simgesine alır (dock.rs).
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(dock::menu)
+        .on_menu_event(|app, event| dock::on_menu_event(app, &event));
+    let app = builder
         .on_window_event(|window, event| {
             // Pencereyi kapatmak uygulamayı kapatmaz; takip menü çubuğunda sürer.
             if let WindowEvent::CloseRequested { api, .. } = event {
