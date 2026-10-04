@@ -34,6 +34,6 @@ pub use platform::ActivityProvider;
 pub use privacy::PrivacySettings;
 pub use report::Report;
 #[cfg(feature = "store")]
-pub use store::{SavedEntry, Store, StoreError, UsageTotal};
+pub use store::{BackupInfo, SavedEntry, Store, StoreError, UsageTotal};
 #[cfg(feature = "store")]
 pub use tracker::{TickOutcome, Tracker};

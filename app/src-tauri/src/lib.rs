@@ -1,5 +1,6 @@
 //! Kum masaüstü uygulaması: menü çubuğunda yaşayan zaman takipçisi.
 
+mod backup;
 mod calendar;
 mod commands;
 #[cfg(target_os = "macos")]
@@ -242,7 +243,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     let dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&dir)?;
-    let store = Store::open(dir.join("kum.db"))?;
+    if let Err(e) = backup::apply_pending_restore(&dir) {
+        eprintln!("yedek geri yüklenemedi: {e}");
+    }
+    let store = Store::open(dir.join(backup::DB_FILE))?;
 
     if store.setting::<bool>(AUTOSTART_INIT_KEY)?.is_none() {
         if let Err(e) = app.autolaunch().enable() {
@@ -282,6 +286,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     });
     sync::start(app)?;
     calendar::start(app)?;
+    backup::start(app)?;
     updater::start(app);
 
     // Karşılama tamamlanmadıysa ya da izin eksikse pencereyi göster;
@@ -364,6 +369,11 @@ pub fn run() {
             commands::get_goals,
             commands::save_goals,
             commands::export_csv,
+            backup::backup_status,
+            backup::backup_now,
+            backup::open_backup_folder,
+            backup::pick_backup,
+            backup::restore_backup,
             sync::sync_status,
             sync::sync_configure,
             sync::sync_sign_in,

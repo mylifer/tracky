@@ -202,6 +202,14 @@ CREATE INDEX rules_tag ON rules (tag_id);
 "#,
 ];
 
+/// Yedek dosyasının içeriği (geri yüklemeden önce göstermek için).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupInfo {
+    pub sessions: i64,
+    pub last_activity: Option<DateTime<Utc>>,
+}
+
 /// `[?1, ?2)` ile kesişen oturumlar. Üçüncü koşul sonucu değiştirmez (kesişen her oturum
 /// en uzun oturumdan kısadır), yalnızca indeksin alt sınırıdır.
 const OVERLAPS: &str = "started_at < ?2 AND ended_at > ?1
@@ -244,6 +252,46 @@ impl Store {
 
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
+    }
+
+    /// Veritabanının tutarlı, sıkıştırılmış bir kopyasını `path`'e yazar (takip yazarken de
+    /// güvenli). Dosya zaten varsa hata verir.
+    pub fn backup_to(&self, path: &Path) -> Result<()> {
+        self.conn
+            .execute("VACUUM INTO ?1", [path.to_string_lossy()])?;
+        Ok(())
+    }
+
+    /// `path` bu sürümün açabileceği bir Kum veritabanı mı? Dosyayı değiştirmeden okur;
+    /// içindeki oturum sayısını ve son kaydın zamanını döndürür.
+    pub fn inspect_backup(path: &Path) -> Result<BackupInfo> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let not_kum = || StoreError::Invalid("bu dosya bir Kum yedeği değil".into());
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(|_| not_kum())?;
+        if version < 1 {
+            return Err(not_kum());
+        }
+        if usize::try_from(version).unwrap_or(usize::MAX) > MIGRATIONS.len() {
+            return Err(StoreError::Invalid(
+                "yedek Kum'un daha yeni bir sürümüyle alınmış; önce Kum'u güncelle".into(),
+            ));
+        }
+        let (sessions, last): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(ended_at) FROM sessions WHERE deleted_at IS NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|_| not_kum())?;
+        Ok(BackupInfo {
+            sessions,
+            last_activity: last.map(from_ms),
+        })
     }
 
     fn init(mut conn: Connection) -> Result<Self> {
@@ -915,6 +963,35 @@ mod tests {
             category_id: None,
             project_id: None,
         }
+    }
+
+    #[test]
+    fn backups_are_complete_and_can_be_inspected() {
+        let dir = std::env::temp_dir().join(format!("tracky-backup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(dir.join("kum.db")).unwrap();
+        store.upsert_session(&session("A", None, 0, 600)).unwrap();
+        let copy = dir.join("yedek.db");
+        store.backup_to(&copy).unwrap();
+        assert!(
+            store.backup_to(&copy).is_err(),
+            "var olan dosyanın üzerine yazılmaz"
+        );
+
+        let info = Store::inspect_backup(&copy).unwrap();
+        assert_eq!(info.sessions, 1);
+        assert_eq!(info.last_activity, Some(t(600)));
+        let restored = Store::open(&copy).unwrap();
+        assert_eq!(restored.device_id(), store.device_id());
+        assert_eq!(restored.app_totals(t(0), t(3600)).unwrap().len(), 1);
+
+        let junk = dir.join("not.db");
+        std::fs::write(&junk, "merhaba").unwrap();
+        assert!(Store::inspect_backup(&junk).is_err());
+        let empty = dir.join("bos.db");
+        Connection::open(&empty).unwrap();
+        assert!(Store::inspect_backup(&empty).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

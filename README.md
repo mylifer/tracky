@@ -44,6 +44,8 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 25. Web sitesi kuralları: tarayıcının adresi okunur (macOS'ta Erişilebilirlik, Windows'ta UI Automation),
       sorgu ve parça atılarak saklanır; `jira.togg.com` ya da `github.com/firma` gibi kurallar projeye/kategoriye
       bağlar. Gizli pencerelerde ve başlığı gizlenen uygulamalarda adres kaydedilmez
+- [x] 26. Yedekler: haftada bir otomatik (son 8 saklanır), elle yedek ve yedekten geri yükleme (şimdiki veri
+      silinmez, yedek klasörüne taşınır)
 
 ## Yapı
 
@@ -91,7 +93,8 @@ Hazır paketler: GitHub **Actions** sekmesindeki son başarılı çalıştırmad
   izni güncellemelerde korunur. Ad-hoc imzalı eski bir sürümden (0.2.0 ve öncesi) geçerken
   izni bir kez daha vermek gerekir.
 - Veriler: macOS'ta `~/Library/Application Support/com.kum.app/kum.db`,
-  Windows'ta `%APPDATA%\com.kum.app\kum.db`.
+  Windows'ta `%APPDATA%\com.kum.app\kum.db`. Yedekler aynı klasördeki `backups/` altında
+  (*Ayarlar → Veriler*).
 
 ## Takibi denemek (tracky-probe)
 

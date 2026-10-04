@@ -11,6 +11,7 @@ import GoalsSettings from "./GoalsSettings";
 import SyncSettings from "./SyncSettings";
 import { CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections } from "./TimesheetSettings";
 import UpdateSettings from "./UpdateSettings";
+import BackupSettings from "./BackupSettings";
 
 /** Sayfanın başındaki içindekiler: bölümler sayfadaki sırasıyla. */
 const SECTIONS = [
@@ -225,6 +226,7 @@ export default function Settings({
             Dışa aktar
           </Button>
         </SettingRow>
+        <BackupSettings />
       </SettingsGroup>
 
       <SettingsGroup id="sorun-giderme" title="Sorun giderme">

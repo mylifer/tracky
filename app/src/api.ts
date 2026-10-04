@@ -200,6 +200,10 @@ export type TimesheetConfig = {
   dayHours: number;
 };
 
+export type BackupFile = { name: string; path: string; at: string; bytes: number };
+export type BackupStatus = { dir: string; last: string | null; files: BackupFile[] };
+export type PickedBackup = { path: string; sessions: number; lastActivity: string | null };
+
 export type LastSync = { at: string; ok: boolean; message: string };
 export type SyncStatus = {
   configured: boolean;
@@ -326,6 +330,13 @@ export const api = {
   goals: () => invoke<Goals>("get_goals"),
   saveGoals: (goals: Goals) => invoke<void>("save_goals", { goals }),
   exportCsv: () => invoke<string>("export_csv"),
+  backupStatus: () => invoke<BackupStatus>("backup_status"),
+  backupNow: () => invoke<BackupFile>("backup_now"),
+  openBackupFolder: () => invoke<void>("open_backup_folder"),
+  /** Yedek dosyası seçtirir ve içeriğini döndürür; vazgeçilirse `null`. */
+  pickBackup: () => invoke<PickedBackup | null>("pick_backup"),
+  /** Yedeği geri yükler ve uygulamayı yeniden başlatır. */
+  restoreBackup: (path: string) => invoke<void>("restore_backup", { path }),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
   syncConfigure: (url: string, anonKey: string, schema: string | null) =>
     invoke<SyncStatus>("sync_configure", { url, anonKey, schema }),
