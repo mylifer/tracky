@@ -32,7 +32,15 @@ pub enum UndoOp {
     Sessions(EditSnapshot),
     AddedRule(String),
     DeletedRule(Rule),
-    DeletedTag { id: String, at: DateTime<Utc> },
+    DeletedTag {
+        id: String,
+        at: DateTime<Utc>,
+    },
+    /// Projenin önceki arşiv anı (`None`: arşivde değildi).
+    Archived {
+        id: String,
+        previous: Option<DateTime<Utc>>,
+    },
 }
 
 /// Geri alma kayıtları: son verilen numara ve (numara, işlemler) listesi, eskiden yeniye.
@@ -94,6 +102,7 @@ fn apply(store: &Store, op: &UndoOp) -> tracky_core::store::Result<()> {
         UndoOp::AddedRule(id) => store.delete_rule(id),
         UndoOp::DeletedRule(rule) => store.restore_rule(rule),
         UndoOp::DeletedTag { id, at } => store.restore_tag(id, *at),
+        UndoOp::Archived { id, previous } => store.set_tag_archived_at(id, *previous),
     }
 }
 
@@ -354,5 +363,35 @@ mod tests {
         undo_ops(&store, &ops).unwrap();
         assert_eq!(store.rules().unwrap().len(), rules);
         assert_eq!(projects(&store), vec![None]);
+    }
+
+    #[test]
+    fn archiving_can_be_undone() {
+        let store = Store::open_in_memory().unwrap();
+        let kum = store.accept_project_suggestion("Kum").unwrap();
+        let snap = store.archive_project(&kum.id).unwrap();
+        assert!(store.archived_projects().unwrap().contains(&kum.id));
+        // archive_project komutunun kaydettiği işlemler.
+        let ops = vec![
+            UndoOp::Archived {
+                id: kum.id.clone(),
+                previous: None,
+            },
+            UndoOp::Sessions(snap),
+        ];
+        assert!(undo_ops(&store, &ops).is_ok());
+        assert!(store.archived_projects().unwrap().is_empty());
+        assert!(store.rules().unwrap().iter().any(|r| r.tag_id == kum.id));
+
+        // Arşivden çıkarmanın geri alınması önceki arşiv anına döner.
+        store.archive_project(&kum.id).unwrap();
+        let previous = store.unarchive_project(&kum.id).unwrap();
+        assert!(previous.is_some());
+        let ops = vec![UndoOp::Archived {
+            id: kum.id.clone(),
+            previous,
+        }];
+        assert!(undo_ops(&store, &ops).is_ok());
+        assert_eq!(store.tag_extras().unwrap()[&kum.id].archived_at, previous);
     }
 }

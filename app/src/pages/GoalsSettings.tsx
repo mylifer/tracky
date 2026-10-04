@@ -6,7 +6,7 @@ import { ErrorText, SettingRow, SettingsGroup, ToggleRow } from "../components/s
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { tagColor } from "../lib/tags";
+import { activeProjects, tagColor } from "../lib/tags";
 import { friendlyError } from "../lib/feedback";
 
 const BREAK_OPTIONS = [30, 45, 50, 60, 75, 90, 120];
@@ -275,7 +275,8 @@ function ProjectGoalsBlock({
   onChange: (g: Goals) => void;
 }) {
   const rows = goals.projectGoals.filter((g) => projects.some((p) => p.id === g.projectId));
-  const free = projects.filter((p) => !rows.some((g) => g.projectId === p.id));
+  // Arşivdeki projelerin hedefi listede kalır (bildirilmez), yeni hedef yalnızca etkinlere.
+  const free = activeProjects(projects).filter((p) => !rows.some((g) => g.projectId === p.id));
   const set = (next: Goals["projectGoals"]) => onChange({ ...goals, projectGoals: next });
 
   return (
@@ -295,7 +296,10 @@ function ProjectGoalsBlock({
             return (
               <li key={g.projectId} className="flex items-center gap-2">
                 <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(tag) }} />
-                <span className="min-w-0 flex-1 truncate">{tag?.name}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  {tag?.name}
+                  {tag?.archived && <span className="text-xs text-muted-foreground"> (arşivde, bildirilmez)</span>}
+                </span>
                 <span className="text-xs text-muted-foreground">haftada</span>
                 <Select
                   value={String(g.minutes)}

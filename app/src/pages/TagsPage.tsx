@@ -1,8 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, ChevronRight, FolderKanban, Plus, Search, Tags, Trash2, X } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  FolderKanban,
+  Plus,
+  Search,
+  Tags,
+  Trash2,
+  X,
+} from "lucide-react";
 import {
   api,
   formatDuration,
+  type Budgets,
+  type BudgetUsage,
   type Client,
   type Rule,
   type RuleField,
@@ -13,13 +27,14 @@ import {
 } from "../api";
 import { SuggestionsCard } from "../components/SuggestionsCard";
 import { RulePreview } from "../components/RulePreview";
+import { BudgetField, BudgetMeter } from "../components/Budget";
 import { friendlyError, undoable, useChanged } from "../lib/feedback";
 import { ErrorText, Page } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { addDays, isoDate, today } from "../lib/dates";
-import { clientColor, NO_CLIENT, nextColor } from "../lib/tags";
+import { archivedProjects, clientColor, NO_CLIENT, nextColor, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 
 /** Sayfaya göre metinler: projeler başlıktaki sözcüklerle, kategoriler uygulamalarla çalışır. */
@@ -70,6 +85,8 @@ export default function TagsPage({
   const [suggestions, setSuggestions] = useState<Suggestions>({ projects: [], categories: [] });
   const [apps, setApps] = useState<UsageTotal[]>([]);
   const [usage, setUsage] = useState<Map<string, number>>(new Map());
+  const [budgets, setBudgets] = useState<Budgets | null>(null);
+  const [showArchive, setShowArchive] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +110,7 @@ export default function TagsPage({
       setSuggestions(s);
       onSuggestions?.(s);
     }
+    if (kind === "project") setBudgets(await api.budgets().catch(() => null));
     const r = await api.report(isoDate(addDays(today(), -6)), 7, false).catch(() => null);
     if (r) {
       const buckets = kind === "project" ? r.projects : r.categories;
@@ -116,7 +134,10 @@ export default function TagsPage({
     }
   };
 
-  const mine = tags.filter((t) => t.kind === kind);
+  // Arşivdeki projeler ayrı, kapalı bir bölümde; listede ve aramada yalnızca etkinler.
+  const mine = tags.filter((t) => t.kind === kind && !t.archived);
+  const archived = kind === "project" ? archivedProjects(tags) : [];
+  const budgetOf = (id: string) => budgets?.projects.find((b) => b.id === id);
   const shown = query.trim()
     ? mine.filter((t) => t.name.toLocaleLowerCase("tr").includes(query.trim().toLocaleLowerCase("tr")))
     : mine;
@@ -192,6 +213,8 @@ export default function TagsPage({
                     clients={clients}
                     clientId={links[t.id] ?? null}
                     seconds={usage.get(t.id) ?? 0}
+                    budget={budgetOf(t.id)}
+                    dayHours={budgets?.dayHours ?? 8}
                     open={open === t.id}
                     onToggle={() => setOpen(open === t.id ? null : t.id)}
                     run={run}
@@ -203,6 +226,50 @@ export default function TagsPage({
           ))
         )}
       </section>
+      {archived.length > 0 && (
+        <section className="space-y-2">
+          <button
+            type="button"
+            className="flex items-center gap-1.5 px-1 text-[13px] font-semibold hover:text-foreground"
+            onClick={() => setShowArchive(!showArchive)}
+            aria-expanded={showArchive}
+          >
+            <ChevronRight
+              className={cn("size-3.5 text-muted-foreground transition-transform", showArchive && "rotate-90")}
+            />
+            Arşiv <span className="font-normal text-muted-foreground tabular">{archived.length}</span>
+          </button>
+          {showArchive && (
+            <>
+              <p className="px-1 text-xs text-muted-foreground">
+                Arşivdeki projeler seçicilerde görünmez ve yeni süre toplamaz; geçmiş kayıtları ve rapor toplamları
+                korunur.
+              </p>
+              <ul className="divide-y rounded-xl border bg-card shadow-xs">
+                {archived.map((t) => {
+                  const budget = budgetOf(t.id);
+                  return (
+                    <li key={t.id} className="flex items-center gap-3 px-4 py-2">
+                      <i className="size-2.5 shrink-0 rounded-full opacity-60" style={{ background: tagColor(t) }} />
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">{t.name}</span>
+                      {budget && (
+                        <BudgetMeter usage={budget} dayHours={budgets?.dayHours ?? 8} color={tagColor(t)} compact />
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={run(() => undoable(api.unarchiveProject(t.id), `“${t.name}” arşivden çıkarıldı`))}
+                      >
+                        <ArchiveRestore /> Arşivden çıkar
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+        </section>
+      )}
     </Page>
   );
 }
@@ -280,9 +347,10 @@ function AddTag({
   const [client, setClient] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const text = TEXT[kind];
-  const exists = allTags.some(
+  const same = allTags.find(
     (t) => t.kind === kind && t.name.toLocaleLowerCase("tr") === name.trim().toLocaleLowerCase("tr"),
   );
+  const exists = !!same;
   return (
     <form
       className="space-y-1.5 rounded-xl border bg-card px-4 py-3 shadow-xs"
@@ -325,7 +393,9 @@ function AddTag({
         </Button>
       </div>
       <p className={cn("text-[11px]", exists ? "text-destructive" : "text-muted-foreground")}>
-        {exists ? `“${name.trim()}” zaten var.` : text.addHint}
+        {exists
+          ? `“${name.trim()}” zaten var${same?.archived ? " (arşivde; aşağıdaki Arşiv'den geri alabilirsin)" : ""}.`
+          : text.addHint}
       </p>
     </form>
   );
@@ -362,6 +432,8 @@ function TagItem({
   clients,
   clientId,
   seconds,
+  budget,
+  dayHours,
   open,
   onToggle,
   run,
@@ -373,6 +445,9 @@ function TagItem({
   clients: Client[];
   clientId: string | null;
   seconds: number;
+  /** Projenin sözleşme bütçesi ve harcanan (tüm zamanlar). */
+  budget?: BudgetUsage;
+  dayHours: number;
   open: boolean;
   onToggle: () => void;
   run: Run;
@@ -403,6 +478,7 @@ function TagItem({
             {summary(rules)}
           </span>
         </span>
+        {budget && <BudgetMeter usage={budget} dayHours={dayHours} color={tagColor(tag)} compact />}
         <span className="shrink-0 text-xs text-muted-foreground tabular">
           {seconds ? formatDuration(seconds) : "—"}
         </span>
@@ -425,13 +501,37 @@ function TagItem({
               )}
             </div>
           )}
+          {tag.kind === "project" && (
+            <div className="space-y-1.5">
+              <div>
+                <div className="text-[11px] font-medium text-muted-foreground">Sözleşme bütçesi</div>
+                <div className="text-[11px] text-muted-foreground/80">
+                  Anlaşılan adam-gün; projeye bugüne kadar yazılan süreyle kıyaslanır, %80'de ve dolunca bildirilir. Bir
+                  adam-gün {String(dayHours).replace(".", ",")} saat (Zaman çizelgesi ayarı).
+                </div>
+              </div>
+              <BudgetField value={tag.budgetDays} onSave={(d) => run(() => api.setProjectBudget(tag.id, d))()} />
+              {budget && <BudgetMeter usage={budget} dayHours={dayHours} color={tagColor(tag)} className="max-w-xs" />}
+            </div>
+          )}
           {(text.primary === "title"
             ? (["title", "domain", "app"] as const)
             : (["app", "domain", "title"] as const)
           ).map((field) => (
             <RuleList key={field} tag={tag} field={field} rules={rules} apps={apps} run={run} allTags={allTags} />
           ))}
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-1">
+            {tag.kind === "project" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                title="Seçicilerden kalkar ve yeni süre toplamaz; geçmiş kayıtları ve toplamları korunur."
+                onClick={run(() => undoable(api.archiveProject(tag.id), `“${tag.name}” arşivlendi`))}
+              >
+                <Archive /> Arşivle
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"

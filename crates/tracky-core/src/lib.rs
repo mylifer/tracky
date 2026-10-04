@@ -5,6 +5,7 @@
 
 pub mod blocks;
 pub mod browser;
+pub mod budget;
 pub mod calendar;
 pub mod classify;
 pub mod client_report;

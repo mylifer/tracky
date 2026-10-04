@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Building2, ChevronDown, ChevronRight, Plus, Trash2, X } from "lucide-react";
-import { api, formatDuration, type Client, type Tag } from "../api";
+import { api, formatDuration, type Budgets, type Client, type Tag } from "../api";
+import { BudgetField, BudgetMeter } from "../components/Budget";
 import { ErrorText, Page } from "../components/settings";
 import {
   AlertDialog,
@@ -16,7 +17,7 @@ import {
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { addDays, isoDate, today } from "../lib/dates";
-import { clientColor, tagColor } from "../lib/tags";
+import { activeProjects, clientColor, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { friendlyError } from "../lib/feedback";
 
@@ -29,6 +30,7 @@ export default function ClientsPage({ onOpenProjects }: { onOpenProjects: () => 
   const [projects, setProjects] = useState<Tag[]>([]);
   const [links, setLinks] = useState<Record<string, string>>({});
   const [usage, setUsage] = useState<Map<string, number>>(new Map());
+  const [budgets, setBudgets] = useState<Budgets | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,6 +39,7 @@ export default function ClientsPage({ onOpenProjects }: { onOpenProjects: () => 
     setClients(t.clients);
     setProjects(t.tags.filter((x) => x.kind === "project"));
     setLinks(t.projectClients);
+    setBudgets(await api.budgets().catch(() => null));
     const r = await api.report(isoDate(addDays(today(), -6)), 7, false).catch(() => null);
     if (r) setUsage(new Map(r.projects.filter((b) => b.id).map((b) => [b.id!, b.seconds])));
   }, []);
@@ -55,7 +58,8 @@ export default function ClientsPage({ onOpenProjects }: { onOpenProjects: () => 
   };
 
   const projectsOf = (id: string) => projects.filter((p) => links[p.id] === id);
-  const unlinked = projects.filter((p) => !links[p.id]);
+  // Arşivdeki projeler müşterinin toplamına ve bütçesine sayılır, ama bağlanmayı beklemez.
+  const unlinked = activeProjects(projects).filter((p) => !links[p.id]);
 
   return (
     <Page title="Müşteriler">
@@ -98,6 +102,7 @@ export default function ClientsPage({ onOpenProjects }: { onOpenProjects: () => 
                 allProjects={projects}
                 links={links}
                 clients={clients}
+                budgets={budgets}
                 seconds={projectsOf(c.id).reduce((s, p) => s + (usage.get(p.id) ?? 0), 0)}
                 open={open === c.id}
                 onToggle={() => setOpen(open === c.id ? null : c.id)}
@@ -180,6 +185,7 @@ function ClientItem({
   allProjects,
   links,
   clients,
+  budgets,
   seconds,
   open,
   onToggle,
@@ -191,6 +197,7 @@ function ClientItem({
   allProjects: Tag[];
   links: Record<string, string>;
   clients: Client[];
+  budgets: Budgets | null;
   seconds: number;
   open: boolean;
   onToggle: () => void;
@@ -198,7 +205,13 @@ function ClientItem({
 }) {
   const [name, setName] = useState(client.name);
   useEffect(() => setName(client.name), [client.name]);
-  const others = allProjects.filter((p) => links[p.id] !== client.id);
+  const others = activeProjects(allProjects).filter((p) => links[p.id] !== client.id);
+  const dayHours = budgets?.dayHours ?? 8;
+  const budget = budgets?.clients.find((b) => b.id === client.id);
+  const projectBudgets = projects.flatMap((p) => {
+    const b = budgets?.projects.find((x) => x.id === p.id);
+    return b ? [{ project: p, budget: b }] : [];
+  });
   const clientName = (id: string | undefined) => clients.find((c) => c.id === id)?.name;
   return (
     <li>
@@ -215,9 +228,14 @@ function ClientItem({
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px] font-medium">{client.name}</span>
           <span className="block truncate text-[11px] text-muted-foreground">
-            {projects.length ? projects.map((p) => p.name).join(", ") : "Proje yok"}
+            {projects.some((p) => !p.archived)
+              ? activeProjects(projects)
+                  .map((p) => p.name)
+                  .join(", ")
+              : "Proje yok"}
           </span>
         </span>
+        {budget && <BudgetMeter usage={budget} dayHours={dayHours} color={color} compact />}
         <span className="shrink-0 text-xs text-muted-foreground tabular">
           {seconds ? formatDuration(seconds) : "—"}
         </span>
@@ -244,7 +262,10 @@ function ClientItem({
                   className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-card pr-0.5 pl-2 text-xs"
                 >
                   <i className="size-2 rounded-full" style={{ background: tagColor(p) }} />
-                  <span className="max-w-48 truncate">{p.name}</span>
+                  <span className={cn("max-w-48 truncate", p.archived && "text-muted-foreground")}>
+                    {p.name}
+                    {p.archived ? " (arşiv)" : ""}
+                  </span>
                   <button
                     type="button"
                     className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
@@ -280,6 +301,33 @@ function ClientItem({
               )}
             </div>
           </div>
+          <div className="space-y-1.5">
+            <div>
+              <div className="text-[11px] font-medium text-muted-foreground">Sözleşme bütçesi</div>
+              <div className="text-[11px] text-muted-foreground/80">
+                Müşteriyle anlaşılan toplam adam-gün; bağlı projelerin bugüne kadarki süresiyle kıyaslanır, %80'de ve
+                dolunca bildirilir. Proje bütçeleri Projeler sayfasında.
+              </div>
+            </div>
+            <BudgetField value={client.budgetDays} onSave={(d) => run(() => api.setClientBudget(client.id, d))()} />
+            {budget && <BudgetMeter usage={budget} dayHours={dayHours} color={color} className="max-w-xs" />}
+          </div>
+          {projectBudgets.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-medium text-muted-foreground">Proje bütçeleri</div>
+              <ul className="max-w-sm space-y-2">
+                {projectBudgets.map(({ project, budget }) => (
+                  <li key={project.id} className="space-y-1">
+                    <span className="flex items-center gap-1.5 text-xs">
+                      <i className="size-2 rounded-full" style={{ background: tagColor(project) }} />
+                      {project.name}
+                    </span>
+                    <BudgetMeter usage={budget} dayHours={dayHours} color={tagColor(project)} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="flex justify-end">
             <AlertDialog>
               <AlertDialogTrigger asChild>

@@ -28,6 +28,16 @@ export function tagMap(tags: Tag[]): Map<string, Tag> {
   return new Map(tags.map((t) => [t.id, t]));
 }
 
+/** Seçicilerde gösterilecek projeler: arşivdekiler hariç. Raporlar ve toplamlar arşivdekileri de içerir. */
+export function activeProjects(tags: Tag[]): Tag[] {
+  return tags.filter((t) => t.kind === "project" && !t.archived);
+}
+
+/** Arşivdeki projeler. */
+export function archivedProjects(tags: Tag[]): Tag[] {
+  return tags.filter((t) => t.kind === "project" && t.archived);
+}
+
 /** Yeni etikete henüz kullanılmayan ilk renk yuvası (hepsi doluysa en az kullanılan). */
 export function nextColor(tags: Tag[]): number {
   const used = new Map<number, number>();

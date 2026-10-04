@@ -96,23 +96,112 @@ pub async fn app_titles_between(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Taxonomy {
-    tags: Vec<Tag>,
+    tags: Vec<TagView>,
+    /// Etkin kurallar (arşivdeki projelerinkiler hariç).
     rules: Vec<Rule>,
-    clients: Vec<Client>,
+    clients: Vec<ClientView>,
     /// Proje → müşteri.
     project_clients: std::collections::HashMap<String, String>,
+}
+
+/// Etiket, arşiv durumu ve sözleşme bütçesiyle.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagView {
+    #[serde(flatten)]
+    tag: Tag,
+    archived: bool,
+    budget_days: Option<f64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientView {
+    #[serde(flatten)]
+    client: Client,
+    budget_days: Option<f64>,
 }
 
 #[tauri::command]
 pub async fn get_taxonomy(app: AppHandle) -> CmdResult<Taxonomy> {
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
+    let mut extras = store.tag_extras().map_err(err)?;
+    let budgets = store.client_budgets().map_err(err)?;
     Ok(Taxonomy {
-        tags: store.tags().map_err(err)?,
+        tags: store
+            .tags()
+            .map_err(err)?
+            .into_iter()
+            .map(|tag| {
+                let e = extras.remove(&tag.id).unwrap_or_default();
+                TagView {
+                    tag,
+                    archived: e.archived_at.is_some(),
+                    budget_days: e.budget_days,
+                }
+            })
+            .collect(),
         rules: store.rules().map_err(err)?,
-        clients: store.clients().map_err(err)?,
+        clients: store
+            .clients()
+            .map_err(err)?
+            .into_iter()
+            .map(|client| ClientView {
+                budget_days: budgets.get(&client.id).copied(),
+                client,
+            })
+            .collect(),
         project_clients: store.project_clients().map_err(err)?,
     })
+}
+
+/// Projeyi arşivler (geçmişi korunur, yeni süre toplamaz); geri alma numarasını döndürür.
+#[tauri::command]
+pub async fn archive_project(app: AppHandle, id: String) -> CmdResult<u64> {
+    let snap = lock(&app.state::<Shared>().store)
+        .archive_project(&id)
+        .map_err(err)?;
+    Ok(record(
+        &app,
+        vec![
+            UndoOp::Archived { id, previous: None },
+            UndoOp::Sessions(snap),
+        ],
+    ))
+}
+
+/// Projeyi arşivden çıkarır; geri alma numarasını döndürür.
+#[tauri::command]
+pub async fn unarchive_project(app: AppHandle, id: String) -> CmdResult<u64> {
+    let previous = lock(&app.state::<Shared>().store)
+        .unarchive_project(&id)
+        .map_err(err)?;
+    Ok(record(&app, vec![UndoOp::Archived { id, previous }]))
+}
+
+/// Projenin sözleşme bütçesi (adam-gün; `null` kaldırır).
+#[tauri::command]
+pub async fn set_project_budget(app: AppHandle, id: String, days: Option<f64>) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .set_project_budget(&id, days)
+        .map_err(err)
+}
+
+/// Müşterinin sözleşme bütçesi (adam-gün; `null` kaldırır).
+#[tauri::command]
+pub async fn set_client_budget(app: AppHandle, id: String, days: Option<f64>) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .set_client_budget(&id, days)
+        .map_err(err)
+}
+
+/// Bütçeler ve bugüne kadar harcanan süre.
+#[tauri::command]
+pub async fn get_budgets(app: AppHandle) -> CmdResult<tracky_core::budget::Budgets> {
+    lock(&app.state::<Shared>().store)
+        .budgets(Utc::now())
+        .map_err(err)
 }
 
 /// Müşteri ekler (`id` yoksa) ya da adını değiştirir; kaydedileni döndürür.

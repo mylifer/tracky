@@ -47,6 +47,7 @@ import {
   today,
 } from "./lib/dates";
 import { friendlyError, toast, useChanged } from "./lib/feedback";
+import { activeProjects } from "./lib/tags";
 import { applyPlatform, useTheme, type ThemePref } from "./lib/theme";
 import { useUpdate } from "./lib/useUpdate";
 import { cn } from "./lib/utils";
@@ -208,7 +209,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   useEffect(() => {
     if (palette)
       api.taxonomy().then(
-        (t) => setProjects(t.tags.filter((x) => x.kind === "project")),
+        (t) => setProjects(activeProjects(t.tags)),
         () => {},
       );
   }, [palette]);

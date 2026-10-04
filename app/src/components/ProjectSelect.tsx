@@ -12,12 +12,13 @@ import { cn } from "../lib/utils";
  * ("Projesiz", "Zaman çizelgesine alma" gibi).
  * Projeler müşteriye göre gruplanır, son seçilenler en üstte durur; proje çoksa yanında bir
  * süzme alanı çıkar (liste yine yerel kalır, Enter ilk eşleşeni seçer). Müşteri bilgisi
- * verilmezse paylaşılan önbellekten alınır.
+ * verilmezse paylaşılan önbellekten alınır. Arşivdeki projeler listelenmez (seçili olan kalır);
+ * raporlardan gelen etiketlerde arşiv bilgisi olmadığı için o da önbellekten okunur.
  */
 export function ProjectSelect({
   value,
   onChange,
-  projects,
+  projects: given,
   placeholder = "Proje seç…",
   extra,
   clients,
@@ -38,7 +39,11 @@ export function ProjectSelect({
   className?: string;
   "aria-label"?: string;
 }) {
-  const taxonomy = useTaxonomy(!clients);
+  const taxonomy = useTaxonomy();
+  const projects = useMemo(() => {
+    const archived = new Set(taxonomy?.tags.filter((t) => t.archived).map((t) => t.id));
+    return given.filter((p) => p.id === value || !(p.archived || archived.has(p.id)));
+  }, [given, taxonomy, value]);
   const [filter, setFilter] = useState("");
   // Son kullanılanlar açılışta okunur; seçim yapılınca bir sonraki seçici günceli görür.
   const [recent, setRecent] = useState(readRecent);

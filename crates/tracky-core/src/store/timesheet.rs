@@ -197,7 +197,7 @@ impl Store {
     /// Excel'e aktarılmış kayıtlara dokunulmaz ve aktarılan iş yeniden eklenmez
     /// ([`timesheet::without_exported`]); yoksa bir sonraki aktarımda dosyaya iki kez yazılırdı.
     pub fn replace_timesheet_day(&self, date: NaiveDate, entries: &[TimesheetEntry]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         self.conn.execute(
             "DELETE FROM timesheet_entries WHERE date = ?1 AND exported_at IS NULL",
             [date.to_string()],
@@ -248,7 +248,7 @@ impl Store {
         old: &[TimesheetEntry],
         new: &[TimesheetEntry],
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         let mut saved: Vec<SavedEntry> = self
             .timesheet_entries(date, date)?
             .into_iter()
@@ -290,7 +290,7 @@ impl Store {
 
     /// Excel'e aktarılan kayıtları işaretler.
     pub fn mark_timesheet_exported(&self, ids: &[String], at: DateTime<Utc>) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         for id in ids {
             self.conn.execute(
                 "UPDATE timesheet_entries SET exported_at = ?2 WHERE id = ?1",

@@ -149,13 +149,20 @@ fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) {
         Ok(Some(summary)) => LastSync {
             at: Utc::now(),
             ok: true,
-            message: if summary.skipped > 0 {
-                format!(
-                    "{} gönderildi, {} alındı; {} kayıt bu sürümde okunamadığı için atlandı (Kum'u güncelle)",
-                    summary.pushed, summary.pulled, summary.skipped
-                )
-            } else {
-                format!("{} gönderildi, {} alındı", summary.pushed, summary.pulled)
+            message: {
+                let mut m = if summary.skipped > 0 {
+                    format!(
+                        "{} gönderildi, {} alındı; {} kayıt bu sürümde okunamadığı için atlandı (Kum'u güncelle)",
+                        summary.pushed, summary.pulled, summary.skipped
+                    )
+                } else {
+                    format!("{} gönderildi, {} alındı", summary.pushed, summary.pulled)
+                };
+                if summary.outdated_schema {
+                    m += ". Proje arşivi ve bütçeler eşitlenmedi: Supabase'de \
+                          supabase/migrations/0007_archive_budget.sql dosyasını çalıştır";
+                }
+                m
             },
             summary: Some(summary),
         },

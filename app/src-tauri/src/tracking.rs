@@ -62,6 +62,8 @@ const EXPORT_REMINDED_KEY: &str = "export_reminder_week";
 const DAY_SUMMARY_SENT_KEY: &str = "day_summary_day";
 /// Günlük hedef bildiriminin en son gösterildiği gün.
 const GOAL_NOTIFIED_KEY: &str = "goal_notified_day";
+/// Bildirilen bütçe eşikleri (anahtar → seviye); her eşik bir kez, yeniden açılışta da.
+const BUDGET_NOTIFIED_KEY: &str = "budget_notified";
 /// Yeni haftada bu kadar çalışılınca geçen haftanın özeti gösterilir.
 const WEEKLY_AFTER_SECS: i64 = 5 * 60;
 /// Geçen hafta bundan az çalışıldıysa özet gösterilmez (örn. ilk kurulum).
@@ -84,6 +86,8 @@ pub struct Shared {
 const REFRESH_EVERY: u32 = 5;
 /// Kategori limitleri bu kadar gözlemde bir denetlenir (rapor sınıflandırması gerekir).
 const LIMITS_EVERY: u32 = 30;
+/// Sözleşme bütçeleri bu kadar gözlemde bir (~10 dk) denetlenir: tüm geçmiş toplanır.
+const BUDGETS_EVERY: u32 = 600;
 
 /// `rx` kapanana ya da `Shutdown` gelene kadar saniyede bir gözlem yapar.
 pub fn run(
@@ -121,6 +125,7 @@ pub fn run(
     };
     let mut limits_primed = false;
     let mut project_goals_primed = false;
+    let mut budgets_checked = false;
     let mut ticks = 0u32;
     loop {
         let mut force = false;
@@ -178,10 +183,20 @@ pub fn run(
             && (!project_goals_primed || ticks.is_multiple_of(LIMITS_EVERY));
         let project_totals = check_projects.then(|| {
             let week = week_start(Local::now().date_naive());
-            store
+            let mut totals = store
                 .project_totals(local_midnight(week), now)
-                .unwrap_or_default()
+                .unwrap_or_default();
+            // Arşivdeki projelerin hedefi bildirilmez.
+            let archived = store.archived_projects().unwrap_or_default();
+            totals.retain(|id, _| !archived.contains(id));
+            totals
         });
+        let budget_alerts = if !budgets_checked || ticks.is_multiple_of(BUDGETS_EVERY) {
+            budgets_checked = true;
+            due_budget_alerts(&store, now)
+        } else {
+            Vec::new()
+        };
         let limit_names: std::collections::HashMap<String, String> =
             if check_limits || check_projects {
                 store
@@ -254,6 +269,9 @@ pub fn run(
                 // Hafta içinde yeniden açıldı: dolmuş hedefleri tekrar bildirme.
                 coach.prime_project_goals(&goals, week, &used);
             }
+        }
+        for (alert, name, day_hours) in &budget_alerts {
+            notify_budget(&app, alert, name, *day_hours);
         }
         if let Some(used) = category_totals {
             if std::mem::replace(&mut limits_primed, true) {
@@ -331,6 +349,87 @@ fn notify(app: &AppHandle, nudge: &Nudge, names: &std::collections::HashMap<Stri
         Nudge::ProjectGoalReached { .. } => crate::navigate_on_focus(app, "week"),
         _ => crate::navigate_on_focus(app, "day"),
     }
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("bildirim gösterilemedi: {e}");
+    }
+}
+
+/// Yeni geçilen bütçe eşikleri: (uyarı, proje ya da müşteri adı, gün saati). Bildirilen eşikler
+/// hemen kaydedilir (bildirim gösterilemese de tekrarlanmaz).
+fn due_budget_alerts(
+    store: &Store,
+    now: DateTime<Utc>,
+) -> Vec<(tracky_core::budget::BudgetAlert, String, f64)> {
+    let budgets = match store.budgets(now) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("bütçeler hesaplanamadı: {e}");
+            return Vec::new();
+        }
+    };
+    let mut notified: std::collections::BTreeMap<String, tracky_core::budget::BudgetLevel> = store
+        .setting(BUDGET_NOTIFIED_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let before = notified.clone();
+    let archived = store.archived_projects().unwrap_or_default();
+    let alerts = tracky_core::budget::budget_alerts(&budgets, &archived, &mut notified);
+    if notified != before
+        && let Err(e) = store.save_setting(BUDGET_NOTIFIED_KEY, &notified)
+    {
+        eprintln!("bütçe bildirimi kaydedilemedi: {e}");
+    }
+    if alerts.is_empty() {
+        return Vec::new();
+    }
+    let tags = store.tags().unwrap_or_default();
+    let clients = store.clients().unwrap_or_default();
+    alerts
+        .into_iter()
+        .map(|a| {
+            let name = if a.client {
+                clients
+                    .iter()
+                    .find(|c| c.id == a.id)
+                    .map(|c| c.name.clone())
+            } else {
+                tags.iter().find(|t| t.id == a.id).map(|t| t.name.clone())
+            };
+            (a, name.unwrap_or_else(|| "Proje".into()), budgets.day_hours)
+        })
+        .collect()
+}
+
+/// Bütçenin %80'i ya da tamamı kullanıldı.
+fn notify_budget(
+    app: &AppHandle,
+    alert: &tracky_core::budget::BudgetAlert,
+    name: &str,
+    day_hours: f64,
+) {
+    use tracky_core::budget::{BudgetLevel, format_days};
+    let days = |secs: i64| format_days(secs as f64 / (day_hours * 3600.0));
+    let (title, body) = match alert.level {
+        BudgetLevel::Near => (
+            format!("{name} bütçesinin %80'i doldu"),
+            format!(
+                "{} / {} adam-gün kullanıldı; {} adam-gün kaldı.",
+                days(alert.used_seconds),
+                days(alert.budget_seconds),
+                days(alert.budget_seconds - alert.used_seconds)
+            ),
+        ),
+        BudgetLevel::Reached => (
+            format!("{name} bütçesi doldu"),
+            format!(
+                "Anlaşılan {} adam-günün tamamı kullanıldı ({} adam-gün).",
+                days(alert.budget_seconds),
+                days(alert.used_seconds)
+            ),
+        ),
+    };
+    crate::navigate_on_focus(app, if alert.client { "clients" } else { "projects" });
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         eprintln!("bildirim gösterilemedi: {e}");
     }

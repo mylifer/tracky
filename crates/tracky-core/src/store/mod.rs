@@ -19,6 +19,7 @@ use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
 
 pub use edits::EditSnapshot;
+pub use taxonomy::TagExtras;
 pub use timesheet::{SavedEntry, SplitMeetings};
 
 #[derive(Debug, thiserror::Error)]
@@ -201,6 +202,13 @@ INSERT INTO rules_new (rowid, id, tag_id, field, pattern, position, updated_at, 
 DROP TABLE rules;
 ALTER TABLE rules_new RENAME TO rules;
 CREATE INDEX rules_tag ON rules (tag_id);
+"#,
+    r#"
+-- Proje arşivi (arşivlenme anı, ms) ve sözleşme bütçesi (adam-gün); müşterinin de bütçesi
+-- olabilir. Üçü de eşitlenir (supabase/migrations/0007).
+ALTER TABLE tags ADD COLUMN archived_at INTEGER;
+ALTER TABLE tags ADD COLUMN budget_days REAL;
+ALTER TABLE clients ADD COLUMN budget_days REAL;
 "#,
 ];
 
