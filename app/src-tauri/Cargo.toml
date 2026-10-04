@@ -1,6 +1,6 @@
 [package]
 name = "kum"
-version = "0.5.6"
+version = "0.6.0"
 edition = "2024"
 description = "Pencerelerde geçen süreyi takip eden masaüstü uygulaması"
 
