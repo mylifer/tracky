@@ -185,7 +185,7 @@ fn unescape(v: &str) -> String {
 fn parse_naive(v: &str) -> Option<NaiveDateTime> {
     let v = v.trim();
     if v.len() >= 15 {
-        NaiveDateTime::parse_from_str(&v[..15], "%Y%m%dT%H%M%S").ok()
+        NaiveDateTime::parse_from_str(v.get(..15)?, "%Y%m%dT%H%M%S").ok()
     } else {
         NaiveDate::parse_from_str(v, "%Y%m%d")
             .ok()
@@ -216,8 +216,8 @@ fn parse_offset(v: &str) -> Option<i32> {
     if digits.len() < 4 {
         return None;
     }
-    let h: i32 = digits[0..2].parse().ok()?;
-    let m: i32 = digits[2..4].parse().ok()?;
+    let h: i32 = digits.get(0..2)?.parse().ok()?;
+    let m: i32 = digits.get(2..4)?.parse().ok()?;
     let s: i32 = digits.get(4..6).and_then(|s| s.parse().ok()).unwrap_or(0);
     Some(sign * (h * 3600 + m * 60 + s))
 }
@@ -270,7 +270,7 @@ fn parse_weekday(v: &str) -> Option<Weekday> {
 fn parse_byday(v: &str) -> Option<(i32, Weekday)> {
     let v = v.trim();
     let split = v.len().checked_sub(2)?;
-    let (n, day) = v.split_at(split);
+    let (n, day) = v.split_at_checked(split)?;
     let n = if n.is_empty() {
         0
     } else {
@@ -1061,5 +1061,12 @@ END:VCALENDAR\r
         let line = parse_line(r#"DTSTART;TZID="Ev: Saat":20261005T100000"#).unwrap();
         assert_eq!(line.param("TZID"), Some("Ev: Saat"));
         assert_eq!(line.value, "20261005T100000");
+    }
+
+    #[test]
+    fn malformed_non_ascii_values_do_not_panic() {
+        assert_eq!(parse_naive("20240101Tİ00000"), None);
+        assert_eq!(parse_offset("+0İ00"), None);
+        assert_eq!(parse_byday("Öx"), None);
     }
 }

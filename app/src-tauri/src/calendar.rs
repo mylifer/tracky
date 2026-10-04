@@ -123,7 +123,13 @@ fn refresh(app: &AppHandle) {
         return;
     };
     let state = app.state::<CalendarState>();
-    let result = fetch(&url).map(|text| {
+    let result = fetch(&url);
+    // İndirme sürerken takvim kaldırıldıysa ya da bağlantı değiştiyse eski takvim geri
+    // yazılmasın.
+    if saved_url(app).as_deref() != Some(url.as_str()) {
+        return;
+    }
+    let result = result.map(|text| {
         if let Some(path) = cache_path(app) {
             let _ = std::fs::write(path, &text);
         }

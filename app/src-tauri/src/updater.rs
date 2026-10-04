@@ -19,6 +19,10 @@ const FIRST_CHECK: Duration = Duration::from_secs(30);
 /// dakika içinde yapılır.
 const INTERVAL: chrono::Duration = chrono::Duration::minutes(5);
 const TICK: Duration = Duration::from_secs(60);
+/// latest.json denetimi ve paket indirmesi için üst sınır: takılan bir istek `checking`
+/// bayrağını sonsuza dek açık tutup sonraki tüm denetimleri durdurmasın.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,8 +96,14 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
     }
     set(app, |s| s.error = None);
     let result = async {
-        let checked = app.updater().map_err(message)?.check().await;
-        let update = match checked {
+        let checked = app
+            .updater_builder()
+            .timeout(CHECK_TIMEOUT)
+            .build()
+            .map_err(message)?
+            .check()
+            .await;
+        let mut update = match checked {
             Ok(Some(update)) => update,
             // Henüz hiç sürüm yayınlanmadıysa latest.json yoktur (404): yeni sürüm yok demektir.
             Ok(None) | Err(tauri_plugin_updater::Error::ReleaseNotFound) => {
@@ -104,9 +114,15 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
         let pending = lock(&app.state::<UpdateState>().pending)
             .as_ref()
             .map(|(u, _)| u.version.clone());
-        if pending.as_deref() == Some(update.version.as_str()) {
+        // Hazır bekleyen paket yalnızca ondan daha yeni bir sürümle değiştirilir: yayından
+        // kaldırılıp latest.json eski sürüme dönerse indirilmiş yeni paket korunur.
+        if let Some(pending) = pending.as_deref()
+            && !is_newer(&update.version, pending)
+        {
             return Ok(None);
         }
+        // Eklenti indirmeye denetimin zaman aşımını aktarmıyor.
+        update.timeout = Some(DOWNLOAD_TIMEOUT);
         // İndirme sürerken de arayüz ve menü çubuğu yeni sürümü göstersin. Hazır bekleyen
         // paket varsa o, yenisi inene kadar gösterilir ve kurulabilir kalır.
         if pending.is_none() {
@@ -162,9 +178,10 @@ pub async fn check_update(app: AppHandle) -> UpdateStatus {
     check_and_download(&app).await
 }
 
-/// İndirilmiş güncellemeyi kurar ve uygulamayı yeniden başlatır.
+/// İndirilmiş güncellemeyi kurar ve uygulamayı yeniden başlatır. `async`: kurulum ana
+/// iş parçacığını tutmasın.
 #[tauri::command]
-pub fn install_update(app: AppHandle) -> Result<(), String> {
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
     install(&app)
 }
 
@@ -182,7 +199,19 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         });
         return Err(msg);
     }
-    app.restart();
+    // `restart()` ana iş parçacığından çağrılınca `RunEvent::Exit` atlanır: takip son
+    // oturumu kaydetmeden kapanır, tek kopya eklentisi soketini temizlemez ve yeni süreç
+    // kapanmakta olan eskisine devredip çıkabilir. `request_restart` olağan kapanıştan geçer.
+    app.request_restart();
+    Ok(())
+}
+
+/// `a`, `b`'den yeni mi (semver; çözülemezse metin farkı yeni sayılır).
+fn is_newer(a: &str, b: &str) -> bool {
+    match (semver::Version::parse(a), semver::Version::parse(b)) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => a != b,
+    }
 }
 
 /// Güncelleyici hatasını kullanıcıya gösterilecek Türkçe metne çevirir.

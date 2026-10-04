@@ -74,10 +74,13 @@ pub async fn get_timesheet_config(app: AppHandle) -> CmdResult<TimesheetConfig> 
 }
 
 #[tauri::command]
-pub async fn save_timesheet_config(app: AppHandle, config: TimesheetConfig) -> CmdResult<()> {
-    lock(&app.state::<Shared>().store)
-        .save_timesheet_config(&config)
-        .map_err(err)
+pub async fn save_timesheet_config(app: AppHandle, mut config: TimesheetConfig) -> CmdResult<()> {
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    // Apps Script anahtarını yalnızca arka uç üretir; arayüzün elindeki kopya, anahtar
+    // üretilmeden önce yüklenmiş olabilir. Eski kopya yeni anahtarı ezmesin.
+    config.sheet_token = store.timesheet_config().map_err(err)?.sheet_token;
+    store.save_timesheet_config(&config).map_err(err)
 }
 
 /// `start` gününden itibaren `days` günün kayıtları.

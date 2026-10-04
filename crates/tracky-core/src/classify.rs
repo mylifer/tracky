@@ -153,9 +153,11 @@ impl Classifier {
                 None => {}
             }
         }
-        // Kararlı sıralama: aynı türdeki kuralların kendi sırası korunur.
+        // Kararlı sıralama: başlık kuralları, sonra tam uygulama kuralları, sonra önek
+        // (`*`) kuralları; aynı türdekilerin kendi sırası korunur. Böylece tek bir uygulamaya
+        // verilen kategori, onu da kapsayan önek kuralını (örn. `com.jetbrains.*`) ezer.
         for list in [&mut category_rules, &mut project_rules] {
-            list.sort_by_key(|r| r.field != RuleField::Title);
+            list.sort_by_key(|r| (r.field != RuleField::Title, r.pattern.ends_with('*')));
         }
         let lowered = |rules: Vec<Rule>| -> Vec<(Rule, String)> {
             rules

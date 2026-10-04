@@ -435,7 +435,16 @@ export function ManualEntry({
           )}
           {error && <p className="text-xs text-destructive selectable">{error}</p>}
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                // Elle kapatmada Radix `onOpenChange` çağırmaz; önizleme de temizlensin.
+                setOpen(false);
+                onClose?.();
+              }}
+            >
               Vazgeç
             </Button>
             <Button type="submit" size="sm" disabled={!label.trim()}>

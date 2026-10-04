@@ -457,9 +457,20 @@ export function DayCalendar({
   /** Bir saatin yüksekliği (yakınlaştırma). */
   hourPx?: number;
 }) {
+  // Gece yarısını aşan toplantılar güne kırpılır: ızgaranın dışına taşmasınlar, saat
+  // aralığı da günün içindeki kısmına göre genişlesin.
+  const meetingSpans = useMemo(() => {
+    const dayStart = +from;
+    const dayEnd = +new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1);
+    return (meetings ?? []).flatMap((m) => {
+      const start = Math.max(+new Date(m.start), dayStart);
+      const end = Math.min(+new Date(m.end), dayEnd);
+      return end > start ? [{ m, start: new Date(start).toISOString(), end: new Date(end).toISOString() }] : [];
+    });
+  }, [meetings, from]);
   const range = useMemo(
-    () => hourRange(from, [...blocks, ...segments, ...(meetings ?? [])], hourPx),
-    [from, blocks, segments, meetings, hourPx],
+    () => hourRange(from, [...blocks, ...segments, ...meetingSpans], hourPx),
+    [from, blocks, segments, meetingSpans, hourPx],
   );
   const top = topFn(+from, range);
   const step = range.px >= 150 ? 5 : 15;
@@ -520,8 +531,8 @@ export function DayCalendar({
         </Column>
         {showMeetings && (
           <Column range={range} className="col-start-3 row-start-1">
-            {meetings.map((m, i) => (
-              <MeetingBlock key={`${m.uid}-${m.start}-${i}`} m={m} onRange={onRange} {...blockGeometry(m, top)} />
+            {meetingSpans.map(({ m, ...span }, i) => (
+              <MeetingBlock key={`${m.uid}-${m.start}-${i}`} m={m} onRange={onRange} {...blockGeometry(span, top)} />
             ))}
             <NowLine day={from} range={range} />
           </Column>

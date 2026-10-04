@@ -377,12 +377,12 @@ impl Store {
 
     /// Uygulama başına toplam süre; aralık dışına taşan kısımlar kırpılır.
     pub fn app_totals(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<UsageTotal>> {
-        self.totals("app_id", "app_name", from, to)
+        self.totals(from, to, |s| Some((&s.app_id, &s.app_name)))
     }
 
     /// Domain başına toplam süre (yalnızca URL'si bilinen oturumlar).
     pub fn domain_totals(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<UsageTotal>> {
-        self.totals("domain", "domain", from, to)
+        self.totals(from, to, |s| s.domain.as_ref().map(|d| (d, d)))
     }
 
     /// İlk açılışta varsayılan kategorileri ekler (kullanıcı silerse geri gelmez).
@@ -836,8 +836,15 @@ impl Store {
             tags.iter()
                 .any(|t| t.id == id && t.kind == TagKind::Category)
         };
+        // Kategori verilirken yalnızca bu uygulamanın kendi (tam) kuralları kalkar: önek
+        // kuralları (`com.jetbrains.*`) başka uygulamaları da kapsar, onlara dokunulmaz;
+        // tam kural sınıflandırmada önek kuralından önce gelir. Kategorisiz bırakmak için
+        // uygulamayı kapsayan önek kuralları da kaldırılmalıdır.
         for rule in self.rules()? {
-            if rule.field == RuleField::App && is_category(&rule.tag_id) && rule.matches(app_id, "")
+            if rule.field == RuleField::App
+                && is_category(&rule.tag_id)
+                && (tag_id.is_none() || !rule.pattern.ends_with('*'))
+                && rule.matches(app_id, "")
             {
                 self.delete_rule(&rule.id)?;
             }
@@ -1437,32 +1444,41 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// `key` ile gruplanmış toplam süre. Bilgisayarlar arası çakışmalar bir kez sayılır ve
+    /// süreler milisaniye olarak toplanıp en sonda saniyeye çevrilir (oturum başına kırpılmaz).
     fn totals(
         &self,
-        key_col: &str,
-        label_col: &str,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
+        key: impl Fn(&Session) -> Option<(&String, &String)>,
     ) -> Result<Vec<UsageTotal>> {
-        // Sütun adları sabit; kullanıcı girdisi değildir.
-        let sql = format!(
-            "SELECT {key_col}, MAX({label_col}),
-                    SUM((MIN(ended_at, ?2) - MAX(started_at, ?1)) / 1000) AS secs
-             FROM sessions
-             WHERE deleted_at IS NULL AND {key_col} IS NOT NULL
-               AND {OVERLAPS}
-             GROUP BY {key_col}
-             ORDER BY secs DESC, 2"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![ms(from), ms(to)], |r| {
-            Ok(UsageTotal {
-                key: r.get(0)?,
-                label: r.get(1)?,
-                seconds: r.get(2)?,
+        let sessions = self.merged_sessions_between(from, to)?;
+        // anahtar → (en son görülen ad, milisaniye)
+        let mut sums: HashMap<&String, (&String, i64)> = HashMap::new();
+        for s in &sessions {
+            let Some((k, label)) = key(s) else { continue };
+            let ms = (s.ended_at.min(to) - s.started_at.max(from)).num_milliseconds();
+            if ms <= 0 {
+                continue;
+            }
+            let entry = sums.entry(k).or_insert((label, 0));
+            entry.0 = label;
+            entry.1 += ms;
+        }
+        let mut out: Vec<UsageTotal> = sums
+            .into_iter()
+            .map(|(k, (label, ms))| UsageTotal {
+                key: k.clone(),
+                label: label.clone(),
+                seconds: ms / 1000,
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+            .collect();
+        out.sort_by(|a, b| {
+            b.seconds
+                .cmp(&a.seconds)
+                .then_with(|| a.label.cmp(&b.label))
+        });
+        Ok(out)
     }
 }
 
@@ -1685,6 +1701,26 @@ mod tests {
             .assign_app_category("com.microsoft.teams2", None)
             .unwrap();
         assert_eq!(category(&store), None);
+    }
+
+    #[test]
+    fn assign_app_category_keeps_prefix_rules_for_other_apps() {
+        let store = Store::open_in_memory().unwrap();
+        let tags = store.tags().unwrap();
+        let comm = tags.iter().find(|t| t.name == "İletişim").unwrap();
+        let dev = tags.iter().find(|t| t.name == "Geliştirme").unwrap();
+        store
+            .assign_app_category("com.jetbrains.pycharm", Some(&comm.id))
+            .unwrap();
+        let classifier = Classifier::new(&store.tags().unwrap(), &store.rules().unwrap());
+        assert_eq!(
+            classifier.app_category("com.jetbrains.pycharm").as_deref(),
+            Some(comm.id.as_str())
+        );
+        assert_eq!(
+            classifier.app_category("com.jetbrains.intellij").as_deref(),
+            Some(dev.id.as_str())
+        );
     }
 
     #[test]

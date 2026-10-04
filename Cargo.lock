@@ -2262,6 +2262,7 @@ dependencies = [
  "chrono",
  "objc2",
  "objc2-app-kit",
+ "semver",
  "serde",
  "serde_json",
  "tauri",

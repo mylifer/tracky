@@ -89,7 +89,9 @@ export default function ReportView(p: Props) {
   useTauriEvent(api.onSync, load);
 
   // Gün takviminde toplantılar; `null`: takvim bağlı değil (sütun gizlenir).
-  const [meetings, setMeetings] = useState<Meeting[] | null>(null);
+  // Hangi günün toplantıları olduğu da tutulur: gün değişince yenisi gelene kadar önceki
+  // günün toplantıları yeni güne çizilmesin.
+  const [meetingsOf, setMeetingsOf] = useState<{ start: string; list: Meeting[] } | null>(null);
   const [calendarOn, setCalendarOn] = useState(false);
   const [calendarRev, setCalendarRev] = useState(0);
   useEffect(() => {
@@ -103,16 +105,19 @@ export default function ReportView(p: Props) {
     setCalendarRev((r) => r + 1);
   });
   useEffect(() => {
-    if (!calendarOn || p.mode !== "day") return setMeetings(null);
+    if (!calendarOn || p.mode !== "day") return setMeetingsOf(null);
     let live = true;
-    api.meetings(p.start, 1).then(
-      (m) => live && setMeetings(m),
-      () => live && setMeetings(null),
+    const start = p.start;
+    api.meetings(start, 1).then(
+      (list) => live && setMeetingsOf({ start, list }),
+      () => live && setMeetingsOf(null),
     );
     return () => {
       live = false;
     };
   }, [calendarOn, calendarRev, p.mode, p.start]);
+  // `null`: takvim bağlı değil (sütun gizlenir); başka günün listesi gelene kadar boş sütun.
+  const meetings = meetingsOf && (meetingsOf.start === p.start ? meetingsOf.list : []);
 
   const from = parseIsoDate(p.start);
   const end = addDays(from, days);
@@ -151,6 +156,8 @@ export default function ReportView(p: Props) {
   const [preview, setPreview] = useState<[number, number] | null>(null);
   const [selection, setSelection] = useState<RangeSelection | null>(null);
   const closeSelection = useCallback(() => setSelection(null), []);
+  // Seçim menüsü eski günün zamanlarını taşır; gün değişince kapanır.
+  useEffect(closeSelection, [p.start, p.mode, closeSelection]);
   const selectRange = useCallback(
     (start: number, end: number, x: number, y: number) => setSelection({ start, end, x, y }),
     [],

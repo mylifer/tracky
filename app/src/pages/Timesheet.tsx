@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   Check,
@@ -147,7 +147,10 @@ export default function Timesheet({
   const [exporting, setExporting] = useState(false);
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
 
+  // Hafta hızla değiştirilince geç gelen eski yanıt yenisinin üzerine yazmasın.
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const [c, d, det, tax] = await Promise.all([
         api.timesheetConfig(),
@@ -155,13 +158,14 @@ export default function Timesheet({
         api.timesheetDetails(),
         api.taxonomy(),
       ]);
+      if (seq !== loadSeq.current) return;
       setConfig(c);
       setDays(d);
       setDetails(det);
       setProjects(tax.tags.filter((t) => t.kind === "project"));
       setError(null);
     } catch (e) {
-      setError(String(e));
+      if (seq === loadSeq.current) setError(String(e));
     }
   }, [start, rangeDays]);
   useEffect(() => {
@@ -404,7 +408,15 @@ function DayCard({
           {day.approved &&
             !exported &&
             (confirmReset ? (
-              <Button size="sm" variant="destructive" onClick={run(() => api.approveTimesheetDay(day.date))}>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => {
+                  // Onay tek kullanımlık: sonraki tıklama yeniden onay istesin.
+                  setConfirmReset(false);
+                  run(() => api.approveTimesheetDay(day.date))();
+                }}
+              >
                 Düzenlemeler silinsin, yeniden öner
               </Button>
             ) : (
@@ -528,7 +540,10 @@ function EntryRow({
   run: Run;
 }) {
   const [draft, setDraft] = useState(entry);
-  useEffect(() => setDraft(entry), [entry]);
+  // Her yeniden yüklemede satırlar yeni nesne olarak gelir; yalnızca içerik değişince taslak
+  // sıfırlansın (başka satırın kaydı ya da takvim yenilemesi yazılanı silmesin).
+  const entryJson = JSON.stringify(entry);
+  useEffect(() => setDraft(JSON.parse(entryJson)), [entryJson]);
   const save = (next: TimesheetEntry) => run(() => api.saveTimesheetEntry(entry.id, next))();
   const commit = () => {
     if (JSON.stringify(draft) !== JSON.stringify(entry)) save(draft);

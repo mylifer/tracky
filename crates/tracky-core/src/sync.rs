@@ -589,14 +589,22 @@ mod tests {
         }
     }
 
+    /// Uygulama başına ham (birleştirilmemiş) süre: eşitlenen satırları sayar.
     fn totals(store: &Mutex<Store>) -> Vec<(String, i64)> {
         let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
-        lock(store)
-            .app_totals(t0, t0 + Duration::hours(1))
+        let mut out: Vec<(String, i64)> = Vec::new();
+        for s in lock(store)
+            .sessions_between(t0, t0 + Duration::hours(1))
             .unwrap()
-            .into_iter()
-            .map(|u| (u.label, u.seconds))
-            .collect()
+        {
+            let secs = (s.ended_at - s.started_at).num_seconds();
+            match out.iter_mut().find(|(name, _)| *name == s.app_name) {
+                Some((_, total)) => *total += secs,
+                None => out.push((s.app_name, secs)),
+            }
+        }
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        out
     }
 
     #[test]

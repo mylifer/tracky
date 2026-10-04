@@ -74,7 +74,10 @@ impl Engine {
         window: Option<ActiveWindow>,
         idle_seconds: u64,
     ) -> Option<Session> {
-        let idle = Duration::seconds(idle_seconds.min(i64::MAX as u64) as i64);
+        // Platform anlamsız büyük bir değer döndürebilir (macOS'ta +inf → u64::MAX);
+        // `Duration::seconds` ve `now - idle` taşmasın diye bir yılla sınırlanır.
+        const MAX_IDLE_SECONDS: u64 = 365 * 24 * 3600;
+        let idle = Duration::seconds(idle_seconds.min(MAX_IDLE_SECONDS) as i64);
         if idle >= self.config.idle_threshold {
             // Boşluk son girdiden itibaren başlar; o ana kadar kullanıcı oradaydı.
             return self.close_at(Some(now - idle));
