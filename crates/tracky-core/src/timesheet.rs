@@ -82,6 +82,9 @@ pub struct ProjectMapping {
     pub division: String,
     /// Bu projenin "Parties" varsayılanı; boşsa genel varsayılan.
     pub party: Option<String>,
+    /// Hazır açıklama: önerinin başlıklardan açıklaması çıkmazsa bu yazılır.
+    #[serde(default)]
+    pub default_details: Option<String>,
 }
 
 impl Default for TimesheetConfig {
@@ -480,6 +483,13 @@ pub fn propose(
             } else {
                 describe(r.titles)
             };
+            // Hazır açıklama yalnızca boş kalan açıklamayı doldurur: başlıklardan çıkan metin
+            // (iş anahtarı, belge adı) projenin genel metninden daha bilgilendiricidir; boş
+            // satır ise aktarılamaz. Doldurulan metin elle değiştirilebilir.
+            let details = match mapping.and_then(|m| m.default_details.as_deref()) {
+                Some(text) if details.trim().is_empty() => text.trim().to_string(),
+                _ => details,
+            };
             let local = r.start.with_timezone(&Local);
             TimesheetEntry {
                 date: local.date_naive(),
@@ -593,6 +603,7 @@ mod tests {
                 project_id: "sync".into(),
                 division: "Int.Work.Sync.".into(),
                 party: None,
+                default_details: None,
             }],
             ..Default::default()
         };
@@ -717,6 +728,53 @@ mod tests {
         );
         assert!((got[0].hours - 1.0).abs() < 1e-9);
         assert_eq!(got[0].actual_hours, Some(1.0));
+    }
+
+    #[test]
+    fn default_details_fill_only_empty_descriptions() {
+        let (classifier, names, mut config) = setup();
+        config.projects.push(ProjectMapping {
+            project_id: "tru".into(),
+            division: "Trumore".into(),
+            party: None,
+            default_details: Some("  Trumore danışmanlık ".into()),
+        });
+        let sessions = [
+            // Başlıktan açıklama çıkar: hazır metin kullanılmaz.
+            s("Figma", "Trumore Pitchdeck — Figma", 0, 30, None),
+            // Toplantı uygulaması: açıklama boş kalır, hazır metin girer.
+            s("us.zoom.xos", "Zoom Meeting", 30, 60, Some("tru")),
+            // Hazır metni olmayan projenin boş açıklaması boş kalır.
+            s("us.zoom.xos", "Zoom Meeting", 60, 90, Some("sync")),
+        ];
+        let got = propose(
+            &sessions,
+            &[],
+            &classifier,
+            &names,
+            &config,
+            t(-540),
+            t(900),
+        );
+        let details: Vec<(&str, &str)> = got
+            .iter()
+            .map(|e| (e.project_id.as_str(), e.details.as_str()))
+            .collect();
+        assert_eq!(
+            details,
+            [
+                ("tru", "Trumore Pitchdeck"),
+                ("tru", "Trumore danışmanlık"),
+                ("sync", "")
+            ]
+        );
+    }
+
+    #[test]
+    fn mapping_without_default_details_still_parses() {
+        let m: ProjectMapping =
+            serde_json::from_str(r#"{"projectId":"a","division":"A","party":null}"#).unwrap();
+        assert_eq!(m.default_details, None);
     }
 
     #[test]

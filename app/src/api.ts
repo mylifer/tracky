@@ -183,7 +183,13 @@ export type Exported = {
   target: string;
   sheets: boolean;
 };
-export type ProjectMapping = { projectId: string; division: string; party: string | null };
+export type ProjectMapping = {
+  projectId: string;
+  division: string;
+  party: string | null;
+  /** Hazır açıklama: önerinin başlıklardan açıklaması çıkmazsa yazılır. */
+  defaultDetails?: string | null;
+};
 export type TimesheetConfig = {
   company: string;
   consultant: string;

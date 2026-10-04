@@ -59,6 +59,11 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 32. Zaman çizelgesi açıklamaları: kaydın iş anahtarları ve süreye göre en önemli başlıkları (yerel, ücretsiz)
 - [x] 33. Görünüm: kum tonlarında marka rengi, hedef halkaları, canlı kart, iskelet yükleme, sayfa geçişleri,
       okunur hata mesajları, karşılamada proje adımı (elle ya da zaman çizelgesi şablonundan)
+- [x] 34. Haftayı kapat: aktarmadan önce dönem denetimi (atanmamış süre, projesiz toplantılar, günlük saati
+      tutmayan ya da kaydı olmayan iş günleri, boş açıklamalar, onaylanmamış günler) ve her birine düzeltme
+      bağlantısı; tek düğmeyle onayla ve aktar. Gün kartında saat farkı rozeti, boş açıklama vurgusu
+- [x] 35. Hazır açıklamalar: proje başına açıklama metni (başlıklardan açıklama çıkmayan önerilere yazılır);
+      gün kartında "Önceki günden kopyala" boş açıklamaları aynı projenin son açıklamalarıyla doldurur (geri alınır)
 
 ## Yapı
 

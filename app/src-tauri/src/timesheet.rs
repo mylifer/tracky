@@ -471,6 +471,7 @@ fn apply_template(
                 project_id: id,
                 division: division.clone(),
                 party: None,
+                default_details: None,
             });
         }
     }

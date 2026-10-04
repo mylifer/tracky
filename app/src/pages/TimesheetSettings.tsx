@@ -185,7 +185,10 @@ function TimesheetDetails({
     }
   };
   const mapping = (id: string) => c.projects.find((m) => m.projectId === id);
-  const setMapping = (id: string, patch: { division?: string; party?: string | null }) => {
+  const setMapping = (
+    id: string,
+    patch: { division?: string; party?: string | null; defaultDetails?: string | null },
+  ) => {
     const current = mapping(id) ?? {
       projectId: id,
       division: projects.find((p) => p.id === id)?.name ?? "",
@@ -227,8 +230,8 @@ function TimesheetDetails({
         "w-20",
       )}
       <SettingBlock
-        label="Proje → birim ve taraf"
-        hint="Projenin dosyadaki adı (birim sütunu) ve tarafı; boş taraf varsayılanı kullanır."
+        label="Proje → birim, taraf ve hazır açıklama"
+        hint="Projenin dosyadaki adı (birim sütunu) ve tarafı; boş taraf varsayılanı kullanır. Hazır açıklama, pencere başlıklarından açıklama çıkmayan önerilere (örn. toplantı uygulaması) yazılır."
       >
         {projects.length === 0 ? (
           <p className="text-xs text-muted-foreground">Henüz proje yok (kenar çubuğunda Projeler).</p>
@@ -255,6 +258,17 @@ function TimesheetDetails({
                   defaultValue={mapping(p.id)?.party ?? ""}
                   onBlur={(e) => setMapping(p.id, { party: e.target.value.trim() || null })}
                   aria-label={`${p.name} tarafı`}
+                />
+                <Input
+                  className="col-span-2 col-start-2 h-7 text-xs"
+                  placeholder="Hazır açıklama (isteğe bağlı)"
+                  defaultValue={mapping(p.id)?.defaultDetails ?? ""}
+                  onBlur={(e) => {
+                    const v = e.target.value.trim() || null;
+                    if (v !== (mapping(p.id)?.defaultDetails ?? null)) setMapping(p.id, { defaultDetails: v });
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                  aria-label={`${p.name} hazır açıklaması`}
                 />
               </li>
             ))}
