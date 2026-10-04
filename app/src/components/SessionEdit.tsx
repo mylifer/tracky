@@ -46,15 +46,21 @@ function ProjectAssign({
   const current = chosen === undefined ? value : chosen;
   const pick = (id: string | null) => {
     setChosen(id);
-    // Hata olursa (yanıt `false`) işaret geri alınır; hata metnini çağıran gösterir.
-    onChange(id).then((ok) => ok === false && setChosen(undefined));
+    // Hata olursa (yanıt `false`) işaret geri alınır; hata metnini çağıran gösterir. Kaldırmada da
+    // geri alınır: proje kurallardan geliyorsa blokta kalır, yenilenen değer doğrusunu gösterir.
+    onChange(id).then((ok) => (ok === false || id === null) && setChosen(undefined));
   };
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-[11px] text-muted-foreground">
         <span>Proje</span>
         {current && (
-          <button type="button" className="hover:text-foreground hover:underline" onClick={() => pick(null)}>
+          <button
+            type="button"
+            className="hover:text-foreground hover:underline"
+            title="Elle atanan projeyi kaldırır; kurallara uyan kayıtlar yine projede kalır"
+            onClick={() => pick(null)}
+          >
             Kaldır
           </button>
         )}
