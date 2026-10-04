@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gapAround, smallLabels } from "./Calendar";
+import { gapAround, HOUR_PX, smallLabels, subMarks } from "./Calendar";
 
 const MIN = 60_000;
 const day = +new Date(2026, 9, 1);
@@ -44,5 +44,16 @@ describe("kısa çubuk etiketleri", () => {
   it("bir sonraki adlı çubuğun yazısını örtmez", () => {
     const labels = smallLabels([app("A", 0, 4), app("Uzun", 6, 40)], top, range);
     expect(labels).toEqual([]);
+  });
+});
+
+describe("subMarks", () => {
+  it("varsayılan görünümde yarım saat, yakınlaşınca çeyrek, çok uzakta yok", () => {
+    expect(subMarks(HOUR_PX, false)).toEqual([30]);
+    expect(subMarks(HOUR_PX, true)).toEqual([30]);
+    expect(subMarks(240, false)).toEqual([15, 30, 45]);
+    expect(subMarks(320, true)).toEqual([15, 30, 45]);
+    expect(subMarks(20, false)).toEqual([]);
+    expect(subMarks(30, true)).toEqual([]);
   });
 });

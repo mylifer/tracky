@@ -49,9 +49,12 @@ function hours(range: Range) {
   return out;
 }
 
-/** Yakınlaştıkça saat aralarına yarım ve çeyrek saat çizgileri/etiketleri eklenir (dakika). */
-function subMarks(px: number, forLabels: boolean): number[] {
-  const step = forLabels ? (px >= 300 ? 15 : px >= 150 ? 30 : 0) : px >= 200 ? 15 : px >= 100 ? 30 : 0;
+/**
+ * Saat aralarındaki çizgi ve etiketler (dakika): varsayılan görünümde yarım saat, yakınlaştıkça
+ * çeyrek saat. Çok uzaklaştırınca (yarım saat birkaç piksele inince) gizlenir.
+ */
+export function subMarks(px: number, forLabels: boolean): number[] {
+  const step = forLabels ? (px >= 300 ? 15 : px >= 40 ? 30 : 0) : px >= 200 ? 15 : px >= 24 ? 30 : 0;
   return step ? Array.from({ length: 60 / step - 1 }, (_, i) => (i + 1) * step) : [];
 }
 
