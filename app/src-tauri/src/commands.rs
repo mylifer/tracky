@@ -496,7 +496,7 @@ fn save_download(app: &AppHandle, name: &str, csv: &str) -> CmdResult<String> {
 }
 
 /// Dosyayı Finder / Gezgin'de seçili gösterir (başarısızlık önemsiz).
-fn reveal(path: &std::path::Path) {
+pub(crate) fn reveal(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open")
         .arg("-R")

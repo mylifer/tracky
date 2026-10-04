@@ -241,6 +241,37 @@ pub struct Store {
     instance_id: Uuid,
 }
 
+/// İç içe geçebilen işlem (SQLite `SAVEPOINT`). Dışarıda açık bir işlem yoksa kendisi başlatır
+/// ve `commit` ile yazar; varsa onun içinde bir kayıt noktası olur, yazılanlar dış işlemle
+/// birlikte kalır ya da geri alınır. `commit` edilmeden düşerse yaptıkları geri alınır.
+/// (`Connection::unchecked_transaction` iç içe açılamaz; depo işlemleri bu yüzden bunu kullanır.)
+pub(crate) struct Savepoint<'a> {
+    conn: &'a Connection,
+    done: bool,
+}
+
+impl<'a> Savepoint<'a> {
+    fn new(conn: &'a Connection) -> Result<Self> {
+        conn.execute_batch("SAVEPOINT kum")?;
+        Ok(Self { conn, done: false })
+    }
+
+    pub(crate) fn commit(mut self) -> Result<()> {
+        self.conn.execute_batch("RELEASE kum")?;
+        self.done = true;
+        Ok(())
+    }
+}
+
+impl Drop for Savepoint<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            // Hata zaten bildiriliyor; geri alma da başarısız olursa yapılacak bir şey yok.
+            let _ = self.conn.execute_batch("ROLLBACK TO kum; RELEASE kum");
+        }
+    }
+}
+
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -254,6 +285,21 @@ impl Store {
 
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
+    }
+
+    /// İç içe geçebilen bir işlem açar (bkz. [`Savepoint`]).
+    pub(crate) fn savepoint(&self) -> Result<Savepoint<'_>> {
+        Savepoint::new(&self.conn)
+    }
+
+    /// `f`'yi tek işlemde çalıştırır: hata dönerse yaptığı her değişiklik geri alınır. Depo
+    /// işlemleri iç içe geçebildiği için birkaç düzenlemeyi (örn. kural ekleyip oturumları
+    /// atamak) hep ya da hiç olarak birleştirir.
+    pub fn atomic<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let sp = self.savepoint()?;
+        let out = f(self)?;
+        sp.commit()?;
+        Ok(out)
     }
 
     /// Veritabanının tutarlı, sıkıştırılmış bir kopyasını `path`'e yazar (takip yazarken de
@@ -321,7 +367,7 @@ impl Store {
     /// eşitleme, sunucudaki (geri yüklemeden sonraki) sürümleri çekip geri yüklemeyi ezerdi;
     /// böylece geri yüklenen sürümler gönderilir ve "son yazan kazanır"da onlar kazanır.
     pub fn mark_restored_for_sync(&self) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         self.conn
             .execute("DELETE FROM settings WHERE key LIKE 'sync_cursor:%'", [])?;
         let now = ms(Utc::now());
@@ -518,7 +564,7 @@ impl Store {
             self.require_tag(id, TagKind::Category)?;
         }
         self.ensure_no_foreign_live(from, to)?;
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
             &format!(
@@ -545,7 +591,7 @@ impl Store {
             self.require_tag(id, TagKind::Project)?;
         }
         self.ensure_no_foreign_live(from, to)?;
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
             &format!(
@@ -563,7 +609,7 @@ impl Store {
     /// kalan kısmı korunur. Silinen satır sayısı.
     pub fn delete_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
         self.ensure_no_foreign_live(from, to)?;
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
             &format!(
@@ -679,7 +725,7 @@ impl Store {
                 "bu aralıkta zaten kayıt var; önce o bloğu silin".into(),
             ));
         }
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         if !overlapping.is_empty() {
             self.split_at(from, to)?;
             self.conn.execute(

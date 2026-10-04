@@ -302,6 +302,27 @@ export type UpdateStatus = {
   error: string | null;
 };
 
+/** Müşteri raporunun kaynağı: zaman çizelgesi satırları ya da takip edilen süre. */
+export type ReportSource = "timesheet" | "tracked";
+export type ClientReportRow = {
+  /** Projesi bilinmeyen zaman çizelgesi kaydında boş. */
+  projectId: string;
+  project: string;
+  color: number;
+  client: string | null;
+  /** Gün başına saat, `days` sırasıyla. */
+  hours: number[];
+  total: number;
+};
+export type ClientReport = {
+  days: string[];
+  source: ReportSource;
+  timesheetAvailable: boolean;
+  rows: ClientReportRow[];
+  dayTotals: number[];
+  total: number;
+};
+
 export const api = {
   status: () => invoke<AppStatus>("get_status"),
   requestAccessibility: () => invoke<boolean>("request_accessibility"),
@@ -343,6 +364,12 @@ export const api = {
     projectId: string | null,
     rule: [RuleField, string] | null,
   ) => invoke<Edited>("assign_unassigned", { start, days, key, title, projectId, rule }),
+  /** `month` ayının proje × gün saatleri; `client` `null` ise tüm müşteriler, `source` `null` ise kendisi seçer. */
+  clientReport: (month: string, client: string | null, source: ReportSource | null) =>
+    invoke<ClientReport>("client_report", { month, client, source }),
+  /** Raporu seçilen Excel dosyasına yazar; vazgeçilirse `null`. */
+  exportClientReport: (month: string, client: string | null, source: ReportSource | null) =>
+    invoke<string | null>("export_client_report", { month, client, source }),
   ignoreUnassigned: (key: string, ignored: boolean) => invoke<void>("ignore_unassigned", { key, ignored }),
   ignoredUnassigned: () => invoke<string[]>("ignored_unassigned"),
   /** Bu hafta aktarılmamış işi olan günler (YYYY-MM-DD). */

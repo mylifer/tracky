@@ -95,7 +95,7 @@ impl Store {
     /// Görüntüdeki duruma döner. Süren oturum geri alınırken uzamış olabilir; bitişi kısalmaz.
     pub fn restore_snapshot(&self, snap: &EditSnapshot) -> Result<()> {
         let now = ms(Utc::now());
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         if let Some((start, end)) = snap.extent {
             let known: HashSet<&str> = snap.rows.iter().map(|r| r.id.as_str()).collect();
             let own = self.device_id.to_string();
@@ -163,7 +163,7 @@ impl Store {
             self.require_tag(id, TagKind::Project)?;
         }
         let now = ms(Utc::now());
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.savepoint()?;
         let mut n = 0;
         for id in ids {
             n += self.conn.execute(
@@ -445,6 +445,39 @@ mod tests {
         expected.push((20, 50, None));
         expected.sort();
         assert_eq!(state(&store), expected);
+    }
+
+    #[test]
+    fn edits_nest_in_one_transaction_and_roll_back_together() {
+        let store = Store::open_in_memory().unwrap();
+        let p = project(&store, "kum");
+        let s = session("a", 0, 60);
+        store.upsert_session(&s).unwrap();
+        let before = state(&store);
+
+        // Kendi işlemini açan düzenlemeler dış işlemin içinde de çalışır; sonradan gelen hata
+        // hepsini geri alır.
+        let out: Result<()> = store.atomic(|store| {
+            store.set_project_for(&[s.id], Some(&p))?;
+            store.set_project_between(t(10), t(20), None)?;
+            assert_ne!(state(store), before);
+            Err(StoreError::Invalid("dur".into()))
+        });
+        assert!(out.is_err());
+        assert_eq!(state(&store), before);
+
+        // İçteki başarısız düzenleme yalnızca kendini geri alır; dış işlem devam edebilir.
+        let snap = store.snapshot_sessions(&[s.id]).unwrap();
+        store
+            .atomic(|store| {
+                store.set_project_for(&[s.id], Some(&p))?;
+                assert!(store.set_project_for(&[s.id], Some("yok")).is_err());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(state(&store), vec![(0, 60, Some(p.clone()))]);
+        store.atomic(|store| store.restore_snapshot(&snap)).unwrap();
+        assert_eq!(state(&store), before);
     }
 
     #[test]

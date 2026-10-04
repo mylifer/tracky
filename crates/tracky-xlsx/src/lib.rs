@@ -8,8 +8,9 @@
 //! yere satır eklenir. Eklenen satırlar biçimini üstteki satırdan alır. Yazmadan önce
 //! dosyanın yanına zaman damgalı yedek alınır.
 //!
-//! Google Sheets'e aynı kurallarla yazmak için [`sheets`].
+//! Google Sheets'e aynı kurallarla yazmak için [`sheets`], aylık müşteri raporu için [`report`].
 
+pub mod report;
 pub mod sheets;
 
 use std::path::{Path, PathBuf};

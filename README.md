@@ -72,6 +72,10 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       ("Portal · 5sa 20dk"); menü çubuğundan "Zaman Çizelgesini Aç"
 - [x] 39. Terimler ve erişilebilirlik: henüz atanmamış süre "Atanmamış", elle proje yok denen süre "Projesiz";
       kenar çubuğu rozetlerinin anlamı ekran okuyucuda, düğmelerde klavye odak halkası
+- [x] 40. Tek işlemde geri alma: geri alma ve kurallı atama hep ya da hiç çalışır (depo işlemleri SQLite
+      `SAVEPOINT` ile iç içe geçer); yarıda kalan bir geri alma hiçbir şeyi değiştirmez, yeniden denenebilir
+- [x] 41. Müşteri raporu: ay ve müşteri seçilir; projelerin gün gün saatleri (zaman çizelgesi satırları ya da
+      takip edilen süre), satır ve gün toplamları. Excel'e aktarma (kaydetme penceresi) ve yazdır / PDF
 
 ## Yapı
 
@@ -90,12 +94,14 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
   calendar.rs             iCalendar (.ics) ayrıştırma: tekrar kuralları, VTIMEZONE, istisnalar
   timesheet.rs            Oturum ve toplantılardan günlük iş kaydı önerileri
   report.rs               Gün/hafta raporu (kategori, proje, uygulama, gün, zaman çizelgesi)
+  client_report.rs        Aylık müşteri raporu: proje × gün saat tablosu
   tracker.rs              Gözlem → gizlilik → motor → depolama hattı
   url_util.rs             URL'den domain çıkarma, adres temizleme, web sitesi kuralı eşleştirme
 crates/tracky-platform/   macOS (Erişilebilirlik API) ve Windows (Win32, UI Automation) gözlemcileri
 crates/tracky-probe/      Takibi terminalden denemek için araç
 crates/tracky-sync/       Supabase istemcisi (Auth + PostgREST)
-crates/tracky-xlsx/       Zaman çizelgesini Excel dosyasına ya da (Apps Script ile) Google Sheets'e ekleme
+crates/tracky-xlsx/       Zaman çizelgesini Excel dosyasına ya da (Apps Script ile) Google Sheets'e ekleme;
+                          müşteri raporunu yeni Excel dosyasına yazma
 supabase/migrations/      Sunucu şeması (tablolar, RLS, çakışma kuralı)
 app/                      Kum masaüstü uygulaması (Tauri + React)
   src/                    Arayüz: karşılama, gün/hafta raporları, kategoriler, ayarlar

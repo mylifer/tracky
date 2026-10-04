@@ -22,6 +22,7 @@ import {
   HardDriveDownload,
   Download,
   Command as CommandIcon,
+  ReceiptText,
 } from "lucide-react";
 import { api, formatDuration, type AppStatus, type Suggestions, type Tag, type TrackingStatus } from "./api";
 import { UpdateCard } from "./components/UpdateCard";
@@ -54,13 +55,24 @@ import TagsPage from "./pages/TagsPage";
 import ClientsPage from "./pages/ClientsPage";
 import Search, { type SearchState } from "./pages/Search";
 import Trends from "./pages/Trends";
+import ClientReport from "./pages/ClientReport";
 import Timesheet from "./pages/Timesheet";
 import Review, { type ReviewRange } from "./pages/Review";
 import Settings from "./pages/Settings";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
 type Mode = "day" | "week" | "month";
-type View = Mode | "review" | "timesheet" | "trends" | "search" | "clients" | "projects" | "categories" | "settings";
+type View =
+  | Mode
+  | "review"
+  | "timesheet"
+  | "trends"
+  | "client-report"
+  | "search"
+  | "clients"
+  | "projects"
+  | "categories"
+  | "settings";
 
 const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
   { id: "day", label: "Gün", icon: <CalendarDays /> },
@@ -72,6 +84,7 @@ const TITLES: Partial<Record<View, string>> = {
   review: "Gözden geçir",
   timesheet: "Zaman çizelgesi",
   trends: "Eğilimler",
+  "client-report": "Müşteri raporu",
   search: "Ara",
   clients: "Müşteriler",
   projects: "Projeler",
@@ -278,6 +291,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
       case "timesheet":
       case "search":
       case "trends":
+      case "client-report":
       case "projects":
       case "categories":
       case "clients":
@@ -363,6 +377,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
       go("timesheet", "Zaman çizelgesi", <FileSpreadsheet />, `${MOD}4`, "excel sheets aktar timesheet"),
       go("review", "Gözden geçir", <Inbox />, `${MOD}5`, "atanmamış projesiz süre"),
       go("trends", "Eğilimler", <TrendingUp />, undefined, "grafik hafta"),
+      go("client-report", "Müşteri raporu", <ReceiptText />, undefined, "aylık fatura onay excel pdf yazdır"),
       go("search", "Ara", <SearchIcon />, `${MOD}F`, "bul pencere başlık"),
       go("clients", "Müşteriler", <Building2 />, undefined, "firma"),
       go("projects", "Projeler", <FolderKanban />, undefined, "kural"),
@@ -451,6 +466,9 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
             ))}
             <NavItem icon={<TrendingUp />} active={view === "trends"} onClick={() => setView("trends")}>
               Eğilimler
+            </NavItem>
+            <NavItem icon={<ReceiptText />} active={view === "client-report"} onClick={() => setView("client-report")}>
+              Müşteri raporu
             </NavItem>
             <NavItem icon={<SearchIcon />} active={view === "search"} onClick={() => setView("search")}>
               Ara
@@ -544,6 +562,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                   }}
                 />
               )}
+              {view === "client-report" && <ClientReport />}
               {view === "search" && (
                 <Search
                   state={search}

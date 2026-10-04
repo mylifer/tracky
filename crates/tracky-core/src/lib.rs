@@ -7,6 +7,7 @@ pub mod blocks;
 pub mod browser;
 pub mod calendar;
 pub mod classify;
+pub mod client_report;
 pub mod coach;
 pub mod engine;
 pub mod export;
