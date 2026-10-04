@@ -50,8 +50,9 @@ export default function Settings({
   const [exported, setExported] = useState<string | null>(null);
 
   useEffect(() => {
-    api.privacy().then(setPrivacy);
-    api.knownApps().then(setApps);
+    // Gizlilik okunamazsa bölüm sessizce kaybolmasın.
+    api.privacy().then(setPrivacy, (e) => setError(friendlyError(e)));
+    api.knownApps().then(setApps, () => {});
   }, []);
   useEffect(() => {
     // Bölümler yüklenince yerleşsin diye bir kare sonra.

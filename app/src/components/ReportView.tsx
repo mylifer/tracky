@@ -53,7 +53,10 @@ export default function ReportView(p: Props) {
   const days = p.mode === "day" ? 1 : p.mode === "week" ? 7 : daysInMonth(parseIsoDate(p.start));
   // Ay görünümünde zaman çizelgesi gerekmez (yalnızca gün toplamları).
   const timeline = p.mode !== "month";
-  const [report, setReport] = useState<Report | null>(null);
+  // Rapor hangi görünümün olduğuyla tutulur: hafta → ay geçişinde 7 günlük rapor ay takvimine
+  // çizilmesin. Dönem değişirken (aynı görünüm) yenisi gelene kadar eskisi görünür kalır.
+  const [loaded, setLoaded] = useState<{ mode: Props["mode"]; report: Report } | null>(null);
+  const report = loaded?.mode === p.mode ? loaded.report : null;
   const [previous, setPrevious] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dailyHours, setDailyHours] = useState(8);
@@ -74,13 +77,19 @@ export default function ReportView(p: Props) {
   const seq = useRef(0);
   const load = useCallback(() => {
     const n = ++seq.current;
+    const mode = p.mode;
     api.report(p.start, days, timeline).then(
       (r) => {
         if (n !== seq.current) return;
-        setReport(r);
+        setLoaded({ mode, report: r });
         setError(null);
       },
-      (e) => n === seq.current && setError(friendlyError(e)),
+      (e) => {
+        if (n !== seq.current) return;
+        // Önceki dönemin rakamları yeni başlığın altında kalmasın.
+        setLoaded(null);
+        setError(friendlyError(e));
+      },
     );
     const start = parseIsoDate(p.start);
     const prevStart = p.mode === "month" ? addMonths(start, -1) : addDays(start, -days);
@@ -290,6 +299,12 @@ export default function ReportView(p: Props) {
 
       <div ref={scroller} className="@container flex-1 overflow-y-auto px-5 pb-6">
         {error && <p className="pb-3 text-xs text-destructive selectable">{error}</p>}
+        {!report && !error && (
+          <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]" aria-busy>
+            <div className="skeleton h-[420px] rounded-xl" />
+            <div className="skeleton hidden h-[420px] rounded-xl @[880px]:block" />
+          </div>
+        )}
         {report && (
           <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
             <div className="min-w-0 space-y-4">

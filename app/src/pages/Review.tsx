@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppWindow,
   CalendarClock,
@@ -29,12 +29,12 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { addDays, formatDate, formatTime, isoDate, startOfWeek, today } from "../lib/dates";
+import { addDays, formatDate, formatTime, isoDate, parseIsoDate, startOfWeek, today } from "../lib/dates";
 import { friendlyError, notifyChanged, toast, undoable, useChanged } from "../lib/feedback";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 
-type Period = "today" | "week" | "lastWeek" | "days30";
+type Period = "today" | "week" | "lastWeek" | "days30" | "custom";
 const PERIODS: { id: Period; label: string }[] = [
   { id: "today", label: "Bugün" },
   { id: "week", label: "Bu hafta" },
@@ -43,9 +43,19 @@ const PERIODS: { id: Period; label: string }[] = [
 ];
 const PERIOD_KEY = "kum.review.period";
 
-function periodRange(p: Period): { start: string; days: number } {
+/** Başka bir sayfadan verilen aralık (raporda bakılan gün/hafta/ay, zaman çizelgesindeki gün). */
+export type ReviewRange = { start: string; days: number };
+
+function rangeLabel({ start, days }: ReviewRange): string {
+  const s = parseIsoDate(start);
+  return days === 1 ? formatDate(s) : `${formatDate(s)} – ${formatDate(addDays(s, days - 1))}`;
+}
+
+function periodRange(p: Period, custom: ReviewRange | null): ReviewRange {
   const t = today();
   switch (p) {
+    case "custom":
+      return custom ?? { start: isoDate(startOfWeek(t)), days: 7 };
     case "today":
       return { start: isoDate(t), days: 1 };
     case "week":
@@ -76,22 +86,25 @@ const FIRST_ITEMS = 3;
  * etkisi önceden gösterilir). Her atama geri alınabilir.
  */
 export default function Review({
+  range,
   onOpenTimesheet,
   onOpenProjects,
 }: {
+  /** Verilirse sayfa bu aralıkla açılır; sekmelerden biri seçilince bırakılır. */
+  range?: ReviewRange | null;
   onOpenTimesheet: () => void;
   onOpenProjects: () => void;
 }) {
-  const [period, setPeriodState] = useState<Period>(savedPeriod);
+  const [period, setPeriodState] = useState<Period>(() => (range ? "custom" : savedPeriod()));
   const setPeriod = (p: Period) => {
     setPeriodState(p);
     try {
-      localStorage.setItem(PERIOD_KEY, p);
+      if (p !== "custom") localStorage.setItem(PERIOD_KEY, p);
     } catch {
       /* depolama kapalı */
     }
   };
-  const { start, days } = periodRange(period);
+  const { start, days } = periodRange(period, range ?? null);
   const [data, setData] = useState<Unassigned | null>(null);
   const [worked, setWorked] = useState(0);
   const [tags, setTags] = useState<Tag[]>([]);
@@ -99,16 +112,26 @@ export default function Review({
   const [ignored, setIgnored] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Dönem hızlı değişince yavaş kalan eski yanıt yenisinin üstüne yazmasın: atama da
+  // ekrandaki grubun anahtarını şimdiki aralıkla gönderir.
+  const seq = useRef(0);
+  const shown = useRef("");
   const load = useCallback(() => {
+    const n = ++seq.current;
+    const key = `${start}/${days}`;
+    if (shown.current !== key) setData(null);
     api.unassigned(start, days).then(
       (u) => {
+        if (n !== seq.current) return;
+        shown.current = key;
         setData(u);
         setError(null);
       },
-      (e) => setError(friendlyError(e)),
+      (e) => n === seq.current && setError(friendlyError(e)),
     );
     api.report(start, days, false).then(
       (r) => {
+        if (n !== seq.current) return;
         setWorked(r.totalSeconds);
         setTags(r.tags);
       },
@@ -171,7 +194,12 @@ export default function Review({
           benzer süre de o projeye yazılır.
         </p>
         <Tabs value={period} onValueChange={(v) => setPeriod(v as Period)}>
-          <TabsList>
+          <TabsList aria-label="Dönem">
+            {range && (
+              <TabsTrigger value="custom" className="px-3">
+                {rangeLabel(range)}
+              </TabsTrigger>
+            )}
             {PERIODS.map((p) => (
               <TabsTrigger key={p.id} value={p.id} className="px-3">
                 {p.label}
@@ -492,7 +520,7 @@ function GroupCard({
             item={item}
             projects={projects}
             tags={tags}
-            initialProject={likely?.id}
+            likely={likely}
             onAssign={(p, rule) => onAssign(p, rule, item.title)}
           />
         ))}
@@ -526,21 +554,25 @@ function MenuButton({ children, onClick }: { children: React.ReactNode; onClick:
   );
 }
 
-/** Başlık satırı: süre ve "Ata"; açılınca proje ve başlık kuralı. */
+/**
+ * Başlık satırı: süre ve "Ata"; açılınca proje ve başlık kuralı. Muhtemel proje biliniyorsa
+ * tek tıkla ona atanır (kuralsız, geri alınabilir).
+ */
 function ItemRow({
   item,
   projects,
   tags,
-  initialProject,
+  likely,
   onAssign,
 }: {
   item: UnassignedItem;
   projects: Tag[];
   tags: Tag[];
-  initialProject?: string;
+  likely?: Tag;
   onAssign: (projectId: string, rule: [RuleField, string] | null) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   return (
     <li className="border-b last:border-b-0">
       <div className="flex items-center gap-2 px-4 py-2 pl-[3.75rem] hover:bg-accent/30">
@@ -555,14 +587,35 @@ function ItemRow({
         <span className="w-14 shrink-0 text-right text-[11px] text-muted-foreground tabular">
           {formatDuration(item.seconds)}
         </span>
+        {likely && !open && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 max-w-36 shrink-0 gap-1.5 px-2 text-[11px]"
+            title={`${likely.name} projesine ata`}
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onAssign(likely.id, null);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(likely) }} aria-hidden />
+            <span className="truncate">{likely.name}</span>
+          </Button>
+        )}
         <Button
           size="sm"
           variant={open ? "secondary" : "ghost"}
-          className="h-6 shrink-0 px-2 text-[11px]"
+          className="h-7 shrink-0 px-2 text-[11px]"
+          aria-expanded={open}
           onClick={() => setOpen(!open)}
           disabled={projects.length === 0}
         >
-          Ata
+          {likely ? "Başka…" : "Ata"}
         </Button>
       </div>
       {open && (
@@ -575,7 +628,7 @@ function ItemRow({
             editable
             defaultRule={!!item.word}
             ruleText={RULE_TEXT.title}
-            initialProject={initialProject}
+            initialProject={likely?.id}
             submitLabel="Ata"
             onSubmit={async (p, rule) => {
               await onAssign(p, rule);
@@ -613,6 +666,10 @@ function AssignForm({
   onSubmit: (projectId: string, rule: [RuleField, string] | null) => Promise<void>;
 }) {
   const [project, setProject] = useState(initialProject ?? "");
+  // Projeler atanmamış süreden sonra gelebilir: önerilen proje o zaman seçilsin.
+  useEffect(() => {
+    if (initialProject) setProject((p) => p || initialProject);
+  }, [initialProject]);
   const [rule, setRule] = useState(defaultRule);
   const [pattern, setPattern] = useState(initialPattern);
   const [busy, setBusy] = useState(false);

@@ -458,8 +458,10 @@ export function ManualEntry({
     setDate(draft.date);
     setFrom(draft.from);
     setTo(draft.to);
-    if (draft.label !== undefined) setLabel(draft.label);
-    if (draft.project !== undefined) setProject(draft.project);
+    // Önceki taslağın (ör. toplantı) adı ve projesi boş alana tıklanınca taşınmasın.
+    setLabel(draft.label ?? "");
+    setProject(draft.project ?? null);
+    setCategory(null);
     setError(null);
     setOpen(true);
   }, [draft]);
@@ -485,6 +487,8 @@ export function ManualEntry({
       setOpen(false);
       onClose?.();
       setLabel("");
+      setCategory(null);
+      setProject(null);
       setError(null);
       onChanged();
     } catch (err) {

@@ -31,7 +31,9 @@ export default function Search({
   onChange: (s: SearchState) => void;
   onSelectDay: (iso: string) => void;
 }) {
-  const [result, setResult] = useState<SearchResult | null>(null);
+  // Sonuç hangi dönemin olduğuyla tutulur: dönem değişince eski sonuç yeni tarihlere çizilmesin.
+  const [found, setFound] = useState<{ days: number; result: SearchResult } | null>(null);
+  const result = found?.days === state.days ? found.result : null;
   const [error, setError] = useState<string | null>(null);
   const start = useMemo(() => addDays(today(), 1 - state.days), [state.days]);
 
@@ -41,14 +43,15 @@ export default function Search({
     const query = state.query.trim();
     const n = ++seq.current;
     if (!query) {
-      setResult(null);
+      setFound(null);
       return;
     }
+    const days = state.days;
     const id = window.setTimeout(() => {
       api.search(query, isoDate(start), state.days).then(
         (r) => {
           if (n !== seq.current) return;
-          setResult(r);
+          setFound({ days, result: r });
           setError(null);
         },
         (e) => n === seq.current && setError(friendlyError(e)),

@@ -140,7 +140,7 @@ export default function Onboarding({ status, onChange }: Props) {
 }
 
 /** Proje adları yazılır (Enter ile eklenir) ya da zaman çizelgesi şablonundan alınır. */
-function ProjectsStep({ onDone, onBack }: { onDone: () => void; onBack: () => void }) {
+function ProjectsStep({ onDone, onBack }: { onDone: () => Promise<void>; onBack: () => void }) {
   const [names, setNames] = useState<string[]>([]);
   const [word, setWord] = useState("");
   const [imported, setImported] = useState<string | null>(null);
@@ -175,19 +175,23 @@ function ProjectsStep({ onDone, onBack }: { onDone: () => void; onBack: () => vo
     try {
       const pending = [...names];
       if (word.trim()) pending.push(word.trim());
-      const { tags } = await api.taxonomy();
+      const { tags, rules } = await api.taxonomy();
       const all = [...tags];
       for (const name of pending) {
-        if (all.some((t) => t.kind === "project" && t.name.toLocaleLowerCase("tr") === name.toLocaleLowerCase("tr")))
-          continue;
-        const tag = await api.saveTag({ kind: "project", name, color: nextColor(all) });
-        all.push(tag);
+        const existing = all.find(
+          (t) => t.kind === "project" && t.name.toLocaleLowerCase("tr") === name.toLocaleLowerCase("tr"),
+        );
+        // Önceki denemede proje eklenip kuralı eklenemediyse kural şimdi eklenir.
+        if (existing && rules.some((r) => r.tagId === existing.id)) continue;
+        const tag = existing ?? (await api.saveTag({ kind: "project", name, color: nextColor(all) }));
+        if (!existing) all.push(tag);
         // Kuralsız proje süre toplamaz: adı başlıkta aranan sözcük olur.
         await api.addRule(tag.id, "title", name);
       }
-      onDone();
+      await onDone();
     } catch (e) {
       setError(friendlyError(e));
+    } finally {
       setBusy(false);
     }
   }

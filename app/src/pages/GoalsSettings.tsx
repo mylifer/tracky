@@ -42,17 +42,26 @@ export default function GoalsSettings() {
       },
       (e) => setError(friendlyError(e)),
     );
-    api.taxonomy().then((t) => {
-      setCategories(t.tags.filter((x) => x.kind === "category"));
-      setProjects(t.tags.filter((x) => x.kind === "project"));
-    });
+    api.taxonomy().then(
+      (t) => {
+        setCategories(t.tags.filter((x) => x.kind === "category"));
+        setProjects(t.tags.filter((x) => x.kind === "project"));
+      },
+      (e) => setError(friendlyError(e)),
+    );
   }, []);
 
   if (!goals) return <ErrorText>{error}</ErrorText>;
 
   function save(next: Goals) {
+    // Kaydedilemezse ekranda kaydedilmemiş değer kalmasın.
+    const prev = goals;
     setGoals(next);
-    api.saveGoals(next).catch((e) => setError(friendlyError(e)));
+    setError(null);
+    api.saveGoals(next).catch((e) => {
+      setGoals(prev);
+      setError(friendlyError(e));
+    });
   }
 
   const breakOn = goals.breakAfterMinutes !== null;

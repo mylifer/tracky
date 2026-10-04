@@ -35,6 +35,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import {
   addDays,
   addMonths,
+  daysInMonth,
   formatMonth,
   formatTime,
   formatWeek,
@@ -54,7 +55,7 @@ import ClientsPage from "./pages/ClientsPage";
 import Search, { type SearchState } from "./pages/Search";
 import Trends from "./pages/Trends";
 import Timesheet from "./pages/Timesheet";
-import Review from "./pages/Review";
+import Review, { type ReviewRange } from "./pages/Review";
 import Settings from "./pages/Settings";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
@@ -133,6 +134,15 @@ function Splash() {
 
 function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) {
   const [view, setView] = useState<View>("day");
+  // Gözden geçir bir aralıkla açılabilir (raporda bakılan dönem); kenar çubuğundan açılınca kendi dönemi.
+  const [reviewRange, setReviewRange] = useState<ReviewRange | null>(null);
+  const openReview = (range: ReviewRange | null = null) => {
+    setReviewRange(range);
+    setView("review");
+  };
+  useEffect(() => {
+    if (view !== "review") setReviewRange(null);
+  }, [view]);
   // Ayarlar başka bir sayfadan belirli bir bölümle açılabilir (zaman çizelgesi → Bağlantılar).
   const [settingsSection, setSettingsSection] = useState<string | null>(null);
   const openSettings = (section: string | null = null) => {
@@ -493,14 +503,27 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
               setDay(iso);
               setView("day");
             }}
-            onReview={() => setView("review")}
+            onReview={() =>
+              openReview(
+                view === "day"
+                  ? { start: day, days: 1 }
+                  : view === "week"
+                    ? { start: week, days: 7 }
+                    : { start: month, days: daysInMonth(parseIsoDate(month)) },
+              )
+            }
           />
         ) : (
           <>
             <Toolbar title={TITLES[view] ?? ""} />
             <div key={view} className="page-enter flex-1 overflow-y-auto">
               {view === "review" && (
-                <Review onOpenTimesheet={() => setView("timesheet")} onOpenProjects={() => setView("projects")} />
+                <Review
+                  key={reviewRange ? `${reviewRange.start}/${reviewRange.days}` : "own"}
+                  range={reviewRange}
+                  onOpenTimesheet={() => setView("timesheet")}
+                  onOpenProjects={() => setView("projects")}
+                />
               )}
               {view === "timesheet" && (
                 <Timesheet
@@ -508,6 +531,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                     setDay(iso);
                     setView("day");
                   }}
+                  onReviewDay={(iso) => openReview({ start: iso, days: 1 })}
                   onOpenSettings={openSettings}
                 />
               )}

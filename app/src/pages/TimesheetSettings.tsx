@@ -272,10 +272,13 @@ export function CalendarConnect() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    api.calendarStatus().then((s) => {
-      setStatus(s);
-      setUrl(s.url ?? "");
-    });
+    api.calendarStatus().then(
+      (s) => {
+        setStatus(s);
+        setUrl(s.url ?? "");
+      },
+      (e) => setError(friendlyError(e)),
+    );
   }, []);
   useTauriEvent(api.onCalendar, setStatus);
   const save = async (next: string | null) => {

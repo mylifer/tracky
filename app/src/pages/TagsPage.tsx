@@ -75,7 +75,14 @@ export default function TagsPage({
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const t = await api.taxonomy();
+    let t;
+    try {
+      t = await api.taxonomy();
+    } catch (e) {
+      // Boş liste "henüz proje yok" gibi görünmesin.
+      setError(friendlyError(e));
+      return;
+    }
     setTags(t.tags);
     setClients(t.clients);
     setLinks(t.projectClients);
@@ -95,7 +102,7 @@ export default function TagsPage({
 
   useEffect(() => {
     load();
-    api.knownApps().then(setApps);
+    api.knownApps().then(setApps, () => {});
   }, [load]);
   useChanged(load);
 
@@ -285,13 +292,18 @@ function AddTag({
         setBusy(true);
         try {
           const tag = await api.saveTag({ kind, name: name.trim(), color: nextColor(allTags) });
-          // Kuralsız proje hiç süre toplamaz: adı, başlıkta aranan sözcük olarak eklenir.
-          if (kind === "project") await api.addRule(tag.id, "title", tag.name);
+          // Kuralsız proje hiç süre toplamaz: adı, başlıkta aranan sözcük olarak eklenir. Kural
+          // eklenemezse proje de kaldırılır; yoksa ad "zaten var" olur ve yeniden denenemez.
+          if (kind === "project")
+            await api.addRule(tag.id, "title", tag.name).catch(async (err) => {
+              await api.deleteTag(tag.id).catch(() => {});
+              throw err;
+            });
           if (kind === "project" && client) await api.setProjectClient(tag.id, client);
           setName("");
           onAdded(tag.id);
         } catch (err) {
-          onError(String(err));
+          onError(friendlyError(err));
         } finally {
           setBusy(false);
         }

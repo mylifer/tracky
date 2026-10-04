@@ -44,6 +44,7 @@ import {
   startOfWeek,
   today,
 } from "../lib/dates";
+import { ProjectSelect } from "../components/ProjectSelect";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
@@ -119,9 +120,12 @@ function manDays(hours: number, dayHours: number) {
  */
 export default function Timesheet({
   onOpenDay,
+  onReviewDay,
   onOpenSettings,
 }: {
   onOpenDay: (iso: string) => void;
+  /** Günün projeye atanmamış süresini Gözden geçir'de aç. */
+  onReviewDay: (iso: string) => void;
   /** Ayarlar'ı bu bölümle aç (Bağlantılar ya da Zaman çizelgesi). */
   onOpenSettings: (section: string) => void;
 }) {
@@ -140,6 +144,9 @@ export default function Timesheet({
   const start = isoDate(rangeStart);
   const [config, setConfig] = useState<TimesheetConfig | null>(null);
   const [days, setDays] = useState<TimesheetDay[]>([]);
+  // Ekrandaki günlerin aralığı: yeni aralık yüklenene kadar aktarma/onay eski satırlarla çalışmasın.
+  const [daysOf, setDaysOf] = useState("");
+  const fresh = daysOf === `${start}/${rangeDays}`;
   const [details, setDetails] = useState<string[]>([]);
   const [projects, setProjects] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -162,6 +169,7 @@ export default function Timesheet({
       if (seq !== loadSeq.current) return;
       setConfig(c);
       setDays(d);
+      setDaysOf(`${start}/${rangeDays}`);
       setDetails(det);
       setProjects(tax.tags.filter((t) => t.kind === "project"));
       setError(null);
@@ -180,6 +188,15 @@ export default function Timesheet({
     load();
   });
 
+  // Klavye: ←/→ önceki/sonraki dönem, T bugün (rapor sayfalarındaki gibi). İşleyici her
+  // çizimde güncellenir; dinleyici bir kez eklenir.
+  const keys = useRef<((e: KeyboardEvent) => void) | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keys.current?.(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const run = (f: () => Promise<unknown>) => async () => {
     try {
       setError(null);
@@ -190,7 +207,17 @@ export default function Timesheet({
     }
   };
 
-  if (!config) return <ErrorText>{error}</ErrorText>;
+  if (!config)
+    return error ? (
+      <ErrorText>{error}</ErrorText>
+    ) : (
+      <div className="mx-auto w-full max-w-5xl space-y-3 px-6 pt-2 pb-10" aria-busy>
+        <div className="skeleton h-12 w-72 rounded-lg" />
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="skeleton h-28 rounded-xl" style={{ animationDelay: `${i * 120}ms` }} />
+        ))}
+      </div>
+    );
   if (!config.filePath && !config.sheetUrl) return <Setup onDone={load} />;
   const target = config.sheetUrl ? "Google Sheets" : `Excel · ${fileName(config.filePath ?? "")}`;
   const calendarText = !calendar?.url
@@ -201,6 +228,7 @@ export default function Timesheet({
 
   const all = days.flatMap((d) => d.entries);
   const pending = days.filter((d) => d.approved).flatMap((d) => d.entries.filter((e) => !e.exported));
+  const unapproved = days.filter((d) => !d.approved && d.entries.length > 0);
   const total = all.reduce((s, e) => s + e.hours, 0);
   const totalActual = all.reduce((s, e) => s + worked(e), 0);
   const byDivision = new Map<string, number>();
@@ -211,6 +239,16 @@ export default function Timesheet({
     setAnchor(isoDate(mode === "day" ? addDays(a, n) : mode === "week" ? addDays(a, 7 * n) : addMonths(a, n)));
   };
   const modeInfo = MODES.find((m) => m.id === mode)!;
+  keys.current = (e) => {
+    if (e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey) return;
+    const el = e.target as HTMLElement | null;
+    if (el?.closest("input, textarea, select, [contenteditable], [role=dialog], [role=listbox], [role=menu]")) return;
+    if (e.key === "ArrowLeft") step(-1);
+    else if (e.key === "ArrowRight" && start < current) step(1);
+    else if (e.key === "t" || e.key === "T") setAnchor(isoDate(today()));
+    else return;
+    e.preventDefault();
+  };
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-4 px-6 pt-2 pb-10">
@@ -269,10 +307,30 @@ export default function Timesheet({
         <Button variant="outline" size="sm" onClick={() => onOpenSettings(TIMESHEET_SECTION)}>
           <Settings2 /> Ayarlar
         </Button>
+        {fresh && unapproved.length > 1 && (
+          <Button
+            size="sm"
+            variant="outline"
+            title="Önerilen satırları gün gün onaylar; onaylı günlere dokunulmaz"
+            onClick={run(async () => {
+              for (const d of unapproved) await api.approveTimesheetDay(d.date);
+            })}
+          >
+            <Check /> Tümünü onayla ({unapproved.length} gün)
+          </Button>
+        )}
         <Button
           size="sm"
-          disabled={pending.length === 0 || exporting}
-          title={config.sheetUrl ? (config.sheetLink ?? "Google Sheets") : (config.filePath ?? "")}
+          disabled={!fresh || pending.length === 0 || exporting}
+          title={
+            pending.length === 0
+              ? unapproved.length
+                ? "Aktarmak için önce günleri onayla"
+                : "Aktarılacak onaylı satır yok"
+              : config.sheetUrl
+                ? (config.sheetLink ?? "Google Sheets")
+                : (config.filePath ?? "")
+          }
           onClick={run(async () => {
             setExporting(true);
             try {
@@ -292,8 +350,12 @@ export default function Timesheet({
         <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs">
           <Check className="mt-0.5 size-3.5 shrink-0 text-success" />
           <span className="min-w-0 flex-1 break-words selectable">{notice}</span>
-          <button aria-label="Kapat" onClick={() => setNotice(null)}>
-            <X className="size-3.5 text-muted-foreground" />
+          <button
+            aria-label="Kapat"
+            className="-m-1 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={() => setNotice(null)}
+          >
+            <X className="size-3.5" />
           </button>
         </div>
       )}
@@ -318,6 +380,7 @@ export default function Timesheet({
           config={config}
           projects={projects}
           onOpenDay={onOpenDay}
+          onReviewDay={onReviewDay}
           run={run}
           // Gün görünümünde boş gün de gösterilir (yoksa sayfa boş kalır).
           alwaysShow={mode === "day"}
@@ -337,6 +400,7 @@ function DayCard({
   config,
   projects,
   onOpenDay,
+  onReviewDay,
   run,
   alwaysShow,
 }: {
@@ -344,6 +408,7 @@ function DayCard({
   config: TimesheetConfig;
   projects: Tag[];
   onOpenDay: (iso: string) => void;
+  onReviewDay: (iso: string) => void;
   run: Run;
   alwaysShow: boolean;
 }) {
@@ -382,13 +447,23 @@ function DayCard({
           </Badge>
         )}
         {day.unassignedSeconds >= 60 && (
-          <button
-            className="text-xs text-muted-foreground underline-offset-2 hover:underline"
-            onClick={() => onOpenDay(day.date)}
-            title="Takvimde aç: blokları ya da aralıkları projeye ata"
-          >
-            Projesiz {formatDuration(day.unassignedSeconds)} · takvimde ata
-          </button>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <button
+              className="rounded underline-offset-2 hover:text-foreground hover:underline"
+              onClick={() => onReviewDay(day.date)}
+              title="Gözden geçir: atanmamış süreyi site ve uygulamaya göre projeye ata"
+            >
+              Atanmamış {formatDuration(day.unassignedSeconds)} · gözden geçir
+            </button>
+            <span aria-hidden>·</span>
+            <button
+              className="rounded underline-offset-2 hover:text-foreground hover:underline"
+              onClick={() => onOpenDay(day.date)}
+              title="Takvimde aç: blokları ya da aralıkları projeye ata"
+            >
+              takvim
+            </button>
+          </span>
         )}
         <span className="ml-auto flex gap-1.5">
           {!day.approved && day.entries.length > 0 && (
@@ -504,23 +579,15 @@ function MeetingList({
               {m.subject || "(konusuz)"}
               <span className="ml-1.5 text-muted-foreground">{m.online ? "Online" : "F2F"}</span>
             </span>
-            <Select
+            <ProjectSelect
               value=""
-              onValueChange={(v) => run(() => api.assignMeeting(m.uid, v === IGNORE ? null : v, date))()}
-            >
-              <SelectTrigger size="sm" className="h-7 w-44 text-xs" aria-label={`${m.subject} projesi`}>
-                <SelectValue placeholder="Projeye ata…" />
-              </SelectTrigger>
-              <SelectContent>
-                {projects.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(p) }} />
-                    {p.name}
-                  </SelectItem>
-                ))}
-                <SelectItem value={IGNORE}>Yoksay (zaman çizelgesine alma)</SelectItem>
-              </SelectContent>
-            </Select>
+              projects={projects}
+              placeholder="Projeye ata…"
+              extra={[{ value: IGNORE, label: "Zaman çizelgesine alma" }]}
+              className="w-44"
+              aria-label={`${m.subject} projesi`}
+              onChange={(v) => run(() => api.assignMeeting(m.uid, v === IGNORE ? null : v, date))()}
+            />
           </li>
         ))}
       </ul>
