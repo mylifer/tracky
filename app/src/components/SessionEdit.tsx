@@ -7,6 +7,8 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { CategorySelect } from "./CategorySelect";
+import { tagColor } from "../lib/tags";
+import { cn } from "../lib/utils";
 
 /** "geçersiz kayıt: bu aralıkta…" → "Bu aralıkta…" */
 function message(e: unknown) {
@@ -17,35 +19,68 @@ function message(e: unknown) {
 /** Takvimdeki blokların düzenleme bağlamı (kategoriler ve yenileme). */
 export const EditContext = createContext<{ categories: Tag[]; projects: Tag[]; onChanged: () => void } | null>(null);
 
-/** Projeye atama seçicisi; proje yoksa nereden ekleneceğini söyler. */
+/**
+ * Projeye atama: her proje tek tıkla seçilen bir düğme. Kartın içinde ikinci bir açılır liste
+ * açılmaz; iç içe katmanlarda (Windows WebView2) seçimin kaybolduğu görüldü. Proje yoksa
+ * nereden ekleneceğini söyler.
+ */
 function ProjectAssign({
   value = null,
   projects,
   onChange,
-  className,
 }: {
-  /** Şu anki proje (blok için); aralıkta boş kalır ve ipucu görünür. */
+  /** Şu anki proje (blok için); aralıkta boş kalır. */
   value?: string | null;
   projects: Tag[];
-  onChange: (id: string | null) => void;
-  className?: string;
+  onChange: (id: string | null) => Promise<unknown>;
 }) {
+  // Tıklanan proje yanıt gelmeden işaretlenir: seçimin alındığı hemen görünsün.
+  const [chosen, setChosen] = useState<string | null | undefined>(undefined);
+  useEffect(() => setChosen(undefined), [value]);
   if (projects.length === 0)
     return (
       <p className="text-[11px] text-muted-foreground">
         Projeye atamak için önce Kategoriler ve projeler → Projeler'den bir proje ekle.
       </p>
     );
+  const current = chosen === undefined ? value : chosen;
+  const pick = (id: string | null) => {
+    setChosen(id);
+    // Hata olursa (yanıt `false`) işaret geri alınır; hata metnini çağıran gösterir.
+    onChange(id).then((ok) => ok === false && setChosen(undefined));
+  };
   return (
-    <CategorySelect
-      value={value}
-      onChange={onChange}
-      categories={projects}
-      noneLabel="Projeyi kaldır (kurallara göre)"
-      placeholder="Projeye ata…"
-      className={className}
-      aria-label="Proje"
-    />
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+        <span>Proje</span>
+        {current && (
+          <button type="button" className="hover:text-foreground hover:underline" onClick={() => pick(null)}>
+            Kaldır
+          </button>
+        )}
+      </div>
+      <div role="radiogroup" aria-label="Proje" className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
+        {projects.map((p) => {
+          const on = p.id === current;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              onClick={() => pick(p.id)}
+              className={cn(
+                "flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
+                on ? "border-primary bg-primary/10 font-medium text-foreground" : "hover:bg-accent",
+              )}
+            >
+              <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(p) }} />
+              <span className="truncate">{p.name}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 export const useEdit = () => useContext(EditContext);
@@ -84,7 +119,10 @@ export function RangeMenu({
         onChanged();
         onClose();
       },
-      (e) => setError(message(e)),
+      (e) => {
+        setError(message(e));
+        return false;
+      },
     );
 
   useEffect(() => {
@@ -122,7 +160,6 @@ export function RangeMenu({
           <ProjectAssign
             projects={projects}
             onChange={(id) => run(() => api.setRangeProject(iso(start), iso(end), id))}
-            className="w-full"
           />
         )}
         {end > start && (
@@ -192,7 +229,11 @@ export function BlockActions({
 }) {
   const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const run = (f: () => Promise<unknown>) => f().then(onChanged, (e) => setError(message(e)));
+  const run = (f: () => Promise<unknown>) =>
+    f().then(onChanged, (e) => {
+      setError(message(e));
+      return false;
+    });
 
   return (
     <div className="space-y-2 border-t pt-3">
@@ -200,7 +241,6 @@ export function BlockActions({
         value={projectId}
         projects={projects}
         onChange={(id) => run(() => api.setRangeProject(start, end, id))}
-        className="w-full"
       />
       <div className="flex items-center gap-2">
         <CategorySelect

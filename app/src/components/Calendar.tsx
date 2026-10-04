@@ -223,7 +223,7 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
   const color = tagColor(tag);
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
         <Badge variant="outline" className="gap-1.5">
           <i className="size-2 rounded-full" style={{ background: color }} />
           {tag?.name ?? UNCATEGORIZED}
