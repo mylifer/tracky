@@ -32,7 +32,19 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { addDays, formatWeek, isoDate, parseIsoDate, startOfWeek, today } from "../lib/dates";
+import {
+  addDays,
+  addMonths,
+  daysInMonth,
+  formatMonth,
+  formatWeek,
+  isoDate,
+  parseIsoDate,
+  startOfMonth,
+  startOfWeek,
+  today,
+} from "../lib/dates";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 
@@ -49,6 +61,50 @@ function exportNotice(r: Exported) {
   const skipped = r.skipped ? `, ${r.skipped} satır zaten yazılmıştı` : "";
   const backup = r.backup ? ` Yedek: ${r.backup}` : "";
   return `${r.rows} satır ${where} eklendi (${r.filled} boş satıra, ${r.inserted} yeni satır${skipped}).${backup}`;
+}
+
+type Mode = "day" | "week" | "month";
+const MODES: { id: Mode; label: string; current: string }[] = [
+  { id: "day", label: "Gün", current: "Bugün" },
+  { id: "week", label: "Hafta", current: "Bu hafta" },
+  { id: "month", label: "Ay", current: "Bu ay" },
+];
+const MODE_KEY = "kum.timesheet.mode";
+const longDate = new Intl.DateTimeFormat("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+
+function savedMode(): Mode {
+  try {
+    const m = localStorage.getItem(MODE_KEY);
+    if (m === "day" || m === "week" || m === "month") return m;
+  } catch {
+    // Depolama kapalıysa varsayılan.
+  }
+  return "week";
+}
+
+/** Görünümün ilk günü ve gün sayısı; `anchor` görünümdeki herhangi bir gün. */
+function range(mode: Mode, anchor: Date): { start: Date; days: number } {
+  if (mode === "day") return { start: anchor, days: 1 };
+  if (mode === "week") return { start: startOfWeek(anchor), days: 7 };
+  const start = startOfMonth(anchor);
+  return { start, days: daysInMonth(start) };
+}
+
+function rangeTitle(mode: Mode, start: Date) {
+  if (mode === "day") return longDate.format(start);
+  if (mode === "week") return formatWeek(start);
+  const m = formatMonth(start);
+  return m.charAt(0).toUpperCase() + m.slice(1);
+}
+
+/** Gerçek süre (saat) → "1sa 7dk". */
+function actual(hours: number) {
+  return formatDuration(Math.round(hours * 3600));
+}
+
+/** Kayıtların gerçek süresi; bilinmiyorsa yazılan saat. */
+function worked(e: TimesheetEntry) {
+  return e.actualHours ?? e.hours;
 }
 
 /** Saat, adam-gün (saat / günlük saat; yuvarlanmaz). */
@@ -68,7 +124,19 @@ export default function Timesheet({
   /** Ayarlar'ı bu bölümle aç (Bağlantılar ya da Zaman çizelgesi). */
   onOpenSettings: (section: string) => void;
 }) {
-  const [week, setWeek] = useState(() => isoDate(startOfWeek(today())));
+  const [mode, setModeState] = useState<Mode>(savedMode);
+  // Görünümdeki herhangi bir gün; görünüm değişince aynı gün etrafında açılır.
+  const [anchor, setAnchor] = useState(() => isoDate(today()));
+  const setMode = (m: Mode) => {
+    setModeState(m);
+    try {
+      localStorage.setItem(MODE_KEY, m);
+    } catch {
+      // Hatırlanmasa da olur.
+    }
+  };
+  const { start: rangeStart, days: rangeDays } = range(mode, parseIsoDate(anchor));
+  const start = isoDate(rangeStart);
   const [config, setConfig] = useState<TimesheetConfig | null>(null);
   const [days, setDays] = useState<TimesheetDay[]>([]);
   const [details, setDetails] = useState<string[]>([]);
@@ -83,7 +151,7 @@ export default function Timesheet({
     try {
       const [c, d, det, tax] = await Promise.all([
         api.timesheetConfig(),
-        api.timesheetDays(week, 7),
+        api.timesheetDays(start, rangeDays),
         api.timesheetDetails(),
         api.taxonomy(),
       ]);
@@ -95,7 +163,7 @@ export default function Timesheet({
     } catch (e) {
       setError(String(e));
     }
-  }, [week]);
+  }, [start, rangeDays]);
   useEffect(() => {
     load();
     api.calendarStatus().then(setCalendar, () => {});
@@ -128,19 +196,26 @@ export default function Timesheet({
   const all = days.flatMap((d) => d.entries);
   const pending = days.filter((d) => d.approved).flatMap((d) => d.entries.filter((e) => !e.exported));
   const total = all.reduce((s, e) => s + e.hours, 0);
+  const totalActual = all.reduce((s, e) => s + worked(e), 0);
   const byDivision = new Map<string, number>();
   for (const e of all) byDivision.set(e.division, (byDivision.get(e.division) ?? 0) + e.hours);
-  const thisWeek = isoDate(startOfWeek(today()));
+  const current = isoDate(range(mode, today()).start);
+  const step = (n: number) => {
+    const a = parseIsoDate(start);
+    setAnchor(isoDate(mode === "day" ? addDays(a, n) : mode === "week" ? addDays(a, 7 * n) : addMonths(a, n)));
+  };
+  const modeInfo = MODES.find((m) => m.id === mode)!;
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-4 px-6 pt-2 pb-10">
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <h1 className="text-[15px] font-semibold">
-            {config.company || "Zaman çizelgesi"} · {formatWeek(parseIsoDate(week))}
+            {config.company || "Zaman çizelgesi"} · {rangeTitle(mode, rangeStart)}
           </h1>
           <p className="text-xs text-muted-foreground">
             Toplam {manDays(total, config.dayHours)}
+            {all.length > 0 && <span title="Takip edilen gerçek süre"> (gerçek {actual(totalActual)})</span>}
             {[...byDivision.entries()].map(([d, h]) => ` · ${d}: ${num.format(h)} sa`).join("")}
           </p>
           {/* Kayıtların nereden gelip nereye gittiği; tıklayınca Ayarlar → Bağlantılar. */}
@@ -156,23 +231,32 @@ export default function Timesheet({
             <span className={cn(calendar?.last && !calendar.last.ok && "text-destructive")}>{calendarText}</span>
           </button>
         </div>
+        <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
+          <TabsList aria-label="Görünüm">
+            {MODES.map((m) => (
+              <TabsTrigger key={m.id} value={m.id} className="px-3">
+                {m.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label="Önceki hafta"
-          onClick={() => setWeek(isoDate(addDays(parseIsoDate(week), -7)))}
+          aria-label={`Önceki ${modeInfo.label.toLowerCase()}`}
+          onClick={() => step(-1)}
         >
           <ChevronLeft />
         </Button>
-        <Button variant="outline" size="sm" disabled={week === thisWeek} onClick={() => setWeek(thisWeek)}>
-          Bu hafta
+        <Button variant="outline" size="sm" disabled={start === current} onClick={() => setAnchor(isoDate(today()))}>
+          {modeInfo.current}
         </Button>
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label="Sonraki hafta"
-          disabled={week >= thisWeek}
-          onClick={() => setWeek(isoDate(addDays(parseIsoDate(week), 7)))}
+          aria-label={`Sonraki ${modeInfo.label.toLowerCase()}`}
+          disabled={start >= current}
+          onClick={() => step(1)}
         >
           <ChevronRight />
         </Button>
@@ -186,7 +270,7 @@ export default function Timesheet({
           onClick={run(async () => {
             setExporting(true);
             try {
-              setNotice(exportNotice(await api.exportTimesheet(week, 7)));
+              setNotice(exportNotice(await api.exportTimesheet(start, rangeDays)));
             } finally {
               setExporting(false);
             }
@@ -222,8 +306,20 @@ export default function Timesheet({
       </datalist>
 
       {days.map((d) => (
-        <DayCard key={d.date} day={d} config={config} projects={projects} onOpenDay={onOpenDay} run={run} />
+        <DayCard
+          key={d.date}
+          day={d}
+          config={config}
+          projects={projects}
+          onOpenDay={onOpenDay}
+          run={run}
+          // Gün görünümünde boş gün de gösterilir (yoksa sayfa boş kalır).
+          alwaysShow={mode === "day"}
+        />
       ))}
+      {mode !== "day" && days.length > 0 && days.every((d) => d.entries.length === 0) && (
+        <p className="px-1 text-sm text-muted-foreground">Bu dönemde kayıt yok.</p>
+      )}
     </div>
   );
 }
@@ -236,20 +332,23 @@ function DayCard({
   projects,
   onOpenDay,
   run,
+  alwaysShow,
 }: {
   day: TimesheetDay;
   config: TimesheetConfig;
   projects: Tag[];
   onOpenDay: (iso: string) => void;
   run: Run;
+  alwaysShow: boolean;
 }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const date = parseIsoDate(day.date);
   const total = day.entries.reduce((s, e) => s + e.hours, 0);
+  const totalActual = day.entries.reduce((s, e) => s + worked(e), 0);
   const exported = day.entries.length > 0 && day.entries.every((e) => e.exported);
   const empty = day.entries.length === 0 && day.unassignedSeconds < 60 && day.meetings.length === 0;
   const weekend = date.getDay() === 0 || date.getDay() === 6;
-  if (empty && weekend) return null;
+  if (empty && weekend && !alwaysShow) return null;
 
   const firstMapping = config.projects[0];
   const blank: TimesheetEntry = {
@@ -267,7 +366,10 @@ function DayCard({
     <section className="rounded-xl border bg-card shadow-xs">
       <div className="flex flex-wrap items-center gap-2 px-4 py-2.5">
         <span className="text-[13px] font-semibold capitalize">{dayFmt.format(date)}</span>
-        <span className="text-xs text-muted-foreground tabular">{total ? manDays(total, config.dayHours) : "—"}</span>
+        <span className="text-xs text-muted-foreground tabular">
+          {total ? manDays(total, config.dayHours) : "—"}
+          {total > 0 && <span title="Takip edilen gerçek süre"> · gerçek {actual(totalActual)}</span>}
+        </span>
         {day.entries.length > 0 && (
           <Badge variant="outline" className={cn(exported && "border-success/40 text-success")}>
             {exported ? "Aktarıldı" : day.approved ? "Onaylandı" : "Öneri"}
@@ -325,7 +427,7 @@ function DayCard({
       {day.entries.length > 0 && (
         // Dar pencerede açıklama sütunu ezilmesin: satırlar kart içinde yatay kayar.
         <div className="overflow-x-auto border-t">
-          <div className="grid grid-cols-[112px_70px_96px_minmax(160px,1fr)_96px_minmax(110px,180px)_28px] gap-2 px-4 pt-2 text-[11px] text-muted-foreground">
+          <div className="grid grid-cols-[112px_128px_96px_minmax(160px,1fr)_96px_minmax(110px,180px)_28px] gap-2 px-4 pt-2 text-[11px] text-muted-foreground">
             <span>Başlangıç</span>
             <span>Saat</span>
             <span>Tür</span>
@@ -443,7 +545,7 @@ function EntryRow({
   return (
     <li
       className={cn(
-        "grid grid-cols-[112px_70px_96px_minmax(160px,1fr)_96px_minmax(110px,180px)_28px] items-center gap-2 px-4 py-1",
+        "grid grid-cols-[112px_128px_96px_minmax(160px,1fr)_96px_minmax(110px,180px)_28px] items-center gap-2 px-4 py-1",
         !editable && "text-muted-foreground",
       )}
     >
@@ -456,17 +558,27 @@ function EntryRow({
         onBlur={commit}
         aria-label="Başlangıç"
       />
-      <Input
-        type="number"
-        step="0.05"
-        min="0.01"
-        className={cn(cell, "tabular")}
-        disabled={!editable}
-        value={Number(draft.hours.toFixed(2))}
-        onChange={(e) => setDraft({ ...draft, hours: Number(e.target.value) })}
-        onBlur={commit}
-        aria-label="Saat"
-      />
+      <div className="flex items-center gap-1.5">
+        <Input
+          type="number"
+          step="0.25"
+          min="0.25"
+          className={cn(cell, "w-16 tabular")}
+          disabled={!editable}
+          value={Number(draft.hours.toFixed(2))}
+          onChange={(e) => setDraft({ ...draft, hours: Number(e.target.value) })}
+          onBlur={commit}
+          aria-label="Saat"
+        />
+        {draft.actualHours != null && (
+          <span
+            className="truncate text-[11px] text-muted-foreground tabular"
+            title="Takip edilen gerçek süre; saat çeyreğe yuvarlanır"
+          >
+            {actual(draft.actualHours)}
+          </span>
+        )}
+      </div>
       <Select value={draft.kind} disabled={!editable} onValueChange={(v) => save({ ...draft, kind: v as EntryKind })}>
         <SelectTrigger size="sm" className="h-7 text-xs" aria-label="Tür">
           <SelectValue />

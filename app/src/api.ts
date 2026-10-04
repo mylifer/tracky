@@ -124,7 +124,10 @@ export type TimesheetEntry = {
   date: string;
   /** Yerel başlangıç saati, "HH:MM:SS". */
   start: string;
+  /** Firmaya yazılan saat (çeyrek saate yuvarlanmış). */
   hours: number;
+  /** Takip edilen gerçek süre (saat); elle eklenen satırda yok. */
+  actualHours?: number | null;
   kind: EntryKind;
   details: string;
   party: string;

@@ -2,8 +2,9 @@
 //! (tarih, başlangıç, saat, tür, açıklama, taraf, birim) dönüştürür.
 //!
 //! Yalnızca bir projeye düşen süre iş sayılır. Aynı projede ve aynı türdeki ardışık
-//! oturumlar, aradaki boşluk `MERGE_GAP`'i geçmedikçe tek kayıt olur; kaydın saati
-//! boşluklar değil, oturumların toplam süresidir (yuvarlanmaz).
+//! oturumlar, aradaki boşluk `MERGE_GAP`'i geçmedikçe tek kayıt olur; kaydın gerçek süresi
+//! boşluklar değil, oturumların toplam süresidir. Firmaya giden saat bu sürenin çeyrek saate
+//! yuvarlanmışıdır ([`round_quarter`]); gerçek süre kayıtta ayrıca saklanır.
 //!
 //! Takvimden gelen ve bir projeye düşen toplantılar kendi kaydı olur (konusu açıklama,
 //! çevrim içiyse Online, değilse F2F). Toplantı süresince takip edilen iş sayılmaz: aynı
@@ -119,13 +120,28 @@ pub struct TimesheetEntry {
     pub date: NaiveDate,
     /// Yerel başlangıç saati.
     pub start: NaiveTime,
-    /// Çalışılan saat (yuvarlanmamış).
+    /// Firmaya yazılan saat (önerilerde çeyrek saate yuvarlanmış; elle değiştirilebilir).
     pub hours: f64,
+    /// Takip edilen gerçek süre (saat, yuvarlanmamış); elle eklenen satırda yok.
+    #[serde(default)]
+    pub actual_hours: Option<f64>,
     pub kind: EntryKind,
     pub details: String,
     pub party: String,
     pub project_id: String,
     pub division: String,
+}
+
+impl TimesheetEntry {
+    /// Gerçek süre; bilinmiyorsa yazılan saat.
+    pub fn worked(&self) -> f64 {
+        self.actual_hours.unwrap_or(self.hours)
+    }
+}
+
+/// Saati en yakın çeyrek saate yuvarlar (en az 0,25).
+pub fn round_quarter(hours: f64) -> f64 {
+    ((hours * 4.0).round() / 4.0).max(0.25)
 }
 
 /// Takvimden (Outlook) bir toplantı; tekrarlayanların her biri ayrı.
@@ -375,7 +391,8 @@ pub fn propose(
             TimesheetEntry {
                 date: local.date_naive(),
                 start: local.time().with_nanosecond(0).unwrap_or(local.time()),
-                hours: r.worked.num_seconds() as f64 / 3600.0,
+                hours: round_quarter(r.worked.num_seconds() as f64 / 3600.0),
+                actual_hours: Some(r.worked.num_seconds() as f64 / 3600.0),
                 kind: r.kind,
                 details,
                 party,
@@ -388,9 +405,9 @@ pub fn propose(
     out
 }
 
-/// Yeniden öneride Excel'e aktarılmış işi düşer: her (proje, tür) için aktarılan saatler o
-/// türün en erken önerilerinden düşülür, yalnızca artan süre kalır (aktarılan + önerilen =
-/// takip edilen). Aktarılan satırın saati ya
+/// Yeniden öneride Excel'e aktarılmış işi düşer: her (proje, tür) için aktarılan gerçek süre
+/// (yoksa yazılan saat) o türün en erken önerilerinden düşülür, yalnızca artan süre kalır
+/// (aktarılan + önerilen = takip edilen); kalanın saati yeniden yuvarlanır. Aktarılan satırın saati ya
 /// da süresi elle değiştirilmiş olsa da iş ikinci kez önerilmez; aktarımdan sonra süren iş
 /// (uzayan kayıt ya da yeni kayıt) önerilir. Kısmen düşülen önerinin kalanı `MIN_REMAINDER`'dan
 /// kısaysa atılır, değilse başlangıcı düşülen süre kadar ileri alınır.
@@ -401,23 +418,24 @@ pub fn without_exported(
     let min_rest = MIN_REMAINDER.num_seconds() as f64 / 3600.0;
     let mut budget: HashMap<(&str, EntryKind), f64> = HashMap::new();
     for x in exported {
-        *budget.entry((x.project_id.as_str(), x.kind)).or_default() += x.hours;
+        *budget.entry((x.project_id.as_str(), x.kind)).or_default() += x.worked();
     }
     let mut sorted: Vec<&TimesheetEntry> = proposed.iter().collect();
     sorted.sort_by_key(|e| e.start);
     let mut out = Vec::new();
     for e in sorted {
         let left = budget.entry((e.project_id.as_str(), e.kind)).or_default();
-        let used = left.min(e.hours);
+        let used = left.min(e.worked());
         *left -= used;
-        let rest = e.hours - used;
+        let rest = e.worked() - used;
         if used == 0.0 {
             out.push(e.clone());
         } else if rest >= min_rest {
             let shift = Duration::seconds((used * 3600.0).round() as i64);
             out.push(TimesheetEntry {
                 start: e.start.overflowing_add_signed(shift).0,
-                hours: rest,
+                hours: round_quarter(rest),
+                actual_hours: Some(rest),
                 ..e.clone()
             });
         }
@@ -513,7 +531,7 @@ mod tests {
             .map(|e| {
                 (
                     e.start.format("%H:%M").to_string(),
-                    (e.hours * 60.0).round() as i64,
+                    (e.worked() * 60.0).round() as i64,
                     e.kind,
                     e.details.as_str(),
                     e.division.as_str(),
@@ -575,6 +593,7 @@ mod tests {
             ("Int.Work.Sync.", "Togg")
         );
         assert!((got[0].hours - 1.0).abs() < 1e-9);
+        assert_eq!(got[0].actual_hours, Some(1.0));
     }
 
     #[test]
@@ -635,7 +654,7 @@ mod tests {
             .map(|e| {
                 (
                     e.start.format("%H:%M").to_string(),
-                    (e.hours * 60.0).round() as i64,
+                    (e.worked() * 60.0).round() as i64,
                     e.kind,
                     e.details.as_str(),
                     e.division.as_str(),
@@ -702,6 +721,7 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
             start: NaiveTime::from_hms_opt(hh, mm, 0).unwrap(),
             hours,
+            actual_hours: None,
             kind,
             details: String::new(),
             party: String::new(),
@@ -711,16 +731,40 @@ mod tests {
     }
 
     #[test]
+    fn hours_are_rounded_to_quarters_and_actual_is_kept() {
+        let (classifier, names, config) = setup();
+        let sessions = [
+            s("Figma", "Trumore — Figma", 0, 67, None), // 1 sa 7 dk → 1,00
+            s("Figma", "Trumore — Figma", 120, 128, None), // 8 dk → 0,25 (en az)
+            s("Figma", "Trumore — Figma", 200, 253, None), // 53 dk → 1,00 (0,88 → 1)
+        ];
+        let got = propose(
+            &sessions,
+            &[],
+            &classifier,
+            &names,
+            &config,
+            t(-540),
+            t(900),
+        );
+        let hours: Vec<(f64, i64)> = got
+            .iter()
+            .map(|e| (e.hours, (e.worked() * 60.0).round() as i64))
+            .collect();
+        assert_eq!(hours, [(1.0, 67), (0.25, 8), (1.0, 53)]);
+        assert_eq!(round_quarter(0.37), 0.25);
+        assert_eq!(round_quarter(0.38), 0.5);
+        assert_eq!(round_quarter(2.6), 2.5);
+    }
+
+    #[test]
     fn exported_work_is_not_proposed_again() {
         use EntryKind::{Online, Working};
         let short = |v: Vec<TimesheetEntry>| -> Vec<(String, String, f64)> {
             v.into_iter()
                 .map(|e| {
-                    (
-                        e.project_id,
-                        e.start.format("%H:%M").to_string(),
-                        (e.hours * 100.0).round() / 100.0,
-                    )
+                    let worked = (e.worked() * 100.0).round() / 100.0;
+                    (e.project_id, e.start.format("%H:%M").to_string(), worked)
                 })
                 .collect()
         };

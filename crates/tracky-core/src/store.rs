@@ -147,6 +147,10 @@ CREATE TABLE timesheet_entries (
 );
 CREATE INDEX timesheet_entries_date ON timesheet_entries (date);
 "#,
+    r#"
+-- Zaman çizelgesi: takip edilen gerçek süre (saat); "hours" çeyrek saate yuvarlanmış olandır.
+ALTER TABLE timesheet_entries ADD COLUMN actual_hours REAL;
+"#,
 ];
 
 /// Onaylanmış zaman çizelgesi kaydı.
@@ -889,7 +893,8 @@ impl Store {
     /// `[from, to]` tarihleri (dahil) arasındaki onaylanmış kayıtlar, tarih ve saate göre.
     pub fn timesheet_entries(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<SavedEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, date, start, hours, kind, details, party, project_id, division, exported_at
+            "SELECT id, date, start, hours, kind, details, party, project_id, division, exported_at,
+                    actual_hours
              FROM timesheet_entries WHERE date >= ?1 AND date <= ?2 ORDER BY date, start",
         )?;
         let rows = stmt.query_map(params![from.to_string(), to.to_string()], |r| {
@@ -904,11 +909,23 @@ impl Store {
                 r.get::<_, String>(7)?,
                 r.get::<_, String>(8)?,
                 r.get::<_, Option<i64>>(9)?,
+                r.get::<_, Option<f64>>(10)?,
             ))
         })?;
         rows.map(|row| {
-            let (id, date, start, hours, kind, details, party, project_id, division, exported) =
-                row?;
+            let (
+                id,
+                date,
+                start,
+                hours,
+                kind,
+                details,
+                party,
+                project_id,
+                division,
+                exported,
+                actual,
+            ) = row?;
             let bad = |what: &str| StoreError::Invalid(format!("zaman çizelgesi {what}: {id}"));
             Ok(SavedEntry {
                 entry: TimesheetEntry {
@@ -916,6 +933,7 @@ impl Store {
                         .map_err(|_| bad("tarihi"))?,
                     start: NaiveTime::parse_from_str(&start, "%H:%M").map_err(|_| bad("saati"))?,
                     hours,
+                    actual_hours: actual,
                     kind: parse_kind(&kind).ok_or_else(|| bad("türü"))?,
                     details,
                     party,
@@ -999,8 +1017,9 @@ impl Store {
     fn insert_entry(&self, id: &str, e: &TimesheetEntry) -> Result<()> {
         self.conn.execute(
             "INSERT INTO timesheet_entries
-                (id, date, start, hours, kind, details, party, project_id, division, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                (id, date, start, hours, kind, details, party, project_id, division, created_at,
+                 actual_hours)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 id,
                 e.date.to_string(),
@@ -1012,6 +1031,7 @@ impl Store {
                 e.project_id,
                 e.division.trim(),
                 ms(Utc::now()),
+                e.actual_hours,
             ],
         )?;
         Ok(())
