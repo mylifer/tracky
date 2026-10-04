@@ -10,8 +10,9 @@ import {
   TrendingUp,
   Settings2,
   Tags,
+  FolderKanban,
 } from "lucide-react";
-import { api, formatDuration, type AppStatus, type TrackingStatus } from "./api";
+import { api, formatDuration, type AppStatus, type Suggestions, type TrackingStatus } from "./api";
 import FocusCard from "./components/FocusCard";
 import { UpdateCard } from "./components/UpdateCard";
 import ReportView from "./components/ReportView";
@@ -35,7 +36,7 @@ import { applyPlatform, useTheme } from "./lib/theme";
 import { useUpdate } from "./lib/useUpdate";
 import { cn } from "./lib/utils";
 import Onboarding from "./Onboarding";
-import Categories from "./pages/Categories";
+import TagsPage from "./pages/TagsPage";
 import Search, { type SearchState } from "./pages/Search";
 import Trends from "./pages/Trends";
 import Timesheet from "./pages/Timesheet";
@@ -43,7 +44,7 @@ import Settings from "./pages/Settings";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
 type Mode = "day" | "week" | "month";
-type View = Mode | "timesheet" | "trends" | "search" | "categories" | "settings";
+type View = Mode | "timesheet" | "trends" | "search" | "projects" | "categories" | "settings";
 
 const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
   { id: "day", label: "Gün", icon: <CalendarDays /> },
@@ -55,7 +56,8 @@ const TITLES: Partial<Record<View, string>> = {
   timesheet: "Zaman çizelgesi",
   trends: "Eğilimler",
   search: "Ara",
-  categories: "Kategoriler ve projeler",
+  projects: "Projeler",
+  categories: "Kategoriler",
   settings: "Ayarlar",
 };
 
@@ -99,16 +101,14 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   };
   // Arama görünümden çıkınca kaybolmasın.
   const [search, setSearch] = useState<SearchState>({ query: "", days: 30 });
-  // Kategoriler sayfası hangi bölümle açılsın (Eğilimler'deki "Proje ekle" projelerle açar).
-  const [categoriesKind, setCategoriesKind] = useState<"category" | "project">("category");
-  // Bekleyen öneri sayısı (kenar çubuğunda); görünüm değişince ve saatte bir yenilenir.
-  const [suggestionCount, setSuggestionCount] = useState(0);
+  // Bekleyen öneri sayıları (kenar çubuğunda); görünüm değişince ve saatte bir yenilenir.
+  const [suggestionCount, setSuggestionCount] = useState({ projects: 0, categories: 0 });
+  const onSuggestions = useCallback(
+    (s: Suggestions) => setSuggestionCount({ projects: s.projects.length, categories: s.categories.length }),
+    [],
+  );
   useEffect(() => {
-    const refresh = () =>
-      api.suggestions().then(
-        (s) => setSuggestionCount(s.projects.length + s.categories.length),
-        () => {},
-      );
+    const refresh = () => api.suggestions().then(onSuggestions, () => {});
     refresh();
     const id = setInterval(refresh, 3600_000);
     return () => clearInterval(id);
@@ -221,15 +221,20 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           </NavSection>
           <NavSection title="Düzenle">
             <NavItem
+              icon={<FolderKanban />}
+              active={view === "projects"}
+              onClick={() => setView("projects")}
+              badge={suggestionCount.projects}
+            >
+              Projeler
+            </NavItem>
+            <NavItem
               icon={<Tags />}
               active={view === "categories"}
-              onClick={() => {
-                setCategoriesKind("category");
-                setView("categories");
-              }}
-              badge={suggestionCount}
+              onClick={() => setView("categories")}
+              badge={suggestionCount.categories}
             >
-              Kategoriler ve projeler
+              Kategoriler
             </NavItem>
             <NavItem icon={<Settings2 />} active={view === "settings"} onClick={() => openSettings()}>
               Ayarlar
@@ -279,10 +284,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
               )}
               {view === "trends" && (
                 <Trends
-                  onAddProject={() => {
-                    setCategoriesKind("project");
-                    setView("categories");
-                  }}
+                  onAddProject={() => setView("projects")}
                   onSearch={(query) => {
                     setSearch({ query, days: 30 });
                     setView("search");
@@ -299,7 +301,8 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                   }}
                 />
               )}
-              {view === "categories" && <Categories onSuggestions={setSuggestionCount} initialKind={categoriesKind} />}
+              {view === "projects" && <TagsPage key="project" kind="project" onSuggestions={onSuggestions} />}
+              {view === "categories" && <TagsPage key="category" kind="category" onSuggestions={onSuggestions} />}
               {view === "settings" && <Settings status={status} onChange={refresh} section={settingsSection} />}
             </div>
           </>

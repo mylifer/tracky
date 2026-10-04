@@ -230,7 +230,7 @@ function TimesheetDetails({
         hint="Projenin dosyadaki adı (birim sütunu) ve tarafı; boş taraf varsayılanı kullanır."
       >
         {projects.length === 0 ? (
-          <p className="text-xs text-muted-foreground">Henüz proje yok (Kategoriler ve projeler).</p>
+          <p className="text-xs text-muted-foreground">Henüz proje yok (kenar çubuğunda Projeler).</p>
         ) : (
           <ul className="divide-y rounded-lg border">
             {projects.map((p) => (

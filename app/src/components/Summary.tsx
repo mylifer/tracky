@@ -198,8 +198,7 @@ function BreakdownCard({ report, tags }: { report: Report; tags: Map<string, Tag
         </Tabs>
         {tab === "projects" && items.length > 0 && items.every((i) => i.key === "none") ? (
           <p className="py-2 text-xs text-muted-foreground">
-            Bu dönemde bir projeye düşen süre yok. Proje eklemek için kenar çubuğunda Kategoriler ve projeler →
-            Projeler.
+            Bu dönemde bir projeye düşen süre yok. Proje eklemek için kenar çubuğunda Projeler.
           </p>
         ) : items.length === 0 ? (
           <p className="py-2 text-xs text-muted-foreground">Kayıt yok.</p>

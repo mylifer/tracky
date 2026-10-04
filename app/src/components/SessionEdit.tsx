@@ -44,7 +44,7 @@ function ProjectAssign({
   if (projects.length === 0)
     return (
       <p className="text-[11px] text-muted-foreground">
-        Projeye atamak için önce Kategoriler ve projeler → Projeler'den bir proje ekle.
+        Projeye atamak için önce kenar çubuğundaki Projeler sayfasından bir proje ekle.
       </p>
     );
   const isRange = value === undefined;
