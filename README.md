@@ -59,6 +59,14 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 32. Zaman çizelgesi açıklamaları: kaydın iş anahtarları ve süreye göre en önemli başlıkları (yerel, ücretsiz)
 - [x] 33. Görünüm: kum tonlarında marka rengi, hedef halkaları, canlı kart, iskelet yükleme, sayfa geçişleri,
       okunur hata mesajları, karşılamada proje adımı (elle ya da zaman çizelgesi şablonundan)
+- [x] 34. Proje seçici: projeler müşteriye göre gruplanır, son seçilen 5 proje en üstte; 12 ve daha fazla projede
+      yanındaki alanla süzülür (Enter ilk eşleşeni seçer). Liste Windows'ta da sorunsuz olsun diye yerel kalır
+- [x] 35. Takvimde renk merceği: gün/hafta blokları kategori ya da proje renginde; proje görünümünde atanmamış
+      süre taralı "Atanmamış" bloktur, lejantta projeler toplamlarıyla
+- [x] 36. Menü çubuğu ve canlı kart: şu anki iş bir projeye düşüyorsa proje adı ve bugünkü süresi
+      ("Portal · 5sa 20dk"); menü çubuğundan "Zaman Çizelgesini Aç"
+- [x] 37. Terimler ve erişilebilirlik: henüz atanmamış süre "Atanmamış", elle proje yok denen süre "Projesiz";
+      kenar çubuğu rozetlerinin anlamı ekran okuyucuda, düğmelerde klavye odak halkası
 
 ## Yapı
 

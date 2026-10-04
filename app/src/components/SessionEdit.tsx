@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { ChevronDown, PenLine, Plus, Trash2, X } from "lucide-react";
+import { PenLine, Plus, Trash2, X } from "lucide-react";
 import { api, type CalendarMeeting, formatDuration, NO_PROJECT, type Tag } from "../api";
 import { formatTime, isoDate, parseIsoDate } from "../lib/dates";
 import { Button } from "./ui/button";
@@ -7,7 +7,7 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { CategorySelect } from "./CategorySelect";
-import { tagColor } from "../lib/tags";
+import { ProjectSelect } from "./ProjectSelect";
 import { friendlyError, undoable } from "../lib/feedback";
 
 /** "geçersiz kayıt: bu aralıkta…" → "Bu aralıkta…" */
@@ -16,22 +16,21 @@ const message = friendlyError;
 /** Takvimdeki blokların düzenleme bağlamı (kategoriler ve yenileme). */
 export const EditContext = createContext<{ categories: Tag[]; projects: Tag[]; onChanged: () => void } | null>(null);
 
-/** Seçicideki değerler: kurallara bırak (elle proje yok) ve seçim yapılmadı (aralık). */
+/** Seçicideki değer: kurallara bırak (elle proje yok). */
 const AUTO = "__otomatik__";
-const PLACEHOLDER = "__sec__";
 
 /**
- * Projeye atama: işletim sisteminin açılır listesi. Kartın içinde ayrı katmanda açılan liste
- * Windows'ta (WebView2) seçimi kaybediyordu; yerel liste bu sorunu yaşamaz. "Projesiz" kurala
- * uysa da projeye saymaz, "Otomatik" elle atamayı kaldırıp kurallara bırakır: atama her zaman
- * geri alınabilir. Proje yoksa nereden ekleneceğini söyler.
+ * Projeye atama: işletim sisteminin açılır listesi (`ProjectSelect`). Kartın içinde ayrı katmanda
+ * açılan liste Windows'ta (WebView2) seçimi kaybediyordu; yerel liste bu sorunu yaşamaz.
+ * "Projesiz" kurala uysa da projeye saymaz, "Otomatik" elle atamayı kaldırıp kurallara bırakır:
+ * atama her zaman geri alınabilir. Proje yoksa nereden ekleneceğini söyler.
  */
 function ProjectAssign({
   value,
   projects,
   onChange,
 }: {
-  /** Bloğun şu anki projesi (`null`: projesiz); aralıkta verilmez ve "Projeye ata…" görünür. */
+  /** Bloğun şu anki projesi (`null`: atanmamış); aralıkta verilmez ve "Projeye ata…" görünür. */
   value?: string | null;
   projects: Tag[];
   onChange: (id: string | null) => Promise<unknown>;
@@ -46,45 +45,26 @@ function ProjectAssign({
       </p>
     );
   const isRange = value === undefined;
-  const current = chosen ?? (isRange ? PLACEHOLDER : (value ?? NO_PROJECT));
-  const tag = projects.find((p) => p.id === current);
+  const current = chosen ?? (isRange ? "" : (value ?? NO_PROJECT));
   return (
-    <label className="block space-y-1">
-      <span className="text-[11px] text-muted-foreground">Proje</span>
-      <span className="relative flex items-center">
-        <i
-          className="pointer-events-none absolute left-2.5 size-2 rounded-full"
-          style={{ background: tagColor(tag) }}
-          aria-hidden
-        />
-        <select
-          value={current}
-          aria-label="Proje"
-          onChange={(e) => {
-            const v = e.target.value;
-            if (v === PLACEHOLDER) return;
-            // Otomatik seçilince değer kurallardan yenilenir; işaret yanıtla gelene bırakılır.
-            setChosen(v === AUTO ? undefined : v);
-            onChange(v === AUTO ? null : v).then((ok) => ok === false && setChosen(undefined));
-          }}
-          className="h-8 w-full appearance-none rounded-md border bg-transparent pr-7 pl-6 text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-input/30"
-        >
-          {isRange && (
-            <option value={PLACEHOLDER} disabled>
-              Projeye ata…
-            </option>
-          )}
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-          <option value={NO_PROJECT}>Projesiz</option>
-          <option value={AUTO}>Otomatik (kurallara göre)</option>
-        </select>
-        <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" aria-hidden />
-      </span>
-    </label>
+    <div className="space-y-1">
+      <span className="block text-[11px] text-muted-foreground">Proje</span>
+      <ProjectSelect
+        value={current}
+        projects={projects}
+        placeholder={isRange ? "Projeye ata…" : null}
+        extra={[
+          { value: NO_PROJECT, label: "Projesiz" },
+          { value: AUTO, label: "Otomatik (kurallara göre)" },
+        ]}
+        className="w-full"
+        onChange={(v) => {
+          // Otomatik seçilince değer kurallardan yenilenir; işaret yanıtla gelene bırakılır.
+          setChosen(v === AUTO ? undefined : v);
+          onChange(v === AUTO ? null : v).then((ok) => ok === false && setChosen(undefined));
+        }}
+      />
+    </div>
   );
 }
 export const useEdit = () => useContext(EditContext);
@@ -280,9 +260,8 @@ export function MeetingMenu({
   const m = selection.meeting;
   const a = new Date(m.start);
   const b = new Date(m.end);
-  const [value, setValue] = useState(m.projectId ?? (m.ignored ? IGNORE : PLACEHOLDER));
+  const [value, setValue] = useState(m.projectId ?? (m.ignored ? IGNORE : ""));
   const [error, setError] = useState<string | null>(null);
-  const tag = projects.find((p) => p.id === value);
   const subject = m.subject || "(konusuz)";
 
   function assign(v: string) {
@@ -307,38 +286,21 @@ export function MeetingMenu({
           Projeye atamak için önce kenar çubuğundaki Projeler sayfasından bir proje ekle.
         </p>
       ) : (
-        <label className="block space-y-1">
-          <span className="text-[11px] text-muted-foreground">Proje</span>
-          <span className="relative flex items-center">
-            <i
-              className="pointer-events-none absolute left-2.5 size-2 rounded-full"
-              style={{ background: tagColor(tag) }}
-              aria-hidden
-            />
-            <select
-              value={value}
-              aria-label="Toplantının projesi"
-              onChange={(e) => e.target.value !== PLACEHOLDER && assign(e.target.value)}
-              className="h-8 w-full appearance-none rounded-md border bg-transparent pr-7 pl-6 text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-input/30"
-            >
-              {value === PLACEHOLDER && (
-                <option value={PLACEHOLDER} disabled>
-                  Projeye ata…
-                </option>
-              )}
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-              <option value={IGNORE}>Zaman çizelgesine alma</option>
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" aria-hidden />
-          </span>
+        <div className="space-y-1">
+          <span className="block text-[11px] text-muted-foreground">Proje</span>
+          <ProjectSelect
+            value={value}
+            projects={projects}
+            placeholder={value === "" ? "Projeye ata…" : null}
+            extra={[{ value: IGNORE, label: "Zaman çizelgesine alma" }]}
+            className="w-full"
+            aria-label="Toplantının projesi"
+            onChange={assign}
+          />
           <span className="block text-[11px] text-muted-foreground">
             Serinin tüm tekrarlarına uygulanır; zaman çizelgesine bu projeyle girer.
           </span>
-        </label>
+        </div>
       )}
       {+a < Date.now() && (
         <Button
@@ -346,7 +308,7 @@ export function MeetingMenu({
           variant="outline"
           className="w-full"
           onClick={() => {
-            const project = value === PLACEHOLDER || value === IGNORE ? null : value;
+            const project = value === "" || value === IGNORE ? null : value;
             onAddEntry(+a, Math.min(+b, Date.now()), m.subject, project);
             onClose();
           }}
@@ -579,7 +541,7 @@ export function ManualEntry({
                 value={project}
                 onChange={setProject}
                 categories={projects}
-                noneLabel="Projesiz"
+                noneLabel="Atanmamış"
                 className="w-full"
                 aria-label="Proje"
               />

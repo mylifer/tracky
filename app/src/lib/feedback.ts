@@ -45,7 +45,7 @@ export function useToasts(): Toast[] {
   );
 }
 
-const CHANGED = "kum:changed";
+export const CHANGED = "kum:changed";
 
 /** Kayıtlar değişti (geri alma, gözden geçirme…): açık rapor ve listeler yenilensin. */
 export function notifyChanged() {

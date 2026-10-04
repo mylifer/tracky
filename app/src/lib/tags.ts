@@ -2,7 +2,10 @@ import type { Client, Tag } from "../api";
 
 /** Kategorisiz süre için nötr renk ve ad. */
 export const UNCATEGORIZED = "Kategorisiz";
+/** Elle "proje yok" denen süre (`api.NO_PROJECT`); kurala uysa da projeye sayılmaz. */
 export const NO_PROJECT = "Projesiz";
+/** Henüz bir projeye atanmamış (kurala uymayan, elle de atanmayan) süre. */
+export const UNASSIGNED = "Atanmamış";
 export const NO_CLIENT = "Müşterisiz";
 
 /** Müşterinin rengi: listedeki sırasına göre paletten (müşterinin ayrı bir rengi yok). */

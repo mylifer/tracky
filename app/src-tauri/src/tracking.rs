@@ -9,7 +9,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tracky_core::{
-    Coach, EngineConfig, Goals, Nudge, PrivacySettings, Report, Store, Tracker, UsageTotal,
+    Classifier, Coach, EngineConfig, Goals, Nudge, PrivacySettings, Report, Store, Tracker,
+    UsageTotal,
 };
 
 use crate::tray;
@@ -35,6 +36,18 @@ pub struct Current {
     pub title: String,
     /// Bu uygulamada bugün geçen toplam süre.
     pub app_seconds_today: i64,
+    /// Şu anki oturumun (kurallara ya da elle atamaya göre) projesi.
+    pub project: Option<CurrentProject>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentProject {
+    pub id: String,
+    pub name: String,
+    pub color: u8,
+    /// Bu projede bugün geçen toplam süre.
+    pub seconds_today: i64,
 }
 
 /// Hedef ve hatırlatıcı ayarlarının anahtarı.
@@ -151,6 +164,9 @@ pub fn run(
             continue;
         }
         let totals = store.app_totals(start_of_today(), now).unwrap_or_default();
+        let project = tracker
+            .current()
+            .and_then(|s| current_project(&store, s, now));
         let check_limits =
             !goals.limits.is_empty() && (!limits_primed || ticks.is_multiple_of(LIMITS_EVERY));
         let category_totals = check_limits.then(|| {
@@ -184,6 +200,7 @@ pub fn run(
                 app_name: s.app_name.clone(),
                 title: s.title.clone(),
                 app_seconds_today: app_seconds(&totals, &s.app_id),
+                project,
             }),
             today_seconds: totals.iter().map(|t| t.seconds).sum(),
             needs_permission: !tracky_platform::permissions().all_granted(),
@@ -498,6 +515,32 @@ fn week_summary_body(report: &Report, previous_seconds: i64) -> String {
         second.push(format!("En yoğun gün: {}", WEEKDAYS[day as usize]));
     }
     join_lines(first, second)
+}
+
+/// Şu anki oturumun projesi ve projenin bugünkü süresi; projeye düşmüyorsa `None`.
+fn current_project(
+    store: &Store,
+    session: &tracky_core::Session,
+    now: DateTime<Utc>,
+) -> Option<CurrentProject> {
+    let tags = store.tags().ok()?;
+    let id = Classifier::new(&tags, &store.rules().ok()?)
+        .classify(session)
+        .project?;
+    let tag = tags.into_iter().find(|t| t.id == id)?;
+    // Projesi olmayan oturumlarda bugünün oturumları yeniden sınıflandırılmaz.
+    let seconds_today = store
+        .project_totals(start_of_today(), now)
+        .ok()?
+        .get(&id)
+        .copied()
+        .unwrap_or(0);
+    Some(CurrentProject {
+        id,
+        name: tag.name,
+        color: tag.color,
+        seconds_today,
+    })
 }
 
 fn app_seconds(totals: &[UsageTotal], app_id: &str) -> i64 {

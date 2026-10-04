@@ -413,7 +413,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
         <div data-tauri-drag-region className={cn("shrink-0", isMac ? "h-[52px]" : "h-3.5")} />
         <button
           onClick={() => setPalette(true)}
-          className="mx-2.5 mb-3 flex h-7 items-center gap-2 rounded-md border border-sidebar-border bg-background/60 px-2 text-xs text-muted-foreground shadow-xs transition-colors hover:bg-background hover:text-foreground dark:bg-white/5 dark:hover:bg-white/10"
+          className="mx-2.5 mb-3 flex h-7 items-center gap-2 rounded-md border border-sidebar-border bg-background/60 px-2 text-xs text-muted-foreground shadow-xs transition-colors outline-none hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-white/5 dark:hover:bg-white/10"
         >
           <SearchIcon className="size-3.5" />
           <span className="flex-1 text-left">Ara ya da git…</span>
@@ -609,13 +609,16 @@ function NavItem({
   tone?: "brand";
   children: ReactNode;
 }) {
+  const label = typeof children === "string" ? children : undefined;
   return (
     <button
       onClick={onClick}
       aria-current={active ? "page" : undefined}
-      title={typeof children === "string" ? children : undefined}
+      // Rozet yalnızca bir sayı ya da süre; ekran okuyucu ne olduğunu da duysun.
+      aria-label={label && badge ? `${label}, ${badgeTitle ?? "rozet"}: ${badge}` : undefined}
+      title={label}
       className={cn(
-        "group/nav relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:transition-colors",
+        "group/nav relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:transition-colors",
         active
           ? "bg-sidebar-accent font-medium [&_svg]:text-primary"
           : "hover:bg-sidebar-accent/50 [&_svg]:text-muted-foreground hover:[&_svg]:text-foreground/80",
@@ -628,6 +631,7 @@ function NavItem({
       {!!badge && (
         <span
           title={badgeTitle}
+          aria-label={badgeTitle ? `${badgeTitle}: ${badge}` : undefined}
           className={cn(
             "shrink-0 rounded-full px-1.5 text-[10px] leading-4 font-semibold tabular",
             tone === "brand" ? "bg-brand text-white shadow-sm shadow-brand-2/30" : "bg-primary/15 text-primary",
@@ -651,6 +655,7 @@ function LiveCard({
   onToggle: () => void;
 }) {
   const [menu, setMenu] = useState(false);
+  const project = tracking.paused || tracking.needsPermission ? null : (tracking.current?.project ?? null);
   const state = tracking.paused
     ? "Duraklatıldı"
     : tracking.needsPermission
@@ -679,15 +684,27 @@ function LiveCard({
           />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium">{state}</div>
+          {project ? (
+            <div className="flex min-w-0 items-center gap-1.5 text-xs font-medium" title={`Proje: ${project.name}`}>
+              <i className="size-2 shrink-0 rounded-full" style={{ background: `var(--c${project.color})` }} />
+              <span className="min-w-0 truncate">{project.name}</span>
+              <span className="shrink-0 font-normal text-muted-foreground tabular">
+                · {formatDuration(project.secondsToday)}
+              </span>
+            </div>
+          ) : (
+            <div className="truncate text-xs font-medium">{state}</div>
+          )}
           {tracking.paused && tracking.pausedUntil && (
             <div className="text-[11px] text-muted-foreground tabular">
               Devam: {formatTime(new Date(tracking.pausedUntil))}
             </div>
           )}
-          {live && tracking.current?.title && (
-            <div className="truncate text-[11px] text-muted-foreground" title={tracking.current.title}>
-              {tracking.current.title}
+          {live && (project || tracking.current?.title) && (
+            <div className="truncate text-[11px] text-muted-foreground" title={tracking.current?.title || undefined}>
+              {project
+                ? [tracking.current?.appName, tracking.current?.title].filter(Boolean).join(" — ")
+                : tracking.current?.title}
             </div>
           )}
         </div>
@@ -725,7 +742,7 @@ function LiveCard({
               {PAUSE_OPTIONS.map(([label, minutes]) => (
                 <button
                   key={label}
-                  className="flex h-7 w-full items-center rounded-md px-2 text-left text-xs hover:bg-accent"
+                  className="flex h-7 w-full items-center rounded-md px-2 text-left text-xs outline-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
                   onClick={() => {
                     setMenu(false);
                     if (minutes === "forever") onToggle();
