@@ -2257,7 +2257,7 @@ dependencies = [
 
 [[package]]
 name = "kum"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "chrono",
  "serde",
