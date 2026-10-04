@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { addDays, formatDate } from "../lib/dates";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
+import { friendlyError } from "../lib/feedback";
 
 const WEEK_OPTIONS = [8, 12, 26] as const;
 type Kind = "projects" | "categories";
@@ -46,7 +47,7 @@ export default function Trends({
         setPatterns(first);
         setError(null);
       },
-      (e) => live && setError(String(e)),
+      (e) => live && setError(friendlyError(e)),
     );
     return () => {
       live = false;

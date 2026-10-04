@@ -246,6 +246,40 @@ export type Goals = {
 export type ProjectGoal = { projectId: string; minutes: number };
 export type CategoryLimit = { categoryId: string; minutes: number };
 
+/** Geri alınabilir düzenleme: değişen kayıt sayısı ve geri alma numarası (`api.undo`). */
+export type Edited = { changed: number; undo: number };
+
+export type UnassignedItem = { title: string; seconds: number; word: string | null };
+export type UnassignedGroup = {
+  /** `site:alan` ya da `app:kimlik`. */
+  key: string;
+  kind: "site" | "app";
+  label: string;
+  appName: string;
+  /** Kural deseni: alan adı ya da uygulama kimliği. */
+  pattern: string;
+  seconds: number;
+  items: UnassignedItem[];
+  more: number;
+  /** Önünde/arkasında çalışılan proje. */
+  likelyProject: string | null;
+};
+export type Unassigned = {
+  totalSeconds: number;
+  groups: UnassignedGroup[];
+  idle: { start: string; end: string; seconds: number }[];
+  idleSeconds: number;
+};
+export type RulePreview = {
+  matchedSeconds: number;
+  gainedSeconds: number;
+  takenSeconds: number;
+  alreadySeconds: number;
+  blockedSeconds: number;
+  takenFrom: { id: string; seconds: number }[];
+  samples: { appName: string; title: string; seconds: number }[];
+};
+
 export type UpdateStatus = {
   current: string;
   available: string | null;
@@ -278,9 +312,29 @@ export const api = {
   setProjectClient: (projectId: string, clientId: string | null) =>
     invoke<void>("set_project_client", { projectId, clientId }),
   saveTag: (tag: { id?: string; kind: TagKind; name: string; color: number }) => invoke<Tag>("save_tag", { tag }),
-  deleteTag: (id: string) => invoke<void>("delete_tag", { id }),
-  addRule: (tagId: string, field: RuleField, pattern: string) => invoke<void>("add_rule", { tagId, field, pattern }),
-  deleteRule: (id: string) => invoke<void>("delete_rule", { id }),
+  /** Geri alma numarasını döndürür. */
+  deleteTag: (id: string) => invoke<number>("delete_tag", { id }),
+  addRule: (tagId: string, field: RuleField, pattern: string) => invoke<number>("add_rule", { tagId, field, pattern }),
+  deleteRule: (id: string) => invoke<number>("delete_rule", { id }),
+  /** Kural eklenseydi son 30 günde ne değişirdi? */
+  previewRule: (tagId: string, field: RuleField, pattern: string) =>
+    invoke<RulePreview>("preview_rule", { tagId, field, pattern }),
+  /** Düzenlemeyi geri alır. */
+  undo: (id: number) => invoke<void>("undo", { id }),
+  unassigned: (start: string, days: number) => invoke<Unassigned>("get_unassigned", { start, days }),
+  /** Grubu (ya da başlığı) projeye atar; `rule` verilirse önce kural eklenir. */
+  assignUnassigned: (
+    start: string,
+    days: number,
+    key: string,
+    title: string | null,
+    projectId: string | null,
+    rule: [RuleField, string] | null,
+  ) => invoke<Edited>("assign_unassigned", { start, days, key, title, projectId, rule }),
+  ignoreUnassigned: (key: string, ignored: boolean) => invoke<void>("ignore_unassigned", { key, ignored }),
+  ignoredUnassigned: () => invoke<string[]>("ignored_unassigned"),
+  /** Bu hafta aktarılmamış işi olan günler (YYYY-MM-DD). */
+  pendingTimesheetDays: () => invoke<string[]>("pending_timesheet_days"),
   assignAppCategory: (appId: string, tagId: string | null) => invoke<void>("assign_app_category", { appId, tagId }),
   knownApps: () => invoke<UsageTotal[]>("known_apps"),
   suggestions: () => invoke<Suggestions>("get_suggestions"),
@@ -320,13 +374,13 @@ export const api = {
   dismissSuggestion: (key: string) => invoke<void>("dismiss_suggestion", { key }),
   /** Aralıktaki oturumlara elle kategori; `null` kurallara döndürür. */
   setRangeCategory: (start: string, end: string, categoryId: string | null) =>
-    invoke<number>("set_range_category", { start, end, categoryId }),
-  deleteRange: (start: string, end: string) => invoke<number>("delete_range", { start, end }),
+    invoke<Edited>("set_range_category", { start, end, categoryId }),
+  deleteRange: (start: string, end: string) => invoke<Edited>("delete_range", { start, end }),
   addManualEntry: (label: string, start: string, end: string, categoryId: string | null, projectId: string | null) =>
-    invoke<void>("add_manual_entry", { label, start, end, categoryId, projectId }),
+    invoke<Edited>("add_manual_entry", { label, start, end, categoryId, projectId }),
   /** Aralıktaki oturumlara elle proje; `null` kurallara döndürür. */
   setRangeProject: (start: string, end: string, projectId: string | null) =>
-    invoke<number>("set_range_project", { start, end, projectId }),
+    invoke<Edited>("set_range_project", { start, end, projectId }),
   privacy: () => invoke<PrivacySettings>("get_privacy"),
   savePrivacy: (settings: PrivacySettings) => invoke<void>("save_privacy", { settings }),
   goals: () => invoke<Goals>("get_goals"),
@@ -354,6 +408,8 @@ export const api = {
   installUpdate: () => invoke<void>("install_update"),
   onUpdate: (cb: (s: UpdateStatus) => void): Promise<UnlistenFn> =>
     listen<UpdateStatus>("update", (e) => cb(e.payload)),
+  /** Menüden, menü çubuğundan ya da bildirimden gelen sayfa isteği ("day", "timesheet", "palette"…). */
+  onNavigate: (cb: (target: string) => void): Promise<UnlistenFn> => listen<string>("navigate", (e) => cb(e.payload)),
   onStatus: (cb: (s: TrackingStatus) => void): Promise<UnlistenFn> =>
     listen<TrackingStatus>("status", (e) => cb(e.payload)),
 };

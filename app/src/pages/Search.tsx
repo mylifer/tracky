@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { addDays, formatDate, isoDate, today } from "../lib/dates";
 import { cn } from "../lib/utils";
+import { friendlyError } from "../lib/feedback";
 
 export const PERIODS = [
   { days: 7, label: "7 gün" },
@@ -50,7 +51,7 @@ export default function Search({
           setResult(r);
           setError(null);
         },
-        (e) => n === seq.current && setError(String(e)),
+        (e) => n === seq.current && setError(friendlyError(e)),
       );
     }, 250);
     return () => window.clearTimeout(id);
@@ -146,7 +147,7 @@ function Results({
                   setSaved(path);
                   setExportError(null);
                 },
-                (e) => setExportError(String(e)),
+                (e) => setExportError(friendlyError(e)),
               )
             }
           >

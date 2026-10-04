@@ -2,6 +2,7 @@
 //! (etiketler, kurallar, müşteriler, öneriler) `taxonomy`, zaman çizelgesi `timesheet`
 //! alt modülündedir.
 
+mod edits;
 mod taxonomy;
 mod timesheet;
 
@@ -17,6 +18,7 @@ use crate::model::{IDLE_APP_ID, MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
 
+pub use edits::EditSnapshot;
 pub use timesheet::{SavedEntry, SplitMeetings};
 
 #[derive(Debug, thiserror::Error)]

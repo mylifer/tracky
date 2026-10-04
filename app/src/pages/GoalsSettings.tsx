@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { tagColor } from "../lib/tags";
+import { friendlyError } from "../lib/feedback";
 
 const BREAK_OPTIONS = [30, 45, 50, 60, 75, 90, 120];
 const DEFAULT_BREAK = 60;
@@ -39,7 +40,7 @@ export default function GoalsSettings() {
         setGoals(g);
         setHours(String(g.dailyHours));
       },
-      (e) => setError(String(e)),
+      (e) => setError(friendlyError(e)),
     );
     api.taxonomy().then((t) => {
       setCategories(t.tags.filter((x) => x.kind === "category"));
@@ -51,7 +52,7 @@ export default function GoalsSettings() {
 
   function save(next: Goals) {
     setGoals(next);
-    api.saveGoals(next).catch((e) => setError(String(e)));
+    api.saveGoals(next).catch((e) => setError(friendlyError(e)));
   }
 
   const breakOn = goals.breakAfterMinutes !== null;

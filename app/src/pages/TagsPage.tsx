@@ -12,18 +12,9 @@ import {
   type UsageTotal,
 } from "../api";
 import { SuggestionsCard } from "../components/SuggestionsCard";
+import { RulePreview } from "../components/RulePreview";
+import { friendlyError, undoable, useChanged } from "../lib/feedback";
 import { ErrorText, Page } from "../components/settings";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
@@ -106,6 +97,7 @@ export default function TagsPage({
     load();
     api.knownApps().then(setApps);
   }, [load]);
+  useChanged(load);
 
   const run = (f: () => Promise<unknown>) => async () => {
     try {
@@ -113,7 +105,7 @@ export default function TagsPage({
       await f();
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     }
   };
 
@@ -138,7 +130,7 @@ export default function TagsPage({
             await load();
             setOpen(id);
           }}
-          onError={setError}
+          onError={(e) => setError(friendlyError(e))}
         />
       </div>
       <ErrorText>{error}</ErrorText>
@@ -196,6 +188,7 @@ export default function TagsPage({
                     open={open === t.id}
                     onToggle={() => setOpen(open === t.id ? null : t.id)}
                     run={run}
+                    allTags={tags}
                   />
                 ))}
               </ul>
@@ -360,6 +353,7 @@ function TagItem({
   open,
   onToggle,
   run,
+  allTags,
 }: {
   tag: Tag;
   rules: Rule[];
@@ -370,6 +364,7 @@ function TagItem({
   open: boolean;
   onToggle: () => void;
   run: Run;
+  allTags: Tag[];
 }) {
   const text = TEXT[tag.kind];
   const empty = rules.filter((r) => !foreignRule(r)).length === 0;
@@ -422,31 +417,18 @@ function TagItem({
             ? (["title", "domain", "app"] as const)
             : (["app", "domain", "title"] as const)
           ).map((field) => (
-            <RuleList key={field} tag={tag} field={field} rules={rules} apps={apps} run={run} />
+            <RuleList key={field} tag={tag} field={field} rules={rules} apps={apps} run={run} allTags={allTags} />
           ))}
           <div className="flex justify-end">
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive">
-                  <Trash2 /> {tag.kind === "project" ? "Projeyi sil" : "Kategoriyi sil"}
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>“{tag.name}” silinsin mi?</AlertDialogTitle>
-                  <AlertDialogDescription>{text.deleteHint}</AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Vazgeç</AlertDialogCancel>
-                  <AlertDialogAction
-                    className="bg-destructive text-white hover:bg-destructive/90"
-                    onClick={run(() => api.deleteTag(tag.id))}
-                  >
-                    Sil
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-destructive"
+              title={text.deleteHint}
+              onClick={run(() => undoable(api.deleteTag(tag.id), `“${tag.name}” silindi`))}
+            >
+              <Trash2 /> {tag.kind === "project" ? "Projeyi sil" : "Kategoriyi sil"}
+            </Button>
           </div>
         </div>
       )}
@@ -522,12 +504,14 @@ function RuleList({
   rules,
   apps,
   run,
+  allTags,
 }: {
   tag: Tag;
   field: RuleField;
   rules: Rule[];
   apps: UsageTotal[];
   run: Run;
+  allTags: Tag[];
 }) {
   const [word, setWord] = useState("");
   const appNames = useMemo(() => new Map(apps.map((a) => [a.key, a.label])), [apps]);
@@ -555,7 +539,12 @@ function RuleList({
             <button
               type="button"
               className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-              onClick={run(() => api.deleteRule(r.id))}
+              onClick={run(() =>
+                undoable(
+                  api.deleteRule(r.id),
+                  `“${field === "app" ? (appNames.get(r.pattern) ?? r.pattern) : r.pattern}” kuralı kaldırıldı`,
+                ),
+              )}
               aria-label={`${r.pattern} kuralını sil`}
             >
               <X className="size-3" />
@@ -600,6 +589,7 @@ function RuleList({
           />
         )}
       </div>
+      {typed && word.trim() && <RulePreview tagId={tag.id} field={field} pattern={word} tags={allTags} />}
     </div>
   );
 }

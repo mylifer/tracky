@@ -118,6 +118,18 @@ pub fn unexported_days(app: &AppHandle, from: NaiveDate, to: NaiveDate) -> Vec<N
         .collect()
 }
 
+/// Bu hafta (pazartesiden bugüne) zaman çizelgesine aktarılmamış işi olan günler
+/// (kenar çubuğu rozeti; kayıtların yazılacağı yer seçilmemişse boş).
+#[tauri::command]
+pub async fn pending_timesheet_days(app: AppHandle) -> CmdResult<Vec<NaiveDate>> {
+    let today = chrono::Local::now().date_naive();
+    let week = today
+        - Days::new(u64::from(
+            chrono::Datelike::weekday(&today).num_days_from_monday(),
+        ));
+    Ok(unexported_days(&app, week, today))
+}
+
 /// `start` gününden itibaren `days` günün kayıtları.
 #[tauri::command]
 pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResult<Vec<Day>> {

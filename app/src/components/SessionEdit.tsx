@@ -8,12 +8,10 @@ import { Label } from "./ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { CategorySelect } from "./CategorySelect";
 import { tagColor } from "../lib/tags";
+import { friendlyError, undoable } from "../lib/feedback";
 
 /** "geçersiz kayıt: bu aralıkta…" → "Bu aralıkta…" */
-function message(e: unknown) {
-  const m = String(e).replace(/^geçersiz kayıt: /, "");
-  return m.charAt(0).toLocaleUpperCase("tr") + m.slice(1);
-}
+const message = friendlyError;
 
 /** Takvimdeki blokların düzenleme bağlamı (kategoriler ve yenileme). */
 export const EditContext = createContext<{ categories: Tag[]; projects: Tag[]; onChanged: () => void } | null>(null);
@@ -91,6 +89,18 @@ function ProjectAssign({
 }
 export const useEdit = () => useContext(EditContext);
 
+/** Atama bildirimi: "Proje: X" ya da kurallara dönüş. */
+function projectMessage(projects: Tag[], id: string | null) {
+  if (id === null) return "Proje kurallara bırakıldı";
+  if (id === NO_PROJECT) return "Projesiz olarak işaretlendi";
+  return `${projects.find((p) => p.id === id)?.name ?? "Proje"} projesine atandı`;
+}
+
+function categoryMessage(categories: Tag[], id: string | null) {
+  if (id === null) return "Kategori kurallara bırakıldı";
+  return `${categories.find((c) => c.id === id)?.name ?? "Kategori"} kategorisine atandı`;
+}
+
 /** Takvimde sürükleyerek seçilen aralık ve menünün açılacağı nokta. */
 export type RangeSelection = { start: number; end: number; x: number; y: number };
 
@@ -165,7 +175,6 @@ export function RangeMenu({
   onChanged: () => void;
   onClose: () => void;
 }) {
-  const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Gelecek kaydedilemez ve silinecek bir şey de yoktur: bitiş şimdiye kırpılır.
   const end = Math.min(selection.end, Date.now());
@@ -195,13 +204,17 @@ export function RangeMenu({
       {end > start && (
         <ProjectAssign
           projects={projects}
-          onChange={(id) => run(() => api.setRangeProject(iso(start), iso(end), id))}
+          onChange={(id) =>
+            run(() => undoable(api.setRangeProject(iso(start), iso(end), id), projectMessage(projects, id)))
+          }
         />
       )}
       {end > start && (
         <CategorySelect
           value={null}
-          onChange={(id) => run(() => api.setRangeCategory(iso(start), iso(end), id))}
+          onChange={(id) =>
+            run(() => undoable(api.setRangeCategory(iso(start), iso(end), id), categoryMessage(categories, id)))
+          }
           categories={categories}
           noneLabel="Kurallara göre"
           placeholder="İçindeki kayıtları kategoriye ata…"
@@ -222,23 +235,18 @@ export function RangeMenu({
           >
             <PenLine /> Elle kayıt ekle
           </Button>
-          {end > start &&
-            (confirm ? (
-              <Button size="sm" variant="destructive" onClick={() => run(() => api.deleteRange(iso(start), iso(end)))}>
-                Silinsin
-              </Button>
-            ) : (
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                className="text-muted-foreground hover:text-destructive"
-                onClick={() => setConfirm(true)}
-                aria-label="Aralıktaki kayıtları sil"
-                title="Aralıktaki kayıtları sil"
-              >
-                <Trash2 />
-              </Button>
-            ))}
+          {end > start && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              className="text-muted-foreground hover:text-destructive"
+              onClick={() => run(() => undoable(api.deleteRange(iso(start), iso(end)), "Aralıktaki kayıtlar silindi"))}
+              aria-label="Aralıktaki kayıtları sil"
+              title="Aralıktaki kayıtları sil (geri alınabilir)"
+            >
+              <Trash2 />
+            </Button>
+          )}
         </div>
       )}
       {error && <p className="text-xs text-destructive selectable">{error}</p>}
@@ -369,7 +377,6 @@ export function BlockActions({
   projects: Tag[];
   onChanged: () => void;
 }) {
-  const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const run = (f: () => Promise<unknown>) =>
     f().then(onChanged, (e) => {
@@ -382,35 +389,28 @@ export function BlockActions({
       <ProjectAssign
         value={projectId}
         projects={projects}
-        onChange={(id) => run(() => api.setRangeProject(start, end, id))}
+        onChange={(id) => run(() => undoable(api.setRangeProject(start, end, id), projectMessage(projects, id)))}
       />
       <div className="flex items-center gap-2">
         <CategorySelect
           value={categoryId}
-          onChange={(id) => run(() => api.setRangeCategory(start, end, id))}
+          onChange={(id) => run(() => undoable(api.setRangeCategory(start, end, id), categoryMessage(categories, id)))}
           categories={categories}
           noneLabel="Kurallara göre"
           className="min-w-0 flex-1"
           aria-label="Bloğun kategorisi"
         />
-        {confirm ? (
-          <Button size="sm" variant="destructive" onClick={() => run(() => api.deleteRange(start, end))}>
-            Silinsin
-          </Button>
-        ) : (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            className="text-muted-foreground hover:text-destructive"
-            onClick={() => setConfirm(true)}
-            aria-label="Bloğu sil"
-            title="Bloğu sil"
-          >
-            <Trash2 />
-          </Button>
-        )}
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          className="text-muted-foreground hover:text-destructive"
+          onClick={() => run(() => undoable(api.deleteRange(start, end), "Blok silindi"))}
+          aria-label="Bloğu sil"
+          title="Bloğu sil (geri alınabilir)"
+        >
+          <Trash2 />
+        </Button>
       </div>
-      {confirm && <p className="text-[11px] text-muted-foreground">Bu bloktaki kayıtlar raporlardan kaldırılır.</p>}
       {error && <p className="text-[11px] text-destructive selectable">{error}</p>}
     </div>
   );
@@ -478,7 +478,10 @@ export function ManualEntry({
     if (+end <= +start) return setError("Bitiş başlangıçtan sonra olmalı.");
     if (+end > Date.now()) return setError("Henüz gelmemiş bir zaman için kayıt eklenemez.");
     try {
-      await api.addManualEntry(label, start.toISOString(), end.toISOString(), category, project);
+      await undoable(
+        api.addManualEntry(label, start.toISOString(), end.toISOString(), category, project),
+        `“${label.trim()}” eklendi`,
+      );
       setOpen(false);
       onClose?.();
       setLabel("");

@@ -47,6 +47,18 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 26. Yedekler: haftada bir otomatik (son 8 saklanır), elle yedek ve yedekten geri yükleme (şimdiki veri
       silinmez, yedek klasörüne taşınır)
 - [x] 27. Zaman çizelgesi hatırlatması: cuma (varsayılan 17:00) bu hafta aktarılmamış günleri bildirir
+- [x] 28. Gözden geçir: projeye düşmeyen süre siteye ve uygulamaya göre gruplanır; grup ya da başlık tek tıkla
+      projeye atanır, istenirse kural eklenir. Öncesinde ve sonrasında çalışılan proje önerilir; başlıktaki iş
+      anahtarından (`LOY-214`) kural öneki çıkar. Boşta süre de buradan atanır, gruplar gizlenebilir
+- [x] 29. Kural önizlemesi: kural eklenmeden son 30 günde ne kadar sürenin geçeceği, ne kadarının başka projeden
+      alınacağı ve etkilenen pencereler gösterilir
+- [x] 30. Geri al: takvimde atama, silme, elle kayıt; kural ve proje/kategori silme; zaman çizelgesi satırı.
+      Silmede onay sorulmaz, alttaki bildirimden geri alınır
+- [x] 31. Komut paleti (⌘K / Ctrl+K), ⌘1–5 sayfalar, ⌘F arama, ⌘, ayarlar; macOS'ta Git menüsü. Bildirime
+      tıklayınca ilgili sayfa (gün, hafta, zaman çizelgesi) açılır; menü çubuğundan "Gözden geçir"
+- [x] 32. Zaman çizelgesi açıklamaları: kaydın iş anahtarları ve süreye göre en önemli başlıkları (yerel, ücretsiz)
+- [x] 33. Görünüm: kum tonlarında marka rengi, hedef halkaları, canlı kart, iskelet yükleme, sayfa geçişleri,
+      okunur hata mesajları, karşılamada proje adımı (elle ya da zaman çizelgesi şablonundan)
 
 ## Yapı
 
@@ -54,7 +66,9 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 crates/tracky-core/       Platformdan bağımsız çekirdek
   engine.rs               Gözlemleri oturumlara çevirir (idle, uyku, kısa geçişler)
   store/                  SQLite: göçler, oturum kaydı, ayarlar, raporlama sorguları; taxonomy.rs
-                          (etiketler, kurallar, müşteriler, öneriler), timesheet.rs (zaman çizelgesi)
+                          (etiketler, kurallar, müşteriler, öneriler), timesheet.rs (zaman çizelgesi),
+                          edits.rs (geri alma, atanmamış süre)
+  inbox.rs                Atanmamış süreyi gruplama, muhtemel proje, kural önizlemesi
   blocks.rs               Takvimdeki çalışma blokları, molalar, bağlam değişimi
   privacy.rs              Gizlilik: duraklatma, hariç uygulamalar, başlık gizleme, adres temizleme
   browser.rs              Tarayıcı tanıma, sekme adı temizleme, gizli pencere tespiti

@@ -5,6 +5,7 @@ mod calendar;
 mod commands;
 #[cfg(target_os = "macos")]
 mod dock;
+mod edits;
 mod effects;
 mod sync;
 mod timesheet;
@@ -17,7 +18,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tracky_core::Store;
 
@@ -228,6 +229,25 @@ pub(crate) fn show_main_window(app: &AppHandle) {
     }
 }
 
+/// Bildirimden sonra pencere bu kadar süre içinde odaklanırsa bildirimin sayfası açılır.
+const PENDING_NAV_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Bildirime tıklanınca açılacak sayfa: masaüstü bildirimleri tıklamayı uygulamaya iletmez;
+/// tıklama Kum'u öne getirir, pencere odaklanınca bu sayfaya gidilir.
+#[derive(Default)]
+pub(crate) struct PendingNav(Mutex<Option<(&'static str, std::time::Instant)>>);
+
+/// Bildirim gösterilirken çağrılır: pencere yakında odaklanırsa `target` açılır.
+pub(crate) fn navigate_on_focus(app: &AppHandle, target: &'static str) {
+    *lock(&app.state::<PendingNav>().0) = Some((target, std::time::Instant::now()));
+}
+
+/// Pencereyi gösterip arayüzde `target` sayfasını açar (gün, hafta, zaman çizelgesi…).
+pub(crate) fn navigate(app: &AppHandle, target: &str) {
+    show_main_window(app);
+    let _ = app.emit("navigate", target);
+}
+
 pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -273,6 +293,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }),
     });
     app.manage(TrayItems(Mutex::new(None)));
+    app.manage(edits::UndoLog::default());
+    app.manage(PendingNav::default());
     tray::create(app.handle(), app.autolaunch().is_enabled().unwrap_or(false))?;
 
     let (tx, rx) = mpsc::channel();
@@ -337,9 +359,16 @@ pub fn run() {
             commands::get_suggestions,
             commands::search,
             commands::set_range_project,
+            edits::undo,
+            edits::get_unassigned,
+            edits::assign_unassigned,
+            edits::ignore_unassigned,
+            edits::ignored_unassigned,
+            edits::preview_rule,
             timesheet::get_timesheet_config,
             timesheet::save_timesheet_config,
             timesheet::timesheet_days,
+            timesheet::pending_timesheet_days,
             timesheet::approve_timesheet_day,
             timesheet::save_timesheet_entry,
             timesheet::delete_timesheet_entry,
@@ -396,6 +425,15 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+            }
+            if let WindowEvent::Focused(true) = event {
+                let app = window.app_handle();
+                let pending = lock(&app.state::<PendingNav>().0).take();
+                if let Some((target, at)) = pending
+                    && at.elapsed() < PENDING_NAV_FOR
+                {
+                    let _ = app.emit("navigate", target);
+                }
             }
         })
         .build(tauri::generate_context!())

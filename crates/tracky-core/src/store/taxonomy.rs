@@ -200,9 +200,10 @@ impl Store {
         Ok(())
     }
 
-    /// Yumuşak siler; kuralları da birlikte silinir.
-    pub fn delete_tag(&self, id: &str) -> Result<()> {
-        let now = ms(Utc::now());
+    /// Yumuşak siler; kuralları da birlikte silinir. Silinme anı ([`Store::restore_tag`]).
+    pub fn delete_tag(&self, id: &str) -> Result<DateTime<Utc>> {
+        let at = Utc::now();
+        let now = ms(at);
         self.conn.execute(
             "UPDATE tags SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
             params![id, now],
@@ -212,7 +213,7 @@ impl Store {
              WHERE tag_id = ?1 AND deleted_at IS NULL",
             params![id, now],
         )?;
-        Ok(())
+        Ok(super::from_ms(now))
     }
 
     pub fn rules(&self) -> Result<Vec<Rule>> {

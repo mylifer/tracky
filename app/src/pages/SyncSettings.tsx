@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { formatTime } from "../lib/dates";
 import { useTauriEvent } from "../lib/useTauriEvent";
+import { friendlyError } from "../lib/feedback";
 
 /** Supabase bağlantısı, giriş ve eşitleme durumu. */
 export default function SyncSettings() {
@@ -39,7 +40,7 @@ export default function SyncSettings() {
       const s = await f();
       if (s) setStatus(s);
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }

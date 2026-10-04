@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   CalendarDays,
   CalendarRange,
@@ -12,11 +12,23 @@ import {
   Tags,
   FolderKanban,
   Building2,
+  Inbox,
+  RotateCw,
+  CalendarCheck,
+  Moon,
+  Sun,
+  Monitor,
+  RefreshCw,
+  HardDriveDownload,
+  Download,
+  Command as CommandIcon,
 } from "lucide-react";
-import { api, formatDuration, type AppStatus, type Suggestions, type TrackingStatus } from "./api";
+import { api, formatDuration, type AppStatus, type Suggestions, type Tag, type TrackingStatus } from "./api";
 import { UpdateCard } from "./components/UpdateCard";
 import ReportView from "./components/ReportView";
 import Toolbar from "./components/Toolbar";
+import { Toaster } from "./components/Toaster";
+import { CommandPalette, type Command } from "./components/CommandPalette";
 import { Button } from "./components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
@@ -32,7 +44,8 @@ import {
   startOfWeek,
   today,
 } from "./lib/dates";
-import { applyPlatform, useTheme } from "./lib/theme";
+import { friendlyError, toast, useChanged } from "./lib/feedback";
+import { applyPlatform, useTheme, type ThemePref } from "./lib/theme";
 import { useUpdate } from "./lib/useUpdate";
 import { cn } from "./lib/utils";
 import Onboarding from "./Onboarding";
@@ -41,11 +54,12 @@ import ClientsPage from "./pages/ClientsPage";
 import Search, { type SearchState } from "./pages/Search";
 import Trends from "./pages/Trends";
 import Timesheet from "./pages/Timesheet";
+import Review from "./pages/Review";
 import Settings from "./pages/Settings";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
 type Mode = "day" | "week" | "month";
-type View = Mode | "timesheet" | "trends" | "search" | "clients" | "projects" | "categories" | "settings";
+type View = Mode | "review" | "timesheet" | "trends" | "search" | "clients" | "projects" | "categories" | "settings";
 
 const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
   { id: "day", label: "Gün", icon: <CalendarDays /> },
@@ -54,6 +68,7 @@ const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
 ];
 
 const TITLES: Partial<Record<View, string>> = {
+  review: "Gözden geçir",
   timesheet: "Zaman çizelgesi",
   trends: "Eğilimler",
   search: "Ara",
@@ -63,6 +78,10 @@ const TITLES: Partial<Record<View, string>> = {
   settings: "Ayarlar",
 };
 
+/** Mac'te ⌘, Windows'ta Ctrl ile kısayollar; ipuçlarında da böyle yazılır. */
+const isMacUA = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+const MOD = isMacUA ? "⌘" : "Ctrl+";
+
 const longDate = new Intl.DateTimeFormat("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
 export default function App() {
@@ -71,12 +90,13 @@ export default function App() {
   useTheme(status?.theme ?? "system");
 
   const refresh = useCallback(() => {
+    setError(null);
     api.status().then(
       (s) => {
         applyPlatform(s.platform, s.effect);
         setStatus(s);
       },
-      (e) => setError(String(e)),
+      (e) => setError(friendlyError(e)),
     );
   }, []);
 
@@ -84,13 +104,31 @@ export default function App() {
 
   if (error)
     return (
-      <main className="grid h-full place-items-center bg-background p-6">
-        <p className="text-destructive selectable">{error}</p>
+      <main data-tauri-drag-region className="grid h-full place-items-center bg-background p-6">
+        <div className="max-w-sm space-y-4 text-center">
+          <img src="/icon.png" alt="" className="mx-auto size-12 opacity-80" />
+          <div>
+            <p className="text-[15px] font-semibold">Kum açılamadı</p>
+            <p className="mt-1 text-[13px] text-muted-foreground selectable">{error}</p>
+          </div>
+          <Button onClick={refresh}>
+            <RotateCw /> Tekrar dene
+          </Button>
+        </div>
       </main>
     );
-  if (!status) return null;
+  if (!status) return <Splash />;
   if (!status.onboarded || !status.accessibility) return <Onboarding status={status} onChange={refresh} />;
   return <Shell status={status} refresh={refresh} />;
+}
+
+/** Açılırken (durum gelene kadar) boş pencere yerine. */
+function Splash() {
+  return (
+    <main data-tauri-drag-region className="grid h-full place-items-center bg-background">
+      <img src="/icon.png" alt="" className="size-14 animate-pulse" />
+    </main>
+  );
 }
 
 function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) {
@@ -109,17 +147,48 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
     (s: Suggestions) => setSuggestionCount({ projects: s.projects.length, categories: s.categories.length }),
     [],
   );
+  // Kenar çubuğu rozetleri: bu haftanın atanmamış süresi ve aktarılmamış günleri.
+  const [unassigned, setUnassigned] = useState(0);
+  const [pendingDays, setPendingDays] = useState(0);
+  const refreshBadges = useCallback(() => {
+    api.suggestions().then(onSuggestions, () => {});
+    api.unassigned(isoDate(startOfWeek(today())), 7).then(
+      (u) => setUnassigned(u.totalSeconds),
+      () => {},
+    );
+    api.pendingTimesheetDays().then(
+      (d) => setPendingDays(d.length),
+      () => {},
+    );
+  }, [onSuggestions]);
   useEffect(() => {
-    const refresh = () => api.suggestions().then(onSuggestions, () => {});
-    refresh();
-    const id = setInterval(refresh, 3600_000);
+    refreshBadges();
+    const id = setInterval(refreshBadges, 3600_000);
     return () => clearInterval(id);
-  }, [view]);
+  }, [view, refreshBadges]);
+  useChanged(refreshBadges);
+
   const [day, setDay] = useState(isoDate(today()));
   const [week, setWeek] = useState(isoDate(startOfWeek(today())));
   const [month, setMonth] = useState(isoDate(startOfMonth(today())));
   const [tracking, setTracking] = useState<TrackingStatus>(status.tracking);
   const [update, setUpdate] = useUpdate();
+  const [palette, setPalette] = useState(false);
+  const [dailyHours, setDailyHours] = useState(8);
+  useEffect(() => {
+    api.goals().then(
+      (g) => setDailyHours(g.dailyHours),
+      () => {},
+    );
+  }, [view]);
+  const [projects, setProjects] = useState<Tag[]>([]);
+  useEffect(() => {
+    if (palette)
+      api.taxonomy().then(
+        (t) => setProjects(t.tags.filter((x) => x.kind === "project")),
+        () => {},
+      );
+  }, [palette]);
   const isMac = status.platform === "macos";
 
   useTauriEvent(api.onStatus, setTracking);
@@ -159,18 +228,81 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   }
 
   function goToday() {
-    if (view === "day") setDay(todayIso);
-    else if (view === "week") setWeek(thisWeek);
-    else if (view === "month") setMonth(thisMonth);
+    if (view === "day" || view === "week" || view === "month") {
+      setDay(todayIso);
+      setWeek(thisWeek);
+      setMonth(thisMonth);
+    } else {
+      setDay(todayIso);
+      setView("day");
+    }
   }
 
-  // Klavye: ←/→ önceki/sonraki dönem, T bugün, 1/2/3 Gün/Hafta/Ay, / arama.
+  function selectMode(m: Mode) {
+    if (m === "week") setWeek(isoDate(startOfWeek(dayDate)));
+    if (m === "month") {
+      // Bu hafta seçiliyse bugünün ayı (hafta önceki aydan başlasa bile).
+      const ref = view === "week" ? (week === thisWeek ? today() : parseIsoDate(week)) : dayDate;
+      setMonth(isoDate(startOfMonth(ref)));
+    }
+    setView(m);
+  }
+
+  /** Menüden, menü çubuğundan, bildirimden ya da kısayoldan gelen sayfa isteği. */
+  function navigate(target: string) {
+    switch (target) {
+      case "palette":
+        return setPalette(true);
+      case "day":
+      case "week":
+      case "month":
+        return selectMode(target);
+      case "today":
+        return goToday();
+      case "last-week":
+        setWeek(isoDate(addDays(startOfWeek(today()), -7)));
+        return setView("week");
+      case "settings":
+        return openSettings();
+      case "review":
+      case "timesheet":
+      case "search":
+      case "trends":
+      case "projects":
+      case "categories":
+      case "clients":
+        return setView(target);
+    }
+  }
+  useTauriEvent(api.onNavigate, navigate);
+
+  // Klavye: ←/→ önceki/sonraki dönem, T bugün, 1/2/3 Gün/Hafta/Ay, / arama;
+  // ⌘K palet, ⌘F arama, ⌘, ayarlar, ⌘1…5 sayfalar (Mac'te menü de aynı isteği gönderir).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
-      const target = e.target as HTMLElement | null;
-      if (target?.closest("input, textarea, select, [contenteditable], [role=dialog], [role=listbox], [role=menu]"))
+      if (e.defaultPrevented || e.altKey) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod) {
+        const target = (
+          {
+            k: "palette",
+            f: "search",
+            ",": "settings",
+            "1": "day",
+            "2": "week",
+            "3": "month",
+            "4": "timesheet",
+            "5": "review",
+            t: "today",
+          } as Record<string, string>
+        )[e.key.toLowerCase()];
+        if (!target || e.shiftKey) return;
+        e.preventDefault();
+        navigate(target);
         return;
+      }
+      const el = e.target as HTMLElement | null;
+      if (el?.closest("input, textarea, select, [contenteditable], [role=dialog], [role=listbox], [role=menu]")) return;
       const report = view === "day" || view === "week" || view === "month";
       if (e.key === "1") selectMode("day");
       else if (e.key === "2") selectMode("week");
@@ -186,15 +318,82 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  function selectMode(m: Mode) {
-    if (m === "week") setWeek(isoDate(startOfWeek(dayDate)));
-    if (m === "month") {
-      // Bu hafta seçiliyse bugünün ayı (hafta önceki aydan başlasa bile).
-      const ref = view === "week" ? (week === thisWeek ? today() : parseIsoDate(week)) : dayDate;
-      setMonth(isoDate(startOfMonth(ref)));
-    }
-    setView(m);
+  async function changeTheme(t: ThemePref) {
+    await api.setTheme(t).catch(() => {});
+    refresh();
   }
+
+  const commands = useMemo<Command[]>(() => {
+    const go = (id: View, label: string, icon: ReactNode, hint?: string, keywords?: string): Command => ({
+      id: `go:${id}`,
+      label,
+      group: "Git",
+      icon,
+      hint,
+      keywords,
+      run: () => (id === "day" || id === "week" || id === "month" ? selectMode(id) : setView(id)),
+    });
+    const act = (id: string, label: string, icon: ReactNode, run: () => void, keywords?: string): Command => ({
+      id,
+      label,
+      group: "Eylemler",
+      icon,
+      keywords,
+      run,
+    });
+    const done = (p: Promise<unknown>, ok: string) =>
+      p.then(
+        () => toast(ok, { tone: "success" }),
+        (e) => toast(friendlyError(e), { tone: "error" }),
+      );
+    return [
+      go("day", "Gün", <CalendarDays />, `${MOD}1`, "bugün rapor takvim"),
+      go("week", "Hafta", <CalendarRange />, `${MOD}2`, "haftalık rapor"),
+      go("month", "Ay", <CalendarIcon />, `${MOD}3`, "aylık rapor"),
+      go("timesheet", "Zaman çizelgesi", <FileSpreadsheet />, `${MOD}4`, "excel sheets aktar timesheet"),
+      go("review", "Gözden geçir", <Inbox />, `${MOD}5`, "atanmamış projesiz süre"),
+      go("trends", "Eğilimler", <TrendingUp />, undefined, "grafik hafta"),
+      go("search", "Ara", <SearchIcon />, `${MOD}F`, "bul pencere başlık"),
+      go("clients", "Müşteriler", <Building2 />, undefined, "firma"),
+      go("projects", "Projeler", <FolderKanban />, undefined, "kural"),
+      go("categories", "Kategoriler", <Tags />, undefined, "kural uygulama"),
+      go("settings", "Ayarlar", <Settings2 />, `${MOD},`, "tercihler"),
+      act("today", "Bugüne git", <CalendarCheck />, goToday, "today"),
+      ...(tracking.paused
+        ? [act("resume", "Takibe devam et", <Play />, togglePause, "başlat")]
+        : [
+            act("pause-15", "15 dakika duraklat", <Pause />, () => api.pauseFor(15).catch(() => {}), "dur mola"),
+            act("pause-60", "1 saat duraklat", <Pause />, () => api.pauseFor(60).catch(() => {}), "dur mola"),
+            act("pause-tomorrow", "Yarına kadar duraklat", <Pause />, () => api.pauseFor(null).catch(() => {})),
+          ]),
+      act("theme-system", "Görünüm: Sistem", <Monitor />, () => changeTheme("system"), "tema"),
+      act("theme-light", "Görünüm: Açık", <Sun />, () => changeTheme("light"), "tema aydınlık"),
+      act("theme-dark", "Görünüm: Koyu", <Moon />, () => changeTheme("dark"), "tema karanlık gece"),
+      act("sync", "Şimdi eşitle", <RefreshCw />, () => done(api.syncNow(), "Eşitleme başladı"), "senkron supabase"),
+      act("backup", "Şimdi yedekle", <HardDriveDownload />, () => done(api.backupNow(), "Yedek alındı"), "yedek"),
+      act("update", "Güncellemeleri denetle", <Download />, () => done(api.checkUpdate(), "Denetlendi"), "sürüm"),
+      ...projects.map<Command>((p) => ({
+        id: `project:${p.id}`,
+        label: p.name,
+        group: "Projeler",
+        icon: <i className="mx-0.5 block size-2.5 rounded-full" style={{ background: `var(--c${p.color})` }} />,
+        keywords: "proje",
+        run: () => {
+          setSearch({ query: p.name, days: 30 });
+          setView("search");
+        },
+      })),
+    ];
+    // Palet açıkken güncel durum yeterli; her çizimde yeniden kurmak ucuz.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracking.paused, projects, day, week, month, view]);
+
+  const title =
+    view === "day"
+      ? capitalize(longDate.format(dayDate))
+      : view === "week"
+        ? formatWeek(parseIsoDate(week))
+        : capitalize(formatMonth(parseIsoDate(month)));
 
   return (
     <div className="flex h-full">
@@ -202,9 +401,35 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
         {/* macOS'ta pencere düğmeleri bu şeridin üstünde durur; Windows'ta yerel başlık
             çubuğu ad ve simgeyi zaten gösterir, burada tekrarlanmaz. */}
         <div data-tauri-drag-region className={cn("shrink-0", isMac ? "h-[52px]" : "h-3.5")} />
+        <button
+          onClick={() => setPalette(true)}
+          className="mx-2.5 mb-3 flex h-7 items-center gap-2 rounded-md border border-sidebar-border bg-background/60 px-2 text-xs text-muted-foreground shadow-xs transition-colors hover:bg-background hover:text-foreground dark:bg-white/5 dark:hover:bg-white/10"
+        >
+          <SearchIcon className="size-3.5" />
+          <span className="flex-1 text-left">Ara ya da git…</span>
+          <kbd className="flex items-center gap-0.5 rounded bg-muted px-1 text-[10px] font-medium">
+            {isMac ? <CommandIcon className="size-2.5" /> : "Ctrl+"}K
+          </kbd>
+        </button>
         <nav className="flex flex-1 flex-col gap-5 overflow-y-auto px-2.5 pt-1">
           <NavSection title="İş">
-            <NavItem icon={<FileSpreadsheet />} active={view === "timesheet"} onClick={() => setView("timesheet")}>
+            <NavItem
+              icon={<Inbox />}
+              active={view === "review"}
+              onClick={() => setView("review")}
+              badge={unassigned >= 60 ? shortDuration(unassigned) : undefined}
+              badgeTitle="Bu hafta projeye atanmamış süre"
+              tone="brand"
+            >
+              Gözden geçir
+            </NavItem>
+            <NavItem
+              icon={<FileSpreadsheet />}
+              active={view === "timesheet"}
+              onClick={() => setView("timesheet")}
+              badge={pendingDays || undefined}
+              badgeTitle="Bu hafta aktarılmamış gün"
+            >
               Zaman çizelgesi
             </NavItem>
           </NavSection>
@@ -229,7 +454,8 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
               icon={<FolderKanban />}
               active={view === "projects"}
               onClick={() => setView("projects")}
-              badge={suggestionCount.projects}
+              badge={suggestionCount.projects || undefined}
+              badgeTitle="Bekleyen proje önerisi"
             >
               Projeler
             </NavItem>
@@ -237,7 +463,8 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
               icon={<Tags />}
               active={view === "categories"}
               onClick={() => setView("categories")}
-              badge={suggestionCount.categories}
+              badge={suggestionCount.categories || undefined}
+              badgeTitle="Bekleyen kategori önerisi"
             >
               Kategoriler
             </NavItem>
@@ -248,7 +475,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
         </nav>
         <div className="space-y-2 p-2.5">
           <UpdateCard status={update} onStatus={setUpdate} />
-          <LiveCard tracking={tracking} onToggle={togglePause} />
+          <LiveCard tracking={tracking} dailyHours={dailyHours} onToggle={togglePause} />
         </div>
       </aside>
 
@@ -257,13 +484,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           <ReportView
             mode={view}
             start={view === "day" ? day : view === "week" ? week : month}
-            title={
-              view === "day"
-                ? capitalize(longDate.format(dayDate))
-                : view === "week"
-                  ? formatWeek(parseIsoDate(week))
-                  : capitalize(formatMonth(parseIsoDate(month)))
-            }
+            title={title}
             onMode={selectMode}
             onPrev={() => step(-1)}
             onNext={() => step(1)}
@@ -272,11 +493,15 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
               setDay(iso);
               setView("day");
             }}
+            onReview={() => setView("review")}
           />
         ) : (
           <>
             <Toolbar title={TITLES[view] ?? ""} />
-            <div className="flex-1 overflow-y-auto">
+            <div key={view} className="page-enter flex-1 overflow-y-auto">
+              {view === "review" && (
+                <Review onOpenTimesheet={() => setView("timesheet")} onOpenProjects={() => setView("projects")} />
+              )}
               {view === "timesheet" && (
                 <Timesheet
                   onOpenDay={(iso) => {
@@ -313,8 +538,23 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           </>
         )}
       </main>
+      <CommandPalette
+        open={palette}
+        onClose={() => setPalette(false)}
+        commands={commands}
+        onSearch={(query) => {
+          setSearch({ query, days: 30 });
+          setView("search");
+        }}
+      />
+      <Toaster />
     </div>
   );
+}
+
+/** Rozet için kısa süre: "45dk", "3sa", "12sa". */
+function shortDuration(secs: number) {
+  return secs >= 3600 ? `${Math.floor(secs / 3600)}sa` : `${Math.floor(secs / 60)}dk`;
 }
 
 function NavSection({ title, children }: { title: string; children: ReactNode }) {
@@ -331,13 +571,18 @@ function NavItem({
   active,
   onClick,
   badge,
+  badgeTitle,
+  tone,
   children,
 }: {
   icon: ReactNode;
   active: boolean;
   onClick: () => void;
-  /** Sağda küçük sayı (örn. bekleyen öneriler). */
-  badge?: number;
+  /** Sağda küçük rozet (örn. bekleyen öneri sayısı, atanmamış süre). */
+  badge?: number | string;
+  badgeTitle?: string;
+  /** "brand": rozet kum renginde (dikkat isteyen iş). */
+  tone?: "brand";
   children: ReactNode;
 }) {
   return (
@@ -346,15 +591,24 @@ function NavItem({
       aria-current={active ? "page" : undefined}
       title={typeof children === "string" ? children : undefined}
       className={cn(
-        "flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-primary",
-        active ? "bg-sidebar-accent font-medium" : "hover:bg-sidebar-accent/50",
+        "group/nav relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:transition-colors",
+        active
+          ? "bg-sidebar-accent font-medium [&_svg]:text-primary"
+          : "hover:bg-sidebar-accent/50 [&_svg]:text-muted-foreground hover:[&_svg]:text-foreground/80",
       )}
     >
+      {active && <span className="absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-full bg-primary" aria-hidden />}
       {icon}
       {/* Dar kenar çubuğunda ad tek satırda kalır, sığmazsa kısalır (iki satıra bölünüp ortalanmaz). */}
       <span className="min-w-0 flex-1 truncate text-left">{children}</span>
       {!!badge && (
-        <span className="shrink-0 rounded-full bg-primary/15 px-1.5 text-[10px] leading-4 font-semibold text-primary tabular">
+        <span
+          title={badgeTitle}
+          className={cn(
+            "shrink-0 rounded-full px-1.5 text-[10px] leading-4 font-semibold tabular",
+            tone === "brand" ? "bg-brand text-white shadow-sm shadow-brand-2/30" : "bg-primary/15 text-primary",
+          )}
+        >
           {badge}
         </span>
       )}
@@ -362,8 +616,16 @@ function NavItem({
   );
 }
 
-/** Kenar çubuğunun altında: şu an ne takip ediliyor, bugünkü toplam, duraklat. */
-function LiveCard({ tracking, onToggle }: { tracking: TrackingStatus; onToggle: () => void }) {
+/** Kenar çubuğunun altında: şu an ne takip ediliyor, bugünkü toplam ve hedef, duraklat. */
+function LiveCard({
+  tracking,
+  dailyHours,
+  onToggle,
+}: {
+  tracking: TrackingStatus;
+  dailyHours: number;
+  onToggle: () => void;
+}) {
   const [menu, setMenu] = useState(false);
   const state = tracking.paused
     ? "Duraklatıldı"
@@ -373,13 +635,23 @@ function LiveCard({ tracking, onToggle }: { tracking: TrackingStatus; onToggle: 
         ? tracking.current.appName
         : "Boşta";
   const live = !tracking.paused && !tracking.needsPermission && !!tracking.current;
+  const goal = dailyHours * 3600;
+  const ratio = goal > 0 ? Math.min(1, tracking.todaySeconds / goal) : 0;
   return (
-    <div className="rounded-lg border border-sidebar-border bg-background/70 p-2.5 shadow-xs dark:bg-white/5">
+    <div
+      className={cn(
+        "rounded-xl border border-sidebar-border bg-background/70 p-2.5 shadow-xs [--live-bg:var(--background)] dark:bg-white/5 dark:[--live-bg:#232325]",
+        live && "live-border",
+      )}
+    >
       <div className="flex items-start gap-2">
         <span className="relative mt-[5px] flex size-2 shrink-0">
           {live && <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60" />}
           <span
-            className={cn("relative inline-flex size-2 rounded-full", live ? "bg-success" : "bg-muted-foreground/50")}
+            className={cn(
+              "relative inline-flex size-2 rounded-full",
+              live ? "bg-success" : tracking.paused ? "bg-amber-500" : "bg-muted-foreground/50",
+            )}
           />
         </span>
         <div className="min-w-0 flex-1">
@@ -399,7 +671,9 @@ function LiveCard({ tracking, onToggle }: { tracking: TrackingStatus; onToggle: 
       <div className="mt-2 flex items-end justify-between">
         <div>
           <div className="text-[11px] text-muted-foreground">Bugün</div>
-          <div className="text-[15px] font-semibold tabular">{formatDuration(tracking.todaySeconds)}</div>
+          <div className="text-[17px] leading-tight font-semibold tracking-tight tabular">
+            {formatDuration(tracking.todaySeconds)}
+          </div>
         </div>
         {tracking.paused ? (
           <Tooltip>
@@ -441,6 +715,20 @@ function LiveCard({ tracking, onToggle }: { tracking: TrackingStatus; onToggle: 
           </Popover>
         )}
       </div>
+      {goal > 0 && (
+        <div
+          className="mt-2 h-1 overflow-hidden rounded-full bg-muted"
+          title={`Günlük hedef: ${formatDuration(goal)} · %${Math.round(ratio * 100)}`}
+        >
+          <div
+            className={cn(
+              "h-full rounded-full transition-[width] duration-700",
+              ratio >= 1 ? "bg-success" : "bg-brand",
+            )}
+            style={{ width: `${ratio * 100}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }

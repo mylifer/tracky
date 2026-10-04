@@ -47,6 +47,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
+import { friendlyError, notifyChanged, toast, useChanged } from "../lib/feedback";
 
 const KINDS: EntryKind[] = ["Working", "Online", "F2F"];
 const dayFmt = new Intl.DateTimeFormat("tr-TR", { weekday: "short", day: "numeric", month: "short" });
@@ -165,13 +166,14 @@ export default function Timesheet({
       setProjects(tax.tags.filter((t) => t.kind === "project"));
       setError(null);
     } catch (e) {
-      if (seq === loadSeq.current) setError(String(e));
+      if (seq === loadSeq.current) setError(friendlyError(e));
     }
   }, [start, rangeDays]);
   useEffect(() => {
     load();
     api.calendarStatus().then(setCalendar, () => {});
   }, [load]);
+  useChanged(load);
   // Takvim arka planda yenilenince toplantılar değişmiş olabilir.
   useTauriEvent(api.onCalendar, (s) => {
     setCalendar(s);
@@ -184,7 +186,7 @@ export default function Timesheet({
       await f();
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     }
   };
 
@@ -654,7 +656,20 @@ function EntryRow({
           variant="ghost"
           className="size-7 text-muted-foreground hover:text-destructive"
           aria-label="Satırı sil"
-          onClick={run(() => api.deleteTimesheetEntry(entry.id!))}
+          onClick={run(async () => {
+            await api.deleteTimesheetEntry(entry.id!);
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const { id, exported, ...saved } = entry;
+            toast("Satır silindi", {
+              action: {
+                label: "Geri al",
+                run: () =>
+                  api
+                    .saveTimesheetEntry(null, saved)
+                    .then(notifyChanged, (e) => toast(friendlyError(e), { tone: "error" })),
+              },
+            });
+          })}
         >
           <Trash2 />
         </Button>
@@ -704,7 +719,7 @@ function Setup({ onDone }: { onDone: () => void }) {
                     onDone();
                   }
                 } catch (e) {
-                  setError(String(e));
+                  setError(friendlyError(e));
                 } finally {
                   setBusy(false);
                 }

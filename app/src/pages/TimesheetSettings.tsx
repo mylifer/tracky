@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input";
 import { tagColor } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { cn } from "../lib/utils";
+import { friendlyError } from "../lib/feedback";
 
 /** Ayarlar sayfasındaki bölüm kimlikleri (başka sayfalardan doğrudan açmak için). */
 export const CONNECTIONS_SECTION = "baglantilar";
@@ -34,7 +35,7 @@ export function TimesheetSections() {
       setConfig(c);
       setProjects(tax.tags.filter((t) => t.kind === "project"));
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     }
   }, []);
   useEffect(() => {
@@ -94,7 +95,7 @@ function TargetSetting({
         onChange();
       }
     } catch (e) {
-      onError(String(e));
+      onError(friendlyError(e));
     }
   };
   const current = config.sheetUrl
@@ -135,7 +136,7 @@ function TargetSetting({
                 await api.disconnectSheet();
                 onChange();
               } catch (e) {
-                onError(String(e));
+                onError(friendlyError(e));
               }
             }}
             title={config.filePath ? `Kayıtlar yeniden ${config.filePath} dosyasına gider` : undefined}
@@ -180,7 +181,7 @@ function TimesheetDetails({
       await api.saveTimesheetConfig(next);
       onSaved();
     } catch (e) {
-      onError(String(e));
+      onError(friendlyError(e));
     }
   };
   const mapping = (id: string) => c.projects.find((m) => m.projectId === id);
@@ -285,7 +286,7 @@ export function CalendarConnect() {
       setStatus(s);
       setUrl(s.url ?? "");
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }
@@ -367,7 +368,7 @@ export function SheetConnect({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    api.sheetScript().then(setScript, (e) => setError(String(e)));
+    api.sheetScript().then(setScript, (e) => setError(friendlyError(e)));
   }, []);
   const step = "flex gap-2.5 text-[13px]";
   const num = "flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold";
@@ -449,7 +450,7 @@ export function SheetConnect({
               await api.connectSheet(url.trim(), link.trim() || null);
               onDone();
             } catch (e) {
-              setError(String(e));
+              setError(friendlyError(e));
             } finally {
               setBusy(false);
             }

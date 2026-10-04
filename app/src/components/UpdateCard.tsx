@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Download, LoaderCircle, TriangleAlert } from "lucide-react";
 import { api, type UpdateStatus } from "../api";
 import { Button } from "./ui/button";
+import { friendlyError } from "../lib/feedback";
 
 /**
  * Kenar çubuğunun altında yeni sürüm kartı: bulunur bulunmaz "indiriliyor", inince
@@ -22,7 +23,7 @@ export function UpdateCard({ status, onStatus }: { status: UpdateStatus | null; 
       // Başarılıysa uygulama yeniden başlar; buraya dönülmez.
       await api.installUpdate();
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
       setInstalling(false);
     }
   }
@@ -50,7 +51,7 @@ export function UpdateCard({ status, onStatus }: { status: UpdateStatus | null; 
           size="sm"
           variant="outline"
           className="mt-2 h-7 w-full bg-background/70"
-          onClick={() => api.checkUpdate().then(onStatus, (e) => setError(String(e)))}
+          onClick={() => api.checkUpdate().then(onStatus, (e) => setError(friendlyError(e)))}
         >
           Tekrar dene
         </Button>

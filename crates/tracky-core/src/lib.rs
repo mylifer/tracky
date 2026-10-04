@@ -10,6 +10,7 @@ pub mod classify;
 pub mod coach;
 pub mod engine;
 pub mod export;
+pub mod inbox;
 pub mod model;
 pub mod platform;
 pub mod privacy;

@@ -113,6 +113,19 @@ impl Rule {
         )
     }
 
+    /// Oturum (adresiyle birlikte) kurala uyuyor mu? `pattern` kuralın küçük harfli desenidir.
+    pub fn matches_session(&self, pattern: &str, session: &Session) -> bool {
+        let address = session.url.as_deref().and_then(crate::url_util::host_path);
+        self.matches_lower(
+            pattern,
+            &Subject {
+                app_id: &session.app_id.to_lowercase(),
+                title: &session.title.to_lowercase(),
+                address: address.as_deref(),
+            },
+        )
+    }
+
     /// Desen ve girdiler önceden küçük harfe çevrilmiş olarak (sınıflandırıcı
     /// desenleri bir kez çevirir, her oturum için değil).
     fn matches_lower(&self, pattern: &str, subject: &Subject) -> bool {

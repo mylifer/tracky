@@ -18,6 +18,7 @@ import { Input } from "../components/ui/input";
 import { addDays, isoDate, today } from "../lib/dates";
 import { clientColor, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
+import { friendlyError } from "../lib/feedback";
 
 /**
  * Müşteriler: her müşterinin projeleri ve son 7 gündeki toplam süresi. Projeler buradan ya da
@@ -40,7 +41,7 @@ export default function ClientsPage({ onOpenProjects }: { onOpenProjects: () => 
     if (r) setUsage(new Map(r.projects.filter((b) => b.id).map((b) => [b.id!, b.seconds])));
   }, []);
   useEffect(() => {
-    load().catch((e) => setError(String(e)));
+    load().catch((e) => setError(friendlyError(e)));
   }, [load]);
 
   const run = (f: () => Promise<unknown>) => async () => {
@@ -49,7 +50,7 @@ export default function ClientsPage({ onOpenProjects }: { onOpenProjects: () => 
       await f();
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     }
   };
 

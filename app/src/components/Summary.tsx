@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, TrendingDown, TrendingUp } from "lucide-react";
+import { Check, ChevronRight, Inbox, TrendingDown, TrendingUp } from "lucide-react";
 import type { CategoryLimit, ProjectGoal, Report, Tag, Taxonomy } from "../api";
 import { api, formatDuration } from "../api";
 import { clientColor, NO_CLIENT, NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
@@ -21,6 +21,8 @@ type Props = {
   limits: CategoryLimit[];
   /** Hafta görünümünde proje hedefleri. */
   projectGoals: ProjectGoal[];
+  /** Projeye atanmamış süreyi gözden geçir. */
+  onReview: () => void;
 };
 
 /** Sağ panel: süre, hedef, kırılım ve mola metrikleri. */
@@ -34,6 +36,7 @@ export default function Summary({
   dailyHours,
   limits,
   projectGoals,
+  onReview,
 }: Props) {
   const f = report.work;
   const target = dailyHours * 3600 * activeDays(report, days);
@@ -44,30 +47,27 @@ export default function Summary({
     <aside className="min-w-0 space-y-3">
       <div className="px-1 pt-0.5 text-xs font-semibold text-muted-foreground">Özet · {title}</div>
 
-      <Card className="gap-3">
-        <CardContent className="space-y-3">
-          <div className="flex items-start justify-between gap-3">
-            <div>
+      <Card className="hero-surface gap-3">
+        <CardContent>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
               <Label>Çalışma süresi</Label>
-              <div className="mt-1 text-[26px] leading-none font-semibold tracking-tight tabular">
+              <div className="mt-1 text-[28px] leading-none font-semibold tracking-tight tabular">
                 {formatDuration(report.totalSeconds)}
               </div>
               <Delta now={report.totalSeconds} before={previous?.totalSeconds} unit={DELTA_UNIT[mode]} />
             </div>
-            <div className="text-right">
-              <Label>Hedef</Label>
-              <div className="mt-1 text-[15px] font-semibold tabular">%{Math.round(ratio * 100)}</div>
-              <div className="text-[11px] text-muted-foreground tabular">{formatDuration(target)}</div>
-            </div>
-          </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-            <div
-              className={cn("h-full rounded-full transition-[width]", ratio >= 1 ? "bg-success" : "bg-primary")}
-              style={{ width: `${Math.min(100, ratio * 100)}%` }}
-            />
+            <GoalRing ratio={ratio} target={target} />
           </div>
         </CardContent>
       </Card>
+
+      <UnassignedCard
+        seconds={report.projects.find((b) => b.id === null)?.seconds ?? 0}
+        idle={report.idleSeconds}
+        hasProjects={report.tags.some((t) => t.kind === "project")}
+        onReview={onReview}
+      />
 
       <BreakdownCard report={report} tags={tags} />
 
@@ -98,16 +98,86 @@ export default function Summary({
             {(f.switchesPerHourX10 / 10).toLocaleString("tr-TR")} uygulama geçişi/sa
           </div>
           {report.idleSeconds > 0 && (
-            <div
-              className="text-[11px] text-muted-foreground"
-              title="Takvimde “Boşta” bloğuna tıklayıp projeye ya da kategoriye atarsan çalışma süresine eklenir."
+            <button
+              className="text-left text-[11px] text-muted-foreground hover:text-foreground"
+              title="Projeye atarsan çalışma süresine eklenir."
+              onClick={onReview}
             >
-              Bilgisayardan uzakta: {formatDuration(report.idleSeconds)}
-            </div>
+              Bilgisayardan uzakta: {formatDuration(report.idleSeconds)} →
+            </button>
           )}
         </CardContent>
       </Card>
     </aside>
+  );
+}
+
+/** Hedefe ulaşma halkası: kum gradyanı, hedef dolunca yeşil. */
+function GoalRing({ ratio, target }: { ratio: number; target: number }) {
+  const r = 26;
+  const c = 2 * Math.PI * r;
+  const done = ratio >= 1;
+  return (
+    <div className="relative grid size-[68px] shrink-0 place-items-center" title={`Hedef: ${formatDuration(target)}`}>
+      <svg viewBox="0 0 68 68" className="absolute inset-0 -rotate-90" aria-hidden>
+        <defs>
+          <linearGradient id="goal-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="var(--brand-1)" />
+            <stop offset="100%" stopColor="var(--brand-2)" />
+          </linearGradient>
+        </defs>
+        <circle cx="34" cy="34" r={r} fill="none" stroke="var(--muted)" strokeWidth="6" />
+        <circle
+          cx="34"
+          cy="34"
+          r={r}
+          fill="none"
+          stroke={done ? "var(--success)" : "url(#goal-grad)"}
+          strokeWidth="6"
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={c * (1 - Math.min(1, ratio))}
+          className="transition-[stroke-dashoffset] duration-700 ease-out"
+        />
+      </svg>
+      <div className="text-center leading-none">
+        <div className="text-[13px] font-semibold tabular">%{Math.round(ratio * 100)}</div>
+        <div className="mt-0.5 text-[9px] text-muted-foreground">hedef</div>
+      </div>
+    </div>
+  );
+}
+
+/** Projeye düşmeyen süre varsa: ne kadar olduğu ve gözden geçirme kısayolu. */
+function UnassignedCard({
+  seconds,
+  idle,
+  hasProjects,
+  onReview,
+}: {
+  seconds: number;
+  idle: number;
+  hasProjects: boolean;
+  onReview: () => void;
+}) {
+  // Proje kullanılmıyorsa her süre projesizdir; uyarı gürültü olur.
+  if (!hasProjects || seconds + idle < 5 * 60) return null;
+  return (
+    <button
+      onClick={onReview}
+      className="group flex w-full items-center gap-3 rounded-xl border border-brand-2/25 bg-brand-soft px-3.5 py-2.5 text-left transition-colors hover:border-brand-2/50"
+    >
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-brand text-white shadow-sm shadow-brand-2/30">
+        <Inbox className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-xs font-semibold">{formatDuration(seconds)} projeye atanmamış</span>
+        <span className="block text-[11px] text-muted-foreground">
+          {idle > 0 ? `ve ${formatDuration(idle)} boşta · ` : ""}Gözden geçir
+        </span>
+      </span>
+      <ChevronRight className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+    </button>
   );
 }
 
@@ -186,10 +256,18 @@ function BreakdownCard({ report, tags }: { report: Report; tags: Map<string, Tag
       <CardContent className="space-y-3">
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
           <TabsList className="w-full">
-            <TabsTrigger value="categories">Kategoriler</TabsTrigger>
-            <TabsTrigger value="projects">Projeler</TabsTrigger>
-            <TabsTrigger value="clients">Müşteriler</TabsTrigger>
-            <TabsTrigger value="apps">Uygulamalar</TabsTrigger>
+            {(
+              [
+                ["categories", "Kategori"],
+                ["projects", "Proje"],
+                ["clients", "Müşteri"],
+                ["apps", "Uygulama"],
+              ] as const
+            ).map(([v, label]) => (
+              <TabsTrigger key={v} value={v} className="min-w-0 px-1 text-[11px]">
+                <span className="truncate">{label}</span>
+              </TabsTrigger>
+            ))}
           </TabsList>
         </Tabs>
         {tab === "projects" && items.length > 0 && items.every((i) => i.key === "none") ? (

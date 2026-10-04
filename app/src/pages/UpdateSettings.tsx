@@ -3,6 +3,7 @@ import { api } from "../api";
 import { ErrorText, SettingRow, SettingsGroup } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { useUpdate } from "../lib/useUpdate";
+import { friendlyError } from "../lib/feedback";
 
 const time = new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
@@ -29,7 +30,7 @@ export default function UpdateSettings() {
     try {
       await api.installUpdate();
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
       setInstalling(false);
     }
   }
@@ -46,7 +47,7 @@ export default function UpdateSettings() {
             variant="outline"
             size="sm"
             disabled={status.checking}
-            onClick={() => api.checkUpdate().then(setStatus, (e) => setError(String(e)))}
+            onClick={() => api.checkUpdate().then(setStatus, (e) => setError(friendlyError(e)))}
           >
             Şimdi denetle
           </Button>

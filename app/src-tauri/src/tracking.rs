@@ -290,6 +290,11 @@ fn notify(app: &AppHandle, nudge: &Nudge, names: &std::collections::HashMap<Stri
             format!("Bu hafta {} çalıştın. Tebrikler!", format_duration(*target)),
         ),
     };
+    match nudge {
+        Nudge::TakeBreak { .. } => {}
+        Nudge::ProjectGoalReached { .. } => crate::navigate_on_focus(app, "week"),
+        _ => crate::navigate_on_focus(app, "day"),
+    }
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         eprintln!("bildirim gösterilemedi: {e}");
     }
@@ -303,6 +308,7 @@ fn notify_day_summary(app: &AppHandle, goals: &Goals, now: DateTime<Utc>) {
         let start = start_of_today();
         store.report(start, now, &[start], false)
     };
+    crate::navigate_on_focus(app, "day");
     let result = match report {
         Ok(r) => app
             .notification()
@@ -386,6 +392,7 @@ fn notify_week_summary(app: &AppHandle, week: NaiveDate) {
     if last.total_seconds < WEEKLY_MIN_SECS {
         return;
     }
+    crate::navigate_on_focus(app, "last-week");
     let result = app
         .notification()
         .builder()
@@ -409,6 +416,7 @@ fn notify_unexported(app: &AppHandle, week: NaiveDate, today: NaiveDate) {
     let Some(body) = unexported_body(&days) else {
         return;
     };
+    crate::navigate_on_focus(app, "timesheet");
     let result = app
         .notification()
         .builder()

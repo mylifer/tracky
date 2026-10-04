@@ -3,6 +3,7 @@ import { api, type BackupStatus, type PickedBackup } from "../api";
 import { ErrorText, SettingBlock, SettingRow } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { formatDate, formatTime } from "../lib/dates";
+import { friendlyError } from "../lib/feedback";
 
 function when(iso: string) {
   const d = new Date(iso);
@@ -16,7 +17,7 @@ export default function BackupSettings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = () => api.backupStatus().then(setStatus, (e) => setError(String(e)));
+  const refresh = () => api.backupStatus().then(setStatus, (e) => setError(friendlyError(e)));
   useEffect(() => {
     refresh();
   }, []);
@@ -27,7 +28,7 @@ export default function BackupSettings() {
     try {
       await f();
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }

@@ -12,6 +12,7 @@ import SyncSettings from "./SyncSettings";
 import { CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections } from "./TimesheetSettings";
 import UpdateSettings from "./UpdateSettings";
 import BackupSettings from "./BackupSettings";
+import { friendlyError } from "../lib/feedback";
 
 /** Sayfanın başındaki içindekiler: bölümler sayfadaki sırasıyla. */
 const SECTIONS = [
@@ -63,7 +64,7 @@ export default function Settings({
       await api.savePrivacy(next);
       setPrivacy(next);
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     }
   }
 
@@ -110,7 +111,9 @@ export default function Settings({
         <SettingRow label="Görünüm" hint="Sistem seçiliyken bilgisayarın açık/koyu ayarını izler.">
           <Select
             value={status.theme}
-            onValueChange={(v) => api.setTheme(v as AppStatus["theme"]).then(onChange, (e) => setError(String(e)))}
+            onValueChange={(v) =>
+              api.setTheme(v as AppStatus["theme"]).then(onChange, (e) => setError(friendlyError(e)))
+            }
           >
             <SelectTrigger size="sm" className="w-32" aria-label="Görünüm">
               <SelectValue />
@@ -219,7 +222,7 @@ export default function Settings({
             onClick={() =>
               api.exportCsv().then(
                 (p) => setExported(`Kaydedildi: ${p}`),
-                (e) => setError(String(e)),
+                (e) => setError(friendlyError(e)),
               )
             }
           >

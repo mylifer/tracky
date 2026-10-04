@@ -4,6 +4,7 @@ import { api, type CalendarMeeting, type CategoryLimit, type ProjectGoal, type R
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
 import { tagMap } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
+import { friendlyError, useChanged } from "../lib/feedback";
 import { clampZoom, stepZoom, useZoomGestures } from "../lib/zoom";
 import { AppList, Legend } from "./Breakdown";
 import AppTimeline from "./AppTimeline";
@@ -44,6 +45,8 @@ type Props = {
   onNext: () => void;
   onToday: (() => void) | null;
   onSelectDay: (iso: string) => void;
+  /** Projeye atanmamış süreyi gözden geçir. */
+  onReview: () => void;
 };
 
 export default function ReportView(p: Props) {
@@ -77,7 +80,7 @@ export default function ReportView(p: Props) {
         setReport(r);
         setError(null);
       },
-      (e) => n === seq.current && setError(String(e)),
+      (e) => n === seq.current && setError(friendlyError(e)),
     );
     const start = parseIsoDate(p.start);
     const prevStart = p.mode === "month" ? addMonths(start, -1) : addDays(start, -days);
@@ -95,6 +98,7 @@ export default function ReportView(p: Props) {
 
   useEffect(load, [load]);
   useTauriEvent(api.onSync, load);
+  useChanged(load);
 
   // Gün takviminde toplantılar; `null`: takvim bağlı değil (sütun gizlenir).
   // Hangi günün toplantıları olduğu da tutulur: gün değişince yenisi gelene kadar önceki
@@ -428,6 +432,7 @@ export default function ReportView(p: Props) {
               projectGoals={p.mode === "week" ? projectGoals : []}
               mode={p.mode}
               title={isLive ? mode.current : mode.summary}
+              onReview={p.onReview}
             />
           </div>
         )}

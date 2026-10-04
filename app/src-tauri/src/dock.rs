@@ -12,7 +12,7 @@ use objc2::runtime::{AnyObject, NSObject};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSWindow, NSWindowButton};
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const MINIMIZE_ID: &str = "kum-minimize";
 
@@ -76,6 +76,8 @@ pub fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[
             &PredefinedMenuItem::about(app, None, None)?,
             &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "nav:settings", "Ayarlar…", true, Some("CmdOrCtrl+,"))?,
+            &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, None)?,
@@ -99,6 +101,36 @@ pub fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &PredefinedMenuItem::select_all(app, None)?,
         ],
     )?;
+    // Arayüzdeki sayfalar ve komutlar: seçilince arayüze "navigate" olayı gider.
+    let go = Submenu::with_items(
+        app,
+        "Git",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "nav:palette",
+                "Komut Paleti…",
+                true,
+                Some("CmdOrCtrl+K"),
+            )?,
+            &MenuItem::with_id(app, "nav:search", "Ara", true, Some("CmdOrCtrl+F"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "nav:day", "Gün", true, Some("CmdOrCtrl+1"))?,
+            &MenuItem::with_id(app, "nav:week", "Hafta", true, Some("CmdOrCtrl+2"))?,
+            &MenuItem::with_id(app, "nav:month", "Ay", true, Some("CmdOrCtrl+3"))?,
+            &MenuItem::with_id(
+                app,
+                "nav:timesheet",
+                "Zaman Çizelgesi",
+                true,
+                Some("CmdOrCtrl+4"),
+            )?,
+            &MenuItem::with_id(app, "nav:review", "Gözden Geçir", true, Some("CmdOrCtrl+5"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "nav:today", "Bugün", true, Some("CmdOrCtrl+T"))?,
+        ],
+    )?;
     let window = Submenu::with_items(
         app,
         "Pencere",
@@ -110,11 +142,18 @@ pub fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &PredefinedMenuItem::close_window(app, None)?,
         ],
     )?;
-    Menu::with_items(app, &[&app_menu, &edit, &window])
+    Menu::with_items(app, &[&app_menu, &edit, &go, &window])
 }
 
-pub fn on_menu_event<R: Runtime>(_app: &AppHandle<R>, event: &MenuEvent) {
-    if event.id().as_ref() == MINIMIZE_ID {
+pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: &MenuEvent) {
+    let id = event.id().as_ref();
+    if id == MINIMIZE_ID {
         hide_main_window();
+    } else if let Some(target) = id.strip_prefix("nav:") {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        let _ = app.emit("navigate", target);
     }
 }

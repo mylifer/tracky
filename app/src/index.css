@@ -39,6 +39,13 @@
   --sidebar-accent: rgb(0 0 0 / 0.07);
   --sidebar-border: rgb(0 0 0 / 0.08);
   --success: #28a745;
+  /* Marka: uygulama simgesinin kum tonları (vurgu yüzeyleri, halkalar, canlı kart). */
+  --brand-1: #f2b45f;
+  --brand-2: #dd7a35;
+  --brand-ink: #9a4c12;
+  --brand-soft: rgb(242 180 95 / 0.14);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.02);
+  --shadow-raised: 0 8px 24px -8px rgb(0 0 0 / 0.12), 0 2px 6px -2px rgb(0 0 0 / 0.06);
 
   --c0: #a1a1a6;
   --c1: #007aff;
@@ -86,6 +93,12 @@
   --sidebar-accent: rgb(255 255 255 / 0.09);
   --sidebar-border: rgb(255 255 255 / 0.06);
   --success: #30d158;
+  --brand-1: #f6c06f;
+  --brand-2: #e8894a;
+  --brand-ink: #f8c58a;
+  --brand-soft: rgb(246 192 111 / 0.12);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-raised: 0 10px 30px -10px rgb(0 0 0 / 0.6), 0 2px 8px -2px rgb(0 0 0 / 0.4);
 
   --c0: #636366;
   --c1: #0a84ff;
@@ -138,6 +151,10 @@
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
   --color-success: var(--success);
+  --color-brand-1: var(--brand-1);
+  --color-brand-2: var(--brand-2);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
 }
 
 @layer base {
@@ -207,4 +224,97 @@
 
 @utility tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/* Marka gradyanı: düğme, halka ve vurgu yüzeyleri. */
+@utility bg-brand {
+  background-image: linear-gradient(135deg, var(--brand-1), var(--brand-2));
+}
+
+@utility text-brand {
+  background-image: linear-gradient(135deg, var(--brand-1), var(--brand-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Öne çıkan özet yüzeyi: kartın köşesinden hafif kum ışığı. */
+@utility hero-surface {
+  background:
+    radial-gradient(120% 140% at 0% 0%, var(--brand-soft), transparent 55%),
+    radial-gradient(90% 120% at 100% 100%, color-mix(in srgb, var(--primary) 7%, transparent), transparent 60%),
+    var(--card);
+}
+
+/* Yüklenirken yer tutucu: soluk zemin üstünde kayan parıltı. */
+@utility skeleton {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--foreground) 6%, transparent), transparent);
+    animation: kum-shimmer 1.4s ease-in-out infinite;
+    animation-delay: inherit;
+  }
+}
+
+@keyframes kum-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* Sayfa değişince içerik yumuşakça gelir. */
+@utility page-enter {
+  animation: kum-page-enter 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes kum-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Canlı kartın kenarında dönen ince kum ışığı. */
+@property --kum-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@utility live-border {
+  border-color: transparent;
+  background:
+    linear-gradient(var(--live-bg, var(--background)), var(--live-bg, var(--background))) padding-box,
+    conic-gradient(
+        from var(--kum-angle),
+        color-mix(in srgb, var(--brand-1) 15%, transparent),
+        var(--brand-1),
+        var(--brand-2),
+        color-mix(in srgb, var(--brand-2) 15%, transparent) 60%,
+        color-mix(in srgb, var(--brand-1) 15%, transparent)
+      )
+      border-box;
+  animation: kum-spin 6s linear infinite;
+}
+
+@keyframes kum-spin {
+  to {
+    --kum-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
 }

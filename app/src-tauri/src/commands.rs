@@ -10,6 +10,7 @@ use tracky_core::{
     Client, Goals, PrivacySettings, Report, Rule, RuleField, Tag, TagKind, UsageTotal,
 };
 
+use crate::edits::{Edited, UndoOp, record};
 use crate::lock;
 use crate::tracking::{Command, GOALS_KEY, Shared, local_midnight};
 
@@ -176,35 +177,47 @@ pub async fn save_tag(app: AppHandle, tag: TagInput) -> CmdResult<Tag> {
     Ok(tag)
 }
 
+/// Siler; geri alma numarasını döndürür.
 #[tauri::command]
-pub async fn delete_tag(app: AppHandle, id: String) -> CmdResult<()> {
-    lock(&app.state::<Shared>().store)
+pub async fn delete_tag(app: AppHandle, id: String) -> CmdResult<u64> {
+    let at = lock(&app.state::<Shared>().store)
         .delete_tag(&id)
-        .map_err(err)
+        .map_err(err)?;
+    Ok(record(&app, vec![UndoOp::DeletedTag { id, at }]))
 }
 
+/// Kural ekler; geri alma numarasını döndürür.
 #[tauri::command]
 pub async fn add_rule(
     app: AppHandle,
     tag_id: String,
     field: RuleField,
     pattern: String,
-) -> CmdResult<()> {
+) -> CmdResult<u64> {
+    let id = uuid::Uuid::new_v4().to_string();
     lock(&app.state::<Shared>().store)
         .upsert_rule(&Rule {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: id.clone(),
             tag_id,
             field,
             pattern,
         })
-        .map_err(err)
+        .map_err(err)?;
+    Ok(record(&app, vec![UndoOp::AddedRule(id)]))
 }
 
+/// Kuralı siler; geri alma numarasını döndürür.
 #[tauri::command]
-pub async fn delete_rule(app: AppHandle, id: String) -> CmdResult<()> {
-    lock(&app.state::<Shared>().store)
-        .delete_rule(&id)
-        .map_err(err)
+pub async fn delete_rule(app: AppHandle, id: String) -> CmdResult<u64> {
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let rule = store.rule_by_id(&id).map_err(err)?;
+    store.delete_rule(&id).map_err(err)?;
+    drop(store);
+    Ok(record(
+        &app,
+        rule.map(UndoOp::DeletedRule).into_iter().collect(),
+    ))
 }
 
 #[tauri::command]
@@ -224,6 +237,29 @@ fn parse_time(s: &str) -> CmdResult<DateTime<Utc>> {
         .map_err(|e| format!("geçersiz zaman {s}: {e}"))
 }
 
+/// `[start, end)` aralığında geri alınabilir bir düzenleme: önce durum saklanır.
+fn range_edit(
+    app: &AppHandle,
+    start: &str,
+    end: &str,
+    edit: impl FnOnce(
+        &tracky_core::Store,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    ) -> tracky_core::store::Result<usize>,
+) -> CmdResult<Edited> {
+    let (from, to) = (parse_time(start)?, parse_time(end)?);
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let snap = store.snapshot_range(from, to).map_err(err)?;
+    let changed = edit(&store, from, to).map_err(err)?;
+    drop(store);
+    Ok(Edited {
+        changed,
+        undo: record(app, vec![UndoOp::Sessions(snap)]),
+    })
+}
+
 /// Takvimdeki bir bloğu (aralıktaki oturumları) kategoriye atar; `None` kurallara döndürür.
 #[tauri::command]
 pub async fn set_range_category(
@@ -231,14 +267,10 @@ pub async fn set_range_category(
     start: String,
     end: String,
     category_id: Option<String>,
-) -> CmdResult<usize> {
-    lock(&app.state::<Shared>().store)
-        .set_category_between(
-            parse_time(&start)?,
-            parse_time(&end)?,
-            category_id.as_deref(),
-        )
-        .map_err(err)
+) -> CmdResult<Edited> {
+    range_edit(&app, &start, &end, |s, from, to| {
+        s.set_category_between(from, to, category_id.as_deref())
+    })
 }
 
 /// Takvimdeki bir bloğu ya da aralığı projeye atar; `None` kurallara döndürür.
@@ -248,21 +280,15 @@ pub async fn set_range_project(
     start: String,
     end: String,
     project_id: Option<String>,
-) -> CmdResult<usize> {
-    lock(&app.state::<Shared>().store)
-        .set_project_between(
-            parse_time(&start)?,
-            parse_time(&end)?,
-            project_id.as_deref(),
-        )
-        .map_err(err)
+) -> CmdResult<Edited> {
+    range_edit(&app, &start, &end, |s, from, to| {
+        s.set_project_between(from, to, project_id.as_deref())
+    })
 }
 
 #[tauri::command]
-pub async fn delete_range(app: AppHandle, start: String, end: String) -> CmdResult<usize> {
-    lock(&app.state::<Shared>().store)
-        .delete_between(parse_time(&start)?, parse_time(&end)?)
-        .map_err(err)
+pub async fn delete_range(app: AppHandle, start: String, end: String) -> CmdResult<Edited> {
+    range_edit(&app, &start, &end, |s, from, to| s.delete_between(from, to))
 }
 
 #[tauri::command]
@@ -273,17 +299,17 @@ pub async fn add_manual_entry(
     end: String,
     category_id: Option<String>,
     project_id: Option<String>,
-) -> CmdResult<()> {
-    lock(&app.state::<Shared>().store)
-        .add_manual_session(
+) -> CmdResult<Edited> {
+    range_edit(&app, &start, &end, |s, from, to| {
+        s.add_manual_session(
             &label,
-            parse_time(&start)?,
-            parse_time(&end)?,
+            from,
+            to,
             category_id.as_deref(),
             project_id.as_deref(),
         )
-        .map(|_| ())
-        .map_err(err)
+        .map(|_| 1)
+    })
 }
 
 /// Başlıklardan bulunan projeler ve tanınan uygulama/sitelerden kategori önerileri.

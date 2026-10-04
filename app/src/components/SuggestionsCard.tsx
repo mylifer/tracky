@@ -3,6 +3,7 @@ import { ArrowRight, FolderGit2, Sparkles, X } from "lucide-react";
 import { api, formatDuration, type Suggestions, type Tag } from "../api";
 import { tagColor } from "../lib/tags";
 import { Button } from "./ui/button";
+import { friendlyError } from "../lib/feedback";
 
 /**
  * Otomatik öneriler: başlıklardan bulunan projeler, tanınan uygulama ve siteler için
@@ -30,7 +31,7 @@ export function SuggestionsCard({
       await f();
       onChanged();
     } catch (e) {
-      onError(String(e));
+      onError(friendlyError(e));
     } finally {
       setBusy(null);
     }

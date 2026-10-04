@@ -254,6 +254,108 @@ fn clean_title(title: &str, app_name: &str) -> String {
     t
 }
 
+/// Açıklamada en çok bu kadar pencere başlığı.
+const MAX_DETAIL_TITLES: usize = 3;
+/// İlkinden sonraki başlık, kaydın en az bu oranını kaplıyorsa açıklamaya girer.
+const DETAIL_SHARE: f64 = 0.2;
+/// Açıklamanın en uzun hali (karakter).
+const MAX_DETAILS: usize = 160;
+/// Açıklama sayılmayan başlıklar (küçük harf).
+const GENERIC_TITLES: &[&str] = &[
+    "new tab",
+    "yeni sekme",
+    "untitled",
+    "adsız",
+    "başlıksız",
+    "start page",
+    "başlangıç sayfası",
+    "home",
+];
+
+/// Kaydın pencere başlıklarından açıklama: başlıklarda geçen iş anahtarları (Jira gibi,
+/// `ABC-123`) başta, ardından süreye göre en önemli başlıklar. Tamamen yerel, kural tabanlı:
+/// tek başlık varsa açıklama odur.
+pub fn describe(titles: HashMap<String, Duration>) -> String {
+    let mut titles: Vec<(String, Duration)> = titles
+        .into_iter()
+        .filter(|(t, _)| !t.is_empty() && !GENERIC_TITLES.contains(&t.to_lowercase().as_str()))
+        .collect();
+    titles.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let total = titles
+        .iter()
+        .map(|(_, d)| d.num_seconds())
+        .sum::<i64>()
+        .max(1) as f64;
+
+    let mut keys: Vec<String> = Vec::new();
+    for (t, _) in &titles {
+        for key in issue_keys(t) {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys.truncate(3);
+
+    let mut picked: Vec<String> = Vec::new();
+    for (i, (t, d)) in titles.iter().enumerate() {
+        if picked.len() >= MAX_DETAIL_TITLES
+            || (i > 0 && (d.num_seconds() as f64) < total * DETAIL_SHARE)
+        {
+            break;
+        }
+        let mut text = t.clone();
+        for key in &keys {
+            text = text.replace(key.as_str(), "");
+        }
+        let text = text
+            .trim_matches(|c: char| {
+                c.is_whitespace() || matches!(c, ':' | '-' | '|' | '·' | '[' | ']')
+            })
+            .to_string();
+        let lower = text.to_lowercase();
+        let duplicate = picked.iter().any(|p| {
+            let p = p.to_lowercase();
+            p.contains(&lower) || lower.contains(&p)
+        });
+        if !text.is_empty() && !duplicate {
+            picked.push(text);
+        }
+    }
+
+    let body = picked.join("; ");
+    let out = match (keys.is_empty(), body.is_empty()) {
+        (true, _) => body,
+        (false, true) => keys.join(", "),
+        (false, false) => format!("{}: {body}", keys.join(", ")),
+    };
+    if out.chars().count() > MAX_DETAILS {
+        let cut: String = out.chars().take(MAX_DETAILS - 1).collect();
+        format!("{}…", cut.trim_end())
+    } else {
+        out
+    }
+}
+
+/// Başlıktaki iş anahtarları: büyük harfle başlayan 2-10 büyük harf/rakam, tire, rakamlar
+/// (`PROJ-12`, `ABC2-7`).
+pub(crate) fn issue_keys(title: &str) -> Vec<String> {
+    title
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter_map(|word| {
+            let (prefix, number) = word.split_once('-')?;
+            let ok = (2..=10).contains(&prefix.len())
+                && prefix.starts_with(|c: char| c.is_ascii_uppercase())
+                && prefix
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && (1..=6).contains(&number.len())
+                && number.chars().all(|c| c.is_ascii_digit());
+            ok.then(|| word.to_string())
+        })
+        .collect()
+}
+
 /// Kırpılmış oturum: (başlangıç, bitiş, oturum, proje, tür).
 type Span<'a> = (DateTime<Utc>, DateTime<Utc>, &'a Session, String, EntryKind);
 
@@ -376,17 +478,7 @@ pub fn propose(
                 // takvimden gelen toplantının konusu ise açıklamadır.
                 String::new()
             } else {
-                let mut titles: Vec<_> = r
-                    .titles
-                    .into_iter()
-                    .filter(|(t, _)| !t.is_empty())
-                    .collect();
-                titles.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-                titles
-                    .into_iter()
-                    .next()
-                    .map(|(t, _)| t)
-                    .unwrap_or_default()
+                describe(r.titles)
             };
             let local = r.start.with_timezone(&Local);
             TimesheetEntry {
@@ -569,6 +661,36 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn details_summarize_issue_keys_and_main_titles() {
+        let m = |n: i64| Duration::minutes(n);
+        let one = HashMap::from([("Trumore Loyalty UI/UX".to_string(), m(40))]);
+        assert_eq!(describe(one), "Trumore Loyalty UI/UX");
+        let many = HashMap::from([
+            ("PROJ-12 Ödeme ekranı hatası - Jira".to_string(), m(30)),
+            ("[PROJ-15] Sepet tutarı".to_string(), m(20)),
+            ("Yeni Sekme".to_string(), m(15)),
+            ("main.rs — kum".to_string(), m(25)),
+            ("Haberler".to_string(), m(2)),
+        ]);
+        assert_eq!(
+            describe(many),
+            "PROJ-12, PROJ-15: Ödeme ekranı hatası - Jira; main.rs — kum; Sepet tutarı"
+        );
+        assert_eq!(
+            describe(HashMap::from([("ABC-1".to_string(), m(5))])),
+            "ABC-1"
+        );
+        assert_eq!(
+            describe(HashMap::from([("Yeni Sekme".to_string(), m(5))])),
+            ""
+        );
+        let long = HashMap::from([("x".repeat(400), m(5))]);
+        assert_eq!(describe(long).chars().count(), MAX_DETAILS);
+        // "COVID-19" gibi sözcükler de anahtara benzer; kabul edilebilir, ama küçük harfli değil.
+        assert!(issue_keys("covid-19 ve utf-8").is_empty());
     }
 
     #[test]
