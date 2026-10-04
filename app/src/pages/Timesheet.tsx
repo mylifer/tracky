@@ -4,7 +4,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Copy,
   FileSpreadsheet,
   Plus,
   RefreshCw,
@@ -27,6 +26,7 @@ import {
   type TimesheetEntry,
 } from "../api";
 import { useTauriEvent } from "../lib/useTauriEvent";
+import { CalendarConnect, CONNECTIONS_SECTION, fileName, SheetConnect, TIMESHEET_SECTION } from "./TimesheetSettings";
 import { ErrorText } from "../components/settings";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -60,7 +60,14 @@ function manDays(hours: number, dayHours: number) {
  * Zaman çizelgesi: haftanın günleri için projeye atanmış süreden önerilen iş kayıtları.
  * Gün onaylanınca satırlar düzenlenebilir; onaylı ve aktarılmamış satırlar Excel dosyasına eklenir.
  */
-export default function Timesheet({ onOpenDay }: { onOpenDay: (iso: string) => void }) {
+export default function Timesheet({
+  onOpenDay,
+  onOpenSettings,
+}: {
+  onOpenDay: (iso: string) => void;
+  /** Ayarlar'ı bu bölümle aç (Bağlantılar ya da Zaman çizelgesi). */
+  onOpenSettings: (section: string) => void;
+}) {
   const [week, setWeek] = useState(() => isoDate(startOfWeek(today())));
   const [config, setConfig] = useState<TimesheetConfig | null>(null);
   const [days, setDays] = useState<TimesheetDay[]>([]);
@@ -70,7 +77,7 @@ export default function Timesheet({ onOpenDay }: { onOpenDay: (iso: string) => v
   const [notice, setNotice] = useState<string | null>(null);
   // Aktarım sürerken düğme kilitli: çift tıklama aynı satırları dosyaya iki kez yazmasın.
   const [exporting, setExporting] = useState(false);
-  const [settings, setSettings] = useState(false);
+  const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -91,9 +98,13 @@ export default function Timesheet({ onOpenDay }: { onOpenDay: (iso: string) => v
   }, [week]);
   useEffect(() => {
     load();
+    api.calendarStatus().then(setCalendar, () => {});
   }, [load]);
   // Takvim arka planda yenilenince toplantılar değişmiş olabilir.
-  useTauriEvent(api.onCalendar, () => load());
+  useTauriEvent(api.onCalendar, (s) => {
+    setCalendar(s);
+    load();
+  });
 
   const run = (f: () => Promise<unknown>) => async () => {
     try {
@@ -107,6 +118,12 @@ export default function Timesheet({ onOpenDay }: { onOpenDay: (iso: string) => v
 
   if (!config) return <ErrorText>{error}</ErrorText>;
   if (!config.filePath && !config.sheetUrl) return <Setup onDone={load} />;
+  const target = config.sheetUrl ? "Google Sheets" : `Excel · ${fileName(config.filePath ?? "")}`;
+  const calendarText = !calendar?.url
+    ? "Outlook takvimi bağlı değil"
+    : calendar.last && !calendar.last.ok
+      ? "Outlook takvimi okunamadı"
+      : "Outlook takvimi bağlı";
 
   const all = days.flatMap((d) => d.entries);
   const pending = days.filter((d) => d.approved).flatMap((d) => d.entries.filter((e) => !e.exported));
@@ -126,6 +143,18 @@ export default function Timesheet({ onOpenDay }: { onOpenDay: (iso: string) => v
             Toplam {manDays(total, config.dayHours)}
             {[...byDivision.entries()].map(([d, h]) => ` · ${d}: ${num.format(h)} sa`).join("")}
           </p>
+          {/* Kayıtların nereden gelip nereye gittiği; tıklayınca Ayarlar → Bağlantılar. */}
+          <button
+            className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            onClick={() => onOpenSettings(CONNECTIONS_SECTION)}
+            title="Ayarlar → Bağlantılar"
+          >
+            {config.sheetUrl ? <Sheet className="size-3" /> : <FileSpreadsheet className="size-3" />}
+            <span className="max-w-60 truncate">{target}</span>
+            <span aria-hidden>·</span>
+            <CalendarDays className="size-3" />
+            <span className={cn(calendar?.last && !calendar.last.ok && "text-destructive")}>{calendarText}</span>
+          </button>
         </div>
         <Button
           variant="ghost"
@@ -147,7 +176,7 @@ export default function Timesheet({ onOpenDay }: { onOpenDay: (iso: string) => v
         >
           <ChevronRight />
         </Button>
-        <Button variant="outline" size="sm" onClick={() => setSettings((s) => !s)} aria-expanded={settings}>
+        <Button variant="outline" size="sm" onClick={() => onOpenSettings(TIMESHEET_SECTION)}>
           <Settings2 /> Ayarlar
         </Button>
         <Button
@@ -178,7 +207,6 @@ export default function Timesheet({ onOpenDay }: { onOpenDay: (iso: string) => v
           </button>
         </div>
       )}
-      {settings && <SettingsPanel config={config} projects={projects} onSaved={load} />}
 
       <datalist id="timesheet-details">
         {details.slice(0, 200).map((d) => (
@@ -510,20 +538,28 @@ function EntryRow({
   );
 }
 
-/** İlk kurulum: firmanın Excel dosyasını ya da Google Sheets tablosunu bağla. */
+/**
+ * İlk kurulum: kayıtların yazılacağı dosya (Excel ya da Google Sheets) ve isteğe bağlı Outlook
+ * takvimi. Sonradan Ayarlar → Bağlantılar'dan değiştirilir.
+ */
 function Setup({ onDone }: { onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [sheets, setSheets] = useState(false);
+  const step = "space-y-2.5 rounded-xl border bg-card px-5 py-4 shadow-xs";
   return (
-    <div className="mx-auto w-full max-w-xl space-y-4 px-6 pt-10">
-      <div className="space-y-3 rounded-xl border bg-card px-6 py-5 shadow-xs">
-        <FileSpreadsheet className="size-6 text-primary" />
+    <div className="mx-auto w-full max-w-xl space-y-4 px-6 pt-8 pb-10">
+      <div className="space-y-1.5 px-1">
         <h1 className="text-base font-semibold">Zaman çizelgesi</h1>
         <p className="text-sm text-muted-foreground">
           Projeye atanmış çalışma süren ve takvimindeki toplantılar günlük iş kayıtlarına dönüşür; onayladığın kayıtlar
-          firmanın Excel dosyasına ya da Google Sheets tablosuna (aynı sütun ve biçimle) eklenir. Başlamak için o
-          dosyayı bağla: firma, danışman, taraflar, birimler (projeler) ve geçmiş açıklamalar dosyadan alınır.
+          firmanın dosyasına aynı sütun ve biçimle eklenir.
+        </p>
+      </div>
+      <section className={step}>
+        <h2 className="text-[13px] font-semibold">1. Kayıtlar nereye yazılsın?</h2>
+        <p className="text-xs text-muted-foreground">
+          Firma, danışman, birimler (projeler) ve geçmiş açıklamalar seçtiğin dosyadan alınır.
         </p>
         {sheets ? (
           <SheetConnect onDone={onDone} onCancel={() => setSheets(false)} />
@@ -547,7 +583,7 @@ function Setup({ onDone }: { onDone: () => void }) {
                 }
               }}
             >
-              <FileSpreadsheet /> Excel dosyasını seç
+              <FileSpreadsheet /> Excel dosyası seç
             </Button>
             <Button variant="outline" onClick={() => setSheets(true)}>
               <Sheet /> Google Sheets'e bağla
@@ -555,379 +591,17 @@ function Setup({ onDone }: { onDone: () => void }) {
           </div>
         )}
         <ErrorText>{error}</ErrorText>
-        {!sheets && (
-          <p className="text-xs text-muted-foreground">
-            Excel dosyasına yazmadan önce her seferinde yanına zaman damgalı bir yedek alınır; Google Sheets'te tablonun
-            sürüm geçmişi kalır.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Google Sheets bağlantısı: tabloya Kum'un Apps Script'i eklenir ve web uygulaması olarak
- * dağıtılır; Kum kayıtları o adrese gönderir (Google Cloud projesi ya da giriş gerekmez).
- */
-function SheetConnect({
-  onDone,
-  onCancel,
-  initial,
-}: {
-  onDone: () => void;
-  onCancel?: () => void;
-  initial?: { url: string | null; link: string | null };
-}) {
-  const [script, setScript] = useState("");
-  const [link, setLink] = useState(initial?.link ?? "");
-  const [url, setUrl] = useState(initial?.url ?? "");
-  const [copied, setCopied] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    api.sheetScript().then(setScript, (e) => setError(String(e)));
-  }, []);
-  const step = "flex gap-2.5 text-[13px]";
-  const num = "flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold";
-  return (
-    <div className="space-y-3">
-      <ol className="space-y-3">
-        <li className={step}>
-          <span className={num}>1</span>
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <div>Tablonun bağlantısı (kayıtlar ilk sayfaya eklenir):</div>
-            <Input
-              className="h-8 text-xs"
-              placeholder="https://docs.google.com/spreadsheets/d/…"
-              value={link}
-              onChange={(e) => setLink(e.target.value)}
-            />
-          </div>
-        </li>
-        <li className={step}>
-          <span className={num}>2</span>
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <div>
-              Tabloda <b>Uzantılar → Apps Script</b>'i aç, içindekini silip bu betiği yapıştır ve kaydet.
-            </div>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!script}
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(script);
-                    setCopied(true);
-                  } catch {
-                    setError("Kopyalanamadı; aşağıdaki kutudan seçip kopyala.");
-                  }
-                }}
-              >
-                {copied ? <Check /> : <Copy />} {copied ? "Kopyalandı" : "Betiği kopyala"}
-              </Button>
-            </div>
-            <textarea
-              readOnly
-              value={script}
-              onFocus={(e) => e.currentTarget.select()}
-              className="h-20 w-full resize-none rounded-md border bg-muted/40 p-2 font-mono text-[10px] text-muted-foreground selectable"
-              aria-label="Apps Script betiği"
-            />
-          </div>
-        </li>
-        <li className={step}>
-          <span className={num}>3</span>
-          <div className="min-w-0 flex-1">
-            <b>Dağıt → Yeni dağıtım → Web uygulaması</b>: "Şu kullanıcı olarak yürüt: <b>Ben</b>", "Erişimi olanlar:{" "}
-            <b>Herkes</b>". İstenen yetkiyi ver (Gelişmiş → güvenli olmayan sayfaya git: betik senin, yalnızca bu
-            tabloya erişir).
-          </div>
-        </li>
-        <li className={step}>
-          <span className={num}>4</span>
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <div>Çıkan web uygulaması adresini yapıştır:</div>
-            <Input
-              className="h-8 text-xs"
-              placeholder="https://script.google.com/macros/s/…/exec"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-          </div>
-        </li>
-      </ol>
-      <div className="flex gap-2">
-        <Button
-          disabled={busy || !url.trim()}
-          onClick={async () => {
-            setBusy(true);
-            setError(null);
-            try {
-              await api.connectSheet(url.trim(), link.trim() || null);
-              onDone();
-            } catch (e) {
-              setError(String(e));
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <Sheet /> {busy ? "Bağlanıyor…" : "Bağlan ve içe aktar"}
-        </Button>
-        {onCancel && (
-          <Button variant="ghost" onClick={onCancel}>
-            Vazgeç
-          </Button>
-        )}
-      </div>
-      <ErrorText>{error}</ErrorText>
-      <p className="text-xs text-muted-foreground">
-        Betik yalnızca Kum'un anahtarını taşıyan istekleri kabul eder ve aynı kaydı iki kez yazmaz. Tablo firmanın
-        hesabındaysa Apps Script ya da "Herkes" erişimi kapatılmış olabilir; o zaman Excel dosyasını kullan.
+      </section>
+      <section className={step}>
+        <h2 className="text-[13px] font-semibold">
+          2. Outlook takvimi <span className="font-normal text-muted-foreground">(isteğe bağlı)</span>
+        </h2>
+        <p className="text-xs text-muted-foreground">Toplantılar da kayıtlara girer.</p>
+        <CalendarConnect />
+      </section>
+      <p className="px-1 text-xs text-muted-foreground">
+        İkisini de sonra <b>Ayarlar → Bağlantılar</b>'dan değiştirebilirsin.
       </p>
     </div>
-  );
-}
-
-/** Outlook takvimi: yayımlanan ICS bağlantısı. */
-function CalendarSettings() {
-  const [status, setStatus] = useState<CalendarStatus | null>(null);
-  const [url, setUrl] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    api.calendarStatus().then((s) => {
-      setStatus(s);
-      setUrl(s.url ?? "");
-    });
-  }, []);
-  useTauriEvent(api.onCalendar, setStatus);
-  const save = async (next: string | null) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const s = await api.setCalendarUrl(next);
-      setStatus(s);
-      setUrl(s.url ?? "");
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const last = status?.last;
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <CalendarDays className="size-3.5" /> Outlook takvimi (toplantılar zaman çizelgesine girer)
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          className="h-8 min-w-0 flex-1 text-xs"
-          placeholder="https://outlook.office365.com/owa/calendar/…/calendar.ics"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-        />
-        <Button size="sm" disabled={busy || !url.trim() || url === status?.url} onClick={() => save(url)}>
-          {busy ? "Okunuyor…" : status?.url ? "Değiştir" : "Bağla"}
-        </Button>
-        {status?.url && (
-          <>
-            <Button size="sm" variant="ghost" aria-label="Takvimi yenile" onClick={() => api.refreshCalendar()}>
-              <RefreshCw />
-            </Button>
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => save(null)}>
-              Kaldır
-            </Button>
-          </>
-        )}
-      </div>
-      <ErrorText>{error}</ErrorText>
-      {status?.url ? (
-        <p className={cn("text-[11px]", last && !last.ok ? "text-destructive" : "text-muted-foreground")}>
-          {last
-            ? `${last.ok ? "Okundu" : "Okunamadı"} ${timeFmt.format(new Date(last.at))}: ${last.message}`
-            : `${status.events} etkinlik`}
-          {
-            " · 15 dakikada bir yenilenir. Konusu bir projenin kuralına uyan toplantı o projeye yazılır; diğerleri gün kartında atanır."
-          }
-          {status.ignored > 0 && (
-            <>
-              {" "}
-              {status.ignored} toplantı yoksayıldı ·{" "}
-              <button
-                className="underline underline-offset-2"
-                onClick={async () => setStatus(await api.restoreIgnoredMeetings())}
-              >
-                geri getir
-              </button>
-            </>
-          )}
-        </p>
-      ) : (
-        <p className="text-[11px] text-muted-foreground">
-          Outlook web'de <b>Ayarlar → Takvim → Paylaşılan takvimler → Takvim yayımla</b>: takvimi seç, "Tüm ayrıntıları
-          görebilir" (en az "Başlıklar ve konumlar"), Yayımla; çıkan <b>ICS</b> bağlantısını buraya yapıştır. Bağlantıyı
-          bilen herkes takvimi görebilir; kimseyle paylaşma.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function SettingsPanel({
-  config,
-  projects,
-  onSaved,
-}: {
-  config: TimesheetConfig;
-  projects: Tag[];
-  onSaved: () => void;
-}) {
-  const [c, setC] = useState(config);
-  const [error, setError] = useState<string | null>(null);
-  const [sheetSetup, setSheetSetup] = useState(false);
-  useEffect(() => setC(config), [config]);
-  const save = async (next: TimesheetConfig) => {
-    setC(next);
-    try {
-      await api.saveTimesheetConfig(next);
-      onSaved();
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-  const mapping = (id: string) => c.projects.find((m) => m.projectId === id);
-  const setMapping = (id: string, patch: { division?: string; party?: string | null }) => {
-    const current = mapping(id) ?? {
-      projectId: id,
-      division: projects.find((p) => p.id === id)?.name ?? "",
-      party: null,
-    };
-    const next = { ...current, ...patch };
-    save({ ...c, projects: [...c.projects.filter((m) => m.projectId !== id), next] });
-  };
-  const field = (label: string, value: string, onCommit: (v: string) => void, hint?: string) => (
-    <label className="space-y-1">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <Input
-        className="h-8 text-sm"
-        defaultValue={value}
-        onBlur={(e) => e.target.value !== value && onCommit(e.target.value.trim())}
-        title={hint}
-      />
-    </label>
-  );
-
-  return (
-    <section className="space-y-4 rounded-xl border bg-card px-4 py-4 shadow-xs">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        {field("Firma", c.company, (v) => save({ ...c, company: v }))}
-        {field("Danışman (Consultant)", c.consultant, (v) => save({ ...c, consultant: v }))}
-        {field("Varsayılan taraf (Parties)", c.defaultParty, (v) => save({ ...c, defaultParty: v }))}
-        {field("Adam-gün saati", String(c.dayHours), (v) => {
-          const n = Number(v.replace(",", "."));
-          if (n > 0 && n <= 24) save({ ...c, dayHours: n });
-        })}
-      </div>
-      {c.sheetUrl ? (
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Google Sheets:</span>
-          <span className="min-w-0 flex-1 truncate font-medium selectable" title={c.sheetLink ?? c.sheetUrl}>
-            {c.sheetLink ?? c.sheetUrl}
-          </span>
-          <Button size="sm" variant="outline" onClick={() => setSheetSetup((v) => !v)}>
-            Betik / adres
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={async () => {
-              try {
-                await api.disconnectSheet();
-                onSaved();
-              } catch (e) {
-                setError(String(e));
-              }
-            }}
-            title={c.filePath ? `Kayıtlar yeniden ${c.filePath} dosyasına gider` : undefined}
-          >
-            {c.filePath ? "Excel'e dön" : "Bağlantıyı kaldır"}
-          </Button>
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Excel dosyası:</span>
-          <span className="min-w-0 flex-1 truncate font-medium selectable" title={c.filePath ?? ""}>
-            {c.filePath}
-          </span>
-          <Button size="sm" variant="outline" onClick={() => setSheetSetup((v) => !v)}>
-            <Sheet /> Google Sheets'e geç
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={async () => {
-              try {
-                const path = await api.pickTimesheetFile();
-                if (path) {
-                  await api.importTimesheetTemplate(path);
-                  onSaved();
-                }
-              } catch (e) {
-                setError(String(e));
-              }
-            }}
-          >
-            Değiştir / yeniden içe aktar
-          </Button>
-        </div>
-      )}
-      {sheetSetup && (
-        <div className="rounded-lg border px-3 py-3">
-          <SheetConnect
-            initial={{ url: c.sheetUrl, link: c.sheetLink }}
-            onDone={() => {
-              setSheetSetup(false);
-              onSaved();
-            }}
-            onCancel={() => setSheetSetup(false)}
-          />
-        </div>
-      )}
-      <CalendarSettings />
-      <div className="space-y-1.5">
-        <div className="text-xs text-muted-foreground">Proje → birim (Excel'deki ad) ve taraf</div>
-        <ul className="divide-y rounded-lg border">
-          {projects.map((p) => (
-            <li
-              key={p.id}
-              className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_120px] items-center gap-2 px-3 py-1.5"
-            >
-              <span className="flex min-w-0 items-center gap-2 text-[13px]">
-                <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(p) }} />
-                <span className="truncate">{p.name}</span>
-              </span>
-              <Input
-                className="h-7 text-xs"
-                defaultValue={mapping(p.id)?.division ?? p.name}
-                onBlur={(e) => setMapping(p.id, { division: e.target.value.trim() })}
-                aria-label={`${p.name} birimi`}
-              />
-              <Input
-                className="h-7 text-xs"
-                placeholder={c.defaultParty}
-                defaultValue={mapping(p.id)?.party ?? ""}
-                onBlur={(e) => setMapping(p.id, { party: e.target.value.trim() || null })}
-                aria-label={`${p.name} tarafı`}
-              />
-            </li>
-          ))}
-        </ul>
-      </div>
-      <ErrorText>{error}</ErrorText>
-    </section>
   );
 }

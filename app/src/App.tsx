@@ -91,6 +91,12 @@ export default function App() {
 
 function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) {
   const [view, setView] = useState<View>("day");
+  // Ayarlar başka bir sayfadan belirli bir bölümle açılabilir (zaman çizelgesi → Bağlantılar).
+  const [settingsSection, setSettingsSection] = useState<string | null>(null);
+  const openSettings = (section: string | null = null) => {
+    setSettingsSection(section);
+    setView("settings");
+  };
   // Arama görünümden çıkınca kaybolmasın.
   const [search, setSearch] = useState<SearchState>({ query: "", days: 30 });
   // Kategoriler sayfası hangi bölümle açılsın (Eğilimler'deki "Proje ekle" projelerle açar).
@@ -225,7 +231,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
             >
               Kategoriler ve projeler
             </NavItem>
-            <NavItem icon={<Settings2 />} active={view === "settings"} onClick={() => setView("settings")}>
+            <NavItem icon={<Settings2 />} active={view === "settings"} onClick={() => openSettings()}>
               Ayarlar
             </NavItem>
           </NavSection>
@@ -268,6 +274,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                     setDay(iso);
                     setView("day");
                   }}
+                  onOpenSettings={openSettings}
                 />
               )}
               {view === "trends" && (
@@ -293,7 +300,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                 />
               )}
               {view === "categories" && <Categories onSuggestions={setSuggestionCount} initialKind={categoriesKind} />}
-              {view === "settings" && <Settings status={status} onChange={refresh} />}
+              {view === "settings" && <Settings status={status} onChange={refresh} section={settingsSection} />}
             </div>
           </>
         )}

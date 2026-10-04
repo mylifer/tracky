@@ -48,6 +48,7 @@ export default function SyncSettings() {
 
   return (
     <SettingsGroup
+      id="senkronizasyon"
       title="Senkronizasyon"
       description="Verilerini kendi Supabase projende saklayarak Mac ve Windows'ta birleşik rapor görürsün. Kurulum adımları README'de."
     >

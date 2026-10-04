@@ -6,11 +6,38 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { cn } from "../lib/utils";
 import GoalsSettings from "./GoalsSettings";
 import SyncSettings from "./SyncSettings";
+import { CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections } from "./TimesheetSettings";
 import UpdateSettings from "./UpdateSettings";
 
-export default function Settings({ status, onChange }: { status: AppStatus; onChange: () => void }) {
+/** Sayfanın başındaki içindekiler: bölümler sayfadaki sırasıyla. */
+const SECTIONS = [
+  { id: "genel", label: "Genel" },
+  { id: CONNECTIONS_SECTION, label: "Bağlantılar" },
+  { id: TIMESHEET_SECTION, label: "Zaman çizelgesi" },
+  { id: "hedefler", label: "Hedefler" },
+  { id: "gizlilik", label: "Gizlilik" },
+  { id: "senkronizasyon", label: "Senkronizasyon" },
+  { id: "guncellemeler", label: "Güncellemeler" },
+  { id: "veriler", label: "Veriler" },
+];
+
+function scrollTo(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+export default function Settings({
+  status,
+  onChange,
+  section,
+}: {
+  status: AppStatus;
+  onChange: () => void;
+  /** Açılınca gidilecek bölüm (örn. zaman çizelgesindeki "Ayarlar" düğmesi). */
+  section?: string | null;
+}) {
   const [privacy, setPrivacy] = useState<PrivacySettings | null>(null);
   const [apps, setApps] = useState<UsageTotal[]>([]);
   const [diag, setDiag] = useState<string[] | null>(null);
@@ -21,6 +48,10 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
     api.privacy().then(setPrivacy);
     api.knownApps().then(setApps);
   }, []);
+  useEffect(() => {
+    // Bölümler yüklenince yerleşsin diye bir kare sonra.
+    if (section) requestAnimationFrame(() => scrollTo(section));
+  }, [section]);
 
   async function save(next: PrivacySettings) {
     try {
@@ -49,9 +80,23 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
 
   return (
     <Page title="Ayarlar">
+      <nav aria-label="Ayarlar bölümleri" className="flex flex-wrap gap-1.5">
+        {SECTIONS.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => scrollTo(s.id)}
+            className={cn(
+              "rounded-full border px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground",
+              section === s.id && "border-primary/40 text-foreground",
+            )}
+          >
+            {s.label}
+          </button>
+        ))}
+      </nav>
       <ErrorText>{error}</ErrorText>
 
-      <SettingsGroup title="Genel">
+      <SettingsGroup id="genel" title="Genel">
         <ToggleRow
           label="Bilgisayar açılınca başlat"
           hint="Kum menü çubuğunda sessizce başlar."
@@ -86,10 +131,16 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
         )}
       </SettingsGroup>
 
+      <TimesheetSections />
+
       <GoalsSettings />
 
       {privacy && (
-        <SettingsGroup title="Gizlilik" description="Değişiklikler yeni kayıtlara uygulanır; geçmiş kayıtlar değişmez.">
+        <SettingsGroup
+          id="gizlilik"
+          title="Gizlilik"
+          description="Değişiklikler yeni kayıtlara uygulanır; geçmiş kayıtlar değişmez."
+        >
           <ToggleRow
             label="Gizli pencerelerin başlığını kaydetme"
             hint="Tarayıcıların gizli/InPrivate pencerelerinde süre kaydedilir, başlık “Gizli” olarak saklanır."
@@ -121,7 +172,7 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
 
       <UpdateSettings />
 
-      <SettingsGroup title="Veriler">
+      <SettingsGroup id="veriler" title="Veriler">
         <SettingRow
           label="CSV olarak dışa aktar"
           hint={
@@ -144,7 +195,7 @@ export default function Settings({ status, onChange }: { status: AppStatus; onCh
         </SettingRow>
       </SettingsGroup>
 
-      <SettingsGroup title="Sorun giderme">
+      <SettingsGroup id="sorun-giderme" title="Sorun giderme">
         <SettingRow
           label="Tanılama"
           hint="Pencere başlıkları görünmüyorsa çalıştır, 5 saniye boyunca farklı pencerelere geç ve çıkan metni paylaş."

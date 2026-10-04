@@ -35,7 +35,7 @@ export default function UpdateSettings() {
   }
 
   return (
-    <SettingsGroup title="Güncellemeler">
+    <SettingsGroup id="guncellemeler" title="Güncellemeler">
       <SettingRow label={`Kum ${status.current}`} hint={describe()}>
         {status.ready ? (
           <Button size="sm" disabled={installing} onClick={install}>

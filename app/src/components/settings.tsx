@@ -4,18 +4,21 @@ import { cn } from "@/lib/utils";
 
 /** Sistem Ayarları tarzı grup: başlık ve altında ayrı çizgili satırlar. */
 export function SettingsGroup({
+  id,
   title,
   description,
   children,
   className,
 }: {
+  /** Ayarlar sayfasında doğrudan bu bölüme gitmek için. */
+  id?: string;
   title: string;
   description?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
   return (
-    <section className={cn("space-y-2", className)}>
+    <section id={id} className={cn("scroll-mt-4 space-y-2", className)}>
       <div className="px-1">
         <h2 className="text-[13px] font-semibold">{title}</h2>
         {description && <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>}

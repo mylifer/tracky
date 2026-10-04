@@ -56,7 +56,7 @@ export default function GoalsSettings() {
   const summaryOn = goals.daySummaryAt !== null;
 
   return (
-    <SettingsGroup title="Hedefler ve hatırlatıcılar">
+    <SettingsGroup id="hedefler" title="Hedefler ve hatırlatıcılar">
       <SettingRow label="Günlük çalışma hedefi" hint="Özetteki hedef yüzdesi buna göre hesaplanır.">
         <Input
           type="number"
