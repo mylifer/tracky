@@ -233,6 +233,11 @@ export type TimesheetConfig = {
   dayHours: number;
 };
 
+/** Yapay zekâyla açıklama yazma ayarı; anahtarın yalnızca son dört karakteri gelir. */
+export type AiStatus = { enabled: boolean; hasKey: boolean; keyHint: string | null; model: string };
+/** Yapay zekânın bir satıra yazdığı açıklama (henüz kaydedilmedi). */
+export type AiChange = { id: string; details: string };
+
 export type BackupFile = { name: string; path: string; at: string; bytes: number };
 export type BackupStatus = { dir: string; last: string | null; files: BackupFile[] };
 export type PickedBackup = { path: string; sessions: number; lastActivity: string | null };
@@ -426,6 +431,12 @@ export const api = {
   sheetScript: () => invoke<string>("sheet_script"),
   connectSheet: (url: string, link: string | null) => invoke<Imported>("connect_sheet", { url, link }),
   disconnectSheet: () => invoke<TimesheetConfig>("disconnect_sheet"),
+  aiSettings: () => invoke<AiStatus>("get_ai_settings"),
+  /** `apiKey` verilmezse kayıtlı anahtar korunur; boş dize siler. */
+  saveAiSettings: (enabled: boolean, apiKey?: string) =>
+    invoke<AiStatus>("save_ai_settings", { enabled, apiKey: apiKey ?? null }),
+  testAi: (apiKey?: string) => invoke<string>("test_ai_connection", { apiKey: apiKey ?? null }),
+  aiWriteDetails: (date: string, rewrite: boolean) => invoke<AiChange[]>("ai_write_details", { date, rewrite }),
   /** Toplantı serisini projeye ata; `null` yoksayar. */
   assignMeeting: (uid: string, projectId: string | null, date: string) =>
     invoke<void>("assign_meeting", { uid, projectId, date }),

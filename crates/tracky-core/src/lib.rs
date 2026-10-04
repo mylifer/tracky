@@ -3,6 +3,7 @@
 //! Platforma özel kod (aktif pencere / idle tespiti) [`platform::ActivityProvider`]
 //! trait'ini uygular; motor ve depolama bu crate'te kalır ki testlerle doğrulanabilsin.
 
+pub mod ai;
 pub mod blocks;
 pub mod browser;
 pub mod budget;

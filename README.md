@@ -87,6 +87,10 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       (geri alınabilir)
 - [x] 45. Atama önerileri en az 15 dakikalık süre için: Gözden geçir, özet kartı, zaman çizelgesi ve "Haftayı kapat"
       daha kısa grupları, başlıkları ve boşta süreyi önermez (grubu atamak kısaları da kapsar)
+- [x] 46. Yapay zekâyla yaz: zaman çizelgesi açıklamalarını Claude yazar (isteğe bağlı, kendi Anthropic API
+      anahtarınla). Gün kartında "Yapay zekâyla yaz" ve "Hepsini yeniden yaz", "Haftayı kapat"ta dönemin boş
+      açıklamaları; gün başına bir istek, satırın pencere başlıkları, iş anahtarları ve geçmiş açıklamaların
+      üslubuyla. Elle yazılan açıklamaya dokunulmaz; sonuç hemen yazılır, bildirimden geri alınır
 
 ## Yapı
 
@@ -104,6 +108,7 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
   classify.rs             Kategoriler, projeler, kurallar ve varsayılan kategoriler
   calendar.rs             iCalendar (.ics) ayrıştırma: tekrar kuralları, VTIMEZONE, istisnalar
   timesheet.rs            Oturum ve toplantılardan günlük iş kaydı önerileri
+  ai.rs                   Yapay zekâyla açıklama: satırın başlıkları/iş anahtarları, istem, yanıt temizliği
   budget.rs               Sözleşme bütçeleri: adam-gün, harcanan süre, %80/%100 bildirimleri
   report.rs               Gün/hafta raporu (kategori, proje, uygulama, gün, zaman çizelgesi)
   client_report.rs        Aylık müşteri raporu: proje × gün saat tablosu
@@ -197,6 +202,24 @@ takvimi görebilir; şirket yayımlamayı kapattıysa bu seçenek Outlook'ta gö
 erişim "Herkes") ile dağıt ve `…/exec` adresini Kum'a gir. Betik yalnızca Kum'un anahtarını taşıyan
 istekleri kabul eder, kayıtları ilk sayfaya Excel aktarımıyla aynı kurallarla ekler ve aynı kaydı
 iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
+
+## Zaman çizelgesi: yapay zekâyla açıklama
+
+İsteğe bağlıdır ve varsayılan olarak kapalıdır. [console.anthropic.com](https://console.anthropic.com)
+→ *API Keys*'ten bir anahtar oluştur, Kum'da *Ayarlar → Yapay zekâ* bölümünde aç, anahtarı gir ve
+**Bağlantıyı dene** ile dene. Sonra zaman çizelgesinde gün kartındaki **Yapay zekâyla yaz** ya da
+"Haftayı kapat" panelindeki **Boş açıklamaları yapay zekâyla yaz** düğmesine bas.
+
+- **Ne yazılır:** aktarılmamış satırlardan açıklaması boş ya da otomatik (başlıklardan, hazır açıklamadan)
+  gelenler. Elle yazılan açıklamaya yalnızca gün kartındaki **Hepsini yeniden yaz** dokunur. Sonuç hemen
+  kaydedilir; bildirimdeki **Geri al** satırları önceki haline döndürür.
+- **Ne gönderilir:** yalnızca düğmeye basınca ve yalnızca `api.anthropic.com`'a; yazılacak satırların proje
+  ve müşteri adı, türü, saati ve başlangıcı; o satırın süresindeki en çok 15 pencere başlığı (süreleriyle),
+  iş anahtarları ve site adları ya da toplantı konusu; üslup örneği olarak o projeye daha önce yazdığın en
+  çok 10 açıklama (projede hiç yoksa diğer projelerden 5). Anahtar yalnızca bu bilgisayarın ayarlarında
+  durur, eşitlenmez ve günlüğe yazılmaz (yerel yedek dosyalarına girer).
+- **Maliyet:** gün başına bir istek (`claude-opus-5`, düşük çaba), ücreti senin API hesabından düşer;
+  hafta için en çok beş-yedi istek.
 
 ## Cihazlar arası senkronizasyon (Supabase)
 

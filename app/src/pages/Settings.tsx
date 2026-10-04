@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { cn } from "../lib/utils";
 import GoalsSettings from "./GoalsSettings";
 import SyncSettings from "./SyncSettings";
-import { CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections } from "./TimesheetSettings";
+import { AI_SECTION, CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections } from "./TimesheetSettings";
 import UpdateSettings from "./UpdateSettings";
 import BackupSettings from "./BackupSettings";
 import { friendlyError } from "../lib/feedback";
@@ -19,6 +19,7 @@ const SECTIONS = [
   { id: "genel", label: "Genel" },
   { id: CONNECTIONS_SECTION, label: "Bağlantılar" },
   { id: TIMESHEET_SECTION, label: "Zaman çizelgesi" },
+  { id: AI_SECTION, label: "Yapay zekâ" },
   { id: "hedefler", label: "Hedefler" },
   { id: "gizlilik", label: "Gizlilik" },
   { id: "senkronizasyon", label: "Senkronizasyon" },

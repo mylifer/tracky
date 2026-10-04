@@ -8,12 +8,15 @@ import {
   ClipboardCheck,
   Copy,
   FileSpreadsheet,
+  Loader2,
   Plus,
   RefreshCw,
   Settings2,
   Sheet,
+  Sparkles,
   Trash2,
   TriangleAlert,
+  WandSparkles,
   X,
 } from "lucide-react";
 import {
@@ -173,7 +176,12 @@ async function copyPreviousDetails(date: string) {
   }
   const changes = copyDetails(entries, prior);
   for (const c of changes) await api.saveTimesheetEntry(c.entry.id, { ...entryOf(c.entry), details: c.details });
-  toast(`${changes.length} satıra önceki günlerden açıklama yazıldı`, {
+  detailsToast(changes, `${changes.length} satıra önceki günlerden açıklama yazıldı`);
+}
+
+/** Açıklaması değişen satırlar için "Geri al"lı bildirim; geri alma satırların önceki halini yazar. */
+function detailsToast(changes: { entry: EntryView }[], message: string) {
+  toast(message, {
     tone: "success",
     action: {
       label: "Geri al",
@@ -183,6 +191,42 @@ async function copyPreviousDetails(date: string) {
         ),
     },
   });
+}
+
+/**
+ * Günlerin açıklamalarını yapay zekâyla (Claude) yazar: gün başına bir istek, sırayla. Varsayılan
+ * olarak yalnızca boş ya da otomatik gelen (başlıklardan, hazır açıklamadan) açıklamalar yazılır,
+ * elle yazılana dokunulmaz; `rewrite` ise günün aktarılmamış bütün satırları. Onaylanmamış gün önce
+ * onaylanır (öneriler düzenlenemez). Yazılanlar hemen kaydedilir, bildirimden hepsi birden geri
+ * alınır. Bir gün hata verirse sonraki günlere geçilmez; o ana kadar yazılanlar kalır.
+ */
+async function aiWriteDays(dates: string[], rewrite: boolean, onProgress?: (done: number) => void) {
+  const changes: { entry: EntryView; details: string }[] = [];
+  let failure: unknown = null;
+  for (const [i, date] of dates.entries()) {
+    try {
+      let [day] = await api.timesheetDays(date, 1);
+      if (!day.entries.some((e) => !e.exported)) continue;
+      if (!day.approved) {
+        await api.approveTimesheetDay(date);
+        [day] = await api.timesheetDays(date, 1);
+      }
+      for (const w of await api.aiWriteDetails(date, rewrite)) {
+        const entry = day.entries.find((e) => e.id === w.id);
+        if (!entry || entry.details === w.details) continue;
+        await api.saveTimesheetEntry(w.id, { ...entryOf(entry), details: w.details });
+        changes.push({ entry, details: w.details });
+      }
+    } catch (e) {
+      failure = e;
+      break;
+    } finally {
+      onProgress?.(i + 1);
+    }
+  }
+  if (changes.length > 0) detailsToast(changes, `${changes.length} satıra yapay zekâyla açıklama yazıldı`);
+  else if (!failure) toast("Yazılacak açıklama yok: boş ya da otomatik açıklamalı, aktarılmamış satır kalmadı");
+  if (failure) throw failure;
 }
 
 /**
@@ -227,6 +271,14 @@ export default function Timesheet({
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   // Dönemi kapatma denetimi açık.
   const [closing, setClosing] = useState(false);
+  // Yapay zekâyla yazma açık ve anahtar girilmiş (Ayarlar → Yapay zekâ).
+  const [ai, setAi] = useState(false);
+  useEffect(() => {
+    api.aiSettings().then(
+      (s) => setAi(s.enabled && s.hasKey),
+      () => {},
+    );
+  }, []);
 
   // Hafta hızla değiştirilince geç gelen eski yanıt yenisinin üzerine yazmasın.
   const loadSeq = useRef(0);
@@ -472,6 +524,7 @@ export default function Timesheet({
           config={config}
           projects={projects}
           ready={fresh && !exporting}
+          ai={ai}
           pending={pending.length}
           onClose={() => setClosing(false)}
           onFinish={() => closeRange(report.unapproved)}
@@ -503,6 +556,7 @@ export default function Timesheet({
           onOpenDay={onOpenDay}
           onReviewDay={onReviewDay}
           run={run}
+          ai={ai}
           // Gün görünümünde boş gün de gösterilir (yoksa sayfa boş kalır).
           alwaysShow={mode === "day"}
         />
@@ -529,6 +583,7 @@ function ClosePanel({
   config,
   projects,
   ready,
+  ai,
   pending,
   onClose,
   onFinish,
@@ -543,6 +598,8 @@ function ClosePanel({
   projects: Tag[];
   /** Ekrandaki günler güncel ve aktarım sürmüyor. */
   ready: boolean;
+  /** Yapay zekâyla yazma açık. */
+  ai: boolean;
   /** Onaylı ve aktarılmamış satır sayısı. */
   pending: number;
   onClose: () => void;
@@ -565,6 +622,18 @@ function ClosePanel({
   const exportLabel = config.sheetUrl ? "Sheets'e aktar" : "Excel'e aktar";
   const work = report.unapproved.length > 0 || pending > 0;
   const blocked = report.blocking > 0;
+  // Yapay zekâyla yazılacak günler: bugüne kadar, aktarılmamış satırı olanlar. Yazarken ilerleme.
+  const todayIso = isoDate(today());
+  const aiDays = days.filter((d) => d.date <= todayIso && d.entries.some((e) => !e.exported)).map((d) => d.date);
+  const [aiDone, setAiDone] = useState<number | null>(null);
+  const writeAll = async () => {
+    setAiDone(0);
+    try {
+      await run(() => aiWriteDays(aiDays, false, setAiDone))();
+    } finally {
+      setAiDone(null);
+    }
+  };
 
   return (
     <section className="rounded-xl border bg-card shadow-xs" aria-label={`${title}: denetim`}>
@@ -603,6 +672,15 @@ function ClosePanel({
                     <button className={FIX_LINK} onClick={run(() => copyPreviousDetails(d.date))}>
                       önceki günden kopyala
                     </button>
+                    {ai && (
+                      <button
+                        className={FIX_LINK}
+                        disabled={aiDone !== null}
+                        onClick={run(() => aiWriteDays([d.date], false))}
+                      >
+                        yapay zekâyla yaz
+                      </button>
+                    )}
                     {show(d.date, true)}
                   </span>
                 </li>
@@ -706,6 +784,18 @@ function ClosePanel({
               ? "Uyarılar aktarımı engellemez."
               : ""}
         </p>
+        {ai && aiDays.length > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!ready || aiDone !== null}
+            title="Boş ya da otomatik gelen açıklamaları Claude yazar (gün başına bir istek); elle yazdıklarına dokunulmaz. Onaylanmamış günler onaylanır."
+            onClick={writeAll}
+          >
+            {aiDone !== null ? <Loader2 className="animate-spin" /> : <Sparkles />}
+            {aiDone !== null ? `Yazılıyor… ${aiDone}/${aiDays.length} gün` : "Boş açıklamaları yapay zekâyla yaz"}
+          </Button>
+        )}
         <Button
           size="sm"
           disabled={!ready || blocked || !work}
@@ -761,6 +851,7 @@ function DayCard({
   onOpenDay,
   onReviewDay,
   run,
+  ai,
   alwaysShow,
 }: {
   day: TimesheetDay;
@@ -769,9 +860,21 @@ function DayCard({
   onOpenDay: (iso: string) => void;
   onReviewDay: (iso: string) => void;
   run: Run;
+  /** Yapay zekâyla yazma açık. */
+  ai: boolean;
   alwaysShow: boolean;
 }) {
   const [confirmReset, setConfirmReset] = useState(false);
+  // Yapay zekâ yazıyor (düğme kilitli, dönen simge).
+  const [writing, setWriting] = useState(false);
+  const aiWrite = async (rewrite: boolean) => {
+    setWriting(true);
+    try {
+      await run(() => aiWriteDays([day.date], rewrite))();
+    } finally {
+      setWriting(false);
+    }
+  };
   const date = parseIsoDate(day.date);
   const total = day.entries.reduce((s, e) => s + e.hours, 0);
   const totalActual = day.entries.reduce((s, e) => s + worked(e), 0);
@@ -782,6 +885,7 @@ function DayCard({
   // Günlük saatten sapma (bugün ve öncesi; ileri tarihli gün henüz bitmedi).
   const diff = day.date <= isoDate(today()) ? hoursDiff(day, config.dayHours) : 0;
   const missing = day.entries.some(needsDetails);
+  const open = day.entries.filter((e) => !e.exported);
 
   const firstMapping = config.projects[0];
   const blank: TimesheetEntry = {
@@ -849,6 +953,32 @@ function DayCard({
               onClick={run(() => copyPreviousDetails(day.date))}
             >
               <Copy /> Önceki günden kopyala
+            </Button>
+          )}
+          {ai && open.length > 0 && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={writing}
+              title={
+                (day.approved ? "" : "Günü onaylar; ") +
+                "boş ya da otomatik gelen açıklamaları Claude yazar, elle yazdıklarına dokunulmaz. Bildirimden geri alınır."
+              }
+              onClick={() => aiWrite(false)}
+            >
+              {writing ? <Loader2 className="animate-spin" /> : <Sparkles />} Yapay zekâyla yaz
+            </Button>
+          )}
+          {ai && day.approved && open.some((e) => e.details.trim()) && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              disabled={writing}
+              aria-label="Hepsini yapay zekâyla yeniden yaz"
+              title="Hepsini yeniden yaz: elle yazılanlar dahil aktarılmamış bütün açıklamaları Claude yazar. Bildirimden geri alınır."
+              onClick={() => aiWrite(true)}
+            >
+              <WandSparkles />
             </Button>
           )}
           {!day.approved && day.entries.length > 0 && (
