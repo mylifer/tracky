@@ -27,7 +27,7 @@ pub mod trends;
 pub mod url_util;
 
 pub use classify::{Classifier, Client, NO_PROJECT, Rule, RuleField, Tag, TagKind};
-pub use coach::{CategoryLimit, Coach, Goals, Nudge, ProjectGoal};
+pub use coach::{CategoryLimit, Coach, Goals, Nudge, ProjectGoal, export_reminder_due};
 pub use engine::{Engine, EngineConfig};
 pub use model::{ActiveWindow, MANUAL_APP_ID, Session};
 pub use platform::ActivityProvider;

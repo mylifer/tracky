@@ -16,6 +16,9 @@ const PROJECT_GOAL_HOURS = [2, 5, 10, 15, 20, 25, 30, 40];
 /** Gün sonu özeti saatleri (16:00–23:00). */
 const SUMMARY_OPTIONS = Array.from({ length: 8 }, (_, i) => (16 + i) * 60);
 const DEFAULT_SUMMARY = 18 * 60;
+/** Cuma aktarım hatırlatması saatleri (12:00–20:00). */
+const EXPORT_REMINDER_OPTIONS = Array.from({ length: 9 }, (_, i) => (12 + i) * 60);
+const DEFAULT_EXPORT_REMINDER = 17 * 60;
 
 function minutesLabel(m: number) {
   return m < 60 ? `${m} dk` : m % 60 === 0 ? `${m / 60} sa` : `${Math.floor(m / 60)} sa ${m % 60} dk`;
@@ -53,6 +56,7 @@ export default function GoalsSettings() {
 
   const breakOn = goals.breakAfterMinutes !== null;
   const summaryOn = goals.daySummaryAt !== null;
+  const reminderOn = goals.exportReminderAt !== null;
 
   return (
     <SettingsGroup id="hedefler" title="Hedefler ve hatırlatıcılar">
@@ -138,6 +142,31 @@ export default function GoalsSettings() {
         checked={goals.weeklySummary}
         onChange={(v) => save({ ...goals, weeklySummary: v })}
       />
+      <ToggleRow
+        label="Zaman çizelgesi hatırlatması"
+        hint="Cuma günü, bu hafta zaman çizelgesine aktarılmamış iş varsa hangi günler olduğunu bildirir. Cuma bilgisayar kapalıysa hafta sonu ilk açılışta."
+        checked={reminderOn}
+        onChange={(v) => save({ ...goals, exportReminderAt: v ? DEFAULT_EXPORT_REMINDER : null })}
+      />
+      {reminderOn && (
+        <SettingRow label="Hatırlatma saati" hint="Cuma, haftada bir kez.">
+          <Select
+            value={String(goals.exportReminderAt ?? DEFAULT_EXPORT_REMINDER)}
+            onValueChange={(v) => save({ ...goals, exportReminderAt: Number(v) })}
+          >
+            <SelectTrigger size="sm" className="w-32">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              {EXPORT_REMINDER_OPTIONS.map((m) => (
+                <SelectItem key={m} value={String(m)}>
+                  {clock(m)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingRow>
+      )}
       <LimitsBlock goals={goals} categories={categories} onChange={save} />
       <ProjectGoalsBlock goals={goals} projects={projects} onChange={save} />
       {error && (

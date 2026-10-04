@@ -83,6 +83,41 @@ pub async fn save_timesheet_config(app: AppHandle, mut config: TimesheetConfig) 
     store.save_timesheet_config(&config).map_err(err)
 }
 
+/// `from`–`to` (dahil) arasında zaman çizelgesine henüz aktarılmamış işi olan günler: onaylanıp
+/// aktarılmamış kaydı ya da aktarılmamış önerisi (takip edilen süre, toplantı) olan günler.
+/// Kayıtların yazılacağı yer (Excel ya da Sheets) seçilmemişse boştur.
+pub fn unexported_days(app: &AppHandle, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
+    let meetings =
+        crate::calendar::meetings(app, local_midnight(from), local_midnight(to + Days::new(1)));
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let configured = store
+        .timesheet_config()
+        .is_ok_and(|c| c.file_path.is_some() || c.sheet_url.is_some());
+    if !configured {
+        return Vec::new();
+    }
+    let pending = |date: NaiveDate| -> Result<bool, tracky_core::StoreError> {
+        let saved = store.timesheet_entries(date, date)?;
+        if saved.iter().any(|e| e.exported_at.is_none()) {
+            return Ok(true);
+        }
+        let (start, end) = (local_midnight(date), local_midnight(date + Days::new(1)));
+        let todays: Vec<Meeting> = meetings
+            .iter()
+            .filter(|m| m.start < end && m.end > start)
+            .cloned()
+            .collect();
+        let proposed = store.propose_timesheet(start, end, &todays)?;
+        let exported: Vec<TimesheetEntry> = saved.into_iter().map(|e| e.entry).collect();
+        Ok(!tracky_core::timesheet::without_exported(&proposed, &exported).is_empty())
+    };
+    from.iter_days()
+        .take_while(|d| *d <= to)
+        .filter(|d| pending(*d).unwrap_or(false))
+        .collect()
+}
+
 /// `start` gününden itibaren `days` günün kayıtları.
 #[tauri::command]
 pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResult<Vec<Day>> {

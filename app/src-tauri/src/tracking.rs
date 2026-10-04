@@ -43,6 +43,8 @@ pub const GOALS_KEY: &str = "goals";
 pub const PAUSE_UNTIL_KEY: &str = "pause_until";
 /// Haftalık özetin en son gösterildiği haftanın pazartesisi.
 const WEEKLY_SENT_KEY: &str = "weekly_summary_week";
+/// Aktarım hatırlatmasının en son yapıldığı haftanın pazartesisi.
+const EXPORT_REMINDED_KEY: &str = "export_reminder_week";
 /// Yeni haftada bu kadar çalışılınca geçen haftanın özeti gösterilir.
 const WEEKLY_AFTER_SECS: i64 = 5 * 60;
 /// Geçen hafta bundan az çalışıldıysa özet gösterilmez (örn. ilk kurulum).
@@ -80,10 +82,13 @@ pub fn run(
         privacy,
     );
     let mut coach = Coach::new();
-    let mut weekly_sent: Option<NaiveDate> = {
+    let (mut weekly_sent, mut export_reminded): (Option<NaiveDate>, Option<NaiveDate>) = {
         let shared = app.state::<Shared>();
         let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
-        store.setting(WEEKLY_SENT_KEY).ok().flatten()
+        (
+            store.setting(WEEKLY_SENT_KEY).ok().flatten(),
+            store.setting(EXPORT_REMINDED_KEY).ok().flatten(),
+        )
     };
     let mut first_refresh = true;
     let mut limits_primed = false;
@@ -201,6 +206,17 @@ pub fn run(
         {
             weekly_sent = Some(week);
             notify_week_summary(&app, week);
+        }
+        if let Some(at) = goals.export_reminder_at
+            && export_reminded != Some(week)
+            && tracky_core::export_reminder_due(today, minute, at)
+        {
+            export_reminded = Some(week);
+            // Önerileri hesaplamak (takvim dahil) saniyelik takibi bekletmesin.
+            let handle = app.clone();
+            let _ = std::thread::Builder::new()
+                .name("kum-export-reminder".into())
+                .spawn(move || notify_unexported(&handle, week, today));
         }
         if let Some(used) = project_totals {
             if std::mem::replace(&mut project_goals_primed, true) {
@@ -381,6 +397,47 @@ fn notify_week_summary(app: &AppHandle, week: NaiveDate) {
     }
 }
 
+/// Bu hafta zaman çizelgesine aktarılmamış günleri hatırlatır (hiç yoksa sessiz kalır).
+fn notify_unexported(app: &AppHandle, week: NaiveDate, today: NaiveDate) {
+    let days = crate::timesheet::unexported_days(app, week, today);
+    {
+        let shared = app.state::<Shared>();
+        let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+        // Uygulama yeniden açılınca aynı hafta için tekrar hatırlatılmasın.
+        let _ = store.save_setting(EXPORT_REMINDED_KEY, &week);
+    }
+    let Some(body) = unexported_body(&days) else {
+        return;
+    };
+    let result = app
+        .notification()
+        .builder()
+        .title("Zaman çizelgesi")
+        .body(body)
+        .show();
+    if let Err(e) = result {
+        eprintln!("bildirim gösterilemedi: {e}");
+    }
+}
+
+fn unexported_body(days: &[NaiveDate]) -> Option<String> {
+    let names: Vec<&str> = days
+        .iter()
+        .map(|d| WEEKDAYS[d.weekday().num_days_from_monday() as usize])
+        .collect();
+    match names.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "{one} gününün kayıtları henüz aktarılmadı. Zaman çizelgesinden gözden geçirip aktarabilirsin."
+        )),
+        _ => Some(format!(
+            "Bu hafta {} gün henüz aktarılmadı: {}. Zaman çizelgesinden gözden geçirip aktarabilirsin.",
+            names.len(),
+            names.join(", ")
+        )),
+    }
+}
+
 const WEEKDAYS: [&str; 7] = [
     "Pazartesi",
     "Salı",
@@ -455,7 +512,9 @@ pub fn format_duration(secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{day_summary_body, format_duration, week_start, week_summary_body};
+    use super::{
+        day_summary_body, format_duration, unexported_body, week_start, week_summary_body,
+    };
     use chrono::{Local, NaiveDate, TimeZone, Utc};
     use tracky_core::report::Bucket;
     use tracky_core::report::DayBucket;
@@ -501,6 +560,20 @@ mod tests {
         };
         report.categories.clear();
         assert_eq!(day_summary_body(&report, &no_goal), "6sa çalıştın");
+    }
+
+    #[test]
+    fn unexported_reminder_names_the_days() {
+        let d = |day| NaiveDate::from_ymd_opt(2026, 9, day).unwrap();
+        assert_eq!(unexported_body(&[]), None);
+        assert!(
+            unexported_body(&[d(28)])
+                .unwrap()
+                .starts_with("Pazartesi gününün")
+        );
+        let body = unexported_body(&[d(28), d(30)]).unwrap();
+        assert!(body.contains("2 gün"), "{body}");
+        assert!(body.contains("Pazartesi, Çarşamba"), "{body}");
     }
 
     #[test]

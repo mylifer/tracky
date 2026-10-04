@@ -46,6 +46,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       bağlar. Gizli pencerelerde ve başlığı gizlenen uygulamalarda adres kaydedilmez
 - [x] 26. Yedekler: haftada bir otomatik (son 8 saklanır), elle yedek ve yedekten geri yükleme (şimdiki veri
       silinmez, yedek klasörüne taşınır)
+- [x] 27. Zaman çizelgesi hatırlatması: cuma (varsayılan 17:00) bu hafta aktarılmamış günleri bildirir
 
 ## Yapı
 

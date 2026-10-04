@@ -25,6 +25,9 @@ pub struct Goals {
     pub weekly_summary: bool,
     /// Proje başına haftalık hedefler.
     pub project_goals: Vec<ProjectGoal>,
+    /// Cuma bu saatte (yerel gece yarısından dakika) zaman çizelgesine aktarılmamış günler
+    /// hatırlatılır; `None` = kapalı.
+    pub export_reminder_at: Option<u32>,
 }
 
 /// Bir kategoride günde en fazla `minutes` dakika.
@@ -71,7 +74,19 @@ impl Default for Goals {
             day_summary_at: Some(18 * 60),
             weekly_summary: true,
             project_goals: Vec::new(),
+            export_reminder_at: Some(17 * 60),
         }
+    }
+}
+
+/// Haftalık aktarım hatırlatmasının zamanı geldi mi: cuma `at` dakikasından sonra ya da hafta
+/// sonu (cuma bilgisayar kapalıydıysa). Haftada bir kez göstermek çağıranın işidir.
+pub fn export_reminder_due(today: NaiveDate, minute: u32, at: u32) -> bool {
+    use chrono::{Datelike, Weekday};
+    match today.weekday() {
+        Weekday::Fri => minute >= at,
+        Weekday::Sat | Weekday::Sun => true,
+        _ => false,
     }
 }
 
@@ -316,6 +331,18 @@ mod tests {
 
     fn day() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, 3).unwrap()
+    }
+
+    #[test]
+    fn export_reminder_is_due_from_friday_evening_through_the_weekend() {
+        let date = |d| NaiveDate::from_ymd_opt(2026, 10, d).unwrap();
+        // 1 Ekim 2026 perşembe.
+        assert!(!export_reminder_due(date(1), 23 * 60, 17 * 60));
+        assert!(!export_reminder_due(date(2), 16 * 60 + 59, 17 * 60));
+        assert!(export_reminder_due(date(2), 17 * 60, 17 * 60));
+        assert!(export_reminder_due(date(3), 0, 17 * 60));
+        assert!(export_reminder_due(date(4), 0, 17 * 60));
+        assert!(!export_reminder_due(date(5), 12 * 60, 17 * 60));
     }
 
     fn goals(break_after: u32) -> Goals {

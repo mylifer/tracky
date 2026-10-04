@@ -240,6 +240,8 @@ export type Goals = {
   weeklySummary: boolean;
   /** Proje başına haftalık hedef (dakika). */
   projectGoals: ProjectGoal[];
+  /** Cuma bu saatte aktarılmamış günler hatırlatılır (gece yarısından dakika); `null` = kapalı. */
+  exportReminderAt: number | null;
 };
 export type ProjectGoal = { projectId: string; minutes: number };
 export type CategoryLimit = { categoryId: string; minutes: number };
