@@ -296,6 +296,47 @@ impl Store {
         })
     }
 
+    /// `source` veritabanının tutarlı bir kopyasını `target`'a yazar (geri yükleme için).
+    /// Dosya kopyalamanın aksine yanındaki `-wal` dosyasındaki son değişiklikler de kopyaya
+    /// girer. `source` değiştirilmez; `target` zaten varsa hata verir.
+    pub fn copy_database(source: &Path, target: &Path) -> Result<()> {
+        let conn = Connection::open_with_flags(
+            source,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.execute("VACUUM INTO ?1", [target.to_string_lossy()])?;
+        Ok(())
+    }
+
+    /// Kapalı bir veritabanının `-wal` dosyasını ana dosyaya işler ve boşaltır; ana dosya
+    /// tek başına eksiksiz olur (örn. kenara taşınmadan önce).
+    pub fn checkpoint_file(path: &Path) -> Result<()> {
+        let conn = Connection::open(path)?;
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
+    }
+
+    /// Yedekten geri yüklenen veritabanı için: imleçleri siler ve eşitlenen tüm satırları
+    /// şimdiki zamanla değişmiş sayar. Yedekteki eski "gönderildi" işaretleri ve imleçlerle
+    /// eşitleme, sunucudaki (geri yüklemeden sonraki) sürümleri çekip geri yüklemeyi ezerdi;
+    /// böylece geri yüklenen sürümler gönderilir ve "son yazan kazanır"da onlar kazanır.
+    pub fn mark_restored_for_sync(&self) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn
+            .execute("DELETE FROM settings WHERE key LIKE 'sync_cursor:%'", [])?;
+        let now = ms(Utc::now());
+        for table in ["sessions", "tags", "rules", "clients"] {
+            self.conn.execute(
+                &format!(
+                    "UPDATE {table} SET updated_at = MAX(updated_at + 1, ?1), synced_at = NULL"
+                ),
+                [now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     fn init(mut conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&mut conn)?;
@@ -983,6 +1024,97 @@ mod tests {
         Connection::open(&empty).unwrap();
         assert!(Store::inspect_backup(&empty).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_database_includes_wal_contents() {
+        let dir = std::env::temp_dir().join(format!("tracky-walcopy-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(dir.join("kum.db")).unwrap();
+        store
+            .conn
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        store.upsert_session(&session("A", None, 0, 600)).unwrap();
+        // Açık veritabanının dosyaları kopyalanır: son oturum yalnızca -wal'da.
+        let moved = dir.join("eski");
+        std::fs::create_dir_all(&moved).unwrap();
+        std::fs::copy(dir.join("kum.db"), moved.join("kum.db")).unwrap();
+        std::fs::copy(dir.join("kum.db-wal"), moved.join("kum.db-wal")).unwrap();
+        drop(store);
+
+        let target = dir.join("kopya.db");
+        Store::copy_database(&moved.join("kum.db"), &target).unwrap();
+        assert_eq!(Store::inspect_backup(&target).unwrap().sessions, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn checkpoint_file_folds_wal_into_the_database() {
+        let dir = std::env::temp_dir().join(format!("tracky-ckpt-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kum.db");
+        let store = Store::open(&path).unwrap();
+        store
+            .conn
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        store.upsert_session(&session("A", None, 0, 600)).unwrap();
+        // Çökme gibi: bağlantı kapanmadan dosyalar kenara alınır.
+        let crashed = dir.join("cokme.db");
+        std::fs::copy(&path, &crashed).unwrap();
+        std::fs::copy(dir.join("kum.db-wal"), dir.join("cokme.db-wal")).unwrap();
+        drop(store);
+        Store::checkpoint_file(&crashed).unwrap();
+        let wal = std::fs::metadata(dir.join("cokme.db-wal")).map_or(0, |m| m.len());
+        assert_eq!(wal, 0);
+        let alone = dir.join("yalniz.db");
+        std::fs::copy(&crashed, &alone).unwrap();
+        assert_eq!(Store::inspect_backup(&alone).unwrap().sessions, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restored_rows_are_newer_and_unsynced() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_session(&session("A", None, 0, 600)).unwrap();
+        store
+            .conn
+            .execute_batch(
+                "UPDATE sessions SET synced_at = updated_at;
+                 UPDATE tags SET synced_at = updated_at;",
+            )
+            .unwrap();
+        store
+            .save_setting("sync_cursor:sessions", &"2026-01-01T00:00:00Z")
+            .unwrap();
+        let before = Utc::now().timestamp_millis();
+        store.mark_restored_for_sync().unwrap();
+        let (pending, oldest): (i64, i64) = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*), MIN(updated_at) FROM sessions WHERE synced_at IS NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pending, 1);
+        assert!(oldest >= before);
+        let synced_tags: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM tags WHERE synced_at IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(synced_tags, 0);
+        assert!(
+            store
+                .setting::<String>("sync_cursor:sessions")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -239,6 +239,47 @@ impl Store {
         Ok(id)
     }
 
+    /// Onaylı güne eklenen toplantı satırlarını değiştirir: `old` (toplantının önceki
+    /// atamasıyla eklenen satırlar) ile birebir aynı, aktarılmamış kayıtları siler ve `new`'u
+    /// ekler. Elle değiştirilen ya da aktarılmış satırlara dokunulmaz.
+    pub fn replace_meeting_entries(
+        &self,
+        date: NaiveDate,
+        old: &[TimesheetEntry],
+        new: &[TimesheetEntry],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut saved: Vec<SavedEntry> = self
+            .timesheet_entries(date, date)?
+            .into_iter()
+            .filter(|s| s.exported_at.is_none())
+            .collect();
+        for entry in old {
+            let same = |s: &SavedEntry| {
+                let e = &s.entry;
+                e.date == entry.date
+                    && e.start.format("%H:%M").to_string()
+                        == entry.start.format("%H:%M").to_string()
+                    && e.hours == entry.hours
+                    && e.kind == entry.kind
+                    && e.project_id == entry.project_id
+                    && e.details == entry.details.trim()
+                    && e.division == entry.division.trim()
+                    && e.party == entry.party.trim()
+            };
+            if let Some(i) = saved.iter().position(same) {
+                let s = saved.remove(i);
+                self.conn
+                    .execute("DELETE FROM timesheet_entries WHERE id = ?1", [&s.id])?;
+            }
+        }
+        for entry in new {
+            self.insert_entry(&Uuid::new_v4().to_string(), entry)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn delete_timesheet_entry(&self, id: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM timesheet_entries WHERE id = ?1 AND exported_at IS NULL",
@@ -281,5 +322,77 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meeting_row(project: &str, hours: f64) -> TimesheetEntry {
+        TimesheetEntry {
+            date: NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
+            start: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            hours,
+            actual_hours: Some(hours),
+            kind: EntryKind::Online,
+            details: "Haftalık toplantı".into(),
+            party: "Togg".into(),
+            project_id: project.into(),
+            division: project.into(),
+        }
+    }
+
+    #[test]
+    fn reassigning_a_meeting_replaces_its_rows() {
+        let store = Store::open_in_memory().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
+        let a = meeting_row("A", 1.0);
+        let b = meeting_row("B", 1.0);
+        // Onaylı gün: başka bir iş ve A'ya atanmış toplantı.
+        let mut other = meeting_row("A", 2.0);
+        other.start = NaiveTime::from_hms_opt(13, 0, 0).unwrap();
+        other.kind = EntryKind::Working;
+        store.replace_timesheet_day(date, &[other.clone()]).unwrap();
+        store
+            .replace_meeting_entries(date, &[], std::slice::from_ref(&a))
+            .unwrap();
+
+        // A → B: A'nın satırı gider, B'ninki gelir; başka iş kalır.
+        store
+            .replace_meeting_entries(date, std::slice::from_ref(&a), std::slice::from_ref(&b))
+            .unwrap();
+        let rows: Vec<TimesheetEntry> = store
+            .timesheet_entries(date, date)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.entry)
+            .collect();
+        assert_eq!(rows, vec![b.clone(), other.clone()]);
+
+        // B → yoksay: toplantı satırı kalmaz.
+        store.replace_meeting_entries(date, &[b], &[]).unwrap();
+        let rows = store.timesheet_entries(date, date).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entry, other);
+    }
+
+    #[test]
+    fn exported_and_edited_meeting_rows_are_kept() {
+        let store = Store::open_in_memory().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
+        let a = meeting_row("A", 1.0);
+        store
+            .replace_meeting_entries(date, &[], std::slice::from_ref(&a))
+            .unwrap();
+        let id = store.timesheet_entries(date, date).unwrap()[0].id.clone();
+        store.mark_timesheet_exported(&[id], Utc::now()).unwrap();
+        let edited = TimesheetEntry {
+            details: "Elle yazıldı".into(),
+            ..a.clone()
+        };
+        store.save_timesheet_entry(None, &edited).unwrap();
+        store.replace_meeting_entries(date, &[a], &[]).unwrap();
+        assert_eq!(store.timesheet_entries(date, date).unwrap().len(), 2);
     }
 }

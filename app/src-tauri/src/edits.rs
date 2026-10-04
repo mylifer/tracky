@@ -63,6 +63,17 @@ impl UndoLog {
         let i = log.list.iter().position(|(n, _)| *n == id)?;
         Some(log.list.remove(i).1)
     }
+
+    /// Geri alma yarıda kaldıysa uygulanmamış işlemleri aynı numarayla yerine koyar; kullanıcı
+    /// "Geri al"ı yeniden deneyebilir.
+    fn put_back(&self, id: u64, ops: Vec<UndoOp>) {
+        let mut log = lock(&self.0);
+        let i = log.list.partition_point(|(n, _)| *n < id);
+        log.list.insert(i, (id, ops));
+        if log.list.len() > MAX_UNDO {
+            log.list.remove(0);
+        }
+    }
 }
 
 /// Değişiklik sayısı ve geri alma numarası.
@@ -89,14 +100,28 @@ fn apply(store: &Store, op: &UndoOp) -> tracky_core::store::Result<()> {
 /// Düzenlemeyi geri alır (en son yapılan önce).
 #[tauri::command]
 pub async fn undo(app: AppHandle, id: u64) -> CmdResult<()> {
-    let ops = app
-        .state::<UndoLog>()
-        .take(id)
-        .ok_or("Bu değişiklik artık geri alınamıyor.")?;
+    let log = app.state::<UndoLog>();
+    let ops = log.take(id).ok_or("Bu değişiklik artık geri alınamıyor.")?;
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    for op in ops.iter().rev() {
-        apply(&store, op).map_err(err)?;
+    undo_ops(&store, ops).map_err(|(rest, e)| {
+        log.put_back(id, rest);
+        err(e)
+    })
+}
+
+/// İşlemleri sondan başa uygular. Biri başarısız olursa henüz uygulanmamış olanlar (o da
+/// dahil) hatayla döner. Tek bir işleme alınamaz: depo işlemlerinin bazıları kendi işlemini
+/// (transaction) açar; uygulananlar bu yüzden yeniden denenmez.
+fn undo_ops(
+    store: &Store,
+    mut ops: Vec<UndoOp>,
+) -> Result<(), (Vec<UndoOp>, tracky_core::StoreError)> {
+    while let Some(op) = ops.last() {
+        if let Err(e) = apply(store, op) {
+            return Err((ops, e));
+        }
+        ops.pop();
     }
     Ok(())
 }
@@ -146,13 +171,24 @@ pub async fn assign_unassigned(
             .map_err(err)?;
         ops.push(UndoOp::AddedRule(id));
     }
-    let ids = store
+    let assigned = store
         .unassigned_sessions(from, to, &key, title.as_deref())
-        .map_err(err)?;
-    let snap = store.snapshot_sessions(&ids).map_err(err)?;
-    let changed = store
-        .set_project_for(&ids, project_id.as_deref())
-        .map_err(err)?;
+        .and_then(|ids| {
+            let snap = store.snapshot_sessions(&ids)?;
+            let changed = store.set_project_for(&ids, project_id.as_deref())?;
+            Ok((snap, changed))
+        });
+    let (snap, changed) = match assigned {
+        Ok(done) => done,
+        Err(e) => {
+            // Oturumlar atanamadı: az önce eklenen kural da kalmasın (yarım düzenleme olmasın).
+            // Tek işleme alınamaz; `set_project_for` kendi işlemini açar.
+            if let Err(e) = undo_ops(&store, ops) {
+                eprintln!("eklenen kural geri alınamadı: {}", e.1);
+            }
+            return Err(err(e));
+        }
+    };
     ops.push(UndoOp::Sessions(snap));
     drop(store);
     Ok(Edited {
@@ -194,4 +230,34 @@ pub async fn preview_rule(
     lock(&app.state::<Shared>().store)
         .preview_rule(&rule, Utc::now(), PREVIEW_DAYS)
         .map_err(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_undo_keeps_the_rest_for_retry() {
+        let store = Store::open_in_memory().unwrap();
+        let rule = store.rules().unwrap()[0].clone();
+        // Sondan başa: kural silinir, var olmayan etiketin geri getirilmesi başarısız olur.
+        let ops = vec![
+            UndoOp::DeletedTag {
+                id: "yok".into(),
+                at: Utc::now(),
+            },
+            UndoOp::AddedRule(rule.id.clone()),
+        ];
+        let (rest, _) = undo_ops(&store, ops).unwrap_err();
+        assert!(matches!(rest.as_slice(), [UndoOp::DeletedTag { .. }]));
+        assert!(store.rules().unwrap().iter().all(|r| r.id != rule.id));
+
+        let log = UndoLog::default();
+        let (older, newer) = (log.push(Vec::new()), log.push(Vec::new()));
+        let failed = log.push(Vec::new());
+        assert!(log.take(failed).is_some());
+        log.put_back(failed, rest);
+        assert!(log.take(failed).is_some_and(|ops| ops.len() == 1));
+        assert!(log.take(older).is_some() && log.take(newer).is_some());
+    }
 }
