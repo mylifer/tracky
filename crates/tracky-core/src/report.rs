@@ -59,6 +59,14 @@ pub struct WindowSpan {
     pub category_id: Option<String>,
 }
 
+/// Bilgisayardan uzakta geçen, henüz bir işe atanmamış süre (takvimde "Boşta").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdleSpan {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
@@ -75,6 +83,10 @@ pub struct Report {
     pub tags: Vec<Tag>,
     /// Tüm aralığın blok ve mola analizi (bloklar yalnızca zaman çizelgesi istenince doldurulur).
     pub work: WorkStats,
+    /// Atanmamış boşta süre; çalışma toplamlarına girmez.
+    pub idle_seconds: i64,
+    /// Atanmamış boşta aralıklar (yalnızca zaman çizelgesi istenince).
+    pub idle: Vec<IdleSpan>,
 }
 
 /// Kırpılmış oturum dilimi: (başlangıç, bitiş, oturum, kategori, proje).
@@ -110,6 +122,8 @@ pub fn build(
     let mut total = 0;
     // Blok analizi için kırpılmış etkinlikler: (başlangıç, bitiş, oturum, kategori, proje).
     let mut spans: Vec<Span> = Vec::new();
+    let mut idle: Vec<IdleSpan> = Vec::new();
+    let mut idle_seconds = 0;
 
     for s in sessions {
         let (start, end) = (s.started_at.max(from), s.ended_at.min(to));
@@ -117,6 +131,13 @@ pub fn build(
             continue;
         }
         let secs = (end - start).num_seconds();
+        if !s.counts_as_work() {
+            idle_seconds += secs;
+            if with_timeline {
+                idle.push(IdleSpan { start, end });
+            }
+            continue;
+        }
         let class = classifier.classify(s);
         spans.push((start, end, s, class.category.clone(), class.project.clone()));
         total += secs;
@@ -231,6 +252,8 @@ pub fn build(
             }
             stats
         },
+        idle_seconds,
+        idle,
     }
 }
 
@@ -357,6 +380,30 @@ mod tests {
         assert_eq!(r.work.blocks.len(), 3);
         assert_eq!(r.work.switches, 1);
         assert_eq!((r.timeline[0].start, r.timeline[0].end), (t(0), t(150)));
+    }
+
+    #[test]
+    fn unassigned_idle_is_listed_apart_and_assigned_idle_is_work() {
+        let c = Classifier::new(&[], &[]);
+        let away = Session::idle(t(100), t(700));
+        let mut meeting = Session::idle(t(800), t(1000));
+        meeting.project_id = Some("kum".into());
+        let sessions = [s("Code", "", 0, 100), away, meeting];
+        let r = build(&sessions, &[], &c, t(0), t(2000), &[t(0)], true);
+        assert_eq!(r.total_seconds, 100 + 200);
+        assert_eq!(r.idle_seconds, 600);
+        assert_eq!(
+            r.idle,
+            [IdleSpan {
+                start: t(100),
+                end: t(700)
+            }]
+        );
+        assert!(r.apps.iter().all(|a| a.seconds != 600));
+        // Zaman çizelgesi istenmezse aralıklar yok, toplam var.
+        let r = build(&sessions, &[], &c, t(0), t(2000), &[t(0)], false);
+        assert!(r.idle.is_empty());
+        assert_eq!(r.idle_seconds, 600);
     }
 
     #[test]

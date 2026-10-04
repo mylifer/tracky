@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::classify::{Classifier, TagKind};
-use crate::model::{MANUAL_APP_ID, Session};
+use crate::model::{IDLE_APP_ID, MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
 
@@ -317,9 +317,21 @@ impl Store {
         Ok(())
     }
 
-    /// Raporlar için: `[from, to)` ile kesişen oturumlar, bilgisayarlar arası çakışmalar
-    /// bir kez sayılacak şekilde birleştirilmiş ([`crate::model::merge_devices`]).
+    /// Toplamlar için: `[from, to)` ile kesişen çalışma oturumları, bilgisayarlar arası
+    /// çakışmalar bir kez sayılacak şekilde birleştirilmiş ([`crate::model::merge_devices`]).
+    /// Atanmamış boşta kayıtları dahil değildir ([`Session::counts_as_work`]).
     pub fn merged_sessions_between(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<Session>> {
+        let mut sessions = self.merged_sessions_with_idle_between(from, to)?;
+        sessions.retain(Session::counts_as_work);
+        Ok(sessions)
+    }
+
+    /// Takvim için: [`Self::merged_sessions_between`] gibi, ama boşta kayıtlarıyla.
+    pub fn merged_sessions_with_idle_between(
         &self,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
@@ -457,14 +469,14 @@ impl Store {
     /// Aralıkta başka cihazın hâlâ sürüyor olabilecek oturumu varsa düzenlemeyi reddeder.
     /// O cihaz süren oturumu birkaç saniyede bir yeniden kaydeder; satırın tamamı son
     /// yazanla eşitlendiği için buradaki bölme, silme ya da atama geri alınırdı.
-    /// Elle eklenen kayıtlar sürmez, kapsam dışıdır.
+    /// Elle eklenen kayıtlar ve boşta kayıtları sürmez (bitince bir kez yazılır), kapsam dışıdır.
     fn ensure_no_foreign_live(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<()> {
         let live: bool = self.conn.query_row(
             &format!(
                 "SELECT EXISTS (SELECT 1 FROM sessions
                  WHERE deleted_at IS NULL AND {OVERLAPS}
                    AND device_id != ?3 AND ended_at > ?4
-                   AND substr(app_id, 1, length(?5)) != ?5)"
+                   AND substr(app_id, 1, length(?5)) != ?5 AND app_id != ?6)"
             ),
             params![
                 ms(from),
@@ -472,6 +484,7 @@ impl Store {
                 self.device_id.to_string(),
                 ms(Utc::now()) - FOREIGN_LIVE_WINDOW_MS,
                 format!("{MANUAL_APP_ID}/"),
+                IDLE_APP_ID,
             ],
             |r| r.get(0),
         )?;
@@ -548,11 +561,24 @@ impl Store {
         if let Some(id) = project_id {
             self.require_tag(id, TagKind::Project)?;
         }
-        // Takip edilen süreyle çakışırsa aynı dakikalar iki kez sayılırdı.
-        if !self.sessions_between(from, to)?.is_empty() {
+        // Takip edilen süreyle çakışırsa aynı dakikalar iki kez sayılırdı. Atanmamış boşta
+        // kaydının yerini ise elle kayıt alır (boşta geçen süreyi açıklamanın yolu bu).
+        let overlapping = self.sessions_between(from, to)?;
+        if overlapping.iter().any(Session::counts_as_work) {
             return Err(StoreError::Invalid(
                 "bu aralıkta zaten kayıt var; önce o bloğu silin".into(),
             ));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        if !overlapping.is_empty() {
+            self.split_at(from, to)?;
+            self.conn.execute(
+                &format!(
+                    "UPDATE sessions SET deleted_at = ?3, updated_at = MAX(?3, updated_at + 1)
+                     WHERE deleted_at IS NULL AND {OVERLAPS} AND app_id = ?4"
+                ),
+                params![ms(from), ms(to), ms(Utc::now()), IDLE_APP_ID],
+            )?;
         }
         let session = Session {
             id: Uuid::new_v4(),
@@ -575,6 +601,7 @@ impl Store {
                 session.project_id
             ],
         )?;
+        tx.commit()?;
         Ok(session)
     }
 
@@ -639,9 +666,11 @@ impl Store {
         Ok(crate::trends::trends(&sessions, &classifier, bounds))
     }
 
-    /// Tüm oturumların CSV dökümü.
+    /// Tüm çalışma oturumlarının CSV dökümü (atanmamış boşta kayıtları hariç).
     pub fn export_csv(&self) -> Result<String> {
-        let sessions = self.sessions_between(DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC)?;
+        let mut sessions =
+            self.sessions_between(DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC)?;
+        sessions.retain(Session::counts_as_work);
         let tags = self.tags()?;
         let classifier = Classifier::new(&tags, &self.rules()?);
         Ok(crate::export::sessions_csv(&sessions, &tags, &classifier))
@@ -655,7 +684,7 @@ impl Store {
         day_starts: &[DateTime<Utc>],
         with_timeline: bool,
     ) -> Result<Report> {
-        let sessions = self.merged_sessions_between(from, to)?;
+        let sessions = self.merged_sessions_with_idle_between(from, to)?;
         let tags = self.tags()?;
         let classifier = Classifier::new(&tags, &self.rules()?);
         Ok(report::build(
@@ -723,9 +752,10 @@ impl Store {
              )
              SELECT s.app_id, s.app_name, 0
              FROM latest JOIN sessions s ON s.rowid = latest.r
+             WHERE s.app_id != ?2
              ORDER BY s.ended_at DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map([limit as i64], |r| {
+        let rows = stmt.query_map(params![limit as i64, IDLE_APP_ID], |r| {
             Ok(UsageTotal {
                 key: r.get(0)?,
                 label: r.get(1)?,
@@ -1513,6 +1543,76 @@ mod tests {
         assert!(manual.is_manual());
         assert_eq!(manual.app_name, "Toplantı");
         assert_eq!(manual.category_id.as_deref(), Some(&*cat));
+    }
+
+    #[test]
+    fn idle_time_is_left_out_of_totals_until_assigned() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_session(&session("A", None, 0, 600)).unwrap();
+        store
+            .upsert_session(&Session::idle(t(600), t(2400)))
+            .unwrap();
+        let (from, to) = (t(0), t(3600));
+        assert_eq!(
+            store.report(from, to, &[from], true).unwrap().total_seconds,
+            600
+        );
+        assert_eq!(store.app_totals(from, to).unwrap().len(), 1);
+        assert!(
+            store
+                .known_apps(10)
+                .unwrap()
+                .iter()
+                .all(|a| a.key != IDLE_APP_ID)
+        );
+        assert!(
+            !store
+                .export_csv()
+                .unwrap()
+                .contains(crate::model::IDLE_NAME)
+        );
+
+        // Bir kısmı projeye atanınca o kısım çalışma olur, kalanı boşta kalır.
+        let project = store.accept_project_suggestion("Togg").unwrap();
+        store
+            .set_project_between(t(600), t(1200), Some(&project.id))
+            .unwrap();
+        let r = store.report(from, to, &[from], true).unwrap();
+        assert_eq!(r.total_seconds, 1200);
+        assert_eq!(r.idle_seconds, 1200);
+        assert_eq!(store.project_totals(from, to).unwrap()[&project.id], 600);
+    }
+
+    #[test]
+    fn manual_entry_replaces_idle_time() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_session(&Session::idle(t(0), t(3600))).unwrap();
+        store
+            .add_manual_session("Toplantı", t(600), t(1800), None, None)
+            .unwrap();
+        let all = store.sessions_between(t(0), t(3600)).unwrap();
+        let spans: Vec<_> = all
+            .iter()
+            .map(|s| (s.is_idle(), s.started_at, s.ended_at))
+            .collect();
+        assert_eq!(
+            spans,
+            [
+                (true, t(0), t(600)),
+                (false, t(600), t(1800)),
+                (true, t(1800), t(3600))
+            ]
+        );
+        // Projeye atanmış boşta süre ise elle kaydın üstüne yazılmaz.
+        let project = store.accept_project_suggestion("Togg").unwrap();
+        store
+            .set_project_between(t(0), t(600), Some(&project.id))
+            .unwrap();
+        assert!(
+            store
+                .add_manual_session("Okuma", t(0), t(300), None, None)
+                .is_err()
+        );
     }
 
     #[test]

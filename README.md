@@ -38,6 +38,9 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       kurallarla yazılır; aynı kayıt iki kez yazılmaz
 - [x] 23. Müşteriler: projeler bir müşteriye bağlanır; Müşteriler sayfası, müşteriye göre gruplanan projeler,
       raporda müşteri dökümü; zaman çizelgesi şablonundaki firma müşteri olarak eklenir
+- [x] 24. Boşta geçen süre: bilgisayardan uzakta (3 dk girdi yok ya da uyku) geçen süre takvimde taralı "Boşta"
+      bloğu olur; çalışma süresine sayılmaz, tıklayıp projeye/kategoriye atanınca ya da elle kayda çevrilince
+      sayılır (zaman çizelgesine F2F girer). En uzun boşluk ayarlanabilir (varsayılan 3 sa; gece kaydedilmez)
 
 ## Yapı
 

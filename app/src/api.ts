@@ -90,7 +90,12 @@ export type Report = {
   windows: WindowSpan[];
   tags: Tag[];
   work: WorkStats;
+  /** Bilgisayardan uzakta geçen, bir işe atanmamış süre; çalışma toplamına girmez. */
+  idleSeconds: number;
+  /** Atanmamış boşta aralıklar (takvimde "Boşta"). */
+  idle: IdleSpan[];
 };
+export type IdleSpan = { start: string; end: string };
 
 export type ProjectSuggestion = { key: string; name: string; seconds: number; apps: string[] };
 export type CategorySuggestion = {
@@ -212,6 +217,10 @@ export type PrivacySettings = {
   hidden_title_apps: string[];
   hide_private_windows: boolean;
   title_suffixes: string[];
+  /** Bilgisayardan uzakta geçen süre takvimde "Boşta" olarak kaydedilir. */
+  record_idle: boolean;
+  /** Bundan uzun boşluklar (gece gibi) kaydedilmez (dakika). */
+  idle_max_minutes: number;
 };
 
 export type Goals = {

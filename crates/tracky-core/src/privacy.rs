@@ -20,7 +20,14 @@ pub struct PrivacySettings {
     pub hide_private_windows: bool,
     /// Başlıkların sonundan silinen ekler (örn. Firefox profil adı " — Kaan").
     pub title_suffixes: Vec<String>,
+    /// Bilgisayardan uzakta geçen süre (boşta, uyku) takvimde "Boşta" olarak kaydedilir.
+    pub record_idle: bool,
+    /// Bundan uzun boşluklar (gece gibi) kaydedilmez (dakika).
+    pub idle_max_minutes: u32,
 }
+
+/// Varsayılan en uzun boşta kaydı: öğle arası ve uzun bir toplantı sığar, gece sığmaz.
+pub const DEFAULT_IDLE_MAX_MINUTES: u32 = 180;
 
 impl Default for PrivacySettings {
     fn default() -> Self {
@@ -30,6 +37,8 @@ impl Default for PrivacySettings {
             hidden_title_apps: Vec::new(),
             hide_private_windows: true,
             title_suffixes: Vec::new(),
+            record_idle: true,
+            idle_max_minutes: DEFAULT_IDLE_MAX_MINUTES,
         }
     }
 }
@@ -88,6 +97,12 @@ fn strip_suffixes(title: &str, suffixes: &[String]) -> String {
 }
 
 impl PrivacySettings {
+    /// Boşta kaydının en uzun süresi; kapalıysa `None`.
+    pub fn max_away(&self) -> Option<chrono::Duration> {
+        self.record_idle
+            .then(|| chrono::Duration::minutes(i64::from(self.idle_max_minutes.clamp(15, 24 * 60))))
+    }
+
     /// Uygulamanın pencere başlığına hiç ihtiyaç var mı? Hariç tutulan ya da başlığı
     /// gizlenen uygulamalarda başlık okunmaz.
     pub fn reads_title(&self, app_id: &str) -> bool {

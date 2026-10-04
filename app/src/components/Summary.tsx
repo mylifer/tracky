@@ -97,6 +97,14 @@ export default function Summary({
           <div className="text-[11px] text-muted-foreground">
             {(f.switchesPerHourX10 / 10).toLocaleString("tr-TR")} uygulama geçişi/sa
           </div>
+          {report.idleSeconds > 0 && (
+            <div
+              className="text-[11px] text-muted-foreground"
+              title="Takvimde “Boşta” bloğuna tıklayıp projeye ya da kategoriye atarsan çalışma süresine eklenir."
+            >
+              Bilgisayardan uzakta: {formatDuration(report.idleSeconds)}
+            </div>
+          )}
         </CardContent>
       </Card>
     </aside>

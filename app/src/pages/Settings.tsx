@@ -24,6 +24,9 @@ const SECTIONS = [
   { id: "veriler", label: "Veriler" },
 ];
 
+/** Boşta kaydının en uzun süresi seçenekleri (dakika). */
+const IDLE_MAX_OPTIONS = [60, 120, 180, 240, 360, 480];
+
 function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -118,6 +121,35 @@ export default function Settings({
             </SelectContent>
           </Select>
         </SettingRow>
+        {privacy && (
+          <>
+            <ToggleRow
+              label="Boşta geçen süreyi takvimde göster"
+              hint="Bilgisayardan uzaklaşınca (3 dakika girdi yoksa ya da uykudayken) geçen süre takvimde “Boşta” olarak görünür. Çalışma süresine sayılmaz; tıklayıp bir projeye atarsan sayılır."
+              checked={privacy.record_idle}
+              onChange={(v) => save({ ...privacy, record_idle: v })}
+            />
+            {privacy.record_idle && (
+              <SettingRow label="En uzun boşluk" hint="Bundan uzun boşluklar (gece gibi) kaydedilmez.">
+                <Select
+                  value={String(privacy.idle_max_minutes)}
+                  onValueChange={(v) => save({ ...privacy, idle_max_minutes: Number(v) })}
+                >
+                  <SelectTrigger size="sm" className="w-32" aria-label="En uzun boşluk">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    {IDLE_MAX_OPTIONS.map((m) => (
+                      <SelectItem key={m} value={String(m)}>
+                        {m / 60} saat
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+            )}
+          </>
+        )}
         {status.platform === "macos" && (
           <SettingRow label="Erişilebilirlik izni" hint="Pencere başlıklarını okumak için gerekir.">
             {status.accessibility ? (

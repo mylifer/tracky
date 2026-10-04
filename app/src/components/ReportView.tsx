@@ -192,7 +192,7 @@ export default function ReportView(p: Props) {
 
   // Yakınlaştırma: takvimde saat yüksekliği, uygulama çizelgesinde gösterilen saat aralığı.
   const appsView = p.mode !== "month" && calendarView === "apps" && !!report && report.totalSeconds > 0;
-  const zoomable = p.mode !== "month" && !!report && report.totalSeconds > 0;
+  const zoomable = p.mode !== "month" && !!report && (report.totalSeconds > 0 || report.idle.length > 0);
   const [calZoom, setCalZoom] = useState(1);
   const [appZoom, setAppZoom] = useState(1);
   const scroller = useRef<HTMLDivElement>(null);
@@ -325,7 +325,9 @@ export default function ReportView(p: Props) {
                   </CardContent>
                 )}
                 <CardContent className="px-3">
-                  {p.mode !== "month" && report.totalSeconds === 0 && <Empty future={+from > Date.now()} />}
+                  {p.mode !== "month" && report.totalSeconds === 0 && report.idle.length === 0 && (
+                    <Empty future={+from > Date.now()} />
+                  )}
                   <div ref={setCalendarArea}>
                     <EditContext.Provider value={editCtx}>
                       {p.mode === "month" ? (
@@ -351,6 +353,7 @@ export default function ReportView(p: Props) {
                         <DayCalendar
                           from={from}
                           blocks={report.work.blocks}
+                          idle={report.idle}
                           segments={report.timeline}
                           tags={tags}
                           meetings={meetings}
@@ -364,6 +367,7 @@ export default function ReportView(p: Props) {
                         <WeekCalendar
                           from={from}
                           blocks={report.work.blocks}
+                          idle={report.idle}
                           dayTotals={report.days.map((d) => d.seconds)}
                           tags={tags}
                           onSelectDay={p.onSelectDay}

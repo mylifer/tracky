@@ -10,6 +10,9 @@ pub struct EngineConfig {
     pub max_gap: Duration,
     /// Bundan kısa oturumlar (hızlı alt-tab geçişleri) kaydedilmez.
     pub min_session: Duration,
+    /// Bilgisayardan uzakta geçen süre (boşta ya da uykuda) bundan uzun değilse "Boşta"
+    /// kaydı olur; daha uzunu (gece gibi) kaydedilmez. `None`: boşta süre hiç kaydedilmez.
+    pub max_away: Option<Duration>,
 }
 
 impl Default for EngineConfig {
@@ -18,6 +21,7 @@ impl Default for EngineConfig {
             idle_threshold: Duration::minutes(3),
             max_gap: Duration::seconds(15),
             min_session: Duration::seconds(1),
+            max_away: None,
         }
     }
 }
@@ -30,6 +34,13 @@ impl Default for EngineConfig {
 pub struct Engine {
     config: EngineConfig,
     current: Option<Session>,
+    /// Kullanıcının uzaklaştığı an (son girdi ya da uykudan önce son görülen an).
+    away_since: Option<DateTime<Utc>>,
+    /// Kullanıcı dönünce kapanan, henüz alınmamış boşta kaydı.
+    away: Option<Session>,
+    /// Boşluk bundan önce başlamış sayılmaz (duraklatma bitince süren boşluk duraklatılan
+    /// süreye taşmasın).
+    away_floor: Option<DateTime<Utc>>,
 }
 
 impl Engine {
@@ -37,7 +48,34 @@ impl Engine {
         Self {
             config,
             current: None,
+            away_since: None,
+            away: None,
+            away_floor: None,
         }
+    }
+
+    /// Boşta kaydının en uzun süresi (`None`: kaydetme). Süren bir boşluğa da uygulanır.
+    pub fn set_max_away(&mut self, max: Option<Duration>) {
+        self.config.max_away = max;
+    }
+
+    /// Kullanıcı dönünce kapanan boşta kaydını alır (her kayıt bir kez döner).
+    pub fn take_away(&mut self) -> Option<Session> {
+        self.away.take()
+    }
+
+    /// Süren boşluğu kayıt üretmeden unutur (örn. takip duraklatıldı); sonraki boşluk
+    /// `now`'dan önce başlamış sayılmaz.
+    pub fn forget_away(&mut self, now: DateTime<Utc>) {
+        self.away_since = None;
+        self.away = None;
+        self.away_floor = Some(now);
+    }
+
+    /// Kullanıcının `at` anından beri uzakta olduğunu not eder (daha önceki bir an varsa o kalır).
+    fn mark_away(&mut self, at: DateTime<Utc>) {
+        let at = self.away_floor.map_or(at, |floor| at.max(floor));
+        self.away_since.get_or_insert(at);
     }
 
     /// Devam eden oturum; çökme durumunda kayıp olmaması için periyodik upsert edilebilir.
@@ -52,12 +90,18 @@ impl Engine {
         window: Option<ActiveWindow>,
         idle_seconds: u64,
     ) -> Option<Session> {
-        // Makine uyuduysa son görülen andan sonrası sayılmaz.
-        let slept = self
+        // Makine uyuduysa son görülen andan sonrası sayılmaz; kullanıcı o andan beri uzakta.
+        let slept_at = self
             .current
             .as_ref()
-            .is_some_and(|s| now - s.ended_at > self.config.max_gap);
-        let closed = if slept { self.close_at(None) } else { None };
+            .map(|s| s.ended_at)
+            .filter(|last| now - *last > self.config.max_gap);
+        let closed = if let Some(last) = slept_at {
+            self.mark_away(last);
+            self.close_at(None)
+        } else {
+            None
+        };
         // Oturum yukarıda kapandıysa `observe` ikinci bir oturum kapatamaz.
         let switched = self.observe(now, window, idle_seconds);
         closed.or(switched)
@@ -65,6 +109,7 @@ impl Engine {
 
     /// Uygulama kapanırken devam eden oturumu kapatır.
     pub fn flush(&mut self, now: DateTime<Utc>) -> Option<Session> {
+        self.forget_away(now);
         self.close_at(Some(now))
     }
 
@@ -80,8 +125,11 @@ impl Engine {
         let idle = Duration::seconds(idle_seconds.min(MAX_IDLE_SECONDS) as i64);
         if idle >= self.config.idle_threshold {
             // Boşluk son girdiden itibaren başlar; o ana kadar kullanıcı oradaydı.
+            self.mark_away(now - idle);
             return self.close_at(Some(now - idle));
         }
+        // Kullanıcı başında: uzaktaysa son girdiyle geri döndü.
+        self.end_away(now - idle);
         let Some(window) = window else {
             return self.close_at(Some(now));
         };
@@ -96,6 +144,20 @@ impl Engine {
                 self.current = Some(Session::start(window, now));
                 closed
             }
+        }
+    }
+
+    /// Uzakta geçen süreyi `at` anında kapatır; eşikten kısa ya da `max_away`'den uzunsa atılır.
+    fn end_away(&mut self, at: DateTime<Utc>) {
+        let Some(since) = self.away_since.take() else {
+            return;
+        };
+        let length = at - since;
+        if let Some(max) = self.config.max_away
+            && length >= self.config.idle_threshold
+            && length <= max
+        {
+            self.away = Some(Session::idle(since, at));
         }
     }
 
@@ -237,6 +299,84 @@ mod tests {
         let flushed = e.flush(t(9)).unwrap();
         assert_eq!((flushed.started_at, flushed.ended_at), (t(6), t(9)));
         assert!(e.current().is_none());
+    }
+
+    fn recording_away(max_minutes: i64) -> Engine {
+        Engine::new(EngineConfig {
+            max_away: Some(Duration::minutes(max_minutes)),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn idle_time_becomes_an_away_session_when_the_user_returns() {
+        let mut e = recording_away(180);
+        let mut steps: Vec<_> = (0..=10).map(|s| (s, win("Code", "x"), 0)).collect();
+        // 10. saniyeden sonra girdi yok; 600. saniyede kullanıcı döner.
+        steps.extend((11..600).map(|s| (s, win("Code", "x"), (s - 10) as u64)));
+        run(&mut e, &steps);
+        assert!(e.take_away().is_none(), "kullanıcı dönmeden kayıt olmaz");
+
+        e.tick(t(600), win("Code", "x"), 0);
+        let away = e.take_away().expect("boşta kaydı");
+        assert!(away.is_idle());
+        assert_eq!((away.started_at, away.ended_at), (t(10), t(600)));
+        assert!(e.take_away().is_none(), "bir kez döner");
+    }
+
+    #[test]
+    fn sleep_becomes_away_but_short_and_overnight_gaps_do_not() {
+        let mut e = recording_away(60);
+        run(
+            &mut e,
+            &[(0, win("Code", "x"), 0), (5, win("Code", "x"), 0)],
+        );
+        // 20 dk uyku.
+        e.tick(t(5 + 20 * 60), win("Code", "x"), 0);
+        let away = e.take_away().expect("uyku boşta sayılır");
+        assert_eq!((away.started_at, away.ended_at), (t(5), t(5 + 20 * 60)));
+
+        // 1 dk uyku: eşiğin (3 dk) altında.
+        let at = 5 + 20 * 60;
+        e.tick(t(at + 60), win("Code", "x"), 0);
+        assert!(e.take_away().is_none());
+
+        // 10 saatlik gece: sınırdan (60 dk) uzun.
+        e.tick(t(at + 61), win("Code", "x"), 0);
+        e.tick(t(at + 61 + 10 * 3600), win("Code", "x"), 0);
+        assert!(e.take_away().is_none());
+    }
+
+    #[test]
+    fn away_is_not_recorded_when_disabled_or_forgotten() {
+        let mut steps: Vec<_> = vec![(0, win("Code", "x"), 0)];
+        steps.extend((1..400).map(|s| (s, win("Code", "x"), s as u64)));
+        steps.push((400, win("Code", "x"), 0));
+
+        let mut off = Engine::new(EngineConfig::default());
+        run(&mut off, &steps);
+        assert!(off.take_away().is_none());
+
+        let mut forgot = recording_away(180);
+        run(&mut forgot, &steps[..400]);
+        forgot.forget_away(t(399));
+        run(&mut forgot, &steps[400..]);
+        assert!(forgot.take_away().is_none());
+    }
+
+    #[test]
+    fn away_after_a_pause_starts_when_the_pause_ended() {
+        // Duraklatma 0–300 sn; kullanıcı 100. saniyeden beri girdi yapmadı, 900'de döner.
+        let mut e = recording_away(180);
+        for s in 0..300 {
+            e.forget_away(t(s));
+        }
+        run(
+            &mut e,
+            &[(300, win("Code", "x"), 200), (900, win("Code", "x"), 0)],
+        );
+        let away = e.take_away().expect("boşta kaydı");
+        assert_eq!((away.started_at, away.ended_at), (t(299), t(900)));
     }
 
     #[test]

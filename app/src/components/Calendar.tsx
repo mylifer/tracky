@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
-import { Briefcase, CalendarDays, Shapes, Video } from "lucide-react";
-import type { CalendarMeeting, Segment, Tag, WorkBlock } from "../api";
+import { Briefcase, CalendarDays, Coffee, Shapes, Video } from "lucide-react";
+import type { CalendarMeeting, IdleSpan, Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
@@ -350,6 +350,61 @@ function Block({
   );
 }
 
+/**
+ * Bilgisayardan uzakta geçen süre: taralı, renksiz blok. Tıklayınca aralık menüsü açılır
+ * (projeye ya da kategoriye ata, elle kayıt olarak ekle); atanan kısım çalışma süresine girer.
+ */
+function IdleBlock({
+  span,
+  top,
+  height,
+  onSelect,
+}: {
+  span: IdleSpan;
+  top: number;
+  height: number;
+  onSelect?: (start: number, end: number, x: number, y: number) => void;
+}) {
+  const a = new Date(span.start);
+  const b = new Date(span.end);
+  const time = `${formatTime(a)}–${formatTime(b)}`;
+  const duration = formatDuration((+b - +a) / 1000);
+  const tip = `Boşta · ${time} · ${duration}\nBilgisayardan uzakta geçen süre; çalışma süresine sayılmaz.`;
+  return (
+    <button
+      type="button"
+      disabled={!onSelect}
+      className="absolute inset-x-0.5 overflow-hidden rounded-[5px] border border-dashed border-muted-foreground/35 px-1.5 text-left text-muted-foreground enabled:cursor-pointer enabled:hover:border-muted-foreground/60 enabled:hover:text-foreground"
+      style={{
+        top,
+        height,
+        background:
+          "repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted-foreground) 12%, transparent) 0 4px, transparent 4px 9px)",
+      }}
+      title={onSelect ? `${tip}\nTıkla: projeye ya da kategoriye ata, elle kayıt olarak ekle` : tip}
+      aria-label={`Boşta ${time}`}
+      onClick={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        const [x, y] = e.detail === 0 ? [r.right, r.top] : [e.clientX, e.clientY];
+        onSelect?.(+a, +b, x, y);
+      }}
+    >
+      {height >= LABEL_MIN_PX && (
+        <span className={cn("flex h-full flex-col", height >= FULL_LABEL_PX ? "py-1" : "justify-center")}>
+          <span className="flex items-center gap-1">
+            <Coffee className="size-3 shrink-0" />
+            <span className="truncate text-[11px] leading-tight font-medium">Boşta</span>
+            {height < FULL_LABEL_PX && <span className="ml-auto shrink-0 text-[10px] tabular">{duration}</span>}
+          </span>
+          {height >= FULL_LABEL_PX && (
+            <span className="truncate text-[10px] leading-tight tabular">{`${duration} · ${time}`}</span>
+          )}
+        </span>
+      )}
+    </button>
+  );
+}
+
 const MIN = 60_000;
 /** Tıklanan anı çevreleyen boşluk: 2 saate kadarsa tamamı, değilse tıklanan çeyrekten 1 saat. */
 export function gapAround(
@@ -399,6 +454,7 @@ function blockGeometry(b: { start: string; end: string }, top: (t: number) => nu
 export function DayCalendar({
   from,
   blocks,
+  idle = [],
   segments,
   tags,
   meetings = null,
@@ -410,6 +466,8 @@ export function DayCalendar({
 }: {
   from: Date;
   blocks: WorkBlock[];
+  /** Bilgisayardan uzakta geçen, atanmamış süre. */
+  idle?: IdleSpan[];
   segments: Segment[];
   tags: Map<string, Tag>;
   /** Takvim toplantıları; `null`: takvim bağlı değil (sütun gösterilmez). */
@@ -435,8 +493,8 @@ export function DayCalendar({
     });
   }, [meetings, from]);
   const range = useMemo(
-    () => hourRange(from, [...blocks, ...segments, ...meetingSpans], hourPx),
-    [from, blocks, segments, meetingSpans, hourPx],
+    () => hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans], hourPx),
+    [from, blocks, idle, segments, meetingSpans, hourPx],
   );
   const top = topFn(+from, range);
   const step = range.px >= 150 ? 5 : 15;
@@ -476,6 +534,9 @@ export function DayCalendar({
           }
           onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y))}
         >
+          {idle.map((span) => (
+            <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} {...blockGeometry(span, top)} />
+          ))}
           {blocks.map((b) => (
             <Block key={b.start} b={b} tags={tags} {...blockGeometry(b, top)} />
           ))}
@@ -616,6 +677,7 @@ function MeetingBlock({
 export function WeekCalendar({
   from,
   blocks,
+  idle = [],
   dayTotals,
   tags,
   onSelectDay,
@@ -626,6 +688,7 @@ export function WeekCalendar({
 }: {
   from: Date;
   blocks: WorkBlock[];
+  idle?: IdleSpan[];
   dayTotals: number[];
   tags: Map<string, Tag>;
   onSelectDay: (iso: string) => void;
@@ -634,7 +697,7 @@ export function WeekCalendar({
   preview?: [number, number] | null;
   hourPx?: number;
 }) {
-  const range = useMemo(() => hourRange(from, blocks, hourPx, 7), [from, blocks, hourPx]);
+  const range = useMemo(() => hourRange(from, [...blocks, ...idle], hourPx, 7), [from, blocks, idle, hourPx]);
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
   const weekday = new Intl.DateTimeFormat("tr-TR", { weekday: "short" });
   const grid = "grid grid-cols-[40px_repeat(7,minmax(0,1fr))] gap-x-1";
@@ -690,6 +753,11 @@ export function WeekCalendar({
               }
               onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, dayStart), fromWallMs(b, dayStart), x, y))}
             >
+              {idle
+                .filter((s) => +new Date(s.start) >= dayStart && +new Date(s.start) < dayEnd)
+                .map((s) => (
+                  <IdleBlock key={`idle-${s.start}`} span={s} onSelect={onRange} {...blockGeometry(s, top)} />
+                ))}
               {blocks
                 .filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd)
                 .map((b) => (

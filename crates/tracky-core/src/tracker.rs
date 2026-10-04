@@ -42,7 +42,12 @@ pub struct Tracker<P: ActivityProvider> {
 }
 
 impl<P: ActivityProvider> Tracker<P> {
+    /// Boşta kaydı ayarı `config` yerine gizlilik ayarlarından gelir.
     pub fn new(provider: P, config: EngineConfig, privacy: PrivacySettings) -> Self {
+        let config = EngineConfig {
+            max_away: privacy.max_away(),
+            ..config
+        };
         Self {
             provider,
             engine: Engine::new(config),
@@ -58,6 +63,7 @@ impl<P: ActivityProvider> Tracker<P> {
 
     /// Yeni ayarlar bir sonraki gözlemden itibaren geçerli olur.
     pub fn set_privacy(&mut self, privacy: PrivacySettings) {
+        self.engine.set_max_away(privacy.max_away());
         self.privacy = privacy;
     }
 
@@ -99,10 +105,22 @@ impl<P: ActivityProvider> Tracker<P> {
             error: obs.error,
         };
         let before = self.engine.current().map(|s| s.id);
+        // Takip başlamadan önceki süre (önceki çalışma kapanırken kaydedildi) boşta sayılmaz.
+        if self.ticks == 0 {
+            self.engine.forget_away(now);
+        }
 
         let closed = self.engine.tick(now, obs.window, obs.idle);
         self.settle(store, before, closed, &mut outcome);
         outcome.changed = self.engine.current().map(|s| s.id) != before;
+        if let Some(away) = self.engine.take_away() {
+            save(store, &away, &mut outcome);
+            outcome.changed = true;
+        }
+        // Duraklatılmışken geçen süre boşta sayılmaz.
+        if self.privacy.paused {
+            self.engine.forget_away(now);
+        }
 
         self.ticks = self.ticks.wrapping_add(1);
         if self.ticks.is_multiple_of(FLUSH_EVERY)
@@ -248,6 +266,63 @@ mod tests {
         assert!(tracker.current().is_none());
         let apps = store.app_totals(t0, t0 + Duration::hours(1)).unwrap();
         assert!(apps.is_empty(), "boşta geçen süre sayıldı: {apps:?}");
+    }
+
+    #[test]
+    fn idle_time_is_saved_as_away_but_not_counted_as_work() {
+        let store = Store::open_in_memory().unwrap();
+        // Son girdi 9. saniyede, 610. saniyede dönüş.
+        let n = 10 + 600 + 5;
+        let windows = (0..n).map(|_| win("A"));
+        let idles: VecDeque<u64> = (0..n as u64)
+            .map(|i| if (10..610).contains(&i) { i - 9 } else { 0 })
+            .collect();
+        let mut tracker = Tracker::new(
+            Script(windows.collect(), idles),
+            EngineConfig::default(),
+            PrivacySettings::default(),
+        );
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        for i in 0..n {
+            tracker.tick(&store, t0 + Duration::seconds(i as i64));
+        }
+        let all = store.sessions_between(t0, t0 + Duration::hours(1)).unwrap();
+        let away: Vec<_> = all.iter().filter(|s| s.is_idle()).collect();
+        assert_eq!(away.len(), 1);
+        assert_eq!(away[0].duration(), Duration::seconds(601));
+        // Toplamlar yalnızca çalışmayı sayar.
+        let apps = store.app_totals(t0, t0 + Duration::hours(1)).unwrap();
+        assert!(
+            apps.iter().all(|u| u.key != crate::model::IDLE_APP_ID),
+            "{apps:?}"
+        );
+    }
+
+    #[test]
+    fn away_does_not_reach_back_before_tracking_started() {
+        let store = Store::open_in_memory().unwrap();
+        // Açılışta kullanıcı 10 dakikadır boşta; 5 dakika sonra döner.
+        let windows = (0..301).map(|_| win("A"));
+        let idles: VecDeque<u64> = (0..301u64)
+            .map(|i| if i < 300 { 600 + i } else { 0 })
+            .collect();
+        let mut tracker = Tracker::new(
+            Script(windows.collect(), idles),
+            EngineConfig::default(),
+            PrivacySettings::default(),
+        );
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        for i in 0..301 {
+            tracker.tick(&store, t0 + Duration::seconds(i));
+        }
+        let away: Vec<_> = store
+            .sessions_between(t0 - Duration::hours(1), t0 + Duration::hours(1))
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.is_idle())
+            .collect();
+        assert_eq!(away.len(), 1);
+        assert_eq!(away[0].started_at, t0);
     }
 
     #[test]

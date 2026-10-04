@@ -212,7 +212,8 @@ fn subtract(pieces: Vec<Interval>, cut: Interval) -> Vec<Interval> {
 const MEETING_TITLES: &[&str] = &["google meet", "meet - ", "microsoft teams", "zoom meeting"];
 
 fn kind_of(session: &Session, config: &TimesheetConfig) -> EntryKind {
-    if session.is_manual() {
+    // Elle eklenen ve projeye atanan boşta süre bilgisayar dışında geçmiştir.
+    if session.is_manual() || session.is_idle() {
         return EntryKind::F2F;
     }
     let id = session.app_id.to_lowercase();
@@ -594,6 +595,17 @@ mod tests {
         );
         assert!((got[0].hours - 1.0).abs() < 1e-9);
         assert_eq!(got[0].actual_hours, Some(1.0));
+    }
+
+    #[test]
+    fn assigned_idle_time_is_face_to_face() {
+        let (c, names, config) = setup();
+        let mut away = Session::idle(t(0), t(60));
+        away.project_id = Some("tru".into());
+        let out = propose(&[away], &[], &c, &names, &config, t(-600), t(600));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, EntryKind::F2F);
+        assert_eq!(out[0].hours, 1.0);
     }
 
     #[test]
