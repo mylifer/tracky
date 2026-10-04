@@ -7,10 +7,11 @@ use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, 
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry};
 
-use crate::tracking::{Status, format_duration};
+use crate::tracking::{Current, Status, format_duration};
 
 const TRAY_ID: &str = "main";
-/// Menü çubuğunda yer kaplamaması için uygulama adı bu uzunlukta kesilir.
+/// Menü çubuğunda yer kaplamaması (ve genişliği sık değişmemesi) için proje ya da uygulama
+/// adı bu uzunlukta kesilir.
 const MAX_NAME: usize = 18;
 
 /// Durum değiştikçe metni güncellenen menü öğeleri.
@@ -61,6 +62,8 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
+    let timesheet =
+        MenuItem::with_id(app, "timesheet", "Zaman Çizelgesini Aç", true, None::<&str>)?;
     let autostart_item = CheckMenuItem::with_id(
         app,
         "autostart",
@@ -81,6 +84,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
             &pause_for,
             &open,
             &review,
+            &timesheet,
             &PredefinedMenuItem::separator(app)?,
             &autostart_item,
             &update,
@@ -126,6 +130,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         }
         "open" => crate::show_main_window(app),
         "review" => crate::navigate(app, "review"),
+        "timesheet" => crate::navigate(app, "timesheet"),
         "autostart" => {
             let enabled = items(app)
                 .and_then(|i| i.autostart.is_checked().ok())
@@ -176,8 +181,7 @@ pub fn update(app: &AppHandle, status: &Status) {
         .today
         .set_text(format!("Bugün: {}", format_duration(status.today_seconds)));
     let _ = items.current.set_text(match &status.current {
-        Some(c) if c.title.is_empty() => c.app_name.clone(),
-        Some(c) => format!("{} — {}", c.app_name, truncate(&c.title, 40)),
+        Some(c) => current_text(c),
         None => label.clone(),
     });
     let _ = items.pause_for.set_enabled(!status.paused);
@@ -209,13 +213,34 @@ pub fn set_update(app: &AppHandle, status: &crate::updater::UpdateStatus) {
     }
 }
 
+/// Menüdeki "şu an" satırı: uygulama ve başlık; projeye düşüyorsa proje adı önde.
+fn current_text(c: &Current) -> String {
+    let app = if c.title.is_empty() {
+        c.app_name.clone()
+    } else {
+        format!("{} — {}", c.app_name, truncate(&c.title, 40))
+    };
+    match &c.project {
+        Some(p) => format!("{} · {app}", truncate(&p.name, 30)),
+        None => app,
+    }
+}
+
+/// Menü çubuğu metni: projeye düşen işte proje ve bugünkü süresi, değilse uygulama.
 fn label(status: &Status) -> String {
     match (&status.current, status.paused) {
-        (Some(c), _) => format!(
-            "{} · {}",
-            truncate(&c.app_name, MAX_NAME),
-            format_duration(c.app_seconds_today)
-        ),
+        (Some(c), _) => match &c.project {
+            Some(p) => format!(
+                "{} · {}",
+                truncate(&p.name, MAX_NAME),
+                format_duration(p.seconds_today)
+            ),
+            None => format!(
+                "{} · {}",
+                truncate(&c.app_name, MAX_NAME),
+                format_duration(c.app_seconds_today)
+            ),
+        },
         (None, true) => match status.paused_until {
             Some(until) => format!(
                 "Duraklatıldı · devam {}",
@@ -239,7 +264,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracking::Current;
+    use crate::tracking::CurrentProject;
 
     #[test]
     fn labels() {
@@ -253,7 +278,34 @@ mod tests {
             app_name: "Visual Studio Code Insiders".into(),
             title: String::new(),
             app_seconds_today: 23 * 60,
+            project: None,
         });
         assert_eq!(label(&s), "Visual Studio Cod… · 23dk");
+    }
+
+    #[test]
+    fn label_prefers_project() {
+        let mut current = Current {
+            app_name: "Code".into(),
+            title: "main.rs".into(),
+            app_seconds_today: 23 * 60,
+            project: Some(CurrentProject {
+                id: "p".into(),
+                name: "Müşteri portalı yenileme işi".into(),
+                color: 1,
+                seconds_today: 5 * 3600 + 20 * 60,
+            }),
+        };
+        let s = Status {
+            current: Some(current.clone()),
+            ..Status::default()
+        };
+        assert_eq!(label(&s), "Müşteri portalı y… · 5sa 20dk");
+        assert_eq!(
+            current_text(&current),
+            "Müşteri portalı yenileme işi · Code — main.rs"
+        );
+        current.project = None;
+        assert_eq!(current_text(&current), "Code — main.rs");
     }
 }

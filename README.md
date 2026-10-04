@@ -64,6 +64,14 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       bağlantısı; tek düğmeyle onayla ve aktar. Gün kartında saat farkı rozeti, boş açıklama vurgusu
 - [x] 35. Hazır açıklamalar: proje başına açıklama metni (başlıklardan açıklama çıkmayan önerilere yazılır);
       gün kartında "Önceki günden kopyala" boş açıklamaları aynı projenin son açıklamalarıyla doldurur (geri alınır)
+- [x] 36. Proje seçici: projeler müşteriye göre gruplanır, son seçilen 5 proje en üstte; 12 ve daha fazla projede
+      yanındaki alanla süzülür (Enter ilk eşleşeni seçer). Liste Windows'ta da sorunsuz olsun diye yerel kalır
+- [x] 37. Takvimde renk merceği: gün/hafta blokları kategori ya da proje renginde; proje görünümünde atanmamış
+      süre taralı "Atanmamış" bloktur, lejantta projeler toplamlarıyla
+- [x] 38. Menü çubuğu ve canlı kart: şu anki iş bir projeye düşüyorsa proje adı ve bugünkü süresi
+      ("Portal · 5sa 20dk"); menü çubuğundan "Zaman Çizelgesini Aç"
+- [x] 39. Terimler ve erişilebilirlik: henüz atanmamış süre "Atanmamış", elle proje yok denen süre "Projesiz";
+      kenar çubuğu rozetlerinin anlamı ekran okuyucuda, düğmelerde klavye odak halkası
 
 ## Yapı
 

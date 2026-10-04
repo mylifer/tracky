@@ -3,7 +3,7 @@ import { Briefcase, CalendarDays, Coffee, Shapes, Video } from "lucide-react";
 import type { CalendarMeeting, IdleSpan, Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
-import { UNCATEGORIZED, tagColor } from "../lib/tags";
+import { UNASSIGNED, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { BlockActions, useEdit } from "./SessionEdit";
@@ -16,6 +16,13 @@ const HOUR_MS = 3600_000;
 const FULL_LABEL_PX = 40;
 /** Bundan alçak bloklarda yazı yok (yalnızca renk; ayrıntı ipucunda). */
 const LABEL_MIN_PX = 15;
+
+/** Blokların rengi: kategoriye ya da projeye göre (takvimin "Renk" seçimi). */
+export type ColorLens = "category" | "project";
+
+/** Taralı, renksiz zemin: projeye atanmamış blok ve lejanttaki karşılığı. */
+export const HATCH =
+  "repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted-foreground) 14%, transparent) 0 4px, transparent 4px 9px)";
 
 /** Gösterilen saatler ve bir saatin piksel yüksekliği (yakınlaştırmayla değişir). */
 type Range = { first: number; last: number; px: number };
@@ -277,13 +284,14 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
   );
 }
 
-function blockTitle(b: WorkBlock, tags: Map<string, Tag>) {
+function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens) {
   const tag = b.categoryId ? tags.get(b.categoryId) : undefined;
   const project = b.projectId ? tags.get(b.projectId) : undefined;
   return {
-    tag,
+    // Proje merceğinde renk projeden; projesi olmayan blok taralı ve renksiz.
+    color: lens === "project" ? (project ? tagColor(project) : null) : tagColor(tag),
     // Projeye atanmış blok proje adıyla görünür: atamanın sonucu takvimde hemen fark edilsin.
-    title: project?.name ?? tag?.name ?? b.topApps[0]?.appName ?? UNCATEGORIZED,
+    title: project?.name ?? (lens === "project" ? UNASSIGNED : (tag?.name ?? b.topApps[0]?.appName ?? UNCATEGORIZED)),
     apps: b.topApps.map((a) => a.appName).join(", "),
   };
 }
@@ -295,6 +303,7 @@ function Block({
   top,
   height,
   narrow = false,
+  lens = "category",
 }: {
   b: WorkBlock;
   tags: Map<string, Tag>;
@@ -302,9 +311,10 @@ function Block({
   height: number;
   /** Dar sütun (hafta): tek satırlık blokta süre yer kaplamasın, başlık okunsun. */
   narrow?: boolean;
+  lens?: ColorLens;
 }) {
-  const { tag, title, apps } = blockTitle(b, tags);
-  const color = tagColor(tag);
+  const { color: blockColor, title, apps } = blockTitle(b, tags, lens);
+  const color = blockColor ?? "var(--c0)";
   const full = height >= FULL_LABEL_PX;
   const label = height >= LABEL_MIN_PX;
   const summary = `${title} · ${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))} · ${formatDuration(b.activeSeconds)}`;
@@ -318,7 +328,7 @@ function Block({
             height,
             ["--cat" as string]: color,
             borderLeftColor: color,
-            background: `color-mix(in srgb, ${color} 22%, var(--card))`,
+            background: blockColor ? `color-mix(in srgb, ${color} 22%, var(--card))` : `${HATCH}, var(--card)`,
           }}
           title={summary}
           aria-label={summary}
@@ -463,6 +473,7 @@ export function DayCalendar({
   onRange,
   preview,
   hourPx = HOUR_PX,
+  lens = "category",
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -480,6 +491,8 @@ export function DayCalendar({
   preview?: [number, number] | null;
   /** Bir saatin yüksekliği (yakınlaştırma). */
   hourPx?: number;
+  /** Bloklar kategori ya da proje renginde. */
+  lens?: ColorLens;
 }) {
   // Gece yarısını aşan toplantılar güne kırpılır: ızgaranın dışına taşmasınlar, saat
   // aralığı da günün içindeki kısmına göre genişlesin.
@@ -538,7 +551,7 @@ export function DayCalendar({
             <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} {...blockGeometry(span, top)} />
           ))}
           {blocks.map((b) => (
-            <Block key={b.start} b={b} tags={tags} {...blockGeometry(b, top)} />
+            <Block key={b.start} b={b} tags={tags} lens={lens} {...blockGeometry(b, top)} />
           ))}
           <Preview range={preview} top={top} />
           <NowLine day={from} range={range} />
@@ -673,7 +686,7 @@ function MeetingBlock({
   );
 }
 
-/** Hafta takvimi: her gün bir sütun, bloklar kategori renginde. */
+/** Hafta takvimi: her gün bir sütun, bloklar kategori (ya da proje) renginde. */
 export function WeekCalendar({
   from,
   blocks,
@@ -685,6 +698,7 @@ export function WeekCalendar({
   onRange,
   preview,
   hourPx = HOUR_PX,
+  lens = "category",
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -696,6 +710,7 @@ export function WeekCalendar({
   onRange?: (start: number, end: number, x: number, y: number) => void;
   preview?: [number, number] | null;
   hourPx?: number;
+  lens?: ColorLens;
 }) {
   const range = useMemo(() => hourRange(from, [...blocks, ...idle], hourPx, 7), [from, blocks, idle, hourPx]);
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
@@ -761,7 +776,7 @@ export function WeekCalendar({
               {blocks
                 .filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd)
                 .map((b) => (
-                  <Block key={b.start} b={b} tags={tags} narrow {...blockGeometry(b, top)} />
+                  <Block key={b.start} b={b} tags={tags} narrow lens={lens} {...blockGeometry(b, top)} />
                 ))}
               <Preview range={preview && preview[0] >= dayStart && preview[0] < dayEnd ? preview : null} top={top} />
               <NowLine day={d} range={range} />

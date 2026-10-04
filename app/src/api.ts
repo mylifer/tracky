@@ -1,7 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type Current = { appName: string; title: string; appSecondsToday: number };
+export type Current = {
+  appName: string;
+  title: string;
+  appSecondsToday: number;
+  /** Şu anki oturumun projesi (kurala ya da elle atamaya göre) ve bugünkü süresi. */
+  project: { id: string; name: string; color: number; secondsToday: number } | null;
+};
 export type TrackingStatus = {
   paused: boolean;
   current: Current | null;

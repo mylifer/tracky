@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, ChevronRight, Inbox, TrendingDown, TrendingUp } from "lucide-react";
 import type { CategoryLimit, ProjectGoal, Report, Tag, Taxonomy } from "../api";
 import { api, formatDuration } from "../api";
-import { clientColor, NO_CLIENT, NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
+import { clientColor, NO_CLIENT, UNASSIGNED, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import type { Mode } from "./ReportView";
 import { Card, CardContent } from "./ui/card";
@@ -160,7 +160,7 @@ function UnassignedCard({
   hasProjects: boolean;
   onReview: () => void;
 }) {
-  // Proje kullanılmıyorsa her süre projesizdir; uyarı gürültü olur.
+  // Proje kullanılmıyorsa her süre atanmamıştır; uyarı gürültü olur.
   if (!hasProjects || seconds + idle < 5 * 60) return null;
   return (
     <button
@@ -242,7 +242,7 @@ function BreakdownCard({ report, tags }: { report: Report; tags: Map<string, Tag
             const tag = b.id ? tags.get(b.id) : undefined;
             return {
               key: b.id ?? "none",
-              name: tag?.name ?? (tab === "categories" ? UNCATEGORIZED : NO_PROJECT),
+              name: tag?.name ?? (tab === "categories" ? UNCATEGORIZED : UNASSIGNED),
               secs: b.seconds,
               color: tagColor(tag),
             };
@@ -295,7 +295,7 @@ function BreakdownCard({ report, tags }: { report: Report; tags: Map<string, Tag
   );
 }
 
-/** Projelerin süresi müşteriye göre; müşterisi olmayan proje ve projesiz süre "Müşterisiz". */
+/** Projelerin süresi müşteriye göre; müşterisi olmayan proje ve atanmamış süre "Müşterisiz". */
 function byClient(report: Report, taxonomy: Taxonomy | null) {
   if (!taxonomy) return [];
   const totals = new Map<string, number>();

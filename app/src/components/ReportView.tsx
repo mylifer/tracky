@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Hourglass, ZoomIn, ZoomOut } from "lucide-react";
-import { api, type CalendarMeeting, type CategoryLimit, type ProjectGoal, type Report, type Tag } from "../api";
+import {
+  api,
+  type Bucket,
+  type CalendarMeeting,
+  type CategoryLimit,
+  formatDuration,
+  type ProjectGoal,
+  type Report,
+  type Tag,
+} from "../api";
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
-import { tagMap } from "../lib/tags";
+import { tagColor, tagMap, UNASSIGNED } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { friendlyError, useChanged } from "../lib/feedback";
 import { clampZoom, stepZoom, useZoomGestures } from "../lib/zoom";
-import { AppList, Legend } from "./Breakdown";
+import { AppList, Dot, Legend } from "./Breakdown";
 import AppTimeline from "./AppTimeline";
-import { DayCalendar, HOUR_PX, WeekCalendar } from "./Calendar";
+import { type ColorLens, DayCalendar, HATCH, HOUR_PX, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
 import {
   EditContext,
@@ -174,6 +183,7 @@ export default function ReportView(p: Props) {
   const mode = MODES.find((m) => m.id === p.mode) ?? MODES[0];
   const [draft, setDraft] = useState<EntryDraft | null>(null);
   const [calendarView, setCalendarView] = useCalendarView();
+  const [lens, setLens] = useColorLens();
   const [preview, setPreview] = useState<[number, number] | null>(null);
   const [selection, setSelection] = useState<RangeSelection | null>(null);
   const [meetingSel, setMeetingSel] = useState<MeetingSelection | null>(null);
@@ -205,6 +215,8 @@ export default function ReportView(p: Props) {
 
   // Yakınlaştırma: takvimde saat yüksekliği, uygulama çizelgesinde gösterilen saat aralığı.
   const appsView = p.mode !== "month" && calendarView === "apps" && !!report && report.totalSeconds > 0;
+  // Proje merceği yalnızca gün/hafta takviminde; ay ve uygulama çizelgesi kategori renginde kalır.
+  const projectLens = lens === "project" && p.mode !== "month" && !appsView;
   const zoomable = p.mode !== "month" && !!report && (report.totalSeconds > 0 || report.idle.length > 0);
   const [calZoom, setCalZoom] = useState(1);
   const [appZoom, setAppZoom] = useState(1);
@@ -316,11 +328,32 @@ export default function ReportView(p: Props) {
                     className="sticky top-0 z-30 -mt-3 flex items-start gap-3 rounded-t-xl bg-card pt-3 pb-1"
                   >
                     <div className="min-w-0 flex-1">
-                      <Legend order={order} tags={tags} />
+                      {projectLens ? (
+                        <ProjectLegend buckets={report.projects} tags={tags} />
+                      ) : (
+                        <Legend order={order} tags={tags} />
+                      )}
                     </div>
+                    {p.mode !== "month" && !appsView && report.totalSeconds > 0 && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-muted-foreground" aria-hidden>
+                          Renk
+                        </span>
+                        <Tabs value={lens} onValueChange={(v) => setLens(v as ColorLens)}>
+                          <TabsList className="h-7" aria-label="Blokların rengi">
+                            <TabsTrigger value="category" className="px-2.5 text-xs">
+                              Kategori
+                            </TabsTrigger>
+                            <TabsTrigger value="project" className="px-2.5 text-xs">
+                              Proje
+                            </TabsTrigger>
+                          </TabsList>
+                        </Tabs>
+                      </div>
+                    )}
                     {p.mode !== "month" && report.totalSeconds > 0 && (
                       <Tabs value={calendarView} onValueChange={(v) => setCalendarView(v as CalendarView)}>
-                        <TabsList className="h-7">
+                        <TabsList className="h-7" aria-label="Takvim görünümü">
                           <TabsTrigger value="calendar" className="px-2.5 text-xs">
                             Takvim
                           </TabsTrigger>
@@ -381,6 +414,7 @@ export default function ReportView(p: Props) {
                           onRange={selectRange}
                           preview={preview}
                           hourPx={HOUR_PX * calZoom}
+                          lens={projectLens ? "project" : "category"}
                         />
                       ) : (
                         <WeekCalendar
@@ -394,6 +428,7 @@ export default function ReportView(p: Props) {
                           onRange={selectRange}
                           preview={preview}
                           hourPx={HOUR_PX * calZoom}
+                          lens={projectLens ? "project" : "category"}
                         />
                       )}
                     </EditContext.Provider>
@@ -529,6 +564,56 @@ function useCalendarView(): [CalendarView, (v: CalendarView) => void] {
       setView(v);
       try {
         localStorage.setItem(CALENDAR_VIEW_KEY, v);
+      } catch {
+        /* depolama kapalıysa yalnızca bu oturumda */
+      }
+    },
+  ];
+}
+
+/** Proje merceğinde lejant: projeler ve dönemdeki toplamları; atanmamış süre taralı ve sonda. */
+function ProjectLegend({ buckets, tags }: { buckets: Bucket[]; tags: Map<string, Tag> }) {
+  const rows = [...buckets.filter((b) => b.id !== null), ...buckets.filter((b) => b.id === null)];
+  return (
+    <ul className="flex flex-wrap gap-x-4 gap-y-1">
+      {rows.map((b) => {
+        const tag = b.id ? tags.get(b.id) : undefined;
+        return (
+          <li key={b.id ?? "none"} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            {b.id ? (
+              <Dot color={tagColor(tag)} />
+            ) : (
+              <i
+                className="inline-block size-2 shrink-0 rounded-full border border-muted-foreground/40"
+                style={{ background: HATCH }}
+              />
+            )}
+            {b.id ? (tag?.name ?? "Silinen proje") : UNASSIGNED}
+            <span className="tabular">{formatDuration(b.seconds)}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+const LENS_KEY = "kum.calendarLens";
+
+/** Takvim blokları kategori mi proje renginde; tercih bu cihazda hatırlanır. */
+function useColorLens(): [ColorLens, (v: ColorLens) => void] {
+  const [lens, setLens] = useState<ColorLens>(() => {
+    try {
+      return localStorage.getItem(LENS_KEY) === "project" ? "project" : "category";
+    } catch {
+      return "category";
+    }
+  });
+  return [
+    lens,
+    (v) => {
+      setLens(v);
+      try {
+        localStorage.setItem(LENS_KEY, v);
       } catch {
         /* depolama kapalıysa yalnızca bu oturumda */
       }

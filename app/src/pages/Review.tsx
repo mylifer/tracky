@@ -319,7 +319,7 @@ function Hero({
           {pending > 0 && (
             <button
               onClick={onOpenTimesheet}
-              className="flex items-center gap-2 rounded-lg border bg-background/70 px-3 py-1.5 text-left text-xs hover:bg-accent"
+              className="flex items-center gap-2 rounded-lg border bg-background/70 px-3 py-1.5 text-left text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               <FileSpreadsheet className="size-3.5 text-emerald-500" />
               <span>
@@ -527,7 +527,7 @@ function GroupCard({
       </ul>
       {group.items.length > FIRST_ITEMS && (
         <button
-          className="flex w-full items-center justify-center gap-1 border-t py-2 text-[11px] font-medium text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+          className="flex w-full items-center justify-center gap-1 border-t py-2 text-[11px] font-medium text-muted-foreground outline-none hover:bg-accent/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
           onClick={() => setExpanded(!expanded)}
         >
           <ChevronDown className={cn("size-3.5 transition-transform", expanded && "rotate-180")} />
@@ -546,7 +546,7 @@ function GroupCard({
 function MenuButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
     <button
-      className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-accent [&_svg]:size-3.5 [&_svg]:text-muted-foreground"
+      className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs outline-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 [&_svg]:size-3.5 [&_svg]:text-muted-foreground"
       onClick={onClick}
     >
       {children}
@@ -767,7 +767,11 @@ function IgnoredList({ keys, onShow }: { keys: string[]; onShow: (key: string) =
   const [open, setOpen] = useState(false);
   return (
     <div className="px-1 text-xs text-muted-foreground">
-      <button className="hover:text-foreground" onClick={() => setOpen(!open)}>
+      <button
+        className="rounded-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
         {keys.length} grup listede gösterilmiyor {open ? "▴" : "▾"}
       </button>
       {open && (
