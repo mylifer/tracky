@@ -17,6 +17,9 @@ use crate::model::Session;
 pub const MERGE_GAP: Duration = Duration::minutes(15);
 /// Bundan kısa kayıt önerilmez (bir mesaja bakmak gibi kısa geçişler).
 pub const MIN_ENTRY: Duration = Duration::minutes(5);
+/// Aktarılmış bir kaydın ardından kalan süre bundan kısaysa önerilmez: aktarırken saati
+/// yuvarlamaktan (0,83 → 0,75) kalan birkaç dakika yeni iş değildir.
+pub const MIN_REMAINDER: Duration = Duration::minutes(15);
 
 /// Çalışma türü; şablondaki "Type" sütunu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -260,6 +263,44 @@ pub fn propose(
     out
 }
 
+/// Yeniden öneride Excel'e aktarılmış işi düşer: her (proje, tür) için aktarılan saatler o
+/// türün en erken önerilerinden düşülür, yalnızca artan süre kalır (aktarılan + önerilen =
+/// takip edilen). Aktarılan satırın saati ya
+/// da süresi elle değiştirilmiş olsa da iş ikinci kez önerilmez; aktarımdan sonra süren iş
+/// (uzayan kayıt ya da yeni kayıt) önerilir. Kısmen düşülen önerinin kalanı `MIN_REMAINDER`'dan
+/// kısaysa atılır, değilse başlangıcı düşülen süre kadar ileri alınır.
+pub fn without_exported(
+    proposed: &[TimesheetEntry],
+    exported: &[TimesheetEntry],
+) -> Vec<TimesheetEntry> {
+    let min_rest = MIN_REMAINDER.num_seconds() as f64 / 3600.0;
+    let mut budget: HashMap<(&str, EntryKind), f64> = HashMap::new();
+    for x in exported {
+        *budget.entry((x.project_id.as_str(), x.kind)).or_default() += x.hours;
+    }
+    let mut sorted: Vec<&TimesheetEntry> = proposed.iter().collect();
+    sorted.sort_by_key(|e| e.start);
+    let mut out = Vec::new();
+    for e in sorted {
+        let left = budget.entry((e.project_id.as_str(), e.kind)).or_default();
+        let used = left.min(e.hours);
+        *left -= used;
+        let rest = e.hours - used;
+        if used == 0.0 {
+            out.push(e.clone());
+        } else if rest >= min_rest {
+            let shift = Duration::seconds((used * 3600.0).round() as i64);
+            out.push(TimesheetEntry {
+                start: e.start.overflowing_add_signed(shift).0,
+                hours: rest,
+                ..e.clone()
+            });
+        }
+    }
+    out.sort_by(|a, b| a.start.cmp(&b.start).then(a.division.cmp(&b.division)));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +448,68 @@ mod tests {
             t(900),
         );
         assert_eq!(got[0].kind, EntryKind::Online);
+    }
+
+    fn entry(project: &str, kind: EntryKind, hh: u32, mm: u32, hours: f64) -> TimesheetEntry {
+        TimesheetEntry {
+            date: NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+            start: NaiveTime::from_hms_opt(hh, mm, 0).unwrap(),
+            hours,
+            kind,
+            details: String::new(),
+            party: String::new(),
+            project_id: project.into(),
+            division: project.into(),
+        }
+    }
+
+    #[test]
+    fn exported_work_is_not_proposed_again() {
+        use EntryKind::{Online, Working};
+        let short = |v: Vec<TimesheetEntry>| -> Vec<(String, String, f64)> {
+            v.into_iter()
+                .map(|e| {
+                    (
+                        e.project_id,
+                        e.start.format("%H:%M").to_string(),
+                        (e.hours * 100.0).round() / 100.0,
+                    )
+                })
+                .collect()
+        };
+        let proposed = [
+            entry("a", Working, 9, 10, 0.83),
+            entry("a", Working, 13, 0, 2.0),
+            entry("a", Online, 11, 0, 0.5),
+            entry("b", Working, 10, 0, 1.0),
+        ];
+        // Hiç aktarım yoksa öneriler aynen.
+        assert_eq!(without_exported(&proposed, &[]).len(), 4);
+        // Aktarırken 09:10 kaydının saati 09:00'a çekilmiş ve 0,75'e yuvarlanmış; 13:00 kaydı
+        // aktarıldığında 1 saatti, sonra 2 saate uzadı. Düzenlenmiş kayıt tekrar önerilmez;
+        // toplam korunur (aktarılan 1,75 + önerilen 1,08 = takip edilen 2,83). Toplantı ve
+        // b projesi aktarılmadı: aynen kalır.
+        let exported = [
+            entry("a", Working, 9, 0, 0.75),
+            entry("a", Working, 13, 0, 1.0),
+        ];
+        assert_eq!(
+            short(without_exported(&proposed, &exported)),
+            [
+                ("b", "10:00", 1.0),
+                ("a", "11:00", 0.5),
+                ("a", "13:55", 1.08)
+            ]
+            .map(|(p, t, h)| (p.to_string(), t.to_string(), h))
+        );
+        // Kalan 15 dakikadan kısaysa (yuvarlama artığı) önerilmez.
+        let exported = [entry("a", Working, 9, 0, 2.75)];
+        assert!(
+            without_exported(&proposed, &exported)
+                .iter()
+                .all(|e| e.project_id != "a" || e.kind != Working)
+        );
+        // Tamamı aktarılmış gün: yeni bir şey yok.
+        assert!(without_exported(&proposed, &proposed).is_empty());
     }
 }

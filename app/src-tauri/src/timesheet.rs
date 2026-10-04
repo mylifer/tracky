@@ -1,6 +1,8 @@
 //! Zaman çizelgesi komutları: günlük kayıt önerileri, onaylama ve düzenleme, şablonu
 //! içe aktarma ve kayıtları kullanıcının Excel dosyasına ekleme.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use chrono::{Days, NaiveDate, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -15,6 +17,19 @@ type CmdResult<T> = Result<T, String>;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+/// Excel'e aktarım sürüyor: ikinci bir aktarım (çift tıklama) aynı kayıtları dosyaya
+/// ikinci kez yazmasın diye reddedilir.
+static EXPORTING: AtomicBool = AtomicBool::new(false);
+
+/// Aktarım bayrağını bırakır (hata ya da panikte de).
+struct ExportGuard;
+
+impl Drop for ExportGuard {
+    fn drop(&mut self) {
+        EXPORTING.store(false, Ordering::Release);
+    }
 }
 
 /// Geçmiş açıklamalar (otomatik tamamlama), şablondan içe aktarılır.
@@ -273,6 +288,10 @@ pub struct Exported {
 /// `start`'tan itibaren `days` gündeki onaylı ve aktarılmamış kayıtları Excel dosyasına ekler.
 #[tauri::command]
 pub async fn export_timesheet(app: AppHandle, start: String, days: u32) -> CmdResult<Exported> {
+    if EXPORTING.swap(true, Ordering::Acquire) {
+        return Err("Excel'e aktarım zaten sürüyor.".into());
+    }
+    let _guard = ExportGuard;
     let first = parse_date(&start)?;
     let last = first + Days::new(u64::from(days.clamp(1, 62)) - 1);
     let (config, pending) = {

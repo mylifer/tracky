@@ -860,15 +860,21 @@ impl Store {
     }
 
     /// Günün aktarılmamış kayıtlarını verilenlerle değiştirir (onaylama, yeniden öneri).
-    /// Excel'e aktarılmış kayıtlara dokunulmaz.
+    /// Excel'e aktarılmış kayıtlara dokunulmaz ve aktarılan iş yeniden eklenmez
+    /// ([`timesheet::without_exported`]); yoksa bir sonraki aktarımda dosyaya iki kez yazılırdı.
     pub fn replace_timesheet_day(&self, date: NaiveDate, entries: &[TimesheetEntry]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.conn.execute(
             "DELETE FROM timesheet_entries WHERE date = ?1 AND exported_at IS NULL",
             [date.to_string()],
         )?;
-        for e in entries {
-            self.insert_entry(&Uuid::new_v4().to_string(), e)?;
+        let exported: Vec<TimesheetEntry> = self
+            .timesheet_entries(date, date)?
+            .into_iter()
+            .map(|e| e.entry)
+            .collect();
+        for e in timesheet::without_exported(entries, &exported) {
+            self.insert_entry(&Uuid::new_v4().to_string(), &e)?;
         }
         tx.commit()?;
         Ok(())
@@ -1593,6 +1599,8 @@ mod tests {
                 .is_err()
         );
         store.replace_timesheet_day(day, &[]).unwrap();
+        // Yeniden öneri aktarılmış işi ikinci kez önermez (dosyaya iki kez yazılırdı).
+        store.replace_timesheet_day(day, &proposed).unwrap();
         let left = store.timesheet_entries(day, day).unwrap();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].entry.details, "Loyalty ekranları");

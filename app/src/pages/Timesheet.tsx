@@ -40,6 +40,8 @@ export default function Timesheet({ onOpenDay }: { onOpenDay: (iso: string) => v
   const [projects, setProjects] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Aktarım sürerken düğme kilitli: çift tıklama aynı satırları dosyaya iki kez yazmasın.
+  const [exporting, setExporting] = useState(false);
   const [settings, setSettings] = useState(false);
 
   const load = useCallback(async () => {
@@ -120,13 +122,18 @@ export default function Timesheet({ onOpenDay }: { onOpenDay: (iso: string) => v
         </Button>
         <Button
           size="sm"
-          disabled={pending.length === 0}
+          disabled={pending.length === 0 || exporting}
           title={config.filePath}
           onClick={run(async () => {
-            const r = await api.exportTimesheet(week, 7);
-            setNotice(
-              `${r.rows} satır Excel'e eklendi (${r.filled} boş satıra, ${r.inserted} yeni satır). Yedek: ${r.backup}`,
-            );
+            setExporting(true);
+            try {
+              const r = await api.exportTimesheet(week, 7);
+              setNotice(
+                `${r.rows} satır Excel'e eklendi (${r.filled} boş satıra, ${r.inserted} yeni satır). Yedek: ${r.backup}`,
+              );
+            } finally {
+              setExporting(false);
+            }
           })}
         >
           <FileSpreadsheet /> Excel'e aktar{pending.length ? ` (${pending.length})` : ""}
@@ -224,6 +231,17 @@ function DayCard({
               <Check /> Onayla
             </Button>
           )}
+          {day.approved && exported && (
+            // Aktarılmış satırlar korunur ve tekrar önerilmez: aktarımdan sonra yapılan iş eklenir.
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={run(() => api.approveTimesheetDay(day.date))}
+              title="Aktarımdan sonra takip edilen işi öner; aktarılan satırlar değişmez"
+            >
+              <RefreshCw /> Yeni işleri öner
+            </Button>
+          )}
           {day.approved &&
             !exported &&
             (confirmReset ? (
@@ -248,8 +266,9 @@ function DayCard({
         </span>
       </div>
       {day.entries.length > 0 && (
-        <div className="border-t">
-          <div className="grid grid-cols-[92px_70px_96px_minmax(0,1fr)_96px_minmax(0,180px)_28px] gap-2 px-4 pt-2 text-[11px] text-muted-foreground">
+        // Dar pencerede açıklama sütunu ezilmesin: satırlar kart içinde yatay kayar.
+        <div className="overflow-x-auto border-t">
+          <div className="grid grid-cols-[112px_70px_96px_minmax(160px,1fr)_96px_minmax(110px,180px)_28px] gap-2 px-4 pt-2 text-[11px] text-muted-foreground">
             <span>Başlangıç</span>
             <span>Saat</span>
             <span>Tür</span>
@@ -312,7 +331,7 @@ function EntryRow({
   return (
     <li
       className={cn(
-        "grid grid-cols-[92px_70px_96px_minmax(0,1fr)_96px_minmax(0,180px)_28px] items-center gap-2 px-4 py-1",
+        "grid grid-cols-[112px_70px_96px_minmax(160px,1fr)_96px_minmax(110px,180px)_28px] items-center gap-2 px-4 py-1",
         !editable && "text-muted-foreground",
       )}
     >
