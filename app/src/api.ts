@@ -202,6 +202,8 @@ export type LastSync = { at: string; ok: boolean; message: string };
 export type SyncStatus = {
   configured: boolean;
   url: string | null;
+  /** Tabloların şeması (paylaşılan projede); boşsa public. */
+  schema: string | null;
   email: string | null;
   last: LastSync | null;
 };
@@ -321,7 +323,8 @@ export const api = {
   saveGoals: (goals: Goals) => invoke<void>("save_goals", { goals }),
   exportCsv: () => invoke<string>("export_csv"),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
-  syncConfigure: (url: string, anonKey: string) => invoke<SyncStatus>("sync_configure", { url, anonKey }),
+  syncConfigure: (url: string, anonKey: string, schema: string | null) =>
+    invoke<SyncStatus>("sync_configure", { url, anonKey, schema }),
   syncSignIn: (email: string, password: string, signUp: boolean) =>
     invoke<SyncStatus>("sync_sign_in", { email, password, signUp }),
   syncSignOut: () => invoke<SyncStatus>("sync_sign_out"),

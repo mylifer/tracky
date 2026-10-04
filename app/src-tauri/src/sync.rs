@@ -50,6 +50,7 @@ pub struct LastSync {
 pub struct SyncStatus {
     configured: bool,
     url: Option<String>,
+    schema: Option<String>,
     email: Option<String>,
     last: Option<LastSync>,
 }
@@ -79,6 +80,7 @@ fn status(app: &AppHandle) -> SyncStatus {
     let auth: Option<AuthSession> = load(app, AUTH_KEY);
     SyncStatus {
         configured: config.is_some(),
+        schema: config.as_ref().and_then(|c| c.schema.clone()),
         url: config.map(|c| c.url),
         email: auth.map(|a| a.email),
         last: lock(&app.state::<SyncWorker>().last).clone(),
@@ -193,6 +195,7 @@ pub async fn sync_configure(
     app: AppHandle,
     url: String,
     anon_key: String,
+    schema: Option<String>,
 ) -> CmdResult<SyncStatus> {
     let url = url.trim().trim_end_matches('/').to_string();
     if !url.starts_with("https://") {
@@ -207,6 +210,9 @@ pub async fn sync_configure(
         &Config {
             url,
             anon_key: anon_key.trim().to_string(),
+            schema: schema
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty() && s != "public"),
         },
     )?;
     clear(&app, AUTH_KEY)?;
@@ -222,7 +228,11 @@ pub async fn sync_sign_in(
     sign_up: bool,
 ) -> CmdResult<SyncStatus> {
     let config: Config = load(&app, CONFIG_KEY).ok_or("Önce Supabase bağlantısını kaydet")?;
-    let url = config.url.clone();
+    // Şema da hesabın parçası: başka şemaya geçince imleçler sıfırlanır (şemasızda eskisi gibi).
+    let url = match &config.schema {
+        Some(schema) => format!("{}#{schema}", config.url),
+        None => config.url.clone(),
+    };
     let auth = tauri::async_runtime::spawn_blocking(move || {
         let client = Client::new(config);
         let email = email.trim();

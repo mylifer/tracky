@@ -18,11 +18,24 @@ pub struct Config {
     pub url: String,
     /// Projenin herkese açık (anon/publishable) anahtarı.
     pub anon_key: String,
+    /// Tabloların şeması; boşsa `public`. Başka bir uygulamanın projesini paylaşırken Kum'un
+    /// tabloları ayrı şemada durur (örn. `kum`; supabase/kum_schema.sql). Şema projenin API
+    /// ayarlarında açılmış olmalı.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
 }
 
 impl Config {
     fn base(&self) -> String {
         self.url.trim().trim_end_matches('/').to_string()
+    }
+
+    /// PostgREST şema başlığının değeri (`public` ise başlık gerekmez).
+    fn profile(&self) -> Option<&str> {
+        self.schema
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "public")
     }
 }
 
@@ -143,7 +156,7 @@ impl SupabaseRemote<'_> {
 
 impl Remote for SupabaseRemote<'_> {
     fn push(&mut self, table: &str, rows: &[Value]) -> std::result::Result<(), String> {
-        let mut resp = self
+        let mut req = self
             .client
             .agent
             .post(self.rest(table))
@@ -153,9 +166,11 @@ impl Remote for SupabaseRemote<'_> {
                 "Authorization",
                 format!("Bearer {}", self.session.access_token),
             )
-            .header("Prefer", "resolution=merge-duplicates,return=minimal")
-            .send_json(rows)
-            .map_err(|e| e.to_string())?;
+            .header("Prefer", "resolution=merge-duplicates,return=minimal");
+        if let Some(schema) = self.client.config.profile() {
+            req = req.header("Content-Profile", schema);
+        }
+        let mut resp = req.send_json(rows).map_err(|e| e.to_string())?;
         self.check(&mut resp)
     }
 
@@ -178,6 +193,9 @@ impl Remote for SupabaseRemote<'_> {
                 "Authorization",
                 format!("Bearer {}", self.session.access_token),
             );
+        if let Some(schema) = self.client.config.profile() {
+            req = req.header("Accept-Profile", schema);
+        }
         if let Some(since) = since {
             req = req.query("server_updated_at", format!("gt.{}", utc_z(since)));
         }
@@ -209,6 +227,9 @@ impl Remote for SupabaseRemote<'_> {
                 "Authorization",
                 format!("Bearer {}", self.session.access_token),
             );
+        if let Some(schema) = self.client.config.profile() {
+            req = req.header("Accept-Profile", schema);
+        }
         if let Some(since) = since {
             req = req.query("server_updated_at", format!("gt.{}", utc_z(since)));
         }
@@ -311,6 +332,7 @@ mod tests {
         Client::new(Config {
             url: format!("{url}/"),
             anon_key: "anon".into(),
+            schema: None,
         })
     }
 
@@ -427,9 +449,45 @@ mod tests {
             "{path}"
         );
         assert!(headers.contains("resolution=merge-duplicates"));
+        // Şema verilmediyse şema başlığı gönderilmez (public).
+        assert!(!headers.contains("content-profile"));
         assert_eq!(
             serde_json::from_str::<Value>(&body).unwrap(),
             json!([{"id": "t1"}])
         );
+    }
+
+    #[test]
+    fn custom_schema_is_sent_as_profile_headers() {
+        let session = AuthSession {
+            access_token: "tok".into(),
+            refresh_token: "r".into(),
+            expires_at: u64::MAX,
+            user_id: "u1".into(),
+            email: String::new(),
+        };
+        let with_schema = |url: String| {
+            Client::new(Config {
+                url,
+                anon_key: "anon".into(),
+                schema: Some(" kum ".into()),
+            })
+        };
+        let (url, rx) = serve_once(201, "");
+        with_schema(url)
+            .remote(&session)
+            .push("tags", &[json!({"id": "t1"})])
+            .unwrap();
+        assert!(rx.recv().unwrap().1.contains("content-profile: kum"));
+        let (url, rx) = serve_once(200, "[]");
+        with_schema(url)
+            .remote(&session)
+            .pull("tags", None, None, 10)
+            .unwrap();
+        assert!(rx.recv().unwrap().1.contains("accept-profile: kum"));
+        // Eski ayar dosyası (şemasız) okunabilir.
+        let old: Config =
+            serde_json::from_str(r#"{"url":"https://x.supabase.co","anon_key":"a"}"#).unwrap();
+        assert_eq!(old.schema, None);
     }
 }

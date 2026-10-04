@@ -13,6 +13,7 @@ export default function SyncSettings() {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [url, setUrl] = useState("");
   const [key, setKey] = useState("");
+  const [schema, setSchema] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -57,7 +58,7 @@ export default function SyncSettings() {
           className="space-y-3 px-4 py-3.5"
           onSubmit={(e) => {
             e.preventDefault();
-            run(() => api.syncConfigure(url, key));
+            run(() => api.syncConfigure(url, key, schema.trim() || null));
           }}
         >
           <Field id="sync-url" label="Proje adresi">
@@ -70,6 +71,14 @@ export default function SyncSettings() {
           </Field>
           <Field id="sync-key" label="Anon (publishable) anahtar">
             <Input id="sync-key" value={key} onChange={(e) => setKey(e.target.value)} placeholder="eyJhbGciOi…" />
+          </Field>
+          <Field id="sync-schema" label="Şema (isteğe bağlı)">
+            <Input
+              id="sync-schema"
+              value={schema}
+              onChange={(e) => setSchema(e.target.value)}
+              placeholder="Boş bırak; başka uygulamanın projesini paylaşıyorsan örn. kum"
+            />
           </Field>
           <ErrorText>{error}</ErrorText>
           <Button type="submit" size="sm" disabled={busy || !url || !key}>
@@ -84,7 +93,10 @@ export default function SyncSettings() {
             signIn(false);
           }}
         >
-          <p className="text-xs text-muted-foreground selectable">Bağlı proje: {status.url}</p>
+          <p className="text-xs text-muted-foreground selectable">
+            Bağlı proje: {status.url}
+            {status.schema ? ` · şema: ${status.schema}` : ""}
+          </p>
           <Field id="sync-email" label="E-posta">
             <Input
               id="sync-email"

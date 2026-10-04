@@ -157,6 +157,11 @@ Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birl
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.
 5. Diğer bilgisayarda aynı proje bilgileri ve aynı hesapla giriş yap.
 
+**Ücretsiz plandaki proje sınırı dolduysa** Kum, başka bir uygulamanın projesinde ayrı bir şemada
+çalışabilir: 2. adımda göçler yerine `supabase/kum_schema.sql` dosyasını çalıştır, *Project Settings →
+Data API → Exposed schemas* listesine `kum` ekle ve Kum'da **Şema** alanına `kum` yaz. Diğer
+uygulamanın tablolarına dokunulmaz; ancak kullanıcı listesi ve kota o projeyle ortaktır.
+
 Nasıl çalışır: her satırın kimliği UUID'dir; değişen satırlar gönderilir, sunucuda son çekimden
 beri değişenler alınır. Aynı satır iki cihazda değiştiyse daha yeni olan kazanır. Silmeler
 yumuşaktır, o yüzden silinenler de eşitlenir. Satır güvenliği (RLS) sayesinde her kullanıcı yalnız
