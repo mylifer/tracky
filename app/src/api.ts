@@ -177,11 +177,17 @@ export type Meeting = {
   location: string;
   online: boolean;
 };
+/** Projesi belli olmayan toplantı için önerilen proje ve kısa gerekçe ("katılımcılar @acme.com"). */
+export type MeetingSuggestion = { projectId: string; reason: string };
+/** Projesi belli olmayan toplantı ve (emin olunursa) önerilen proje. */
+export type UnassignedMeeting = Meeting & { suggestion?: MeetingSuggestion | null };
 /** Gün takvimindeki toplantı: serinin projesi (elle ya da kuraldan) ile. */
 export type CalendarMeeting = Meeting & {
   projectId: string | null;
   /** Seri zaman çizelgesine alınmıyor. */
   ignored: boolean;
+  /** Projesi belli değilse önerilen proje. */
+  suggestion?: MeetingSuggestion | null;
 };
 export type TimesheetDay = {
   date: string;
@@ -190,7 +196,7 @@ export type TimesheetDay = {
   /** Projeye atanmamış takip edilen süre (saniye). */
   unassignedSeconds: number;
   /** Hiçbir projeye düşmeyen takvim toplantıları. */
-  meetings: Meeting[];
+  meetings: UnassignedMeeting[];
 };
 export type CalendarStatus = {
   url: string | null;

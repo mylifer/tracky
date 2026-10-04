@@ -8,6 +8,7 @@ use chrono::{Days, NaiveDate, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tracky_core::meeting_suggest::{MeetingSuggester, MeetingSuggestion};
 use tracky_core::timesheet::{Meeting, ProjectMapping, TimesheetConfig, TimesheetEntry};
 use tracky_core::{Rule, RuleField, Store, Tag, TagKind};
 
@@ -60,7 +61,32 @@ pub struct Day {
     /// Bir projeye atanmamış takip edilen süre (saniye): gözden geçirilecek.
     unassigned_seconds: i64,
     /// Takvimde olup hiçbir projeye düşmeyen toplantılar: projeye ata ya da yoksay.
-    meetings: Vec<Meeting>,
+    meetings: Vec<UnassignedMeeting>,
+}
+
+/// Projesi belli olmayan toplantı ve (eminse) önerilen proje.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnassignedMeeting {
+    #[serde(flatten)]
+    meeting: Meeting,
+    suggestion: Option<MeetingSuggestion>,
+}
+
+/// Öneri modeli yalnızca projesiz toplantı varsa ve bir kez kurulur (depo kilidi tutulurken).
+struct LazySuggester<'a> {
+    series: &'a [Meeting],
+    model: Option<MeetingSuggester>,
+}
+
+impl LazySuggester<'_> {
+    fn suggest(&mut self, store: &Store, meeting: &Meeting) -> Option<MeetingSuggestion> {
+        if self.model.is_none() {
+            // Kurulamazsa (depo hatası) öneri yok; liste yine gösterilir.
+            self.model = Some(store.meeting_suggester(self.series).unwrap_or_default());
+        }
+        self.model.as_ref()?.suggest(meeting)
+    }
 }
 
 #[derive(Serialize)]
@@ -151,6 +177,11 @@ pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResu
         local_midnight(first),
         local_midnight(first + Days::new(days.into())),
     );
+    let series = crate::calendar::series(&app);
+    let mut suggester = LazySuggester {
+        series: &series,
+        model: None,
+    };
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
     (0..days)
@@ -192,7 +223,13 @@ pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResu
                 approved: !saved.is_empty(),
                 entries,
                 unassigned_seconds,
-                meetings: unassigned,
+                meetings: unassigned
+                    .into_iter()
+                    .map(|meeting| UnassignedMeeting {
+                        suggestion: suggester.suggest(&store, &meeting),
+                        meeting,
+                    })
+                    .collect(),
             })
         })
         .collect()
@@ -207,6 +244,8 @@ pub struct CalendarMeeting {
     project_id: Option<String>,
     /// Seri zaman çizelgesine alınmıyor (yoksayıldı).
     ignored: bool,
+    /// Projesi belli olmayan (yoksayılmamış) toplantı için önerilen proje.
+    suggestion: Option<MeetingSuggestion>,
 }
 
 /// `start` gününden itibaren `days` günün takvim toplantıları (gün takviminde gösterilir).
@@ -223,9 +262,14 @@ pub async fn calendar_meetings(
         local_midnight(first),
         local_midnight(first + Days::new(days.into())),
     );
-    let (known, unassigned) = lock(&app.state::<Shared>().store)
-        .classify_meetings(&meetings)
-        .map_err(err)?;
+    let series = crate::calendar::series(&app);
+    let mut suggester = LazySuggester {
+        series: &series,
+        model: None,
+    };
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let (known, unassigned) = store.classify_meetings(&meetings).map_err(err)?;
     Ok(meetings
         .into_iter()
         .map(|meeting| {
@@ -233,11 +277,17 @@ pub async fn calendar_meetings(
                 .iter()
                 .find(|(m, _)| *m == meeting)
                 .map(|(_, p)| p.clone());
-            let ignored = project_id.is_none() && !unassigned.contains(&meeting);
+            let open = unassigned.contains(&meeting);
+            let suggestion = if open {
+                suggester.suggest(&store, &meeting)
+            } else {
+                None
+            };
             CalendarMeeting {
+                ignored: project_id.is_none() && !open,
                 meeting,
                 project_id,
-                ignored,
+                suggestion,
             }
         })
         .collect())

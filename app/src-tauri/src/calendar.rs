@@ -176,6 +176,13 @@ pub fn meetings(app: &AppHandle, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<
     calendar.map(|c| c.meetings(from, to)).unwrap_or_default()
 }
 
+/// Takvimdeki her seriden bir örnek (toplantı önerileri geçmişten öğrenir); takvim bağlı
+/// değilse boş.
+pub fn series(app: &AppHandle) -> Vec<Meeting> {
+    let calendar = lock(&app.state::<CalendarState>().calendar).clone();
+    calendar.map(|c| c.series()).unwrap_or_default()
+}
+
 fn run(app: AppHandle, rx: Receiver<CalendarCommand>) {
     // Önce son okunan dosya: ağ beklenmeden toplantılar görünsün.
     if saved_url(&app).is_some()

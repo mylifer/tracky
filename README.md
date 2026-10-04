@@ -87,6 +87,12 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       (geri alınabilir)
 - [x] 45. Atama önerileri en az 15 dakikalık süre için: Gözden geçir, özet kartı, zaman çizelgesi ve "Haftayı kapat"
       daha kısa grupları, başlıkları ve boşta süreyi önermez (grubu atamak kısaları da kapsar)
+- [x] 46. Toplantı → proje önerileri: projesi belli olmayan toplantıya, daha önce atanan serilerden öğrenilen
+      katılımcı alan adı (kendi ve gmail.com gibi genel alan adları hariç), düzenleyen ve konu sözcükleriyle ya da
+      konuda geçen proje/müşteri adı ve kuralın bağladığı iş anahtarıyla proje önerilir ("→ Portal", gerekçesi
+      ipucunda); tek tıkla ya da "Önerilenleri ata" ile seri atanır. Takvim katılımcı yayımlamıyorsa konu ve
+      düzenleyen yeter; belirsizse, arşivdeki projeye ya da 15 dakikadan kısa toplantıya öneri yok. Gün takvimindeki
+      toplantı menüsünde de görünür
 
 ## Yapı
 
