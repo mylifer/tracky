@@ -339,15 +339,17 @@ function NavItem({
     <button
       onClick={onClick}
       aria-current={active ? "page" : undefined}
+      title={typeof children === "string" ? children : undefined}
       className={cn(
         "flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-primary",
         active ? "bg-sidebar-accent font-medium" : "hover:bg-sidebar-accent/50",
       )}
     >
       {icon}
-      {children}
+      {/* Dar kenar çubuğunda ad tek satırda kalır, sığmazsa kısalır (iki satıra bölünüp ortalanmaz). */}
+      <span className="min-w-0 flex-1 truncate text-left">{children}</span>
       {!!badge && (
-        <span className="ml-auto rounded-full bg-primary/15 px-1.5 text-[10px] leading-4 font-semibold text-primary tabular">
+        <span className="shrink-0 rounded-full bg-primary/15 px-1.5 text-[10px] leading-4 font-semibold text-primary tabular">
           {badge}
         </span>
       )}
