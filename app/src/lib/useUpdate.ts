@@ -3,7 +3,7 @@ import { api, type UpdateStatus } from "../api";
 import { useTauriEvent } from "./useTauriEvent";
 
 /** Pencere öne gelince, son denetim bundan eskiyse yeniden denetlenir. */
-const FOCUS_RECHECK_MS = 10 * 60_000;
+const FOCUS_RECHECK_MS = 2 * 60_000;
 /** Kancayı kullanan birden çok bileşen aynı odakta ikinci kez denetlemesin. */
 let lastAsked = 0;
 
@@ -21,7 +21,7 @@ export function useUpdate(): [UpdateStatus | null, (s: UpdateStatus) => void] {
       api.updateStatus().then(
         (s) => {
           const last = s.lastChecked ? Date.parse(s.lastChecked) : 0;
-          if (!s.ready && !s.checking && Date.now() - last >= FOCUS_RECHECK_MS) api.checkUpdate().catch(() => {});
+          if (!s.checking && Date.now() - last >= FOCUS_RECHECK_MS) api.checkUpdate().catch(() => {});
         },
         () => {},
       );

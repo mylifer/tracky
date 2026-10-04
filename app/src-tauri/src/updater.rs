@@ -14,9 +14,10 @@ use crate::{lock, tray};
 
 /// Açılıştan sonra ilk denetim (takip ve senkronizasyon önce otursun).
 const FIRST_CHECK: Duration = Duration::from_secs(30);
-/// Arka plan denetimlerinin aralığı. Duvar saatine göre ölçülür: Mac uykudan uyanınca
-/// geciken denetim bir dakika içinde yapılır.
-const INTERVAL: chrono::Duration = chrono::Duration::hours(1);
+/// Arka plan denetimlerinin aralığı: yeni sürüm birkaç dakika içinde görünsün (latest.json
+/// küçük bir dosya). Duvar saatine göre ölçülür: Mac uykudan uyanınca geciken denetim bir
+/// dakika içinde yapılır.
+const INTERVAL: chrono::Duration = chrono::Duration::minutes(5);
 const TICK: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -76,11 +77,9 @@ fn set(app: &AppHandle, f: impl FnOnce(&mut UpdateStatus)) -> UpdateStatus {
     snapshot
 }
 
-/// Denetler; yeni sürüm varsa indirir ve kuruluma hazır tutar.
+/// Denetler; yeni sürüm varsa indirir ve kuruluma hazır tutar. Hazır bekleyen paketten
+/// daha yeni bir sürüm çıktıysa onu indirip yerine koyar.
 async fn check_and_download(app: &AppHandle) -> UpdateStatus {
-    if lock(&app.state::<UpdateState>().pending).is_some() {
-        return lock(&app.state::<UpdateState>().status).clone();
-    }
     // Arka plan denetimi sürerken elle denetim (ya da tersi) aynı paketi ikinci kez
     // indirmesin: bayrak denetimle aynı kilit altında alınır.
     {
@@ -102,12 +101,21 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
             }
             Err(e) => return Err(message(e)),
         };
-        // İndirme sürerken de arayüz ve menü çubuğu yeni sürümü göstersin.
-        set(app, |s| {
-            s.available = Some(update.version.clone());
-            s.notes = update.body.clone();
-            s.ready = false;
-        });
+        let pending = lock(&app.state::<UpdateState>().pending)
+            .as_ref()
+            .map(|(u, _)| u.version.clone());
+        if pending.as_deref() == Some(update.version.as_str()) {
+            return Ok(None);
+        }
+        // İndirme sürerken de arayüz ve menü çubuğu yeni sürümü göstersin. Hazır bekleyen
+        // paket varsa o, yenisi inene kadar gösterilir ve kurulabilir kalır.
+        if pending.is_none() {
+            set(app, |s| {
+                s.available = Some(update.version.clone());
+                s.notes = update.body.clone();
+                s.ready = false;
+            });
+        }
         let bytes = update.download(|_, _| {}, || {}).await.map_err(message)?;
         Ok(Some((update, bytes)))
     }
@@ -125,12 +133,17 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
                 s.ready = true;
             })
         }
-        Ok(None) => set(app, |s| {
-            s.checking = false;
-            s.last_checked = Some(Utc::now());
-            s.available = None;
-            s.notes = None;
-        }),
+        Ok(None) => {
+            let pending = lock(&app.state::<UpdateState>().pending).is_some();
+            set(app, |s| {
+                s.checking = false;
+                s.last_checked = Some(Utc::now());
+                if !pending {
+                    s.available = None;
+                    s.notes = None;
+                }
+            })
+        }
         Err(e) => set(app, |s| {
             s.checking = false;
             s.last_checked = Some(Utc::now());
