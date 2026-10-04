@@ -26,11 +26,11 @@ import {
   type EntryKind,
   type EntryView,
   type Exported,
-  type Meeting,
   type Tag,
   type TimesheetConfig,
   type TimesheetDay,
   type TimesheetEntry,
+  type UnassignedMeeting,
 } from "../api";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { CalendarConnect, CONNECTIONS_SECTION, fileName, SheetConnect, TIMESHEET_SECTION } from "./TimesheetSettings";
@@ -1068,7 +1068,7 @@ function DayCard({
  * Takvimde olup hiçbir projeye düşmeyen toplantılar. Seçilen proje serinin tüm tekrarlarına
  * uygulanır (haftalık toplantı bir kez atanır); "Yoksay" seriyi zaman çizelgesinden çıkarır.
  */
-function MeetingList(props: { date: string; meetings: Meeting[]; projects: Tag[]; run: Run }) {
+function MeetingList(props: { date: string; meetings: UnassignedMeeting[]; projects: Tag[]; run: Run }) {
   return (
     <div className="border-t px-4 py-2">
       <div className="flex items-center gap-1.5 pb-1 text-[11px] text-muted-foreground">
@@ -1079,7 +1079,11 @@ function MeetingList(props: { date: string; meetings: Meeting[]; projects: Tag[]
   );
 }
 
-/** Toplantılar ve proje seçimi (gün kartında ve dönem denetiminde). */
+/**
+ * Toplantılar ve proje seçimi (gün kartında ve dönem denetiminde). Emin olunan öneri seçicinin
+ * yanında "→ Proje" olarak durur (gerekçesi ipucunda); tıklayınca seri o projeye atanır.
+ * Birden çok seri için öneri varsa hepsi tek düğmeyle atanır.
+ */
 function MeetingRows({
   date,
   meetings,
@@ -1087,32 +1091,64 @@ function MeetingRows({
   run,
 }: {
   date: string;
-  meetings: Meeting[];
+  meetings: UnassignedMeeting[];
   projects: Tag[];
   run: Run;
 }) {
+  const projectName = (id: string) => projects.find((p) => p.id === id)?.name;
+  // Seri başına bir öneri (aynı gün iki tekrar olsa da bir kez atanır); adı bilinmeyen
+  // (seçicide olmayan) proje önerilmez.
+  const suggested = new Map<string, string>();
+  for (const m of meetings) {
+    if (m.suggestion && projectName(m.suggestion.projectId)) suggested.set(m.uid, m.suggestion.projectId);
+  }
+  const assignAll = run(async () => {
+    for (const [uid, projectId] of suggested) await api.assignMeeting(uid, projectId, date);
+  });
   return (
     <ul className="space-y-1">
-      {meetings.map((m) => (
-        <li key={`${m.uid}-${m.start}`} className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="w-24 shrink-0 text-muted-foreground tabular">
-            {timeFmt.format(new Date(m.start))}–{timeFmt.format(new Date(m.end))}
-          </span>
-          <span className="min-w-0 flex-1 truncate" title={m.location || undefined}>
-            {m.subject || "(konusuz)"}
-            <span className="ml-1.5 text-muted-foreground">{m.online ? "Online" : "F2F"}</span>
-          </span>
-          <ProjectSelect
-            value=""
-            projects={projects}
-            placeholder="Projeye ata…"
-            extra={[{ value: IGNORE, label: "Zaman çizelgesine alma" }]}
-            className="w-44"
-            aria-label={`${m.subject} projesi`}
-            onChange={(v) => run(() => api.assignMeeting(m.uid, v === IGNORE ? null : v, date))()}
-          />
+      {meetings.map((m) => {
+        const s = m.suggestion;
+        const name = s ? projectName(s.projectId) : undefined;
+        return (
+          <li key={`${m.uid}-${m.start}`} className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="w-24 shrink-0 text-muted-foreground tabular">
+              {timeFmt.format(new Date(m.start))}–{timeFmt.format(new Date(m.end))}
+            </span>
+            <span className="min-w-0 flex-1 truncate" title={m.location || undefined}>
+              {m.subject || "(konusuz)"}
+              <span className="ml-1.5 text-muted-foreground">{m.online ? "Online" : "F2F"}</span>
+            </span>
+            {s && name && (
+              <button
+                type="button"
+                className="max-w-40 truncate rounded-md border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-solid hover:bg-accent hover:text-foreground"
+                title={`Öneri: ${s.reason}`}
+                aria-label={`${m.subject} toplantısını ${name} projesine ata (${s.reason})`}
+                onClick={run(() => api.assignMeeting(m.uid, s.projectId, date))}
+              >
+                → {name}
+              </button>
+            )}
+            <ProjectSelect
+              value=""
+              projects={projects}
+              placeholder="Projeye ata…"
+              extra={[{ value: IGNORE, label: "Zaman çizelgesine alma" }]}
+              className="w-44"
+              aria-label={`${m.subject} projesi`}
+              onChange={(v) => run(() => api.assignMeeting(m.uid, v === IGNORE ? null : v, date))()}
+            />
+          </li>
+        );
+      })}
+      {suggested.size > 1 && (
+        <li className="flex justify-end">
+          <button className={cn(FIX_LINK, "text-[11px]")} onClick={assignAll}>
+            Önerilenleri ata ({suggested.size})
+          </button>
         </li>
-      ))}
+      )}
     </ul>
   );
 }

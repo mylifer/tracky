@@ -96,6 +96,12 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       anahtarınla). Gün kartında "Yapay zekâyla yaz" ve "Hepsini yeniden yaz", "Haftayı kapat"ta dönemin boş
       açıklamaları; gün başına bir istek, satırın pencere başlıkları, iş anahtarları ve geçmiş açıklamaların
       üslubuyla. Elle yazılan açıklamaya dokunulmaz; sonuç hemen yazılır, bildirimden geri alınır
+- [x] 48. Toplantı → proje önerileri: projesi belli olmayan toplantıya, daha önce atanan serilerden öğrenilen
+      katılımcı alan adı (kendi ve gmail.com gibi genel alan adları hariç), düzenleyen ve konu sözcükleriyle ya da
+      konuda geçen proje/müşteri adı ve kuralın bağladığı iş anahtarıyla proje önerilir ("→ Portal", gerekçesi
+      ipucunda); tek tıkla ya da "Önerilenleri ata" ile seri atanır. Takvim katılımcı yayımlamıyorsa konu ve
+      düzenleyen yeter; belirsizse, arşivdeki projeye ya da 15 dakikadan kısa toplantıya öneri yok. Gün takvimindeki
+      toplantı menüsünde de görünür
 
 ## Yapı
 

@@ -8,8 +8,12 @@ use uuid::Uuid;
 
 use super::{Result, Store, StoreError, from_ms, ms};
 use crate::classify::{Classifier, TagKind};
+use crate::meeting_suggest::{MeetingSuggester, ProjectInfo, SuggestInput};
 use crate::model::Session;
 use crate::timesheet::{self, EntryKind, Meeting, MeetingProject, TimesheetConfig, TimesheetEntry};
+
+/// Toplantı önerilerinde projelerin kullanımına bakılan dönem (gün; zaman çizelgesi kayıtları).
+const SUGGEST_USAGE_DAYS: u64 = 90;
 
 /// Zaman çizelgesi ayarları.
 const TIMESHEET_KEY: &str = "timesheet";
@@ -82,6 +86,58 @@ impl Store {
             }
         }
         Ok((known, unassigned))
+    }
+
+    /// Toplantı → proje öneri modeli ([`crate::meeting_suggest`]). `series` takvimdeki her
+    /// seriden bir örnektir ([`crate::calendar::Calendar::series`]); projesi belli olanlar
+    /// (elle atanan ya da kurala uyan) geçmiş olur. Müşterinin projeleri arasında son
+    /// [`SUGGEST_USAGE_DAYS`] günün zaman çizelgesi saatlerine göre seçilir.
+    pub fn meeting_suggester(&self, series: &[Meeting]) -> Result<MeetingSuggester> {
+        let tags = self.tags()?;
+        let rules = self.rules()?;
+        let classifier = Classifier::new(&tags, &rules);
+        let assigned = self.meeting_assignments()?;
+        let history: Vec<(Meeting, String)> = series
+            .iter()
+            .filter_map(
+                |m| match timesheet::meeting_project(m, &classifier, &assigned) {
+                    MeetingProject::Project(p) => Some((m.clone(), p)),
+                    _ => None,
+                },
+            )
+            .collect();
+        let client_names: HashMap<String, String> = self
+            .clients()?
+            .into_iter()
+            .map(|c| (c.id, c.name))
+            .collect();
+        let project_clients = self.project_clients()?;
+        let archived = self.archived_projects()?;
+        let projects: Vec<ProjectInfo> = tags
+            .into_iter()
+            .filter(|t| t.kind == TagKind::Project)
+            .map(|t| ProjectInfo {
+                client: project_clients
+                    .get(&t.id)
+                    .and_then(|c| client_names.get(c))
+                    .cloned(),
+                archived: archived.contains(&t.id),
+                id: t.id,
+                name: t.name,
+            })
+            .collect();
+        let today = chrono::Local::now().date_naive();
+        let mut usage: HashMap<String, f64> = HashMap::new();
+        for e in self.timesheet_entries(today - chrono::Days::new(SUGGEST_USAGE_DAYS), today)? {
+            *usage.entry(e.entry.project_id).or_default() += e.entry.hours;
+        }
+        Ok(MeetingSuggester::new(&SuggestInput {
+            projects: &projects,
+            history: &history,
+            all: series,
+            rules: &rules,
+            usage: &usage,
+        }))
     }
 
     /// Günün (`day_start`–`day_end`, yerel gün) oturumlarından ve takvim toplantılarından
@@ -394,5 +450,49 @@ mod tests {
         store.save_timesheet_entry(None, &edited).unwrap();
         store.replace_meeting_entries(date, &[a], &[]).unwrap();
         assert_eq!(store.timesheet_entries(date, date).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn meeting_suggester_learns_from_assigned_series_and_skips_archived() {
+        let store = Store::open_in_memory().unwrap();
+        let tag = |id: &str, name: &str| crate::classify::Tag {
+            id: id.into(),
+            kind: TagKind::Project,
+            name: name.into(),
+            color: 1,
+        };
+        store.upsert_tag(&tag("p1", "Portal"), 0).unwrap();
+        let series = |uid: &str, subject: &str| Meeting {
+            uid: uid.into(),
+            start: chrono::Utc::now(),
+            end: chrono::Utc::now() + chrono::Duration::hours(1),
+            subject: subject.into(),
+            attendees: vec!["me@kum.dev".into(), "ali@acme.com".into()],
+            ..Meeting::default()
+        };
+        // İç toplantı: kullanıcının kendi alan adı en sık geçen olur.
+        let mut internal = series("c", "Ekip");
+        internal.attendees.truncate(1);
+        let all = [
+            series("a", "Planlama"),
+            series("b", "Retro"),
+            internal,
+            series("new", "Yeni konu"),
+        ];
+        store.assign_meeting("a", Some("p1")).unwrap();
+        store.assign_meeting("b", Some("p1")).unwrap();
+        let got = store
+            .meeting_suggester(&all)
+            .unwrap()
+            .suggest(&all[3])
+            .unwrap();
+        assert_eq!(got.project_id, "p1");
+        assert_eq!(got.reason, "katılımcılar @acme.com");
+        // Arşivlenen proje önerilmez.
+        store.archive_project("p1").unwrap();
+        assert_eq!(
+            store.meeting_suggester(&all).unwrap().suggest(&all[3]),
+            None
+        );
     }
 }

@@ -148,7 +148,7 @@ pub fn round_quarter(hours: f64) -> f64 {
 }
 
 /// Takvimden (Outlook) bir toplantı; tekrarlayanların her biri ayrı.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Meeting {
     /// Takvimdeki kimlik; tekrarlayan toplantının hepsinde aynı.
@@ -159,6 +159,13 @@ pub struct Meeting {
     pub location: String,
     /// Teams, Zoom, Meet… bağlantısı var.
     pub online: bool,
+    /// Düzenleyenin e-posta adresi (küçük harf). Outlook yayımlanan takvime katılımcıları
+    /// yalnızca "Tüm ayrıntılar" düzeyinde yazar; çoğu zaman yoktur. Arayüze gönderilmez.
+    #[serde(skip)]
+    pub organizer: Option<String>,
+    /// Katılımcıların e-posta adresleri (küçük harf, düzenleyen dahil olabilir).
+    #[serde(skip)]
+    pub attendees: Vec<String>,
 }
 
 /// Toplantıların proje kuralları bu uygulama kimliğiyle denenir (yalnızca başlık kuralları uyar).
@@ -811,6 +818,7 @@ mod tests {
             subject: subject.into(),
             location: String::new(),
             online,
+            ..Meeting::default()
         }
     }
 

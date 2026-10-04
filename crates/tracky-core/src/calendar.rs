@@ -84,6 +84,8 @@ struct Event {
     rrule: Option<String>,
     exdates: Vec<Stamp>,
     recurrence_id: Option<Stamp>,
+    organizer: Option<String>,
+    attendees: Vec<String>,
 }
 
 /// VTIMEZONE: standart ve yaz saati geçişleri.
@@ -180,6 +182,20 @@ fn unescape(v: &str) -> String {
         }
     }
     out
+}
+
+/// ORGANIZER / ATTENDEE satırındaki e-posta: `mailto:` değeri, yoksa `EMAIL` parametresi.
+/// Küçük harfe çevrilir; '@' içermeyen (oda, kaynak adı) değer atlanır.
+fn email_of(line: &Line) -> Option<String> {
+    let value = line.value.trim();
+    let address = match value.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("mailto:") => &value[7..],
+        _ => line.param("EMAIL").unwrap_or(value),
+    };
+    let address = address.trim().to_lowercase();
+    let (user, domain) = address.split_once('@')?;
+    (!user.is_empty() && domain.contains('.') && !address.contains(char::is_whitespace))
+        .then_some(address)
 }
 
 fn parse_naive(v: &str) -> Option<NaiveDateTime> {
@@ -357,6 +373,45 @@ impl Calendar {
         self.events.is_empty()
     }
 
+    /// Her toplantı serisinden (UID) bir örnek, tekrarlar açılmadan: serinin ilk hâli (tek
+    /// seferlik değişiklik değil). Saat ilk tekrarınkidir. Toplantı önerileri geçmiş serilerden
+    /// öğrenirken kullanılır ([`crate::meeting_suggest`]); tüm geçmişi açmaktan çok ucuzdur.
+    pub fn series(&self) -> Vec<Meeting> {
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        let mut out: Vec<Meeting> = Vec::new();
+        for e in &self.events {
+            if e.skip || e.all_day || e.uid.is_empty() {
+                continue;
+            }
+            let Some((start, length)) = self.span(e) else {
+                continue;
+            };
+            let Some(s) = self.to_utc(&start) else {
+                continue;
+            };
+            let meeting = Meeting {
+                uid: e.uid.clone(),
+                start: s,
+                end: s + length,
+                subject: e.summary.trim().to_string(),
+                location: e.location.trim().to_string(),
+                online: e.online,
+                organizer: e.organizer.clone(),
+                attendees: e.attendees.clone(),
+            };
+            match seen.get(e.uid.as_str()) {
+                // Değişiklik önce gelmişse yerine serinin asıl hâli yazılır.
+                Some(&i) if e.recurrence_id.is_none() => out[i] = meeting,
+                Some(_) => {}
+                None => {
+                    seen.insert(e.uid.as_str(), out.len());
+                    out.push(meeting);
+                }
+            }
+        }
+        out
+    }
+
     /// `[from, to)` ile kesişen toplantılar, başlangıca göre sıralı.
     pub fn meetings(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<Meeting> {
         // Tek seferlik değişiklikler: (UID, asıl başlangıç) → değişen etkinlik.
@@ -377,6 +432,8 @@ impl Calendar {
                     subject: e.summary.trim().to_string(),
                     location: e.location.trim().to_string(),
                     online: e.online,
+                    organizer: e.organizer.clone(),
+                    attendees: e.attendees.clone(),
                 });
             }
         };
@@ -595,6 +652,14 @@ impl Event {
             "X-MICROSOFT-CDO-BUSYSTATUS" => {
                 let v = value.trim().to_ascii_uppercase();
                 self.skip |= v == "FREE" || v == "OOF";
+            }
+            "ORGANIZER" => self.organizer = email_of(line),
+            "ATTENDEE" => {
+                if let Some(a) = email_of(line)
+                    && !self.attendees.contains(&a)
+                {
+                    self.attendees.push(a);
+                }
             }
             _ => {}
         }
@@ -1061,6 +1126,49 @@ END:VCALENDAR\r
         let line = parse_line(r#"DTSTART;TZID="Ev: Saat":20261005T100000"#).unwrap();
         assert_eq!(line.param("TZID"), Some("Ev: Saat"));
         assert_eq!(line.value, "20261005T100000");
+    }
+
+    #[test]
+    fn parses_organizer_and_attendees() {
+        // "Tüm ayrıntılar" düzeyinde yayımlanan Outlook takvimi: CN parametreleri (tırnaklı,
+        // içinde ':' ve ';'), büyük harfli MAILTO, katlanmış satır, adresi olmayan oda.
+        let text = "BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+UID:acme-weekly\r
+SUMMARY:Loyalty haftalık\r
+DTSTART:20261005T090000Z\r
+DTEND:20261005T100000Z\r
+ORGANIZER;CN=\"Yılmaz, Ayşe: PM\":mailto:Ayse.Yilmaz@Acme.com\r
+ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Ali Veli:MAILTO:ali@\r
+ acme.com\r
+ATTENDEE;CN=Ben;RSVP=TRUE:mailto:me@kum.dev\r
+ATTENDEE;CUTYPE=RESOURCE;CN=Toplantı Odası 3:Toplantı Odası 3\r
+ATTENDEE;CN=E-posta param;EMAIL=veli@partner.com.tr:urn:uuid:1234\r
+ATTENDEE;CN=Tekrar:mailto:ali@acme.com\r
+END:VEVENT\r
+BEGIN:VEVENT\r
+UID:no-details\r
+SUMMARY:Meşgul\r
+DTSTART:20261005T110000Z\r
+DTEND:20261005T113000Z\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+        let cal = Calendar::parse(text);
+        let got = cal.meetings(utc("2026-10-05 00:00"), utc("2026-10-06 00:00"));
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].organizer.as_deref(), Some("ayse.yilmaz@acme.com"));
+        assert_eq!(
+            got[0].attendees,
+            ["ali@acme.com", "me@kum.dev", "veli@partner.com.tr"]
+        );
+        // Katılımcı bilgisi yayımlanmamışsa boş kalır.
+        assert_eq!(got[1].organizer, None);
+        assert!(got[1].attendees.is_empty());
+        // Seri başına bir örnek de aynı bilgileri taşır.
+        let series = cal.series();
+        assert_eq!(series.len(), 2);
+        assert_eq!(series[0].attendees.len(), 3);
     }
 
     #[test]

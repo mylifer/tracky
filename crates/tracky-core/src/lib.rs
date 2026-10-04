@@ -15,6 +15,7 @@ pub mod engine;
 pub mod export;
 pub mod inbox;
 pub mod learn;
+pub mod meeting_suggest;
 pub mod model;
 pub mod platform;
 pub mod privacy;

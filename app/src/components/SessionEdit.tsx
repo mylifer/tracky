@@ -263,6 +263,9 @@ export function MeetingMenu({
   const [value, setValue] = useState(m.projectId ?? (m.ignored ? IGNORE : ""));
   const [error, setError] = useState<string | null>(null);
   const subject = m.subject || "(konusuz)";
+  // Projesi belli olmayan toplantının önerisi (seçicide olan bir projeyse).
+  const suggestion = value === "" && m.suggestion ? m.suggestion : null;
+  const suggestedName = suggestion ? projects.find((p) => p.id === suggestion.projectId)?.name : undefined;
 
   function assign(v: string) {
     const before = value;
@@ -288,6 +291,17 @@ export function MeetingMenu({
       ) : (
         <div className="space-y-1">
           <span className="block text-[11px] text-muted-foreground">Proje</span>
+          {suggestion && suggestedName && (
+            <button
+              type="button"
+              className="flex w-full items-center gap-1.5 rounded-md border border-dashed px-2 py-1 text-left text-xs hover:border-solid hover:bg-accent"
+              title={`Öneri: ${suggestion.reason}`}
+              onClick={() => assign(suggestion.projectId)}
+            >
+              <span className="truncate">→ {suggestedName}</span>
+              <span className="ml-auto shrink-0 truncate text-[11px] text-muted-foreground">{suggestion.reason}</span>
+            </button>
+          )}
           <ProjectSelect
             value={value}
             projects={projects}
@@ -308,7 +322,7 @@ export function MeetingMenu({
           variant="outline"
           className="w-full"
           onClick={() => {
-            const project = value === "" || value === IGNORE ? null : value;
+            const project = value === IGNORE ? null : value || (suggestedName && suggestion?.projectId) || null;
             onAddEntry(+a, Math.min(+b, Date.now()), m.subject, project);
             onClose();
           }}
