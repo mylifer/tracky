@@ -7,6 +7,10 @@
 //! yetmezse o günün son satırının altına, gün hiç yoksa tarih sırasını bozmayacak
 //! yere satır eklenir. Eklenen satırlar biçimini üstteki satırdan alır. Yazmadan önce
 //! dosyanın yanına zaman damgalı yedek alınır.
+//!
+//! Google Sheets'e aynı kurallarla yazmak için [`sheets`].
+
+pub mod sheets;
 
 use std::path::{Path, PathBuf};
 
@@ -37,6 +41,8 @@ pub enum Error {
     NoSheet,
     #[error("başlık satırında \"{0}\" sütunu bulunamadı")]
     MissingColumn(&'static str),
+    #[error("Google Sheets: {0}")]
+    Sheets(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

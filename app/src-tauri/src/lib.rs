@@ -1,5 +1,6 @@
 //! Kum masaüstü uygulaması: menü çubuğunda yaşayan zaman takipçisi.
 
+mod calendar;
 mod commands;
 mod effects;
 mod sync;
@@ -307,6 +308,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         handle: Mutex::new(Some(worker)),
     });
     sync::start(app)?;
+    calendar::start(app)?;
     updater::start(app);
 
     // Karşılama tamamlanmadıysa ya da izin eksikse pencereyi göster;
@@ -366,6 +368,14 @@ pub fn run() {
             timesheet::pick_timesheet_file,
             timesheet::import_timesheet_template,
             timesheet::export_timesheet,
+            timesheet::assign_meeting,
+            timesheet::sheet_script,
+            timesheet::connect_sheet,
+            timesheet::disconnect_sheet,
+            calendar::calendar_status,
+            calendar::set_calendar_url,
+            calendar::refresh_calendar,
+            calendar::restore_ignored_meetings,
             commands::get_trends,
             commands::export_search,
             commands::accept_project_suggestion,
@@ -403,6 +413,7 @@ pub fn run() {
     app.run(|app, event| {
         if let RunEvent::Exit = event {
             sync::shutdown(app);
+            calendar::shutdown(app);
             let worker = app.state::<Worker>();
             let _ = worker.tx.send(Command::Shutdown);
             // Kilit join'den önce bırakılır; takip iş parçacığı bitmeyi beklerken tutulmasın.

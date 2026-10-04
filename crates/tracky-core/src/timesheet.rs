@@ -4,6 +4,10 @@
 //! Yalnızca bir projeye düşen süre iş sayılır. Aynı projede ve aynı türdeki ardışık
 //! oturumlar, aradaki boşluk `MERGE_GAP`'i geçmedikçe tek kayıt olur; kaydın saati
 //! boşluklar değil, oturumların toplam süresidir (yuvarlanmaz).
+//!
+//! Takvimden gelen ve bir projeye düşen toplantılar kendi kaydı olur (konusu açıklama,
+//! çevrim içiyse Online, değilse F2F). Toplantı süresince takip edilen iş sayılmaz: aynı
+//! saat iki kez yazılmasın.
 
 use std::collections::HashMap;
 
@@ -52,6 +56,13 @@ pub struct TimesheetConfig {
     pub consultant: String,
     /// Kayıtların ekleneceği Excel dosyası.
     pub file_path: Option<String>,
+    /// Doluysa kayıtlar Excel yerine bu Google Sheets tablosuna, tabloya eklenen Apps Script
+    /// web uygulaması (`…/exec`) üzerinden yazılır.
+    pub sheet_url: Option<String>,
+    /// Tablonun kendisi (docs.google.com bağlantısı; açmak için).
+    pub sheet_link: Option<String>,
+    /// Apps Script'in yalnızca Kum'dan gelen istekleri kabul etmesi için anahtar.
+    pub sheet_token: String,
     /// "Parties" varsayılanı (örn. kendi firman).
     pub default_party: String,
     /// Proje → firmadaki birim ("Togg Division") ve taraf.
@@ -78,6 +89,9 @@ impl Default for TimesheetConfig {
             company: String::new(),
             consultant: String::new(),
             file_path: None,
+            sheet_url: None,
+            sheet_link: None,
+            sheet_token: String::new(),
             default_party: String::new(),
             projects: Vec::new(),
             day_hours: 8.0,
@@ -112,6 +126,70 @@ pub struct TimesheetEntry {
     pub party: String,
     pub project_id: String,
     pub division: String,
+}
+
+/// Takvimden (Outlook) bir toplantı; tekrarlayanların her biri ayrı.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Meeting {
+    /// Takvimdeki kimlik; tekrarlayan toplantının hepsinde aynı.
+    pub uid: String,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub subject: String,
+    pub location: String,
+    /// Teams, Zoom, Meet… bağlantısı var.
+    pub online: bool,
+}
+
+/// Toplantıların proje kuralları bu uygulama kimliğiyle denenir (yalnızca başlık kuralları uyar).
+pub const CALENDAR_APP_ID: &str = "kum.calendar";
+
+/// Bir toplantının zaman çizelgesindeki yeri.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeetingProject {
+    Project(String),
+    /// Kullanıcı bu toplantıyı (serisini) zaman çizelgesine almamayı seçti.
+    Ignored,
+    /// Ne elle atandı ne de bir proje kuralına uyuyor.
+    Unassigned,
+}
+
+/// Elle atama (toplantı serisi → proje, `None`: yoksay) önce gelir; yoksa konusu proje
+/// kurallarına (örn. başlıkta "Togg") göre sınıflandırılır.
+pub fn meeting_project(
+    meeting: &Meeting,
+    classifier: &Classifier,
+    assigned: &HashMap<String, Option<String>>,
+) -> MeetingProject {
+    match assigned.get(&meeting.uid) {
+        Some(Some(project)) => MeetingProject::Project(project.clone()),
+        Some(None) => MeetingProject::Ignored,
+        None => classifier
+            .classify_parts(CALENDAR_APP_ID, &meeting.subject)
+            .project
+            .map_or(MeetingProject::Unassigned, MeetingProject::Project),
+    }
+}
+
+type Interval = (DateTime<Utc>, DateTime<Utc>);
+
+/// `pieces`'ten `cut` aralığını çıkarır.
+fn subtract(pieces: Vec<Interval>, cut: Interval) -> Vec<Interval> {
+    let mut out = Vec::with_capacity(pieces.len() + 1);
+    for (a, b) in pieces {
+        if cut.1 <= a || cut.0 >= b {
+            out.push((a, b));
+            continue;
+        }
+        if cut.0 > a {
+            out.push((a, cut.0));
+        }
+        if cut.1 < b {
+            out.push((cut.1, b));
+        }
+    }
+    out
 }
 
 /// Tarayıcıda Google Meet / Teams sekmesi de toplantıdır.
@@ -162,10 +240,12 @@ fn clean_title(title: &str, app_name: &str) -> String {
 /// Kırpılmış oturum: (başlangıç, bitiş, oturum, proje, tür).
 type Span<'a> = (DateTime<Utc>, DateTime<Utc>, &'a Session, String, EntryKind);
 
-/// Günün oturumlarından iş kaydı önerileri; başlangıca göre sıralı.
-/// `day_start`/`day_end` yerel günün sınırlarıdır; oturumlar bunlara kırpılır.
+/// Günün oturumlarından ve toplantılarından iş kaydı önerileri; başlangıca göre sıralı.
+/// `meetings` projesi belli toplantılardır ([`meeting_project`]). `day_start`/`day_end`
+/// yerel günün sınırlarıdır; oturumlar ve toplantılar bunlara kırpılır.
 pub fn propose(
     sessions: &[Session],
+    meetings: &[(Meeting, String)],
     classifier: &Classifier,
     project_names: &HashMap<String, String>,
     config: &TimesheetConfig,
@@ -180,12 +260,52 @@ pub fn propose(
         worked: Duration,
         titles: HashMap<String, Duration>,
     }
+    // Toplantılar: üst üste binenlerde ortak süre ilkine yazılır.
+    let mut sorted: Vec<&(Meeting, String)> = meetings.iter().collect();
+    sorted.sort_by_key(|(m, _)| (m.start, m.end));
+    let mut covered: Vec<Interval> = Vec::new();
+    let mut meeting_runs: Vec<Run> = Vec::new();
+    for (m, project) in sorted {
+        let span = (m.start.max(day_start), m.end.min(day_end));
+        if span.1 <= span.0 {
+            continue;
+        }
+        let pieces = covered.iter().fold(vec![span], |p, &c| subtract(p, c));
+        covered.push(span);
+        let Some(&(start, _)) = pieces.first() else {
+            continue;
+        };
+        let worked = pieces
+            .iter()
+            .fold(Duration::zero(), |t, (a, b)| t + (*b - *a));
+        meeting_runs.push(Run {
+            project: project.clone(),
+            kind: if m.online {
+                EntryKind::Online
+            } else {
+                EntryKind::F2F
+            },
+            start,
+            end: start,
+            worked,
+            titles: HashMap::from([(m.subject.clone(), worked)]),
+        });
+    }
+
     let mut spans: Vec<Span> = sessions
         .iter()
         .filter_map(|s| {
             let project = classifier.classify(s).project?;
             let (a, b) = (s.started_at.max(day_start), s.ended_at.min(day_end));
             (b > a).then(|| (a, b, s, project, kind_of(s, config)))
+        })
+        // Toplantı süresince takip edilen iş, toplantının kaydında sayılır.
+        .flat_map(|(a, b, s, project, kind)| {
+            covered
+                .iter()
+                .fold(vec![(a, b)], |p, &c| subtract(p, c))
+                .into_iter()
+                .map(move |(a, b)| (a, b, s, project.clone(), kind))
         })
         .collect();
     spans.sort_by_key(|s| s.0);
@@ -215,11 +335,15 @@ pub fn propose(
             .or_insert(Duration::zero()) += b - a;
     }
     runs.extend(open.into_values());
+    let meetings_from = runs.len();
+    runs.extend(meeting_runs);
 
     let mut out: Vec<TimesheetEntry> = runs
         .into_iter()
-        .filter(|r| r.worked >= MIN_ENTRY)
-        .map(|r| {
+        .enumerate()
+        .filter(|(_, r)| r.worked >= MIN_ENTRY)
+        .map(|(i, r)| (i >= meetings_from, r))
+        .map(|(is_meeting, r)| {
             let mapping = config.projects.iter().find(|m| m.project_id == r.project);
             let name = project_names.get(&r.project).cloned().unwrap_or_default();
             let division = mapping
@@ -230,8 +354,9 @@ pub fn propose(
                 .and_then(|m| m.party.clone())
                 .filter(|p| !p.trim().is_empty())
                 .unwrap_or_else(|| config.default_party.clone());
-            let details = if r.kind == EntryKind::Online {
-                // Toplantı uygulamasının başlığı ("Zoom Meeting") açıklama değildir.
+            let details = if r.kind == EntryKind::Online && !is_meeting {
+                // Toplantı uygulamasının başlığı ("Zoom Meeting") açıklama değildir;
+                // takvimden gelen toplantının konusu ise açıklamadır.
                 String::new()
             } else {
                 let mut titles: Vec<_> = r
@@ -374,7 +499,15 @@ mod tests {
             s("Figma", "Trumore Pitchdeck — Figma", 150, 170, None), // 60 dk boşluk: yeni kayıt
             s("Slack", "sync", 170, 173, Some("sync")), // 3 dk: çok kısa
         ];
-        let got = propose(&sessions, &classifier, &names, &config, t(-540), t(900));
+        let got = propose(
+            &sessions,
+            &[],
+            &classifier,
+            &names,
+            &config,
+            t(-540),
+            t(900),
+        );
         let rows: Vec<_> = got
             .iter()
             .map(|e| {
@@ -425,7 +558,15 @@ mod tests {
         config.projects[0].party = Some("Togg".into());
         let mut meeting = s("kum.manual/Workshop", "Workshop", 0, 60, Some("sync"));
         meeting.app_name = "Workshop".into();
-        let got = propose(&[meeting], &classifier, &names, &config, t(-540), t(900));
+        let got = propose(
+            &[meeting],
+            &[],
+            &classifier,
+            &names,
+            &config,
+            t(-540),
+            t(900),
+        );
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, EntryKind::F2F);
         assert_eq!(got[0].details, "Workshop");
@@ -441,6 +582,7 @@ mod tests {
         let (classifier, names, config) = setup();
         let got = propose(
             &[s("com.google.Chrome", "Meet - Trumore weekly", 0, 30, None)],
+            &[],
             &classifier,
             &names,
             &config,
@@ -448,6 +590,111 @@ mod tests {
             t(900),
         );
         assert_eq!(got[0].kind, EntryKind::Online);
+    }
+
+    fn meeting(uid: &str, subject: &str, from: i64, to: i64, online: bool) -> Meeting {
+        Meeting {
+            uid: uid.into(),
+            start: t(from),
+            end: t(to),
+            subject: subject.into(),
+            location: String::new(),
+            online,
+        }
+    }
+
+    #[test]
+    fn calendar_meetings_become_entries_and_replace_tracked_time() {
+        let (classifier, names, config) = setup();
+        let sessions = [
+            // 09:00–10:30 Figma; 09:30–10:00 arası toplantıdaydı (ekran paylaşımı).
+            s("Figma", "Trumore Loyalty UI/UX — Figma", 0, 90, None),
+        ];
+        let meetings = [
+            (
+                meeting("w", "Trumore haftalık", 30, 60, true),
+                "tru".to_string(),
+            ),
+            // Yüz yüze; ilk 15 dakikası öncekiyle çakışıyor (iki kez sayılmaz).
+            (
+                meeting("f", "Sync atölye", 45, 105, false),
+                "sync".to_string(),
+            ),
+        ];
+        let got = propose(
+            &sessions,
+            &meetings,
+            &classifier,
+            &names,
+            &config,
+            t(-540),
+            t(900),
+        );
+        let rows: Vec<_> = got
+            .iter()
+            .map(|e| {
+                (
+                    e.start.format("%H:%M").to_string(),
+                    (e.hours * 60.0).round() as i64,
+                    e.kind,
+                    e.details.as_str(),
+                    e.division.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                // Figma 90 dk − toplantılar (09:30–10:30 kapalı) = 30 dk.
+                (
+                    "09:00".to_string(),
+                    30,
+                    EntryKind::Working,
+                    "Trumore Loyalty UI/UX",
+                    "Trumore"
+                ),
+                (
+                    "09:30".to_string(),
+                    30,
+                    EntryKind::Online,
+                    "Trumore haftalık",
+                    "Trumore"
+                ),
+                (
+                    "10:00".to_string(),
+                    45,
+                    EntryKind::F2F,
+                    "Sync atölye",
+                    "Int.Work.Sync."
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn meeting_project_prefers_assignment_then_rules() {
+        let (classifier, _, _) = setup();
+        let m = meeting("seri", "Trumore weekly", 0, 30, true);
+        let mut assigned = HashMap::new();
+        assert_eq!(
+            meeting_project(&m, &classifier, &assigned),
+            MeetingProject::Project("tru".into())
+        );
+        let other = meeting("x", "1:1", 0, 30, true);
+        assert_eq!(
+            meeting_project(&other, &classifier, &assigned),
+            MeetingProject::Unassigned
+        );
+        assigned.insert("seri".to_string(), Some("sync".to_string()));
+        assigned.insert("x".to_string(), None);
+        assert_eq!(
+            meeting_project(&m, &classifier, &assigned),
+            MeetingProject::Project("sync".into())
+        );
+        assert_eq!(
+            meeting_project(&other, &classifier, &assigned),
+            MeetingProject::Ignored
+        );
     }
 
     fn entry(project: &str, kind: EntryKind, hh: u32, mm: u32, hours: f64) -> TimesheetEntry {

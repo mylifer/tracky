@@ -132,18 +132,53 @@ export type TimesheetEntry = {
   division: string;
 };
 export type EntryView = TimesheetEntry & { id: string | null; exported: boolean };
+/** Takvimden (Outlook) bir toplantı. */
+export type Meeting = {
+  /** Serinin kimliği: tekrarlayan toplantının hepsinde aynı. */
+  uid: string;
+  start: string;
+  end: string;
+  subject: string;
+  location: string;
+  online: boolean;
+};
 export type TimesheetDay = {
   date: string;
   approved: boolean;
   entries: EntryView[];
   /** Projeye atanmamış takip edilen süre (saniye). */
   unassignedSeconds: number;
+  /** Hiçbir projeye düşmeyen takvim toplantıları. */
+  meetings: Meeting[];
+};
+export type CalendarStatus = {
+  url: string | null;
+  events: number;
+  last: { at: string; ok: boolean; message: string } | null;
+  /** Yoksayılan toplantı serisi sayısı. */
+  ignored: number;
+};
+export type Imported = { config: TimesheetConfig; created: string[]; details: number };
+export type Exported = {
+  rows: number;
+  filled: number;
+  inserted: number;
+  skipped: number;
+  backup: string | null;
+  /** Excel dosyası ya da Sheets sayfası. */
+  target: string;
+  sheets: boolean;
 };
 export type ProjectMapping = { projectId: string; division: string; party: string | null };
 export type TimesheetConfig = {
   company: string;
   consultant: string;
   filePath: string | null;
+  /** Apps Script web uygulaması (…/exec); doluysa kayıtlar Google Sheets'e gider. */
+  sheetUrl: string | null;
+  /** Tablonun docs.google.com bağlantısı. */
+  sheetLink: string | null;
+  sheetToken: string;
   defaultParty: string;
   projects: ProjectMapping[];
   meetingApps: string[];
@@ -234,13 +269,20 @@ export const api = {
   deleteTimesheetEntry: (id: string) => invoke<void>("delete_timesheet_entry", { id }),
   timesheetDetails: () => invoke<string[]>("timesheet_details"),
   pickTimesheetFile: () => invoke<string | null>("pick_timesheet_file"),
-  importTimesheetTemplate: (path: string) =>
-    invoke<{ config: TimesheetConfig; created: string[]; details: number }>("import_timesheet_template", { path }),
-  exportTimesheet: (start: string, days: number) =>
-    invoke<{ rows: number; filled: number; inserted: number; backup: string; path: string }>("export_timesheet", {
-      start,
-      days,
-    }),
+  importTimesheetTemplate: (path: string) => invoke<Imported>("import_timesheet_template", { path }),
+  exportTimesheet: (start: string, days: number) => invoke<Exported>("export_timesheet", { start, days }),
+  sheetScript: () => invoke<string>("sheet_script"),
+  connectSheet: (url: string, link: string | null) => invoke<Imported>("connect_sheet", { url, link }),
+  disconnectSheet: () => invoke<TimesheetConfig>("disconnect_sheet"),
+  /** Toplantı serisini projeye ata; `null` yoksayar. */
+  assignMeeting: (uid: string, projectId: string | null, date: string) =>
+    invoke<void>("assign_meeting", { uid, projectId, date }),
+  calendarStatus: () => invoke<CalendarStatus>("calendar_status"),
+  setCalendarUrl: (url: string | null) => invoke<CalendarStatus>("set_calendar_url", { url }),
+  refreshCalendar: () => invoke<void>("refresh_calendar"),
+  restoreIgnoredMeetings: () => invoke<CalendarStatus>("restore_ignored_meetings"),
+  onCalendar: (cb: (s: CalendarStatus) => void): Promise<UnlistenFn> =>
+    listen<CalendarStatus>("calendar", (e) => cb(e.payload)),
   /** Aramayla eşleşen oturumları İndirilenler'e CSV yazar; dosya yolunu döndürür. */
   exportSearch: (query: string, start: string, days: number) => invoke<string>("export_search", { query, start, days }),
   acceptProject: (name: string) => invoke<Tag>("accept_project_suggestion", { name }),

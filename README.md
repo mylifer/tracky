@@ -32,6 +32,11 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 19. Proje hedefleri: proje başına haftalık saat; hafta özeti ve eğilimlerde ilerleme, dolunca bildirim
 - [x] 20. Zaman çizelgesi: projeye atanan süreden günlük iş kayıtları (başlangıç, saat, Working/Online/F2F,
       açıklama, taraf, birim), gözden geçirip onaylama ve firmanın Excel dosyasına biçimini koruyarak ekleme
+- [x] 21. Outlook takvimi: yayımlanan ICS bağlantısından toplantılar (tekrarlar, saat dilimleri, iptaller); konusu
+      proje kuralına uyan toplantı zaman çizelgesine Online/F2F kayıt olarak girer ve o sürede takip edilen işin
+      yerini alır; diğerleri gün kartında seri olarak projeye atanır ya da yoksayılır
+- [x] 22. Google Sheets: kayıtlar tabloya eklenen Apps Script web uygulamasıyla (OAuth gerekmeden) Excel'deki
+      kurallarla yazılır; aynı kayıt iki kez yazılmaz
 
 ## Yapı
 
@@ -43,12 +48,15 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
   browser.rs              Tarayıcı tanıma, sekme adı temizleme, gizli pencere tespiti
   platform.rs             Her OS'un uygulayacağı ActivityProvider trait'i
   classify.rs             Kategoriler, projeler, kurallar ve varsayılan kategoriler
+  calendar.rs             iCalendar (.ics) ayrıştırma: tekrar kuralları, VTIMEZONE, istisnalar
+  timesheet.rs            Oturum ve toplantılardan günlük iş kaydı önerileri
   report.rs               Gün/hafta raporu (kategori, proje, uygulama, gün, zaman çizelgesi)
   tracker.rs              Gözlem → gizlilik → motor → depolama hattı
   url_util.rs             URL'den domain çıkarma (ileride eklenti için)
 crates/tracky-platform/   macOS (Erişilebilirlik API) ve Windows (Win32) gözlemcileri
 crates/tracky-probe/      Takibi terminalden denemek için araç
 crates/tracky-sync/       Supabase istemcisi (Auth + PostgREST)
+crates/tracky-xlsx/       Zaman çizelgesini Excel dosyasına ya da (Apps Script ile) Google Sheets'e ekleme
 supabase/migrations/      Sunucu şeması (tablolar, RLS, çakışma kuralı)
 app/                      Kum masaüstü uygulaması (Tauri + React)
   src/                    Arayüz: karşılama, gün/hafta raporları, kategoriler, ayarlar
@@ -116,6 +124,21 @@ npm test               # Vitest; saat dilimi Europe/Berlin'e sabit (yaz saati te
 
 Windows platform kodu macOS'ta da denetlenebilir:
 `rustup target add x86_64-pc-windows-msvc && cargo clippy -p tracky-platform --target x86_64-pc-windows-msvc`.
+
+## Zaman çizelgesi: Outlook takvimi ve Google Sheets
+
+**Outlook takvimi:** Outlook web'de *Ayarlar → Takvim → Paylaşılan takvimler → Takvim yayımla*
+ile takvimi "Tüm ayrıntılar" (en az "Başlıklar ve konumlar") düzeyinde yayımla, **ICS**
+bağlantısını Kum'da *Zaman çizelgesi → Ayarlar → Outlook takvimi* alanına yapıştır. Kum takvimi
+15 dakikada bir okur. Konusu bir projenin başlık kuralına uyan toplantı o projeye yazılır; diğerleri
+gün kartında listelenir, seçilen proje serinin tüm tekrarlarına uygulanır. Bağlantıyı bilen herkes
+takvimi görebilir; şirket yayımlamayı kapattıysa bu seçenek Outlook'ta görünmez.
+
+**Google Sheets:** *Zaman çizelgesi → Google Sheets'e bağla* betiği gösterir. Tabloda
+*Uzantılar → Apps Script*'e yapıştır, *Dağıt → Yeni dağıtım → Web uygulaması* ("Ben" olarak yürüt,
+erişim "Herkes") ile dağıt ve `…/exec` adresini Kum'a gir. Betik yalnızca Kum'un anahtarını taşıyan
+istekleri kabul eder, kayıtları ilk sayfaya Excel aktarımıyla aynı kurallarla ekler ve aynı kaydı
+iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
 
 ## Cihazlar arası senkronizasyon (Supabase)
 

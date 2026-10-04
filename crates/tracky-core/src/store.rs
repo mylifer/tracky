@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
@@ -10,7 +10,7 @@ use crate::model::{FocusTimer, MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
 use crate::suggest::{self, Suggestions};
-use crate::timesheet::{self, EntryKind, TimesheetConfig, TimesheetEntry};
+use crate::timesheet::{self, EntryKind, Meeting, MeetingProject, TimesheetConfig, TimesheetEntry};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -179,6 +179,8 @@ const DEFAULTS_SEEDED_KEY: &str = "default_tags_seeded";
 const PRIVACY_KEY: &str = "privacy";
 /// Zaman çizelgesi ayarları.
 const TIMESHEET_KEY: &str = "timesheet";
+/// Takvim toplantı serilerinin elle verilen projesi (UID → proje; `null`: yoksay).
+const MEETING_ASSIGNMENTS_KEY: &str = "meeting_assignments";
 /// Yoksayılan öneri anahtarları.
 const DISMISSED_SUGGESTIONS_KEY: &str = "dismissed_suggestions";
 /// Öneriler bu kadar günlük geçmişe bakar.
@@ -191,6 +193,9 @@ pub struct UsageTotal {
     pub label: String,
     pub seconds: i64,
 }
+
+/// (Projesi belli toplantılar ve projeleri, hiçbir projeye düşmeyen toplantılar).
+pub type SplitMeetings = (Vec<(Meeting, String)>, Vec<Meeting>);
 
 pub struct Store {
     conn: Connection,
@@ -793,11 +798,74 @@ impl Store {
         self.save_setting(TIMESHEET_KEY, config)
     }
 
-    /// Günün (`day_start`–`day_end`, yerel gün) oturumlarından iş kaydı önerileri.
+    /// Toplantı serilerinin elle verilen projeleri (UID → proje; `None`: yoksayıldı).
+    pub fn meeting_assignments(&self) -> Result<HashMap<String, Option<String>>> {
+        Ok(self.setting(MEETING_ASSIGNMENTS_KEY)?.unwrap_or_default())
+    }
+
+    /// Toplantı serisini projeye atar (`None`: zaman çizelgesine alma).
+    pub fn assign_meeting(&self, uid: &str, project: Option<&str>) -> Result<()> {
+        let mut all = self.meeting_assignments()?;
+        all.insert(uid.to_string(), project.map(str::to_string));
+        self.save_setting(MEETING_ASSIGNMENTS_KEY, &all)
+    }
+
+    /// Yoksayılan toplantıları geri getirir; sayısını döndürür.
+    pub fn restore_ignored_meetings(&self) -> Result<usize> {
+        let mut all = self.meeting_assignments()?;
+        let before = all.len();
+        all.retain(|_, p| p.is_some());
+        self.save_setting(MEETING_ASSIGNMENTS_KEY, &all)?;
+        Ok(before - all.len())
+    }
+
+    /// Toplantıları projesine göre ayırır: (projesi belli olanlar, hiçbir projeye düşmeyenler).
+    pub fn classify_meetings(&self, meetings: &[Meeting]) -> Result<SplitMeetings> {
+        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let assigned = self.meeting_assignments()?;
+        let (mut known, mut unassigned) = (Vec::new(), Vec::new());
+        for m in meetings {
+            match timesheet::meeting_project(m, &classifier, &assigned) {
+                MeetingProject::Project(p) => known.push((m.clone(), p)),
+                MeetingProject::Unassigned => unassigned.push(m.clone()),
+                MeetingProject::Ignored => {}
+            }
+        }
+        Ok((known, unassigned))
+    }
+
+    /// Günün (`day_start`–`day_end`, yerel gün) oturumlarından ve takvim toplantılarından
+    /// iş kaydı önerileri.
     pub fn propose_timesheet(
         &self,
         day_start: DateTime<Utc>,
         day_end: DateTime<Utc>,
+        meetings: &[Meeting],
+    ) -> Result<Vec<TimesheetEntry>> {
+        self.propose_from(
+            &self.sessions_between(day_start, day_end)?,
+            day_start,
+            day_end,
+            meetings,
+        )
+    }
+
+    /// Yalnızca toplantılardan iş kaydı önerileri (takip edilen süre olmadan).
+    pub fn propose_meetings(
+        &self,
+        day_start: DateTime<Utc>,
+        day_end: DateTime<Utc>,
+        meetings: &[Meeting],
+    ) -> Result<Vec<TimesheetEntry>> {
+        self.propose_from(&[], day_start, day_end, meetings)
+    }
+
+    fn propose_from(
+        &self,
+        sessions: &[Session],
+        day_start: DateTime<Utc>,
+        day_end: DateTime<Utc>,
+        meetings: &[Meeting],
     ) -> Result<Vec<TimesheetEntry>> {
         let tags = self.tags()?;
         let classifier = Classifier::new(&tags, &self.rules()?);
@@ -806,8 +874,10 @@ impl Store {
             .filter(|t| t.kind == TagKind::Project)
             .map(|t| (t.id.clone(), t.name.clone()))
             .collect();
+        let (meetings, _) = self.classify_meetings(meetings)?;
         Ok(timesheet::propose(
-            &self.sessions_between(day_start, day_end)?,
+            sessions,
+            &meetings,
             &classifier,
             &names,
             &self.timesheet_config()?,
@@ -1555,7 +1625,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let proposed = store.propose_timesheet(t(-36_000), t(36_000)).unwrap();
+        let proposed = store.propose_timesheet(t(-36_000), t(36_000), &[]).unwrap();
         assert_eq!(proposed.len(), 1);
         assert_eq!(
             (proposed[0].division.as_str(), proposed[0].party.as_str()),

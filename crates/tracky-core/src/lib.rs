@@ -4,6 +4,7 @@
 //! trait'ini uygular; motor ve depolama bu crate'te kalır ki testlerle doğrulanabilsin.
 
 pub mod browser;
+pub mod calendar;
 pub mod classify;
 pub mod coach;
 pub mod engine;

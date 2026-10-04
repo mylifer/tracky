@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 chrono = "0.4.45"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 thiserror = "2.0.21"
+ureq = { version = "3.4.2", features = ["json"] }
 umya-spreadsheet = "2.3.3"
 
 [dev-dependencies]

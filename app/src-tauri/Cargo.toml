@@ -25,5 +25,6 @@ tracky-core = { version = "0.1.0", path = "../../crates/tracky-core" }
 tracky-platform = { version = "0.1.0", path = "../../crates/tracky-platform" }
 tracky-sync = { version = "0.1.0", path = "../../crates/tracky-sync" }
 tracky-xlsx = { version = "0.1.0", path = "../../crates/tracky-xlsx" }
+ureq = "3.4.2"
 uuid = { version = "1.26.1", features = ["v4"] }
 window-vibrancy = "0.8.1"

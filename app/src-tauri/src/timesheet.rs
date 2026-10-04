@@ -1,5 +1,6 @@
-//! Zaman çizelgesi komutları: günlük kayıt önerileri, onaylama ve düzenleme, şablonu
-//! içe aktarma ve kayıtları kullanıcının Excel dosyasına ekleme.
+//! Zaman çizelgesi komutları: günlük kayıt önerileri (takip edilen süre ve takvim
+//! toplantıları), onaylama ve düzenleme, şablonu içe aktarma ve kayıtları kullanıcının
+//! Excel dosyasına ya da Google Sheets tablosuna ekleme.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -7,8 +8,8 @@ use chrono::{Days, NaiveDate, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
-use tracky_core::timesheet::{ProjectMapping, TimesheetConfig, TimesheetEntry};
-use tracky_core::{Rule, RuleField, Tag, TagKind};
+use tracky_core::timesheet::{Meeting, ProjectMapping, TimesheetConfig, TimesheetEntry};
+use tracky_core::{Rule, RuleField, Store, Tag, TagKind};
 
 use crate::lock;
 use crate::tracking::{Shared, local_midnight};
@@ -35,6 +36,8 @@ impl Drop for ExportGuard {
 /// Geçmiş açıklamalar (otomatik tamamlama), şablondan içe aktarılır.
 const DETAILS_KEY: &str = "timesheet_details";
 const MAX_DETAILS: usize = 300;
+const NO_TARGET: &str =
+    "Önce Excel dosyasını seç ya da Google Sheets'e bağlan (Zaman çizelgesi ayarları)";
 
 /// Bir günün kayıtları: onaylandıysa kaydedilenler, yoksa canlı öneri.
 #[derive(Serialize)]
@@ -45,6 +48,8 @@ pub struct Day {
     entries: Vec<EntryView>,
     /// Bir projeye atanmamış takip edilen süre (saniye): gözden geçirilecek.
     unassigned_seconds: i64,
+    /// Takvimde olup hiçbir projeye düşmeyen toplantılar: projeye ata ya da yoksay.
+    meetings: Vec<Meeting>,
 }
 
 #[derive(Serialize)]
@@ -79,12 +84,24 @@ pub async fn save_timesheet_config(app: AppHandle, config: TimesheetConfig) -> C
 #[tauri::command]
 pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResult<Vec<Day>> {
     let first = parse_date(&start)?;
+    let days = days.clamp(1, 62);
+    let meetings = crate::calendar::meetings(
+        &app,
+        local_midnight(first),
+        local_midnight(first + Days::new(days.into())),
+    );
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    (0..days.clamp(1, 62))
+    (0..days)
         .map(|i| {
             let date = first + Days::new(i.into());
             let (from, to) = (local_midnight(date), local_midnight(date + Days::new(1)));
+            let todays: Vec<Meeting> = meetings
+                .iter()
+                .filter(|m| m.start < to && m.end > from)
+                .cloned()
+                .collect();
+            let (_, unassigned) = store.classify_meetings(&todays).map_err(err)?;
             let saved = store.timesheet_entries(date, date).map_err(err)?;
             let report = store.report(from, to, &[from], false).map_err(err)?;
             let assigned: i64 = report
@@ -95,7 +112,7 @@ pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResu
                 .sum();
             let entries = if saved.is_empty() {
                 store
-                    .propose_timesheet(from, to)
+                    .propose_timesheet(from, to, &todays)
                     .map_err(err)?
                     .into_iter()
                     .map(|entry| EntryView {
@@ -119,6 +136,7 @@ pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResu
                 approved: !saved.is_empty(),
                 entries,
                 unassigned_seconds: (report.total_seconds - assigned).max(0),
+                meetings: unassigned,
             })
         })
         .collect()
@@ -129,11 +147,41 @@ pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResu
 #[tauri::command]
 pub async fn approve_timesheet_day(app: AppHandle, date: String) -> CmdResult<()> {
     let date = parse_date(&date)?;
+    let (from, to) = (local_midnight(date), local_midnight(date + Days::new(1)));
+    let meetings = crate::calendar::meetings(&app, from, to);
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    let (from, to) = (local_midnight(date), local_midnight(date + Days::new(1)));
-    let proposed = store.propose_timesheet(from, to).map_err(err)?;
+    let proposed = store.propose_timesheet(from, to, &meetings).map_err(err)?;
     store.replace_timesheet_day(date, &proposed).map_err(err)
+}
+
+/// Takvimdeki toplantı serisini projeye atar (`None`: zaman çizelgesine alma). Atama
+/// serinin tüm tekrarlarına uygulanır. `date` günü onaylanmışsa toplantı o güne satır
+/// olarak da eklenir (onaylı gün yeniden önerilmeden değişmez).
+#[tauri::command]
+pub async fn assign_meeting(
+    app: AppHandle,
+    uid: String,
+    project_id: Option<String>,
+    date: String,
+) -> CmdResult<()> {
+    let date = parse_date(&date)?;
+    let (from, to) = (local_midnight(date), local_midnight(date + Days::new(1)));
+    let meetings: Vec<Meeting> = crate::calendar::meetings(&app, from, to)
+        .into_iter()
+        .filter(|m| m.uid == uid)
+        .collect();
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    store
+        .assign_meeting(&uid, project_id.as_deref())
+        .map_err(err)?;
+    if project_id.is_some() && !store.timesheet_entries(date, date).map_err(err)?.is_empty() {
+        for entry in store.propose_meetings(from, to, &meetings).map_err(err)? {
+            store.save_timesheet_entry(None, &entry).map_err(err)?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -219,6 +267,18 @@ pub async fn import_timesheet_template(app: AppHandle, path: String) -> CmdResul
     let store = lock(&shared.store);
     let mut config = store.timesheet_config().map_err(err)?;
     config.file_path = Some(path);
+    // Excel seçildi: kayıtlar bundan sonra bu dosyaya gider.
+    config.sheet_url = None;
+    apply_template(&store, config, template)
+}
+
+/// Şablon bilgilerini ayarlara işler: firma, danışman ve taraf; her birim için (yoksa)
+/// proje ve eşlemesi; geçmiş açıklamalar.
+fn apply_template(
+    store: &Store,
+    mut config: TimesheetConfig,
+    template: tracky_xlsx::Template,
+) -> CmdResult<Imported> {
     if let Some(c) = template.company {
         config.company = c;
     }
@@ -275,17 +335,76 @@ pub async fn import_timesheet_template(app: AppHandle, path: String) -> CmdResul
     })
 }
 
+/// Apps Script anahtarını (yoksa üretip) döndürür.
+fn sheet_token(store: &Store) -> CmdResult<String> {
+    let mut config = store.timesheet_config().map_err(err)?;
+    if config.sheet_token.is_empty() {
+        config.sheet_token = uuid::Uuid::new_v4().simple().to_string();
+        store.save_timesheet_config(&config).map_err(err)?;
+    }
+    Ok(config.sheet_token)
+}
+
+/// Google Sheets tablosuna eklenecek Apps Script (bu kuruluma özgü anahtarla).
+#[tauri::command]
+pub async fn sheet_script(app: AppHandle) -> CmdResult<String> {
+    let token = sheet_token(&lock(&app.state::<Shared>().store))?;
+    Ok(tracky_xlsx::sheets::script(&token))
+}
+
+/// Google Sheets'e bağlanır: web uygulamasını dener, tablodan şablon bilgilerini içe
+/// aktarır; kayıtlar bundan sonra bu tabloya gider.
+#[tauri::command]
+pub async fn connect_sheet(
+    app: AppHandle,
+    url: String,
+    link: Option<String>,
+) -> CmdResult<Imported> {
+    let url = tracky_xlsx::sheets::check_url(&url).map_err(err)?;
+    let token = sheet_token(&lock(&app.state::<Shared>().store))?;
+    let template = {
+        let url = url.clone();
+        tauri::async_runtime::spawn_blocking(move || tracky_xlsx::sheets::inspect(&url, &token))
+            .await
+            .map_err(err)?
+            .map_err(err)?
+    };
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let mut config = store.timesheet_config().map_err(err)?;
+    config.sheet_url = Some(url);
+    config.sheet_link = link.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
+    apply_template(&store, config, template)
+}
+
+/// Google Sheets bağlantısını kaldırır; kayıtlar yeniden Excel dosyasına (seçiliyse) gider.
+#[tauri::command]
+pub async fn disconnect_sheet(app: AppHandle) -> CmdResult<TimesheetConfig> {
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let mut config = store.timesheet_config().map_err(err)?;
+    config.sheet_url = None;
+    store.save_timesheet_config(&config).map_err(err)?;
+    Ok(config)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Exported {
     rows: usize,
     filled: usize,
     inserted: usize,
-    backup: String,
-    path: String,
+    /// Daha önce yazıldığı için atlanan (yalnızca Sheets).
+    skipped: usize,
+    /// Excel yedeği; Sheets'te yok (tablonun sürüm geçmişi var).
+    backup: Option<String>,
+    /// Excel dosyası ya da Sheets sayfasının adı.
+    target: String,
+    sheets: bool,
 }
 
-/// `start`'tan itibaren `days` gündeki onaylı ve aktarılmamış kayıtları Excel dosyasına ekler.
+/// `start`'tan itibaren `days` gündeki onaylı ve aktarılmamış kayıtları Excel dosyasına
+/// ya da (bağlıysa) Google Sheets tablosuna ekler.
 #[tauri::command]
 pub async fn export_timesheet(app: AppHandle, start: String, days: u32) -> CmdResult<Exported> {
     if EXPORTING.swap(true, Ordering::Acquire) {
@@ -306,10 +425,9 @@ pub async fn export_timesheet(app: AppHandle, start: String, days: u32) -> CmdRe
             .collect();
         (config, pending)
     };
-    let path = config
-        .file_path
-        .clone()
-        .ok_or("Önce Excel dosyasını seç (Zaman çizelgesi ayarları)")?;
+    if config.sheet_url.is_none() && config.file_path.is_none() {
+        return Err(NO_TARGET.into());
+    }
     if pending.is_empty() {
         return Err("Aktarılacak onaylı kayıt yok; önce günleri onayla.".into());
     }
@@ -344,22 +462,50 @@ pub async fn export_timesheet(app: AppHandle, start: String, days: u32) -> CmdRe
             division: e.entry.division.clone(),
         })
         .collect();
-    let done = {
-        let (path, consultant) = (std::path::PathBuf::from(&path), config.consultant.clone());
-        tauri::async_runtime::spawn_blocking(move || tracky_xlsx::append(&path, &consultant, &rows))
+    let ids: Vec<String> = pending.iter().map(|e| e.id.clone()).collect();
+    let consultant = config.consultant.clone();
+    let exported = match (config.sheet_url.clone(), config.file_path.clone()) {
+        (Some(url), _) => {
+            let token = config.sheet_token.clone();
+            let keyed: Vec<_> = ids.iter().cloned().zip(rows).collect();
+            let done = tauri::async_runtime::spawn_blocking(move || {
+                tracky_xlsx::sheets::append(&url, &token, &consultant, &keyed)
+            })
             .await
             .map_err(err)?
+            .map_err(err)?;
+            Exported {
+                rows: ids.len(),
+                filled: done.filled,
+                inserted: done.inserted,
+                skipped: done.skipped,
+                backup: None,
+                target: done.sheet,
+                sheets: true,
+            }
+        }
+        (None, Some(path)) => {
+            let file = std::path::PathBuf::from(&path);
+            let done = tauri::async_runtime::spawn_blocking(move || {
+                tracky_xlsx::append(&file, &consultant, &rows)
+            })
+            .await
             .map_err(err)?
+            .map_err(err)?;
+            Exported {
+                rows: ids.len(),
+                filled: done.filled,
+                inserted: done.inserted,
+                skipped: 0,
+                backup: Some(done.backup.display().to_string()),
+                target: path,
+                sheets: false,
+            }
+        }
+        (None, None) => return Err(NO_TARGET.into()),
     };
-    let ids: Vec<String> = pending.iter().map(|e| e.id.clone()).collect();
     lock(&app.state::<Shared>().store)
         .mark_timesheet_exported(&ids, Utc::now())
         .map_err(err)?;
-    Ok(Exported {
-        rows: ids.len(),
-        filled: done.filled,
-        inserted: done.inserted,
-        backup: done.backup.display().to_string(),
-        path,
-    })
+    Ok(exported)
 }
