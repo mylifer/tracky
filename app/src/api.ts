@@ -46,6 +46,8 @@ export type WorkBlock = {
   end: string;
   activeSeconds: number;
   categoryId: string | null;
+  /** Bloğun en az yarısını kaplayan proje. */
+  projectId: string | null;
   focus: boolean;
   switches: number;
   topApps: { appName: string; seconds: number }[];

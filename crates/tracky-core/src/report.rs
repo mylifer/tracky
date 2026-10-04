@@ -81,8 +81,14 @@ pub struct Report {
     pub focus_timers: Vec<crate::model::FocusTimer>,
 }
 
-/// Kırpılmış oturum dilimi: (başlangıç, bitiş, oturum, kategori).
-type Span<'a> = (DateTime<Utc>, DateTime<Utc>, &'a Session, Option<String>);
+/// Kırpılmış oturum dilimi: (başlangıç, bitiş, oturum, kategori, proje).
+type Span<'a> = (
+    DateTime<Utc>,
+    DateTime<Utc>,
+    &'a Session,
+    Option<String>,
+    Option<String>,
+);
 
 /// Aynı uygulamanın bu kadar yakın bloklarını zaman çizelgesinde birleştir.
 const MERGE_GAP_SECS: i64 = 5;
@@ -106,7 +112,7 @@ pub fn build(
     let mut timeline: Vec<Segment> = Vec::new();
     let mut windows: Vec<WindowSpan> = Vec::new();
     let mut total = 0;
-    // Odak analizi için kırpılmış etkinlikler: (başlangıç, bitiş, oturum, kategori).
+    // Odak analizi için kırpılmış etkinlikler: (başlangıç, bitiş, oturum, kategori, proje).
     let mut spans: Vec<Span> = Vec::new();
 
     for s in sessions {
@@ -116,7 +122,7 @@ pub fn build(
         }
         let secs = (end - start).num_seconds();
         let class = classifier.classify(s);
-        spans.push((start, end, s, class.category.clone()));
+        spans.push((start, end, s, class.category.clone(), class.project.clone()));
         total += secs;
         *categories.entry(class.category.clone()).or_default() += secs;
         *projects.entry(class.project.clone()).or_default() += secs;
@@ -244,7 +250,7 @@ fn activities<'a>(
 ) -> Vec<Activity<'a>> {
     spans
         .iter()
-        .filter_map(|(start, end, s, category)| {
+        .filter_map(|(start, end, s, category, project)| {
             let (a, b) = ((*start).max(from), (*end).min(to));
             (b > a).then(|| Activity {
                 start: a,
@@ -252,6 +258,7 @@ fn activities<'a>(
                 app_id: &s.app_id,
                 app_name: &s.app_name,
                 category: category.as_deref(),
+                project: project.as_deref(),
             })
         })
         .collect()

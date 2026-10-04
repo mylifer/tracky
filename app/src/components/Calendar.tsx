@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { Zap } from "lucide-react";
+import { Briefcase, Zap } from "lucide-react";
 import type { FocusTimer, Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
@@ -219,6 +219,7 @@ function NowLine({ day, range }: { day: Date; range: Range }) {
 function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag> }) {
   const edit = useEdit();
   const tag = block.categoryId ? tags.get(block.categoryId) : undefined;
+  const project = block.projectId ? tags.get(block.projectId) : undefined;
   const color = tagColor(tag);
   return (
     <div className="space-y-3">
@@ -227,6 +228,12 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
           <i className="size-2 rounded-full" style={{ background: color }} />
           {tag?.name ?? UNCATEGORIZED}
         </Badge>
+        {project && (
+          <Badge variant="outline" className="min-w-0 gap-1.5" title="Proje">
+            <Briefcase className="shrink-0" style={{ color: tagColor(project) }} />
+            <span className="truncate">{project.name}</span>
+          </Badge>
+        )}
         {block.focus && (
           <Badge variant="outline" className="gap-1 border-focus/30 text-focus">
             <Zap /> Odak
@@ -265,6 +272,7 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
           start={block.start}
           end={block.end}
           categoryId={block.categoryId}
+          projectId={block.projectId}
           categories={edit.categories}
           projects={edit.projects}
           onChanged={edit.onChanged}
@@ -276,9 +284,11 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
 
 function blockTitle(b: WorkBlock, tags: Map<string, Tag>) {
   const tag = b.categoryId ? tags.get(b.categoryId) : undefined;
+  const project = b.projectId ? tags.get(b.projectId) : undefined;
   return {
     tag,
-    title: tag?.name ?? b.topApps[0]?.appName ?? UNCATEGORIZED,
+    // Projeye atanmış blok proje adıyla görünür: atamanın sonucu takvimde hemen fark edilsin.
+    title: project?.name ?? tag?.name ?? b.topApps[0]?.appName ?? UNCATEGORIZED,
     apps: b.topApps.map((a) => a.appName).join(", "),
   };
 }

@@ -19,10 +19,13 @@ export const EditContext = createContext<{ categories: Tag[]; projects: Tag[]; o
 
 /** Projeye atama seçicisi; proje yoksa nereden ekleneceğini söyler. */
 function ProjectAssign({
+  value = null,
   projects,
   onChange,
   className,
 }: {
+  /** Şu anki proje (blok için); aralıkta boş kalır ve ipucu görünür. */
+  value?: string | null;
   projects: Tag[];
   onChange: (id: string | null) => void;
   className?: string;
@@ -35,7 +38,7 @@ function ProjectAssign({
     );
   return (
     <CategorySelect
-      value={null}
+      value={value}
       onChange={onChange}
       categories={projects}
       noneLabel="Projeyi kaldır (kurallara göre)"
@@ -174,6 +177,7 @@ export function BlockActions({
   start,
   end,
   categoryId,
+  projectId,
   categories,
   projects,
   onChanged,
@@ -181,6 +185,7 @@ export function BlockActions({
   start: string;
   end: string;
   categoryId: string | null;
+  projectId: string | null;
   categories: Tag[];
   projects: Tag[];
   onChanged: () => void;
@@ -192,6 +197,7 @@ export function BlockActions({
   return (
     <div className="space-y-2 border-t pt-3">
       <ProjectAssign
+        value={projectId}
         projects={projects}
         onChange={(id) => run(() => api.setRangeProject(start, end, id))}
         className="w-full"

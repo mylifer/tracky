@@ -14,7 +14,10 @@ use crate::{lock, tray};
 
 /// Açılıştan sonra ilk denetim (takip ve senkronizasyon önce otursun).
 const FIRST_CHECK: Duration = Duration::from_secs(30);
-const INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Arka plan denetimlerinin aralığı. Duvar saatine göre ölçülür: Mac uykudan uyanınca
+/// geciken denetim bir dakika içinde yapılır.
+const INTERVAL: chrono::Duration = chrono::Duration::hours(1);
+const TICK: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,8 +54,11 @@ pub fn start(app: &tauri::App) {
         .spawn(move || {
             std::thread::sleep(FIRST_CHECK);
             loop {
-                tauri::async_runtime::block_on(check_and_download(&handle));
-                std::thread::sleep(INTERVAL);
+                let last = lock(&handle.state::<UpdateState>().status).last_checked;
+                if last.is_none_or(|t| Utc::now() - t >= INTERVAL) {
+                    tauri::async_runtime::block_on(check_and_download(&handle));
+                }
+                std::thread::sleep(TICK);
             }
         });
 }

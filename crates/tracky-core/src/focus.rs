@@ -39,6 +39,7 @@ pub struct Activity<'a> {
     pub app_id: &'a str,
     pub app_name: &'a str,
     pub category: Option<&'a str>,
+    pub project: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -57,6 +58,8 @@ pub struct WorkBlock {
     pub active_seconds: i64,
     /// En çok zaman geçen kategori.
     pub category_id: Option<String>,
+    /// Bloğun en az yarısını kaplayan proje (yoksa `None`).
+    pub project_id: Option<String>,
     pub focus: bool,
     pub switches: u32,
     /// En çok kullanılan uygulamalar (en fazla 3).
@@ -218,6 +221,7 @@ struct Builder {
     switches: u32,
     last_app: String,
     categories: HashMap<Option<String>, i64>,
+    projects: HashMap<String, i64>,
     apps: HashMap<String, i64>,
 }
 
@@ -231,6 +235,7 @@ impl Builder {
             switches: 0,
             last_app: item.app_id.to_string(),
             categories: HashMap::new(),
+            projects: HashMap::new(),
             apps: HashMap::new(),
         };
         b.add(item);
@@ -249,6 +254,9 @@ impl Builder {
             .categories
             .entry(item.category.map(str::to_string))
             .or_default() += secs;
+        if let Some(p) = item.project {
+            *self.projects.entry(p.to_string()).or_default() += secs;
+        }
         *self.apps.entry(item.app_name.to_string()).or_default() += secs;
     }
 
@@ -265,6 +273,12 @@ impl Builder {
             .into_iter()
             .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
             .unwrap_or((None, 0));
+        let project_id = self
+            .projects
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+            .filter(|(_, secs)| *secs * 2 >= self.active && *secs > 0)
+            .map(|(p, _)| p);
         let mut apps: Vec<BlockApp> = self
             .apps
             .into_iter()
@@ -279,6 +293,7 @@ impl Builder {
             end: self.end,
             active_seconds: self.active,
             category_id,
+            project_id,
             focus,
             switches: self.switches,
             top_apps: apps,
@@ -302,6 +317,7 @@ mod tests {
             app_id: app,
             app_name: app,
             category: cat,
+            project: None,
         }
     }
 
@@ -342,6 +358,24 @@ mod tests {
         let frag = analyze(&fragmented).score;
         assert_eq!(deep, 100);
         assert!(frag < 30, "dağınık iş skoru: {frag}");
+    }
+
+    #[test]
+    fn block_project_needs_half_of_the_block() {
+        let p = |mut x: Activity<'static>, project| {
+            x.project = project;
+            x
+        };
+        let items = [
+            p(a("Code", Some("dev"), 0, 30), Some("kum")),
+            p(a("Code", Some("dev"), 30, 50), None),
+            p(a("Code", Some("dev"), 100, 110), Some("kum")),
+            p(a("Code", Some("dev"), 110, 130), Some("x")),
+            p(a("Code", Some("dev"), 130, 160), None),
+        ];
+        let s = analyze(&items);
+        let projects: Vec<_> = s.blocks.iter().map(|b| b.project_id.as_deref()).collect();
+        assert_eq!(projects, [Some("kum"), None]);
     }
 
     #[test]
