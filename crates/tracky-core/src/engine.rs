@@ -41,6 +41,9 @@ pub struct Engine {
     /// Boşluk bundan önce başlamış sayılmaz (duraklatma bitince süren boşluk duraklatılan
     /// süreye taşmasın).
     away_floor: Option<DateTime<Utc>>,
+    /// Son gözlemin anı: uyku, açık oturum olmasa da (hariç tutulan uygulama, pencere yok)
+    /// iki gözlem arasındaki boşluktan anlaşılır.
+    last_tick: Option<DateTime<Utc>>,
 }
 
 impl Engine {
@@ -51,6 +54,7 @@ impl Engine {
             away_since: None,
             away: None,
             away_floor: None,
+            last_tick: None,
         }
     }
 
@@ -65,11 +69,13 @@ impl Engine {
     }
 
     /// Süren boşluğu kayıt üretmeden unutur (örn. takip duraklatıldı); sonraki boşluk
-    /// `now`'dan önce başlamış sayılmaz.
+    /// `now`'dan önce başlamış sayılmaz. Sonraki gözleme kadarki ara da uyku sayılmaz
+    /// (duraklatılmışken uyuyan makine boşta kaydı üretmesin).
     pub fn forget_away(&mut self, now: DateTime<Utc>) {
         self.away_since = None;
         self.away = None;
         self.away_floor = Some(now);
+        self.last_tick = None;
     }
 
     /// Kullanıcının `at` anından beri uzakta olduğunu not eder (daha önceki bir an varsa o kalır).
@@ -91,10 +97,10 @@ impl Engine {
         idle_seconds: u64,
     ) -> Option<Session> {
         // Makine uyuduysa son görülen andan sonrası sayılmaz; kullanıcı o andan beri uzakta.
+        // Açık oturum olmasa da (hariç tutulan uygulama, pencere yok) son gözleme bakılır.
         let slept_at = self
-            .current
-            .as_ref()
-            .map(|s| s.ended_at)
+            .last_tick
+            .replace(now)
             .filter(|last| now - *last > self.config.max_gap);
         let closed = if let Some(last) = slept_at {
             self.mark_away(last);
@@ -345,6 +351,24 @@ mod tests {
         e.tick(t(at + 61), win("Code", "x"), 0);
         e.tick(t(at + 61 + 10 * 3600), win("Code", "x"), 0);
         assert!(e.take_away().is_none());
+    }
+
+    #[test]
+    fn sleep_without_an_open_session_becomes_away() {
+        // Hariç tutulan uygulama ya da pencere yok: açık oturum olmadan kapak kapanır.
+        let mut e = recording_away(60);
+        run(&mut e, &[(0, None, 0), (5, None, 0)]);
+        assert!(e.current().is_none());
+        e.tick(t(5 + 20 * 60), win("Code", "x"), 0);
+        let away = e.take_away().expect("uyku boşta sayılır");
+        assert_eq!((away.started_at, away.ended_at), (t(5), t(5 + 20 * 60)));
+
+        // Duraklatılmışken (her gözlemden sonra unutulur) uyku kayıt üretmez.
+        let mut paused = recording_away(60);
+        paused.tick(t(0), None, 0);
+        paused.forget_away(t(0));
+        paused.tick(t(20 * 60), win("Code", "x"), 0);
+        assert!(paused.take_away().is_none());
     }
 
     #[test]

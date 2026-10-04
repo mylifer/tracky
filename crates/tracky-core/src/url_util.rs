@@ -20,6 +20,9 @@ pub fn sanitize(raw: &str) -> Option<String> {
 
 /// Alan adı kuralları için URL'nin `alan/yol` biçimi (küçük harf, `www.` ve şema yok,
 /// sondaki `/` yok): `https://www.GitHub.com/Firma/` → `github.com/firma`.
+///
+/// Yol çözülür (`%C5%9F` → `ş`) ve [`crate::search::fold`] ile katlanır: kayıtlı adresler
+/// [`sanitize`] sonrası kodlanmış, kullanıcının yazdığı desen ise çoğu zaman ham olur.
 pub fn host_path(raw: &str) -> Option<String> {
     let domain = domain_of(raw)?;
     let raw = raw.trim();
@@ -29,9 +32,10 @@ pub fn host_path(raw: &str) -> Option<String> {
         .map_or("", |i| &rest[i..])
         .split(['?', '#'])
         .next()
-        .unwrap_or("")
-        .trim_end_matches('/');
-    Some(format!("{domain}{}", path.to_lowercase()))
+        .unwrap_or("");
+    let path = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
+    let path = crate::search::fold(path.trim_end_matches('/'));
+    Some(format!("{domain}{path}"))
 }
 
 /// Alan adı kuralı deseni, eşleşen `alan/yol` (bkz. [`host_path`]) ile karşılaştırılır:
@@ -143,6 +147,19 @@ mod tests {
         assert!(!pattern_matches("github.com/firma", "github.com/firmab"));
         assert!(!pattern_matches("github.com/firma", "github.com"));
         assert!(!pattern_matches("", "github.com"));
+    }
+
+    #[test]
+    fn non_ascii_paths_match_encoded_urls() {
+        let stored = sanitize("https://tr.wikipedia.org/wiki/İstanbul_Boğazı?x=1").unwrap();
+        assert!(stored.contains("%C4%B0"));
+        let pattern = normalize_pattern("tr.wikipedia.org/wiki/istanbul_boğazı").unwrap();
+        assert!(pattern_matches(&pattern, &host_path(&stored).unwrap()));
+        // Kodlanmış yazılmış desen de aynı biçime iner.
+        assert_eq!(
+            normalize_pattern("tr.wikipedia.org/wiki/%C4%B0stanbul_Bo%C4%9Faz%C4%B1"),
+            Some(pattern)
+        );
     }
 
     #[test]

@@ -112,6 +112,7 @@ pub fn build(
     day_starts: &[DateTime<Utc>],
     with_timeline: bool,
 ) -> Report {
+    // Süreler milisaniye olarak toplanır, en sonda saniyeye çevrilir (oturum başına kırpılmaz).
     let mut categories: HashMap<Option<String>, i64> = HashMap::new();
     let mut projects: HashMap<Option<String>, i64> = HashMap::new();
     let mut apps: HashMap<&str, (String, i64)> = HashMap::new();
@@ -123,16 +124,16 @@ pub fn build(
     // Blok analizi için kırpılmış etkinlikler: (başlangıç, bitiş, oturum, kategori, proje).
     let mut spans: Vec<Span> = Vec::new();
     let mut idle: Vec<IdleSpan> = Vec::new();
-    let mut idle_seconds = 0;
+    let mut idle_ms = 0;
 
     for s in sessions {
         let (start, end) = (s.started_at.max(from), s.ended_at.min(to));
         if end <= start {
             continue;
         }
-        let secs = (end - start).num_seconds();
+        let ms = (end - start).num_milliseconds();
         if !s.counts_as_work() {
-            idle_seconds += secs;
+            idle_ms += ms;
             if with_timeline {
                 idle.push(IdleSpan { start, end });
             }
@@ -140,20 +141,20 @@ pub fn build(
         }
         let class = classifier.classify(s);
         spans.push((start, end, s, class.category.clone(), class.project.clone()));
-        total += secs;
-        *categories.entry(class.category.clone()).or_default() += secs;
-        *projects.entry(class.project.clone()).or_default() += secs;
+        total += ms;
+        *categories.entry(class.category.clone()).or_default() += ms;
+        *projects.entry(class.project.clone()).or_default() += ms;
         let app = apps
             .entry(s.app_id.as_str())
             .or_insert_with(|| (s.app_name.clone(), 0));
-        app.1 += secs;
+        app.1 += ms;
 
         // Gün sınırını aşan oturum her güne kendi payı kadar yazılır.
         for (i, day_start) in day_starts.iter().enumerate() {
             let day_end = day_starts.get(i + 1).copied().unwrap_or(to);
             let (a, b) = (start.max(*day_start), end.min(day_end));
             if b > a {
-                let d = (b - a).num_seconds();
+                let d = (b - a).num_milliseconds();
                 days[i].0 += d;
                 *days[i].1.entry(class.category.clone()).or_default() += d;
             }
@@ -211,11 +212,11 @@ pub fn build(
 
     let mut apps: Vec<AppBucket> = apps
         .into_iter()
-        .map(|(app_id, (app_name, seconds))| AppBucket {
+        .map(|(app_id, (app_name, ms))| AppBucket {
             category_id: classifier.app_category(app_id),
             app_id: app_id.to_string(),
             app_name,
-            seconds,
+            seconds: ms / 1000,
         })
         .collect();
     apps.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.app_name.cmp(&b.app_name)));
@@ -223,16 +224,16 @@ pub fn build(
     Report {
         from: Some(from),
         to: Some(to),
-        total_seconds: total,
+        total_seconds: total / 1000,
         categories: sorted(categories),
         projects: sorted(projects),
         apps,
         days: day_starts
             .iter()
             .zip(days)
-            .map(|(start, (seconds, cats))| DayBucket {
+            .map(|(start, (ms, cats))| DayBucket {
                 start: *start,
-                seconds,
+                seconds: ms / 1000,
                 categories: sorted(cats),
             })
             .collect(),
@@ -252,7 +253,7 @@ pub fn build(
             }
             stats
         },
-        idle_seconds,
+        idle_seconds: idle_ms / 1000,
         idle,
     }
 }
@@ -279,12 +280,16 @@ fn activities<'a>(
         .collect()
 }
 
-/// Süreye göre azalan; eşitlikte kimliğe göre (kararlı çıktı için).
+/// Milisaniyeleri saniyeye çevirir; süreye göre azalan, eşitlikte kimliğe göre (kararlı
+/// çıktı için).
 fn sorted(map: HashMap<Option<String>, i64>) -> Vec<Bucket> {
     let mut v: Vec<Bucket> = map
         .into_iter()
-        .filter(|(_, s)| *s > 0)
-        .map(|(id, seconds)| Bucket { id, seconds })
+        .map(|(id, ms)| Bucket {
+            id,
+            seconds: ms / 1000,
+        })
+        .filter(|b| b.seconds > 0)
         .collect();
     v.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.id.cmp(&b.id)));
     v
@@ -314,6 +319,30 @@ mod tests {
             category_id: None,
             project_id: None,
         }
+    }
+
+    #[test]
+    fn sums_milliseconds_before_rounding() {
+        // Saniyenin altı kesirler oturum başına atılmaz: 4 × 1,5 sn = 6 sn (4 değil).
+        let mut sessions: Vec<Session> = (0..4)
+            .map(|i| {
+                let mut x = s("Code", "a", i * 10, i * 10);
+                x.ended_at = x.started_at + Duration::milliseconds(1500);
+                x
+            })
+            .collect();
+        for a in [100, 110] {
+            let mut away = Session::idle(t(a), t(a));
+            away.ended_at = away.started_at + Duration::milliseconds(2500);
+            sessions.push(away);
+        }
+        let c = Classifier::new(&[], &[]);
+        let r = build(&sessions, &[], &c, t(0), t(1000), &[t(0)], false);
+        assert_eq!(r.total_seconds, 6);
+        assert_eq!(r.apps[0].seconds, 6);
+        assert_eq!(r.categories[0].seconds, 6);
+        assert_eq!(r.days[0].seconds, 6);
+        assert_eq!(r.idle_seconds, 5);
     }
 
     #[test]
