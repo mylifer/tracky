@@ -391,6 +391,8 @@ pub fn run() {
             edits::ignore_unassigned,
             edits::ignored_unassigned,
             edits::preview_rule,
+            edits::rule_suggestions,
+            edits::dismiss_rule_suggestion,
             client_report::client_report,
             client_report::export_client_report,
             timesheet::get_timesheet_config,

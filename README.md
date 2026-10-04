@@ -87,6 +87,11 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       (geri alınabilir)
 - [x] 45. Atama önerileri en az 15 dakikalık süre için: Gözden geçir, özet kartı, zaman çizelgesi ve "Haftayı kapat"
       daha kısa grupları, başlıkları ve boşta süreyi önermez (grubu atamak kısaları da kapsar)
+- [x] 46. Kural önerileri: son 30 günde elle atanan süreden kural öğrenilir (başlıktaki iş anahtarı öneki `LOY-`,
+      editör klasörü/GitHub reposu, site ya da `github.com/firma/repo` yolu). En az iki günde ya da üç ayrı atamada,
+      toplam 15 dk ve üstü; uyan sürenin en az %80'i o projede, başka projeden en çok %10 alır, aynı kural yoksa
+      ve yoksayılmadıysa. Gözden geçir'in üstünde gerekçe ve önizlemeyle "Kural ekle" / "Önerme"; elle atamadan
+      sonra bildirimde "Kural yap" (ikisi de geri alınabilir)
 
 ## Yapı
 
@@ -97,6 +102,7 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
                           (etiketler, kurallar, müşteriler, öneriler), timesheet.rs (zaman çizelgesi),
                           edits.rs (geri alma, atanmamış süre)
   inbox.rs                Atanmamış süreyi gruplama, muhtemel proje, kural önizlemesi
+  learn.rs                Elle atamalardan kural önerileri (iş anahtarı, başlıktaki proje, site)
   blocks.rs               Takvimdeki çalışma blokları, molalar, bağlam değişimi
   privacy.rs              Gizlilik: duraklatma, hariç uygulamalar, başlık gizleme, adres temizleme
   browser.rs              Tarayıcı tanıma, sekme adı temizleme, gizli pencere tespiti

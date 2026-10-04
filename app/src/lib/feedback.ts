@@ -1,5 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { api, type Edited } from "../api";
+import { api, type Edited, type RuleSuggestion } from "../api";
+import { ruleSentence } from "./ruleSuggestions";
 
 /**
  * Geri bildirim: ekranın altındaki kısa bildirimler ("Silindi · Geri al"), veri değişince
@@ -13,6 +14,8 @@ export type Toast = {
   /** Arka uçtaki geri alma numarası; varsa "Geri al" düğmesi görünür. */
   undo?: number;
   action?: { label: string; run: () => void };
+  /** İletinin altında küçük ikinci satır (örn. önerilen kural). */
+  detail?: string;
 };
 
 let toasts: Toast[] = [];
@@ -78,13 +81,36 @@ export async function undo(id: number) {
 
 /**
  * Geri alınabilir bir düzenlemeyi çalıştırır; bittiğinde "Geri al" düğmeli bildirim gösterir.
- * Arka uç geri alma numarasını ya doğrudan ya da `Edited` içinde döndürür.
+ * Arka uç geri alma numarasını ya doğrudan ya da `Edited` içinde döndürür. Elle atama bir
+ * alışkanlığa dönüştüyse (`Edited.suggestion`) bildirimde "Kural yap" da çıkar.
  */
 export async function undoable<T extends Edited | number>(work: Promise<T>, message: string): Promise<T> {
   const result = await work;
-  const id = typeof result === "number" ? result : result.undo;
-  toast(message, { undo: id });
+  if (typeof result === "number") {
+    toast(message, { undo: result });
+    return result;
+  }
+  const s = result.suggestion;
+  toast(message, {
+    undo: result.undo,
+    ...(s && {
+      detail: `Öneri: ${ruleSentence(s)}`,
+      action: { label: "Kural yap", run: () => void addSuggestedRule(s) },
+    }),
+  });
   return result;
+}
+
+/** Önerilen kuralı ekler (geri alınabilir); açık sayfalar yenilenir. */
+export async function addSuggestedRule(s: RuleSuggestion): Promise<boolean> {
+  try {
+    await undoable(api.addRule(s.projectId, s.field, s.pattern), `Kural eklendi: ${ruleSentence(s)}`);
+    notifyChanged();
+    return true;
+  } catch (e) {
+    toast(friendlyError(e), { tone: "error" });
+    return false;
+  }
 }
 
 /** Bilinen arka uç hata kalıpları → kullanıcının anlayacağı cümle. */

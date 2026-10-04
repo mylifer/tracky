@@ -279,8 +279,29 @@ export type Goals = {
 export type ProjectGoal = { projectId: string; minutes: number };
 export type CategoryLimit = { categoryId: string; minutes: number };
 
-/** Geri alınabilir düzenleme: değişen kayıt sayısı ve geri alma numarası (`api.undo`). */
-export type Edited = { changed: number; undo: number };
+/**
+ * Geri alınabilir düzenleme: değişen kayıt sayısı ve geri alma numarası (`api.undo`). Elle
+ * atamadan sonra atanan süre bir alışkanlığa dönüştüyse önerilen kural da gelir.
+ */
+export type Edited = { changed: number; undo: number; suggestion?: RuleSuggestion };
+
+/** Elle atamalardan öğrenilen kural önerisi. */
+export type RuleSuggestion = {
+  /** Yoksayma anahtarı. */
+  key: string;
+  projectId: string;
+  projectName: string;
+  field: RuleField;
+  pattern: string;
+  /** İş anahtarı öneki (`LOY-`), başlıktaki proje adı ya da site. */
+  source: "issueKey" | "titleWord" | "site";
+  /** Ayrı elle atama sayısı. */
+  assignments: number;
+  days: number;
+  /** Desene uyan, elle bu projeye atanmış süre. */
+  manualSeconds: number;
+  preview: RulePreview;
+};
 
 export type UnassignedItem = { title: string; seconds: number; word: string | null };
 export type UnassignedGroup = {
@@ -381,6 +402,10 @@ export const api = {
   /** Kural eklenseydi son 30 günde ne değişirdi? */
   previewRule: (tagId: string, field: RuleField, pattern: string) =>
     invoke<RulePreview>("preview_rule", { tagId, field, pattern }),
+  /** Son 30 günün elle atamalarından öğrenilen kural önerileri. */
+  ruleSuggestions: () => invoke<RuleSuggestion[]>("rule_suggestions"),
+  /** Kural önerisini bir daha gösterme. */
+  dismissRuleSuggestion: (key: string) => invoke<void>("dismiss_rule_suggestion", { key }),
   /** Düzenlemeyi geri alır. */
   undo: (id: number) => invoke<void>("undo", { id }),
   unassigned: (start: string, days: number) => invoke<Unassigned>("get_unassigned", { start, days }),

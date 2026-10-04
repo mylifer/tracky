@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::{Result, Store, StoreError, ms};
 use crate::classify::{Client, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind, default_id};
+use crate::learn::{self, LearnInput, RuleCandidate};
 use crate::suggest::{self, Suggestions};
 
 const DEFAULTS_SEEDED_KEY: &str = "default_tags_seeded";
@@ -16,6 +17,10 @@ const DEFAULTS_SEEDED_KEY: &str = "default_tags_seeded";
 const DISMISSED_SUGGESTIONS_KEY: &str = "dismissed_suggestions";
 /// Öneriler bu kadar günlük geçmişe bakar.
 const SUGGEST_DAYS: i64 = 14;
+/// Yoksayılan kural önerileri ([`crate::learn::candidate_key`]).
+const DISMISSED_RULE_SUGGESTIONS_KEY: &str = "dismissed_rule_suggestions";
+/// Gözden geçir sayfasında gösterilen en çok kural önerisi.
+const MAX_RULE_SUGGESTIONS: usize = 5;
 
 impl Store {
     /// İlk açılışta varsayılan kategorileri ekler (kullanıcı silerse geri gelmez).
@@ -359,6 +364,79 @@ impl Store {
         if !keys.iter().any(|k| k == key) {
             keys.push(key.to_string());
             self.save_setting(DISMISSED_SUGGESTIONS_KEY, &keys)?;
+        }
+        Ok(())
+    }
+
+    /// Son 30 günün elle atamalarından öğrenilen kural önerileri, en çok kazandırandan aza.
+    pub fn rule_suggestions(&self, now: DateTime<Utc>) -> Result<Vec<RuleCandidate>> {
+        let mut out = self.rule_candidates(now, None)?;
+        out.truncate(MAX_RULE_SUGGESTIONS);
+        Ok(out)
+    }
+
+    /// Elle atamadan hemen sonra: `[from, to)` içinde az önce `project_id` projesine atanan
+    /// oturumlardan (`ids` verilirse yalnızca onlar) en az birine uyan en iyi kural önerisi.
+    pub fn rule_suggestion_after(
+        &self,
+        now: DateTime<Utc>,
+        project_id: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        ids: Option<&[Uuid]>,
+    ) -> Result<Option<RuleCandidate>> {
+        let ids: Option<HashSet<&Uuid>> = ids.map(|ids| ids.iter().collect());
+        let assigned: Vec<_> = self
+            .sessions_between(from, to)?
+            .into_iter()
+            .filter(|s| {
+                s.project_id.as_deref() == Some(project_id)
+                    && ids.as_ref().is_none_or(|ids| ids.contains(&s.id))
+            })
+            .collect();
+        if assigned.is_empty() {
+            return Ok(None);
+        }
+        let candidates = self.rule_candidates(now, Some(project_id))?;
+        Ok(learn::candidate_for(candidates, project_id, &assigned))
+    }
+
+    fn rule_candidates(
+        &self,
+        now: DateTime<Utc>,
+        project: Option<&str>,
+    ) -> Result<Vec<RuleCandidate>> {
+        let from = now - chrono::Duration::days(learn::LEARN_DAYS);
+        let sessions = self.merged_sessions_between(from, now)?;
+        let dismissed: HashSet<String> = self
+            .setting::<Vec<String>>(DISMISSED_RULE_SUGGESTIONS_KEY)?
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let day_of = |t: DateTime<Utc>| t.with_timezone(&chrono::Local).date_naive();
+        Ok(learn::rule_candidates(
+            &sessions,
+            &LearnInput {
+                tags: &self.tags()?,
+                rules: &self.rules()?,
+                archived: &self.archived_projects()?,
+                dismissed: &dismissed,
+                from,
+                to: now,
+                day_of: &day_of,
+                project,
+            },
+        ))
+    }
+
+    /// Kural önerisini bir daha gösterme.
+    pub fn dismiss_rule_suggestion(&self, key: &str) -> Result<()> {
+        let mut keys = self
+            .setting::<Vec<String>>(DISMISSED_RULE_SUGGESTIONS_KEY)?
+            .unwrap_or_default();
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+            self.save_setting(DISMISSED_RULE_SUGGESTIONS_KEY, &keys)?;
         }
         Ok(())
     }
@@ -746,5 +824,74 @@ mod tests {
             b.clients[0].level(),
             Some(crate::budget::BudgetLevel::Reached)
         );
+    }
+
+    #[test]
+    fn rule_suggestions_follow_manual_assignments_and_stay_dismissed() {
+        let store = Store::open_in_memory().unwrap();
+        let loy = Tag {
+            id: Uuid::new_v4().to_string(),
+            kind: TagKind::Project,
+            name: "Sadakat".into(),
+            color: 1,
+        };
+        store.upsert_tag(&loy, 0).unwrap();
+        let day = 86_400;
+        let first = session("LOY-214 Kampanya", 0, 1200);
+        let second = session("LOY-87 Puanlar", day, day + 1200);
+        for s in [&first, &second] {
+            store.upsert_session(s).unwrap();
+        }
+        let now = t(2 * day);
+        store.set_project_for(&[first.id], Some(&loy.id)).unwrap();
+        // Tek atama henüz alışkanlık değil.
+        assert!(store.rule_suggestions(now).unwrap().is_empty());
+        let after = |ids: &[Uuid]| {
+            store
+                .rule_suggestion_after(now, &loy.id, t(0), now, Some(ids))
+                .unwrap()
+        };
+        assert!(after(&[first.id]).is_none());
+
+        // İkinci gün de elle atanınca öneri çıkar; atamadan hemen sonra da sunulur.
+        store.set_project_for(&[second.id], Some(&loy.id)).unwrap();
+        let list = store.rule_suggestions(now).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            (list[0].pattern.as_str(), list[0].project_name.as_str()),
+            ("LOY-", "Sadakat")
+        );
+        assert_eq!(after(&[second.id]).unwrap().key, list[0].key);
+        // Başka projeye atanan oturumlar için öneri yok.
+        assert!(
+            store
+                .rule_suggestion_after(now, "yok", t(0), now, None)
+                .unwrap()
+                .is_none()
+        );
+
+        // Yoksayılan öneri bir daha gelmez (iki kez yoksaymak kopya yazmaz).
+        store.dismiss_rule_suggestion(&list[0].key).unwrap();
+        store.dismiss_rule_suggestion(&list[0].key).unwrap();
+        assert!(store.rule_suggestions(now).unwrap().is_empty());
+        assert!(after(&[second.id]).is_none());
+        let saved: Vec<String> = store
+            .setting(DISMISSED_RULE_SUGGESTIONS_KEY)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.len(), 1);
+
+        // Kural eklenince de önerilmez (yoksayma kaldırılsa bile).
+        store
+            .save_setting(DISMISSED_RULE_SUGGESTIONS_KEY, &Vec::<String>::new())
+            .unwrap();
+        assert_eq!(store.rule_suggestions(now).unwrap().len(), 1);
+        store
+            .upsert_rule(&Rule {
+                id: Uuid::new_v4().to_string(),
+                ..list[0].rule()
+            })
+            .unwrap();
+        assert!(store.rule_suggestions(now).unwrap().is_empty());
     }
 }

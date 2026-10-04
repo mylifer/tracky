@@ -41,7 +41,10 @@ function ToastItem({ toast }: { toast: Toast }) {
       )}
     >
       {Icon && <Icon className={cn("size-4 shrink-0", toast.tone === "error" ? "text-red-400" : "text-emerald-400")} />}
-      <span className="min-w-0 flex-1 selectable">{toast.message}</span>
+      <span className="min-w-0 flex-1 selectable">
+        {toast.message}
+        {toast.detail && <span className="mt-0.5 block text-[11px] text-white/60">{toast.detail}</span>}
+      </span>
       {toast.undo !== undefined && (
         <button
           className="flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-semibold text-sky-300 hover:bg-white/10"

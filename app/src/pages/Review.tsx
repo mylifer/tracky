@@ -18,6 +18,7 @@ import {
   formatDuration,
   NO_PROJECT,
   type RuleField,
+  type RuleSuggestion,
   type Tag,
   type Unassigned,
   type UnassignedGroup,
@@ -30,7 +31,8 @@ import { Input } from "../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { addDays, formatDate, formatTime, isoDate, parseIsoDate, startOfWeek, today } from "../lib/dates";
-import { friendlyError, notifyChanged, toast, undoable, useChanged } from "../lib/feedback";
+import { addSuggestedRule, friendlyError, notifyChanged, toast, undoable, useChanged } from "../lib/feedback";
+import { ruleReason, ruleSubject } from "../lib/ruleSuggestions";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 
@@ -110,6 +112,7 @@ export default function Review({
   const [tags, setTags] = useState<Tag[]>([]);
   const [pending, setPending] = useState<string[]>([]);
   const [ignored, setIgnored] = useState<string[]>([]);
+  const [suggestions, setSuggestions] = useState<RuleSuggestion[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   // Dönem hızlı değişince yavaş kalan eski yanıt yenisinin üstüne yazmasın: atama da
@@ -138,6 +141,8 @@ export default function Review({
       () => {},
     );
     api.ignoredUnassigned().then(setIgnored, () => {});
+    // Kural önerileri dönemden bağımsızdır (son 30 günün elle atamaları).
+    api.ruleSuggestions().then(setSuggestions, () => setSuggestions([]));
   }, [start, days]);
   useEffect(load, [load]);
   useChanged(load);
@@ -183,6 +188,17 @@ export default function Review({
     }
   }
 
+  async function dismissSuggestion(s: RuleSuggestion) {
+    setSuggestions((list) => list.filter((x) => x.key !== s.key));
+    try {
+      await api.dismissRuleSuggestion(s.key);
+      toast(`“${ruleSubject(s)}” bir daha önerilmeyecek`);
+    } catch (e) {
+      toast(friendlyError(e), { tone: "error" });
+      load();
+    }
+  }
+
   const total = data ? data.totalSeconds : 0;
   const assignedShare = worked > 0 ? Math.max(0, Math.min(1, (worked - total) / worked)) : 0;
 
@@ -215,6 +231,18 @@ export default function Review({
         <ReviewSkeleton />
       ) : (
         <>
+          {suggestions.length > 0 && projects.length > 0 && (
+            <RuleSuggestions
+              suggestions={suggestions}
+              projects={projects}
+              tags={tags}
+              onAdd={async (s) => {
+                if (await addSuggestedRule(s)) setSuggestions((list) => list.filter((x) => x.key !== s.key));
+              }}
+              onDismiss={dismissSuggestion}
+            />
+          )}
+
           <Hero
             total={total}
             worked={worked}
@@ -330,6 +358,103 @@ function Hero({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Elle atamalardan öğrenilen kural önerileri: her biri gerekçesi ve önizlemesiyle; "Kural ekle"
+ * kuralı ekler (geri alınabilir), "Önerme" bir daha göstermez.
+ */
+function RuleSuggestions({
+  suggestions,
+  projects,
+  tags,
+  onAdd,
+  onDismiss,
+}: {
+  suggestions: RuleSuggestion[];
+  projects: Tag[];
+  tags: Tag[];
+  onAdd: (s: RuleSuggestion) => Promise<void>;
+  onDismiss: (s: RuleSuggestion) => void;
+}) {
+  return (
+    <section className="space-y-2" aria-labelledby="kural-onerileri">
+      <div className="flex items-center gap-2 px-1">
+        <Wand2 className="size-4 text-primary" />
+        <h2 id="kural-onerileri" className="text-[13px] font-semibold">
+          Kural önerileri
+        </h2>
+        <span className="text-xs text-muted-foreground">
+          Sık elle atadığın süre; kural olursa bundan sonra kendiliğinden projeye düşer.
+        </span>
+      </div>
+      <ul className="space-y-2">
+        {suggestions.map((s) => (
+          <RuleSuggestionCard
+            key={s.key}
+            suggestion={s}
+            project={projects.find((p) => p.id === s.projectId)}
+            tags={tags}
+            onAdd={() => onAdd(s)}
+            onDismiss={() => onDismiss(s)}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function RuleSuggestionCard({
+  suggestion: s,
+  project,
+  tags,
+  onAdd,
+  onDismiss,
+}: {
+  suggestion: RuleSuggestion;
+  project?: Tag;
+  tags: Tag[];
+  onAdd: () => Promise<void>;
+  onDismiss: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <li className="animate-in space-y-2 rounded-xl border bg-card px-4 py-3 shadow-xs fade-in-0 slide-in-from-bottom-1">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5 text-[13px] font-semibold">
+            <span>{ruleSubject(s)}</span>
+            <span className="text-muted-foreground">→</span>
+            <span className="inline-flex items-center gap-1.5">
+              {project && <i className="size-2 rounded-full" style={{ background: tagColor(project) }} aria-hidden />}
+              {project?.name ?? s.projectName}
+            </span>
+          </div>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">{ruleReason(s)}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={onDismiss} disabled={busy}>
+            Önerme
+          </Button>
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onAdd();
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Kural ekle
+          </Button>
+        </div>
+      </div>
+      <RulePreview tagId={s.projectId} field={s.field} pattern={s.pattern} tags={tags} />
+    </li>
   );
 }
 

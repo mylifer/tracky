@@ -343,10 +343,10 @@ fn range_edit(
     let snap = store.snapshot_range(from, to).map_err(err)?;
     let changed = edit(&store, from, to).map_err(err)?;
     drop(store);
-    Ok(Edited {
+    Ok(Edited::new(
         changed,
-        undo: record(app, vec![UndoOp::Sessions(snap)]),
-    })
+        record(app, vec![UndoOp::Sessions(snap)]),
+    ))
 }
 
 /// Takvimdeki bir bloğu (aralıktaki oturumları) kategoriye atar; `None` kurallara döndürür.
@@ -370,9 +370,15 @@ pub async fn set_range_project(
     end: String,
     project_id: Option<String>,
 ) -> CmdResult<Edited> {
-    range_edit(&app, &start, &end, |s, from, to| {
+    let mut edited = range_edit(&app, &start, &end, |s, from, to| {
         s.set_project_between(from, to, project_id.as_deref())
-    })
+    })?;
+    if edited.changed > 0 {
+        let (from, to) = (parse_time(&start)?, parse_time(&end)?);
+        edited.suggestion =
+            crate::edits::rule_suggestion_after(&app, project_id.as_deref(), from, to, None);
+    }
+    Ok(edited)
 }
 
 #[tauri::command]

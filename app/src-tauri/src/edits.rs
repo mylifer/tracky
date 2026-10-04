@@ -10,8 +10,9 @@ use chrono::{DateTime, Days, NaiveDate, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tracky_core::inbox::{RulePreview, Unassigned};
+use tracky_core::learn::RuleCandidate;
 use tracky_core::store::EditSnapshot;
-use tracky_core::{Rule, RuleField, Store};
+use tracky_core::{NO_PROJECT, Rule, RuleField, Store};
 
 use crate::lock;
 use crate::tracking::{Shared, local_midnight};
@@ -90,6 +91,36 @@ impl UndoLog {
 pub struct Edited {
     pub changed: usize,
     pub undo: u64,
+    /// Elle atamadan sonra: atanan süre bir alışkanlığa dönüştüyse önerilen kural
+    /// (bildirimde "Kural yap").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<RuleCandidate>,
+}
+
+impl Edited {
+    pub fn new(changed: usize, undo: u64) -> Self {
+        Self {
+            changed,
+            undo,
+            suggestion: None,
+        }
+    }
+}
+
+/// Elle `project_id` projesine atamadan sonra önerilecek kural (`[from, to)` içinde, `ids`
+/// verilirse yalnızca o oturumlar). Öneri isteğe bağlıdır: hesaplanamazsa atama yine başarılı.
+pub fn rule_suggestion_after(
+    app: &AppHandle,
+    project_id: Option<&str>,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    ids: Option<&[uuid::Uuid]>,
+) -> Option<RuleCandidate> {
+    let project = project_id.filter(|p| *p != NO_PROJECT)?;
+    lock(&app.state::<Shared>().store)
+        .rule_suggestion_after(Utc::now(), project, from, to, ids)
+        .ok()
+        .flatten()
 }
 
 pub fn record(app: &AppHandle, ops: Vec<UndoOp>) -> u64 {
@@ -157,7 +188,8 @@ pub async fn assign_unassigned(
     let (from, to) = range(&start, days)?;
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    let (changed, ops) = store
+    let with_rule = rule.is_some();
+    let (changed, ops, ids) = store
         .atomic(|store| {
             assign(
                 store,
@@ -171,10 +203,13 @@ pub async fn assign_unassigned(
         })
         .map_err(err)?;
     drop(store);
-    Ok(Edited {
-        changed,
-        undo: record(&app, ops),
-    })
+    let mut edited = Edited::new(changed, record(&app, ops));
+    // Kuralla atandıysa öneri gereksiz.
+    if !with_rule && changed > 0 {
+        edited.suggestion =
+            rule_suggestion_after(&app, project_id.as_deref(), from, to, Some(&ids));
+    }
+    Ok(edited)
 }
 
 /// [`assign_unassigned`]'ın depo tarafı; çağıran tek işlemde çalıştırır (kural eklenip
@@ -187,7 +222,7 @@ fn assign(
     title: Option<&str>,
     project_id: Option<&str>,
     rule: Option<(RuleField, String)>,
-) -> tracky_core::store::Result<(usize, Vec<UndoOp>)> {
+) -> tracky_core::store::Result<(usize, Vec<UndoOp>, Vec<uuid::Uuid>)> {
     let mut ops = Vec::new();
     if let (Some(project), Some((field, pattern))) = (project_id, rule) {
         let id = uuid::Uuid::new_v4().to_string();
@@ -203,7 +238,7 @@ fn assign(
     let snap = store.snapshot_sessions(&ids)?;
     let changed = store.set_project_for(&ids, project_id)?;
     ops.push(UndoOp::Sessions(snap));
-    Ok((changed, ops))
+    Ok((changed, ops, ids))
 }
 
 /// Takvim bloğundaki bir pencereyi (uygulama + başlık, `[from, to)` içinde) projeye atar;
@@ -219,19 +254,21 @@ pub async fn assign_window(
 ) -> CmdResult<Edited> {
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    let (changed, ops) = store
+    let (changed, ops, ids) = store
         .atomic(|store| {
             let ids = store.window_sessions(from, to, &app_id, &title)?;
             let snap = store.snapshot_sessions(&ids)?;
             let changed = store.set_project_for(&ids, project_id.as_deref())?;
-            Ok((changed, vec![UndoOp::Sessions(snap)]))
+            Ok((changed, vec![UndoOp::Sessions(snap)], ids))
         })
         .map_err(err)?;
     drop(store);
-    Ok(Edited {
-        changed,
-        undo: record(&app, ops),
-    })
+    let mut edited = Edited::new(changed, record(&app, ops));
+    if changed > 0 {
+        edited.suggestion =
+            rule_suggestion_after(&app, project_id.as_deref(), from, to, Some(&ids));
+    }
+    Ok(edited)
 }
 
 /// Grubu atanmamış listesinde gösterme ya da yeniden göster.
@@ -247,6 +284,22 @@ pub async fn ignore_unassigned(app: AppHandle, key: String, ignored: bool) -> Cm
 pub async fn ignored_unassigned(app: AppHandle) -> CmdResult<Vec<String>> {
     lock(&app.state::<Shared>().store)
         .ignored_unassigned()
+        .map_err(err)
+}
+
+/// Son 30 günün elle atamalarından öğrenilen kural önerileri (Gözden geçir).
+#[tauri::command]
+pub async fn rule_suggestions(app: AppHandle) -> CmdResult<Vec<RuleCandidate>> {
+    lock(&app.state::<Shared>().store)
+        .rule_suggestions(Utc::now())
+        .map_err(err)
+}
+
+/// Kural önerisini bir daha gösterme.
+#[tauri::command]
+pub async fn dismiss_rule_suggestion(app: AppHandle, key: String) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .dismiss_rule_suggestion(&key)
         .map_err(err)
 }
 
@@ -382,7 +435,7 @@ mod tests {
         assert_eq!(store.rules().unwrap().len(), rules);
 
         let p = tag(&store, TagKind::Project);
-        let (changed, ops) = store
+        let (changed, ops, _) = store
             .atomic(|s| assign(s, t(0), t(60), "app:com.apple.Safari", None, Some(&p), rule))
             .unwrap();
         assert_eq!(changed, 1);
