@@ -57,6 +57,10 @@ pub struct WindowSpan {
     pub app_name: String,
     pub title: String,
     pub category_id: Option<String>,
+    /// Pencerenin (kurala ya da elle atamaya göre) projesi.
+    pub project_id: Option<String>,
+    /// Tarayıcıdaysa sitenin alan adı.
+    pub domain: Option<String>,
 }
 
 /// Bilgisayardan uzakta geçen, henüz bir işe atanmamış süre (takvimde "Boşta").
@@ -166,6 +170,7 @@ pub fn build(
                     if last.app_id == s.app_id
                         && last.title == s.title
                         && last.category_id == class.category
+                        && last.project_id == class.project
                         && start - last.end <= Duration::seconds(MERGE_GAP_SECS) =>
                 {
                     last.end = last.end.max(end);
@@ -177,6 +182,8 @@ pub fn build(
                     app_name: s.app_name.clone(),
                     title: s.title.clone(),
                     category_id: class.category.clone(),
+                    project_id: class.project.clone(),
+                    domain: s.domain.clone(),
                 }),
             }
             match timeline.last_mut() {
@@ -480,5 +487,28 @@ mod tests {
                 .windows
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn windows_split_by_project_and_carry_the_site() {
+        let mut a = s("Chrome", "LOY-214 · Jira", 0, 60);
+        a.domain = Some("jira.firma.com".into());
+        a.project_id = Some("kum".into());
+        let b = s("Chrome", "LOY-214 · Jira", 61, 120);
+        let tags = [Tag {
+            id: "kum".into(),
+            kind: TagKind::Project,
+            name: "Kum".into(),
+            color: 1,
+        }];
+        let c = Classifier::new(&tags, &[]);
+        let r = build(&[a, b], &tags, &c, t(0), t(3600), &[t(0)], true);
+        // Aynı pencere ama biri elle projeye atanmış: ayrı satır olur.
+        let w: Vec<_> = r
+            .windows
+            .iter()
+            .map(|w| (w.project_id.as_deref(), w.domain.as_deref()))
+            .collect();
+        assert_eq!(w, [(Some("kum"), Some("jira.firma.com")), (None, None)]);
     }
 }

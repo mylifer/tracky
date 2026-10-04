@@ -67,6 +67,8 @@ export default function ReportView(p: Props) {
   const [loaded, setLoaded] = useState<{ mode: Props["mode"]; report: Report } | null>(null);
   const report = loaded?.mode === p.mode ? loaded.report : null;
   const [previous, setPrevious] = useState<Report | null>(null);
+  // Gözden geçir'in önerdiği atanmamış süre (15 dakikadan kısa parçalar sayılmaz).
+  const [review, setReview] = useState<{ seconds: number; idle: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dailyHours, setDailyHours] = useState(8);
   const [limits, setLimits] = useState<CategoryLimit[]>([]);
@@ -111,6 +113,10 @@ export default function ReportView(p: Props) {
     api.report(isoDate(prevStart), fullPrev, false, until).then(
       (r) => n === seq.current && setPrevious(r),
       () => n === seq.current && setPrevious(null),
+    );
+    api.unassigned(p.start, days).then(
+      (u) => n === seq.current && setReview({ seconds: u.totalSeconds, idle: u.idleSeconds }),
+      () => n === seq.current && setReview(null),
     );
   }, [p.start, p.mode, days, timeline]);
 
@@ -407,6 +413,7 @@ export default function ReportView(p: Props) {
                           blocks={report.work.blocks}
                           idle={report.idle}
                           segments={report.timeline}
+                          windows={report.windows}
                           tags={tags}
                           meetings={meetings}
                           onMeeting={(meeting, x, y) => setMeetingSel({ meeting, x, y })}
@@ -422,6 +429,7 @@ export default function ReportView(p: Props) {
                           blocks={report.work.blocks}
                           idle={report.idle}
                           dayTotals={report.days.map((d) => d.seconds)}
+                          windows={report.windows}
                           tags={tags}
                           onSelectDay={p.onSelectDay}
                           onEmpty={openDraft}
@@ -480,6 +488,7 @@ export default function ReportView(p: Props) {
               dailyHours={dailyHours}
               limits={p.mode === "day" ? limits : []}
               projectGoals={p.mode === "week" ? projectGoals : []}
+              unassigned={review}
               mode={p.mode}
               title={isLive ? mode.current : mode.summary}
               onReview={p.onReview}

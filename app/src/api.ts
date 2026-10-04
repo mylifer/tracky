@@ -100,6 +100,10 @@ export type WindowSpan = {
   appName: string;
   title: string;
   categoryId: string | null;
+  /** Pencerenin (kurala ya da elle atamaya göre) projesi. */
+  projectId: string | null;
+  /** Tarayıcıdaysa sitenin alan adı. */
+  domain: string | null;
 };
 export type Report = {
   from: string;
@@ -389,6 +393,9 @@ export const api = {
     projectId: string | null,
     rule: [RuleField, string] | null,
   ) => invoke<Edited>("assign_unassigned", { start, days, key, title, projectId, rule }),
+  /** Takvim bloğundaki bir pencereyi (`from`–`to` içinde) projeye atar; `null` kurallara bırakır. */
+  assignWindow: (from: string, to: string, appId: string, title: string, projectId: string | null) =>
+    invoke<Edited>("assign_window", { from, to, appId, title, projectId }),
   /** `month` ayının proje × gün saatleri; `client` `null` ise tüm müşteriler, `source` `null` ise kendisi seçer. */
   clientReport: (month: string, client: string | null, source: ReportSource | null) =>
     invoke<ClientReport>("client_report", { month, client, source }),

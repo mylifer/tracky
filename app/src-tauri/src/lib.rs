@@ -387,6 +387,7 @@ pub fn run() {
             edits::undo,
             edits::get_unassigned,
             edits::assign_unassigned,
+            edits::assign_window,
             edits::ignore_unassigned,
             edits::ignored_unassigned,
             edits::preview_rule,

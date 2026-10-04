@@ -1,12 +1,16 @@
 import { useMemo, useRef, useState } from "react";
-import { Briefcase, CalendarDays, Coffee, Shapes, Video } from "lucide-react";
-import type { CalendarMeeting, IdleSpan, Segment, Tag, WorkBlock } from "../api";
-import { formatDuration } from "../api";
+import { Briefcase, CalendarDays, ChevronDown, Coffee, FolderInput, Globe, Shapes, Video } from "lucide-react";
+import type { CalendarMeeting, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../api";
+import { api, formatDuration, NO_PROJECT } from "../api";
+import { blockWindows, type BlockApp, type BlockWindow } from "../lib/blockWindows";
+import { friendlyError, toast, undoable } from "../lib/feedback";
+import { UNASSIGNED_MIN } from "../lib/timesheet";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
 import { UNASSIGNED, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { BlockActions, useEdit } from "./SessionEdit";
+import { ProjectSelect } from "./ProjectSelect";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
 /** Yakınlaştırılmamış takvimde bir saatin yüksekliği. */
@@ -223,8 +227,18 @@ function NowLine({ day, range }: { day: Date; range: Range }) {
 }
 
 /** Bloğun ayrıntı kartı: kategori, süre, uygulama yüzdeleri. */
-function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag> }) {
+function BlockDetails({
+  block,
+  tags,
+  windows,
+}: {
+  block: WorkBlock;
+  tags: Map<string, Tag>;
+  /** Raporun pencere aralıkları; verilirse uygulamaların altında pencereler de listelenir. */
+  windows?: WindowSpan[];
+}) {
   const edit = useEdit();
+  const apps = useMemo(() => (windows ? blockWindows(windows, block.start, block.end) : null), [windows, block]);
   const tag = block.categoryId ? tags.get(block.categoryId) : undefined;
   const project = block.projectId ? tags.get(block.projectId) : undefined;
   const color = tagColor(tag);
@@ -252,23 +266,27 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
           {block.switches > 0 && ` · ${block.switches} uygulama geçişi`}
         </p>
       </div>
-      <ul className="space-y-1.5">
-        {block.topApps.map((a) => {
-          const pct = block.activeSeconds ? Math.round((a.seconds / block.activeSeconds) * 100) : 0;
-          return (
-            <li key={a.appName} className="grid grid-cols-[34px_1fr_auto] items-center gap-2 text-xs">
-              <span className="text-muted-foreground tabular">%{pct}</span>
-              <span className="min-w-0">
-                <span className="block truncate">{a.appName}</span>
-                <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
-                  <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+      {apps && apps.length > 0 ? (
+        <BlockApps block={block} apps={apps} tags={tags} color={color} />
+      ) : (
+        <ul className="space-y-1.5">
+          {block.topApps.map((a) => {
+            const pct = block.activeSeconds ? Math.round((a.seconds / block.activeSeconds) * 100) : 0;
+            return (
+              <li key={a.appName} className="grid grid-cols-[34px_1fr_auto] items-center gap-2 text-xs">
+                <span className="text-muted-foreground tabular">%{pct}</span>
+                <span className="min-w-0">
+                  <span className="block truncate">{a.appName}</span>
+                  <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
+                    <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+                  </span>
                 </span>
-              </span>
-              <span className="text-muted-foreground tabular">{formatDuration(a.seconds)}</span>
-            </li>
-          );
-        })}
-      </ul>
+                <span className="text-muted-foreground tabular">{formatDuration(a.seconds)}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {edit && (
         <BlockActions
           start={block.start}
@@ -283,6 +301,178 @@ function BlockDetails({ block, tags }: { block: WorkBlock; tags: Map<string, Tag
     </div>
   );
 }
+
+/** Bir uygulamada gösterilen ilk pencere sayısı; gerisi "daha fazla" ile açılır. */
+const FIRST_WINDOWS = 5;
+/** Seçicide "kurallara bırak" (elle atamayı kaldır). */
+const AUTO = "__otomatik__";
+
+/**
+ * Bloktaki uygulamalar ve her birinde zaman geçirilen pencereler: hangi işin yapıldığı (ve
+ * hangi projeye yazıldığı) başlıktan anlaşılsın; pencere tek başına projeye atanabilir.
+ */
+function BlockApps({
+  block,
+  apps,
+  tags,
+  color,
+}: {
+  block: WorkBlock;
+  apps: BlockApp[];
+  tags: Map<string, Tag>;
+  color: string;
+}) {
+  const total = apps.reduce((n, a) => n + a.seconds, 0);
+  return (
+    <div className="-mr-2 max-h-80 space-y-3 overflow-y-auto pr-2">
+      {apps.map((a) => {
+        const pct = total ? Math.round((a.seconds / total) * 100) : 0;
+        return (
+          <section key={a.appId}>
+            <div className="grid grid-cols-[34px_1fr_auto] items-center gap-2 text-xs">
+              <span className="text-muted-foreground tabular">%{pct}</span>
+              <span className="min-w-0">
+                <span className="block truncate font-medium">{a.appName}</span>
+                <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
+                  <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+                </span>
+              </span>
+              <span className="text-muted-foreground tabular">{formatDuration(a.seconds)}</span>
+            </div>
+            <AppWindows block={block} app={a} tags={tags} />
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function AppWindows({ block, app, tags }: { block: WorkBlock; app: BlockApp; tags: Map<string, Tag> }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? app.windows : app.windows.slice(0, FIRST_WINDOWS);
+  const hidden = app.windows.length - shown.length;
+  return (
+    <ul className="mt-1.5 ml-[42px] space-y-0.5 border-l pl-2">
+      {shown.map((w) => (
+        <WindowRow key={`${w.title}\u0000${w.projectId ?? ""}`} block={block} appId={app.appId} w={w} tags={tags} />
+      ))}
+      {(hidden > 0 || all) && app.windows.length > FIRST_WINDOWS && (
+        <li>
+          <button
+            className="flex items-center gap-1 rounded py-0.5 text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+            aria-expanded={all}
+            onClick={() => setAll(!all)}
+          >
+            <ChevronDown className={cn("size-3 transition-transform", all && "rotate-180")} />
+            {all ? "Daha az göster" : `${hidden} pencere daha`}
+          </button>
+        </li>
+      )}
+    </ul>
+  );
+}
+
+/** Pencere satırı: başlık, site, proje ve süre; "Ata" ile yalnızca bu pencerenin süresi atanır. */
+function WindowRow({
+  block,
+  appId,
+  w,
+  tags,
+}: {
+  block: WorkBlock;
+  appId: string;
+  w: BlockWindow;
+  tags: Map<string, Tag>;
+}) {
+  const edit = useEdit();
+  const [open, setOpen] = useState(false);
+  const project = w.projectId ? tags.get(w.projectId) : undefined;
+  // Atama yalnızca zaman çizelgesine girecek kadar uzun (≥ 15 dk) atanmamış pencerede önerilir.
+  const suggest = !project && w.seconds >= UNASSIGNED_MIN;
+  const title = w.title || "(başlıksız)";
+
+  async function assign(v: string) {
+    if (!edit) return;
+    const id = v === AUTO ? null : v;
+    const name =
+      id === null
+        ? "kurallara bırakıldı"
+        : id === NO_PROJECT
+          ? "projesiz sayıldı"
+          : `→ ${tags.get(id)?.name ?? "proje"}`;
+    try {
+      await undoable(api.assignWindow(block.start, block.end, appId, w.title, id), `“${short(title)}” ${name}`);
+      setOpen(false);
+      edit.onChanged();
+    } catch (e) {
+      toast(friendlyError(e), { tone: "error" });
+    }
+  }
+
+  return (
+    <li className="group/w rounded-md px-1.5 py-1 hover:bg-accent/40">
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className={cn("truncate text-xs", !w.title && "text-muted-foreground italic")} title={title}>
+            {title}
+          </div>
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            {w.domain && (
+              <span className="flex min-w-0 items-center gap-1 truncate">
+                <Globe className="size-3 shrink-0" aria-hidden />
+                <span className="truncate">{w.domain}</span>
+              </span>
+            )}
+            {w.domain && <span aria-hidden>·</span>}
+            {project ? (
+              <span className="flex min-w-0 items-center gap-1">
+                <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(project) }} aria-hidden />
+                <span className="truncate">{project.name}</span>
+              </span>
+            ) : (
+              <span className={cn(suggest && "font-medium text-foreground")}>{UNASSIGNED}</span>
+            )}
+          </div>
+        </div>
+        <span className="shrink-0 pt-px text-[11px] text-muted-foreground tabular">{formatDuration(w.seconds)}</span>
+        {edit && edit.projects.length > 0 && (
+          <button
+            className={cn(
+              "flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] focus-visible:outline-2 focus-visible:outline-ring",
+              suggest
+                ? "border bg-background font-medium hover:bg-accent"
+                : "text-muted-foreground opacity-0 group-hover/w:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100",
+              open && "opacity-100",
+            )}
+            aria-expanded={open}
+            aria-label={`“${title}” penceresini projeye ata`}
+            title="Bu blokta bu pencerede geçen süreyi projeye ata"
+            onClick={() => setOpen(!open)}
+          >
+            <FolderInput className="size-3" aria-hidden />
+            {suggest && "Ata"}
+          </button>
+        )}
+      </div>
+      {open && edit && (
+        <ProjectSelect
+          className="mt-1.5 w-full"
+          value=""
+          projects={edit.projects}
+          placeholder="Projeye ata…"
+          extra={[
+            { value: NO_PROJECT, label: "Projesiz" },
+            ...(w.projectId ? [{ value: AUTO, label: "Otomatik (kurallara göre)" }] : []),
+          ]}
+          aria-label={`“${title}” projesi`}
+          onChange={assign}
+        />
+      )}
+    </li>
+  );
+}
+
+const short = (s: string) => (s.length > 40 ? `${s.slice(0, 39)}…` : s);
 
 function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens) {
   const tag = b.categoryId ? tags.get(b.categoryId) : undefined;
@@ -304,11 +494,13 @@ function Block({
   height,
   narrow = false,
   lens = "category",
+  windows,
 }: {
   b: WorkBlock;
   tags: Map<string, Tag>;
   top: number;
   height: number;
+  windows?: WindowSpan[];
   /** Dar sütun (hafta): tek satırlık blokta süre yer kaplamasın, başlık okunsun. */
   narrow?: boolean;
   lens?: ColorLens;
@@ -353,8 +545,8 @@ function Block({
           )}
         </button>
       </PopoverTrigger>
-      <PopoverContent side="right" align="start" className="w-72">
-        <BlockDetails block={b} tags={tags} />
+      <PopoverContent side="right" align="start" className={windows ? "w-96" : "w-72"}>
+        <BlockDetails block={b} tags={tags} windows={windows} />
       </PopoverContent>
     </Popover>
   );
@@ -466,6 +658,7 @@ export function DayCalendar({
   blocks,
   idle = [],
   segments,
+  windows,
   tags,
   meetings = null,
   onMeeting,
@@ -480,6 +673,8 @@ export function DayCalendar({
   /** Bilgisayardan uzakta geçen, atanmamış süre. */
   idle?: IdleSpan[];
   segments: Segment[];
+  /** Pencere aralıkları: bloğa tıklayınca hangi pencerelerde zaman geçtiği görünür. */
+  windows?: WindowSpan[];
   tags: Map<string, Tag>;
   /** Takvim toplantıları; `null`: takvim bağlı değil (sütun gösterilmez). */
   meetings?: CalendarMeeting[] | null;
@@ -551,7 +746,7 @@ export function DayCalendar({
             <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} {...blockGeometry(span, top)} />
           ))}
           {blocks.map((b) => (
-            <Block key={b.start} b={b} tags={tags} lens={lens} {...blockGeometry(b, top)} />
+            <Block key={b.start} b={b} tags={tags} lens={lens} windows={windows} {...blockGeometry(b, top)} />
           ))}
           <Preview range={preview} top={top} />
           <NowLine day={from} range={range} />
@@ -692,6 +887,7 @@ export function WeekCalendar({
   blocks,
   idle = [],
   dayTotals,
+  windows,
   tags,
   onSelectDay,
   onEmpty,
@@ -704,6 +900,7 @@ export function WeekCalendar({
   blocks: WorkBlock[];
   idle?: IdleSpan[];
   dayTotals: number[];
+  windows?: WindowSpan[];
   tags: Map<string, Tag>;
   onSelectDay: (iso: string) => void;
   onEmpty?: (start: number, end: number) => void;
@@ -776,7 +973,15 @@ export function WeekCalendar({
               {blocks
                 .filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd)
                 .map((b) => (
-                  <Block key={b.start} b={b} tags={tags} narrow lens={lens} {...blockGeometry(b, top)} />
+                  <Block
+                    key={b.start}
+                    b={b}
+                    tags={tags}
+                    narrow
+                    lens={lens}
+                    windows={windows}
+                    {...blockGeometry(b, top)}
+                  />
                 ))}
               <Preview range={preview && preview[0] >= dayStart && preview[0] < dayEnd ? preview : null} top={top} />
               <NowLine day={d} range={range} />

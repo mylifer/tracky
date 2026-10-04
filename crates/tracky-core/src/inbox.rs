@@ -16,8 +16,14 @@ use serde::Serialize;
 use crate::classify::{Classifier, NO_PROJECT, Rule, Tag, TagKind};
 use crate::model::Session;
 
-/// Bundan kısa grup listelenmez (tek bir bildirime bakmak gibi).
-pub const MIN_GROUP_SECS: i64 = 60;
+/// Bundan kısa grup ve başlık atanmak üzere önerilmez: zaman çizelgesi en az çeyrek saatlik
+/// işle ilgilenir, birkaç dakikalık geçişler (bildirime bakmak gibi) gürültüdür.
+pub const MIN_GROUP_SECS: i64 = 15 * 60;
+/// Grupta ayrı satır olarak gösterilen başlığın en kısa süresi; kısalar `more` olarak sayılır
+/// (grubu atamak onları da kapsar).
+pub const MIN_ITEM_SECS: i64 = 15 * 60;
+/// Bundan kısa boşta süre önerilmez.
+pub const MIN_IDLE_SECS: i64 = 15 * 60;
 /// Grupta gösterilen en çok başlık; gerisi `more` olarak sayılır.
 pub const MAX_ITEMS: usize = 12;
 /// Komşu iş: atanmamış oturuma bu kadar yakın atanmış oturumun projesi öneri sayılır.
@@ -160,6 +166,9 @@ pub fn unassigned(
             continue;
         }
         if s.is_idle() {
+            if ms / 1000 < MIN_IDLE_SECS {
+                continue;
+            }
             idle_ms += ms;
             out.idle.push(UnassignedIdle {
                 start: s.started_at.max(from),
@@ -212,8 +221,10 @@ pub fn unassigned(
                 })
                 .collect();
             items.sort_by(|x, y| y.seconds.cmp(&x.seconds).then(x.title.cmp(&y.title)));
-            let more = items.len().saturating_sub(MAX_ITEMS);
+            let total = items.len();
+            items.retain(|i| i.seconds >= MIN_ITEM_SECS);
             items.truncate(MAX_ITEMS);
+            let more = total - items.len();
             let likely_project = a
                 .votes
                 .into_iter()
@@ -478,31 +489,37 @@ mod tests {
             idle,
         ];
         let out = unassigned(&sessions, &classifier, &HashSet::new(), t(0), t(24 * 60));
-        assert_eq!(out.groups.len(), 2);
+        // Slack (8 dk) 15 dakikadan kısa: önerilmez.
+        assert_eq!(out.groups.len(), 1);
         let jira = &out.groups[0];
         assert_eq!(jira.key, "site:jira.togg.com");
         assert_eq!(jira.kind, GroupKind::Site);
         assert_eq!(jira.pattern, "jira.togg.com");
         assert_eq!(jira.seconds, 25 * 60);
         assert_eq!(jira.items[0].title, "PROJ-1 Ödeme - Jira");
-        assert_eq!(jira.items[1].title, "PROJ-2 Sepet");
+        // 5 dakikalık başlık ayrı satır olmaz; grubu atamak onu da kapsar.
+        assert_eq!((jira.items.len(), jira.more), (1, 1));
         assert_eq!(jira.items[0].word.as_deref(), Some("PROJ-"));
         // Jira, kum'da çalışılan iki oturumun arasında (biri 1 dk, diğeri 0 dk uzakta).
         assert_eq!(jira.likely_project.as_deref(), Some("kum"));
-        let slack = &out.groups[1];
-        assert_eq!(slack.key, "app:com.tinyspeck.slackmacgap");
-        assert_eq!(slack.seconds, 8 * 60);
-        assert_eq!(out.total_seconds, 33 * 60);
+        assert_eq!(out.total_seconds, 25 * 60);
         assert_eq!(out.idle_seconds, 30 * 60);
         assert_eq!(out.idle.len(), 1);
 
         // Yoksayılan grup listelenmez.
         let ignored = HashSet::from(["site:jira.togg.com".to_string()]);
         let out = unassigned(&sessions, &classifier, &ignored, t(0), t(24 * 60));
-        assert_eq!(out.groups.len(), 1);
-        // Aralık dışına taşan kısım sayılmaz.
+        assert!(out.groups.is_empty());
+        // Aralık dışına taşan kısım sayılmaz; kırpılınca 15 dakikanın altına inen grup düşer.
+        let out = unassigned(&sessions, &classifier, &HashSet::new(), t(45), t(70));
+        assert_eq!(out.groups[0].seconds, 21 * 60);
         let out = unassigned(&sessions, &classifier, &HashSet::new(), t(36), t(45));
-        assert_eq!(out.groups[0].seconds, 4 * 60);
+        assert!(out.groups.is_empty());
+
+        // Kısa boşta süre de önerilmez.
+        let short = vec![Session::idle(t(0), t(10))];
+        let out = unassigned(&short, &classifier, &HashSet::new(), t(0), t(60));
+        assert_eq!((out.idle_seconds, out.idle.len()), (0, 0));
     }
 
     #[test]
@@ -569,9 +586,12 @@ mod tests {
         let p = preview_rule(&sessions, &tags, &[], &new, t(0), t(100));
         assert_eq!((p.matched_seconds, p.gained_seconds), (6, 6));
         assert_eq!(p.samples[0].seconds, 6);
-        let idle: Vec<Session> = sessions
-            .iter()
-            .map(|x| Session::idle(x.started_at, x.ended_at))
+        // Boşta süre de milisaniyeyle toplanır: 4 × (15 dk + 1,5 sn).
+        let idle: Vec<Session> = (0..4)
+            .map(|i| {
+                let start = t(i * 20);
+                Session::idle(start, start + Duration::milliseconds(900_000 + 1500))
+            })
             .collect();
         let out = unassigned(
             &idle,
@@ -580,6 +600,6 @@ mod tests {
             t(0),
             t(100),
         );
-        assert_eq!(out.idle_seconds, 6);
+        assert_eq!(out.idle_seconds, 3606);
     }
 }

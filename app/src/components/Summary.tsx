@@ -21,6 +21,8 @@ type Props = {
   limits: CategoryLimit[];
   /** Hafta görünümünde proje hedefleri. */
   projectGoals: ProjectGoal[];
+  /** Gözden geçir'in önerdiği atanmamış ve boşta süre; `null`: henüz bilinmiyor. */
+  unassigned: { seconds: number; idle: number } | null;
   /** Projeye atanmamış süreyi gözden geçir. */
   onReview: () => void;
 };
@@ -36,6 +38,7 @@ export default function Summary({
   dailyHours,
   limits,
   projectGoals,
+  unassigned,
   onReview,
 }: Props) {
   const f = report.work;
@@ -63,8 +66,8 @@ export default function Summary({
       </Card>
 
       <UnassignedCard
-        seconds={report.projects.find((b) => b.id === null)?.seconds ?? 0}
-        idle={report.idleSeconds}
+        seconds={unassigned?.seconds ?? 0}
+        idle={unassigned?.idle ?? 0}
         hasProjects={report.tags.some((t) => t.kind === "project")}
         onReview={onReview}
       />
@@ -160,8 +163,9 @@ function UnassignedCard({
   hasProjects: boolean;
   onReview: () => void;
 }) {
-  // Proje kullanılmıyorsa her süre atanmamıştır; uyarı gürültü olur.
-  if (!hasProjects || seconds + idle < 5 * 60) return null;
+  // Proje kullanılmıyorsa her süre atanmamıştır; uyarı gürültü olur. Süre Gözden geçir'in
+  // önerdiğidir: kısa parçalar zaten sayılmaz.
+  if (!hasProjects || seconds + idle <= 0) return null;
   return (
     <button
       onClick={onReview}

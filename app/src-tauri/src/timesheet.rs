@@ -164,13 +164,8 @@ pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResu
                 .collect();
             let (_, unassigned) = store.classify_meetings(&todays).map_err(err)?;
             let saved = store.timesheet_entries(date, date).map_err(err)?;
-            let report = store.report(from, to, &[from], false).map_err(err)?;
-            let assigned: i64 = report
-                .projects
-                .iter()
-                .filter(|b| b.id.is_some())
-                .map(|b| b.seconds)
-                .sum();
+            // Gözden geçir'in önerdiği süre (kısa parçalar sayılmaz): bağlantı aynı listeyi açar.
+            let unassigned_seconds = store.unassigned(from, to).map_err(err)?.total_seconds;
             let entries = if saved.is_empty() {
                 store
                     .propose_timesheet(from, to, &todays)
@@ -196,7 +191,7 @@ pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResu
                 date,
                 approved: !saved.is_empty(),
                 entries,
-                unassigned_seconds: (report.total_seconds - assigned).max(0),
+                unassigned_seconds,
                 meetings: unassigned,
             })
         })

@@ -7,7 +7,7 @@ import { parseIsoDate } from "./dates";
  */
 
 /** Bundan kısa atanmamış süre uyarı sayılmaz (pencere geçişleri, kısa bakışlar). */
-export const UNASSIGNED_MIN = 5 * 60;
+export const UNASSIGNED_MIN = 15 * 60;
 /** Günün saati günlük saatten bu kadar sapmadıkça tutuyor sayılır (kayan nokta payı). */
 const HOURS_EPSILON = 0.01;
 

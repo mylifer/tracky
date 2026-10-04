@@ -53,7 +53,7 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { friendlyError, notifyChanged, toast, useChanged } from "../lib/feedback";
-import { closeReport, copyDetails, hoursDiff, needsDetails, type CloseReport } from "../lib/timesheet";
+import { closeReport, copyDetails, UNASSIGNED_MIN, hoursDiff, needsDetails, type CloseReport } from "../lib/timesheet";
 
 const KINDS: EntryKind[] = ["Working", "Online", "F2F"];
 const dayFmt = new Intl.DateTimeFormat("tr-TR", { weekday: "short", day: "numeric", month: "short" });
@@ -817,7 +817,7 @@ function DayCard({
             {signedHours(diff)}
           </Badge>
         )}
-        {day.unassignedSeconds >= 60 && (
+        {day.unassignedSeconds >= UNASSIGNED_MIN && (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <button
               className="rounded underline-offset-2 hover:text-foreground hover:underline"

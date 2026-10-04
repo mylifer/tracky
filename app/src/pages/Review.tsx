@@ -534,9 +534,11 @@ function GroupCard({
           {expanded ? "Daha az göster" : `${group.items.length - FIRST_ITEMS} başlık daha`}
         </button>
       )}
-      {expanded && group.more > 0 && (
+      {/* 15 dakikadan kısa başlıklar ayrı satır olmaz; liste açıkken ya da hiç uzun başlık yokken söylenir. */}
+      {(expanded || group.items.length <= FIRST_ITEMS) && group.more > 0 && (
         <p className="border-t py-2 text-center text-[11px] text-muted-foreground">
-          ve {group.more} kısa başlık daha (grubu atamak hepsini kapsar)
+          {group.items.length ? "ve " : ""}
+          {group.more} kısa başlık (15 dk altı; grubu atamak hepsini kapsar)
         </p>
       )}
     </section>

@@ -227,6 +227,32 @@ impl Store {
         Ok(ids)
     }
 
+    /// `[from, to)` aralığında aynı uygulama ve pencere başlığındaki çalışma oturumları
+    /// (takvim bloğundaki bir pencereyi projeye atamak için; projesi olsa da olmasa da).
+    pub fn window_sessions(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        app_id: &str,
+        title: &str,
+    ) -> Result<Vec<Uuid>> {
+        let mut ids: Vec<Uuid> = self
+            .merged_sessions_between(from, to)?
+            .into_iter()
+            .filter(|s| {
+                !s.is_idle()
+                    && s.ended_at > from
+                    && s.started_at < to
+                    && s.app_id == app_id
+                    && s.title == title
+            })
+            .map(|s| s.id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(ids)
+    }
+
     pub fn ignored_unassigned(&self) -> Result<Vec<String>> {
         Ok(self
             .setting::<Vec<String>>(IGNORED_UNASSIGNED_KEY)?
@@ -486,11 +512,11 @@ mod tests {
         let p = project(&store, "kum");
         store.upsert_session(&session("Plan", 0, 30)).unwrap();
         store.upsert_session(&session("Plan", 40, 50)).unwrap();
-        store.upsert_session(&session("Haberler", 50, 60)).unwrap();
+        store.upsert_session(&session("Haberler", 50, 70)).unwrap();
         let out = store.unassigned(t(0), t(100)).unwrap();
         assert_eq!(out.groups.len(), 1);
         assert_eq!(out.groups[0].key, "app:com.apple.Safari");
-        assert_eq!(out.groups[0].seconds, 50 * 60);
+        assert_eq!(out.groups[0].seconds, 60 * 60);
 
         let ids = store
             .unassigned_sessions(t(0), t(100), "app:com.apple.Safari", Some("Plan"))
@@ -500,12 +526,12 @@ mod tests {
         assert_eq!(store.set_project_for(&ids, Some(&p)).unwrap(), 2);
         assert_eq!(
             store.unassigned(t(0), t(100)).unwrap().total_seconds,
-            10 * 60
+            20 * 60
         );
         store.restore_snapshot(&snap).unwrap();
         assert_eq!(
             store.unassigned(t(0), t(100)).unwrap().total_seconds,
-            50 * 60
+            60 * 60
         );
 
         store
@@ -540,5 +566,30 @@ mod tests {
         store.restore_tag(&p, at).unwrap();
         assert!(store.tags().unwrap().iter().any(|t| t.id == p));
         assert!(store.rules().unwrap().iter().any(|r| r.id == rule.id));
+    }
+
+    #[test]
+    fn window_sessions_find_one_window_whatever_its_project() {
+        let store = Store::open_in_memory().unwrap();
+        let p = project(&store, "kum");
+        let mut assigned = session("LOY-214", 0, 10);
+        assigned.project_id = Some(p.clone());
+        let other = session("Gelen kutusu", 10, 20);
+        let later = session("LOY-214", 20, 30);
+        for s in [&assigned, &other, &later] {
+            store.upsert_session(s).unwrap();
+        }
+        let mut found = store
+            .window_sessions(t(0), t(25), "com.apple.Safari", "LOY-214")
+            .unwrap();
+        found.sort();
+        let mut expected = vec![assigned.id, later.id];
+        expected.sort();
+        assert_eq!(found, expected);
+        store.set_project_for(&found, None).unwrap();
+        assert_eq!(
+            state(&store),
+            [(0, 10, None), (10, 20, None), (20, 30, None)]
+        );
     }
 }

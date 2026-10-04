@@ -206,6 +206,34 @@ fn assign(
     Ok((changed, ops))
 }
 
+/// Takvim bloğundaki bir pencereyi (uygulama + başlık, `[from, to)` içinde) projeye atar;
+/// `None` elle atamayı kaldırıp kurallara bırakır. Geri alınabilir.
+#[tauri::command]
+pub async fn assign_window(
+    app: AppHandle,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    app_id: String,
+    title: String,
+    project_id: Option<String>,
+) -> CmdResult<Edited> {
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let (changed, ops) = store
+        .atomic(|store| {
+            let ids = store.window_sessions(from, to, &app_id, &title)?;
+            let snap = store.snapshot_sessions(&ids)?;
+            let changed = store.set_project_for(&ids, project_id.as_deref())?;
+            Ok((changed, vec![UndoOp::Sessions(snap)]))
+        })
+        .map_err(err)?;
+    drop(store);
+    Ok(Edited {
+        changed,
+        undo: record(&app, ops),
+    })
+}
+
 /// Grubu atanmamış listesinde gösterme ya da yeniden göster.
 #[tauri::command]
 pub async fn ignore_unassigned(app: AppHandle, key: String, ignored: bool) -> CmdResult<()> {

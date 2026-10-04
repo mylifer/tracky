@@ -82,6 +82,11 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 43. Sözleşme bütçesi: proje ve müşteri başına anlaşılan adam-gün (zaman çizelgesindeki gün saatiyle, yoksa
       8 sa); bugüne kadar yazılan süreyle kıyas Projeler, Müşteriler ve Eğilimler'de (kalan bütçe eğrisi, bu hızla
       kaç haftada biteceği). %80'de ve dolunca birer kez bildirim; eşitlenir
+- [x] 44. Blok ayrıntısı: takvimde bloğa tıklayınca uygulamaların altında o blokta zaman geçirilen pencereler
+      (başlık, site, süre) ve her birinin projesi ya da "Atanmamış" görünür; pencere tek başına projeye atanır
+      (geri alınabilir)
+- [x] 45. Atama önerileri en az 15 dakikalık süre için: Gözden geçir, özet kartı, zaman çizelgesi ve "Haftayı kapat"
+      daha kısa grupları, başlıkları ve boşta süreyi önermez (grubu atamak kısaları da kapsar)
 
 ## Yapı
 
