@@ -431,14 +431,15 @@ impl Store {
     }
 
     /// `[from, to)` aralığındaki oturumlara elle proje verir (sınırda bölünür);
-    /// `None` kurallara döndürür. Değişen satır sayısı.
+    /// `None` kurallara döndürür, [`crate::classify::NO_PROJECT`] projesiz yapar. Değişen
+    /// satır sayısı.
     pub fn set_project_between(
         &self,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
         project_id: Option<&str>,
     ) -> Result<usize> {
-        if let Some(id) = project_id {
+        if let Some(id) = project_id.filter(|id| *id != crate::classify::NO_PROJECT) {
             self.require_tag(id, TagKind::Project)?;
         }
         let tx = self.conn.unchecked_transaction()?;
@@ -1732,6 +1733,15 @@ mod tests {
         want.sort();
         assert_eq!(got, want);
         // Kurallara döndürünce yine tamamı kurala göre.
+        store.set_project_between(t(0), t(3600), None).unwrap();
+        assert_eq!(projects(0, 3600), [(Some(kum.id.clone()), 3600)]);
+        // "Projesiz": kurala uysa da ilk yarım saat hiçbir projeye sayılmaz; geri alınabilir.
+        store
+            .set_project_between(t(0), t(1800), Some(crate::classify::NO_PROJECT))
+            .unwrap();
+        let mut got = projects(0, 3600);
+        got.sort();
+        assert_eq!(got, [(None, 1800), (Some(kum.id.clone()), 1800)]);
         store.set_project_between(t(0), t(3600), None).unwrap();
         assert_eq!(projects(0, 3600), [(Some(kum.id.clone()), 3600)]);
         // Kategori kimliği proje olarak verilemez.

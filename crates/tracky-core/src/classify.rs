@@ -110,6 +110,10 @@ pub(crate) fn app_matches(pattern: &str, id: &str) -> bool {
     }
 }
 
+/// Oturuma elle verilen "proje yok": proje kuralına uysa da bir projeye sayılmaz. Senkronize
+/// edilen sütun UUID olduğu için boş UUID.
+pub const NO_PROJECT: &str = "00000000-0000-0000-0000-000000000000";
+
 /// Bir oturumun kategorisi ve projesi.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Classification {
@@ -170,7 +174,8 @@ impl Classifier {
         }
     }
 
-    /// Elle verilen kategori ve proje (hâlâ varsa) kurallardan önce gelir.
+    /// Elle verilen kategori ve proje (hâlâ varsa) kurallardan önce gelir. [`NO_PROJECT`]
+    /// kurala uysa da projesiz demektir.
     pub fn classify(&self, session: &Session) -> Classification {
         let mut class = self.classify_parts(&session.app_id, &session.title);
         if let Some(id) = &session.category_id
@@ -178,10 +183,10 @@ impl Classifier {
         {
             class.category = Some(id.clone());
         }
-        if let Some(id) = &session.project_id
-            && self.projects.contains(id)
-        {
-            class.project = Some(id.clone());
+        match session.project_id.as_deref() {
+            Some(NO_PROJECT) => class.project = None,
+            Some(id) if self.projects.contains(id) => class.project = Some(id.to_string()),
+            _ => {}
         }
         class
     }

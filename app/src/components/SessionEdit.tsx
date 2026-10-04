@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { PenLine, Plus, Trash2, X } from "lucide-react";
-import { api, formatDuration, type Tag } from "../api";
+import { ChevronDown, PenLine, Plus, Trash2, X } from "lucide-react";
+import { api, formatDuration, NO_PROJECT, type Tag } from "../api";
 import { formatTime, isoDate, parseIsoDate } from "../lib/dates";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -8,7 +8,6 @@ import { Label } from "./ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { CategorySelect } from "./CategorySelect";
 import { tagColor } from "../lib/tags";
-import { cn } from "../lib/utils";
 
 /** "geçersiz kayıt: bu aralıkta…" → "Bu aralıkta…" */
 function message(e: unknown) {
@@ -19,23 +18,28 @@ function message(e: unknown) {
 /** Takvimdeki blokların düzenleme bağlamı (kategoriler ve yenileme). */
 export const EditContext = createContext<{ categories: Tag[]; projects: Tag[]; onChanged: () => void } | null>(null);
 
+/** Seçicideki değerler: kurallara bırak (elle proje yok) ve seçim yapılmadı (aralık). */
+const AUTO = "__otomatik__";
+const PLACEHOLDER = "__sec__";
+
 /**
- * Projeye atama: her proje tek tıkla seçilen bir düğme. Kartın içinde ikinci bir açılır liste
- * açılmaz; iç içe katmanlarda (Windows WebView2) seçimin kaybolduğu görüldü. Proje yoksa
- * nereden ekleneceğini söyler.
+ * Projeye atama: işletim sisteminin açılır listesi. Kartın içinde ayrı katmanda açılan liste
+ * Windows'ta (WebView2) seçimi kaybediyordu; yerel liste bu sorunu yaşamaz. "Projesiz" kurala
+ * uysa da projeye saymaz, "Otomatik" elle atamayı kaldırıp kurallara bırakır: atama her zaman
+ * geri alınabilir. Proje yoksa nereden ekleneceğini söyler.
  */
 function ProjectAssign({
-  value = null,
+  value,
   projects,
   onChange,
 }: {
-  /** Şu anki proje (blok için); aralıkta boş kalır. */
+  /** Bloğun şu anki projesi (`null`: projesiz); aralıkta verilmez ve "Projeye ata…" görünür. */
   value?: string | null;
   projects: Tag[];
   onChange: (id: string | null) => Promise<unknown>;
 }) {
-  // Tıklanan proje yanıt gelmeden işaretlenir: seçimin alındığı hemen görünsün.
-  const [chosen, setChosen] = useState<string | null | undefined>(undefined);
+  // Seçilen değer yanıt gelmeden gösterilir; hata olursa (yanıt `false`) geri alınır.
+  const [chosen, setChosen] = useState<string | undefined>(undefined);
   useEffect(() => setChosen(undefined), [value]);
   if (projects.length === 0)
     return (
@@ -43,50 +47,46 @@ function ProjectAssign({
         Projeye atamak için önce Kategoriler ve projeler → Projeler'den bir proje ekle.
       </p>
     );
-  const current = chosen === undefined ? value : chosen;
-  const pick = (id: string | null) => {
-    setChosen(id);
-    // Hata olursa (yanıt `false`) işaret geri alınır; hata metnini çağıran gösterir. Kaldırmada da
-    // geri alınır: proje kurallardan geliyorsa blokta kalır, yenilenen değer doğrusunu gösterir.
-    onChange(id).then((ok) => (ok === false || id === null) && setChosen(undefined));
-  };
+  const isRange = value === undefined;
+  const current = chosen ?? (isRange ? PLACEHOLDER : (value ?? NO_PROJECT));
+  const tag = projects.find((p) => p.id === current);
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-        <span>Proje</span>
-        {current && (
-          <button
-            type="button"
-            className="hover:text-foreground hover:underline"
-            title="Elle atanan projeyi kaldırır; kurallara uyan kayıtlar yine projede kalır"
-            onClick={() => pick(null)}
-          >
-            Kaldır
-          </button>
-        )}
-      </div>
-      <div role="radiogroup" aria-label="Proje" className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
-        {projects.map((p) => {
-          const on = p.id === current;
-          return (
-            <button
-              key={p.id}
-              type="button"
-              role="radio"
-              aria-checked={on}
-              onClick={() => pick(p.id)}
-              className={cn(
-                "flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
-                on ? "border-primary bg-primary/10 font-medium text-foreground" : "hover:bg-accent",
-              )}
-            >
-              <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(p) }} />
-              <span className="truncate">{p.name}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
+    <label className="block space-y-1">
+      <span className="text-[11px] text-muted-foreground">Proje</span>
+      <span className="relative flex items-center">
+        <i
+          className="pointer-events-none absolute left-2.5 size-2 rounded-full"
+          style={{ background: tagColor(tag) }}
+          aria-hidden
+        />
+        <select
+          value={current}
+          aria-label="Proje"
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === PLACEHOLDER) return;
+            // Otomatik seçilince değer kurallardan yenilenir; işaret yanıtla gelene bırakılır.
+            setChosen(v === AUTO ? undefined : v);
+            onChange(v === AUTO ? null : v).then((ok) => ok === false && setChosen(undefined));
+          }}
+          className="h-8 w-full appearance-none rounded-md border bg-transparent pr-7 pl-6 text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-input/30"
+        >
+          {isRange && (
+            <option value={PLACEHOLDER} disabled>
+              Projeye ata…
+            </option>
+          )}
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+          <option value={NO_PROJECT}>Projesiz</option>
+          <option value={AUTO}>Otomatik (kurallara göre)</option>
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" aria-hidden />
+      </span>
+    </label>
   );
 }
 export const useEdit = () => useContext(EditContext);
