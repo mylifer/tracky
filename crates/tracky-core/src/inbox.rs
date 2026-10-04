@@ -134,7 +134,8 @@ pub fn unassigned(
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Unassigned {
-    let clip = |s: &Session| (s.ended_at.min(to) - s.started_at.max(from)).num_seconds();
+    // Süreler milisaniye olarak toplanır, en sonda saniyeye çevrilir (oturum başına kırpılmaz).
+    let clip = |s: &Session| (s.ended_at.min(to) - s.started_at.max(from)).num_milliseconds();
     let projects: Vec<Option<String>> = sessions
         .iter()
         .map(|s| classifier.classify(s).project)
@@ -145,24 +146,25 @@ pub fn unassigned(
         kind: GroupKind,
         label: String,
         pattern: String,
-        seconds: i64,
+        ms: i64,
         apps: HashMap<String, i64>,
         items: HashMap<String, (i64, Option<String>)>,
         votes: HashMap<String, i64>,
     }
     let mut groups: HashMap<String, Acc> = HashMap::new();
     let mut out = Unassigned::default();
+    let mut idle_ms = 0;
     for (i, s) in sessions.iter().enumerate() {
-        let secs = clip(s);
-        if secs <= 0 || projects[i].is_some() || s.project_id.as_deref() == Some(NO_PROJECT) {
+        let ms = clip(s);
+        if ms <= 0 || projects[i].is_some() || s.project_id.as_deref() == Some(NO_PROJECT) {
             continue;
         }
         if s.is_idle() {
-            out.idle_seconds += secs;
+            idle_ms += ms;
             out.idle.push(UnassignedIdle {
                 start: s.started_at.max(from),
                 end: s.ended_at.min(to),
-                seconds: secs,
+                seconds: ms / 1000,
             });
             continue;
         }
@@ -174,33 +176,38 @@ pub fn unassigned(
             kind,
             label,
             pattern,
-            seconds: 0,
+            ms: 0,
             apps: HashMap::new(),
             items: HashMap::new(),
             votes: HashMap::new(),
         });
-        acc.seconds += secs;
-        *acc.apps.entry(s.app_name.clone()).or_default() += secs;
+        acc.ms += ms;
+        *acc.apps.entry(s.app_name.clone()).or_default() += ms;
         let item = acc
             .items
             .entry(item_title(s))
             .or_insert_with(|| (0, rule_word(s)));
-        item.0 += secs;
+        item.0 += ms;
         if let Some(p) = &likely[i] {
-            *acc.votes.entry(p.clone()).or_default() += secs;
+            *acc.votes.entry(p.clone()).or_default() += ms;
         }
     }
 
-    let mut list: Vec<UnassignedGroup> = groups
+    let kept: Vec<(String, Acc)> = groups
         .into_iter()
-        .filter(|(_, a)| a.seconds >= MIN_GROUP_SECS)
+        .filter(|(_, a)| a.ms / 1000 >= MIN_GROUP_SECS)
+        .collect();
+    out.total_seconds = kept.iter().map(|(_, a)| a.ms).sum::<i64>() / 1000;
+    out.idle_seconds = idle_ms / 1000;
+    let mut list: Vec<UnassignedGroup> = kept
+        .into_iter()
         .map(|(key, a)| {
             let mut items: Vec<UnassignedItem> = a
                 .items
                 .into_iter()
-                .map(|(title, (seconds, word))| UnassignedItem {
+                .map(|(title, (ms, word))| UnassignedItem {
                     title,
-                    seconds,
+                    seconds: ms / 1000,
                     word,
                 })
                 .collect();
@@ -211,7 +218,7 @@ pub fn unassigned(
                 .votes
                 .into_iter()
                 .max_by(|x, y| x.1.cmp(&y.1).then(y.0.cmp(&x.0)))
-                .filter(|(_, v)| v * 2 >= a.seconds)
+                .filter(|(_, v)| v * 2 >= a.ms)
                 .map(|(p, _)| p);
             let app_name = a
                 .apps
@@ -225,7 +232,7 @@ pub fn unassigned(
                 label: a.label,
                 app_name,
                 pattern: a.pattern,
-                seconds: a.seconds,
+                seconds: a.ms / 1000,
                 items,
                 more,
                 likely_project,
@@ -233,7 +240,6 @@ pub fn unassigned(
         })
         .collect();
     list.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.label.cmp(&b.label)));
-    out.total_seconds = list.iter().map(|g| g.seconds).sum();
     out.groups = list;
     out
 }
@@ -334,47 +340,60 @@ pub fn preview_rule(
             TagKind::Category => class.category,
         }
     };
-    let pattern = rule.pattern.to_lowercase();
+    let pattern = rule.prepared_pattern();
+    // Toplamlar önce milisaniye tutulur, en sonda saniyeye çevrilir (oturum başına kırpılmaz).
     let mut out = RulePreview::default();
     let mut taken: HashMap<String, i64> = HashMap::new();
     let mut samples: HashMap<(String, String), i64> = HashMap::new();
     for s in sessions {
-        let secs = (s.ended_at.min(to) - s.started_at.max(from)).num_seconds();
-        if secs <= 0 || !rule.matches_session(&pattern, s) {
+        let ms = (s.ended_at.min(to) - s.started_at.max(from)).num_milliseconds();
+        if ms <= 0 || !rule.matches_session(&pattern, s) {
             continue;
         }
-        out.matched_seconds += secs;
+        out.matched_seconds += ms;
         let (was, now) = (pick(&before, s), pick(&after, s));
         let target = Some(&rule.tag_id);
         if was.as_ref() == target {
-            out.already_seconds += secs;
+            out.already_seconds += ms;
         } else if now.as_ref() != target {
-            out.blocked_seconds += secs;
+            out.blocked_seconds += ms;
         } else {
             match was {
                 Some(other) => {
-                    out.taken_seconds += secs;
-                    *taken.entry(other).or_default() += secs;
+                    out.taken_seconds += ms;
+                    *taken.entry(other).or_default() += ms;
                 }
-                None => out.gained_seconds += secs,
+                None => out.gained_seconds += ms,
             }
             *samples
                 .entry((s.app_name.clone(), item_title(s)))
-                .or_default() += secs;
+                .or_default() += ms;
         }
+    }
+    for v in [
+        &mut out.matched_seconds,
+        &mut out.gained_seconds,
+        &mut out.taken_seconds,
+        &mut out.already_seconds,
+        &mut out.blocked_seconds,
+    ] {
+        *v /= 1000;
     }
     out.taken_from = taken
         .into_iter()
-        .map(|(id, seconds)| PreviewTag { id, seconds })
+        .map(|(id, ms)| PreviewTag {
+            id,
+            seconds: ms / 1000,
+        })
         .collect();
     out.taken_from
         .sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.id.cmp(&b.id)));
     let mut samples: Vec<PreviewSample> = samples
         .into_iter()
-        .map(|((app_name, title), seconds)| PreviewSample {
+        .map(|((app_name, title), ms)| PreviewSample {
             app_name,
             title,
-            seconds,
+            seconds: ms / 1000,
         })
         .collect();
     samples.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.title.cmp(&b.title)));
@@ -533,5 +552,34 @@ mod tests {
         let p = preview_rule(&sessions, &tags, &rules, &site, t(0), t(100));
         assert_eq!(p.taken_seconds, 10 * 60);
         assert_eq!(p.taken_from[0].id, "togg");
+    }
+
+    #[test]
+    fn preview_folds_turkish_i_and_sums_milliseconds() {
+        let tags = [tag("ist", TagKind::Project)];
+        // Dört 1,5 saniyelik oturum: 6 sn (oturum başına kırpılsa 4 olurdu).
+        let sessions: Vec<Session> = (0..4)
+            .map(|i| {
+                let mut x = s("com.apple.mail", "İstanbul Ofis", None, i, i);
+                x.ended_at = x.started_at + Duration::milliseconds(1500);
+                x
+            })
+            .collect();
+        let new = rule("ist", RuleField::Title, "istanbul");
+        let p = preview_rule(&sessions, &tags, &[], &new, t(0), t(100));
+        assert_eq!((p.matched_seconds, p.gained_seconds), (6, 6));
+        assert_eq!(p.samples[0].seconds, 6);
+        let idle: Vec<Session> = sessions
+            .iter()
+            .map(|x| Session::idle(x.started_at, x.ended_at))
+            .collect();
+        let out = unassigned(
+            &idle,
+            &Classifier::new(&tags, &[]),
+            &HashSet::new(),
+            t(0),
+            t(100),
+        );
+        assert_eq!(out.idle_seconds, 6);
     }
 }

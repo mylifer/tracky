@@ -792,13 +792,15 @@ impl Store {
         pick: fn(crate::classify::Classification) -> Option<String>,
     ) -> Result<std::collections::HashMap<String, i64>> {
         let classifier = Classifier::new(&self.tags()?, &self.rules()?);
-        let mut out = std::collections::HashMap::new();
+        // Milisaniye toplanır, en sonda saniyeye çevrilir (oturum başına kırpılmaz).
+        let mut out: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         for s in self.merged_sessions_between(from, to)? {
-            let secs = (s.ended_at.min(to) - s.started_at.max(from)).num_seconds();
-            if let (Some(id), true) = (pick(classifier.classify(&s)), secs > 0) {
-                *out.entry(id).or_default() += secs;
+            let ms = (s.ended_at.min(to) - s.started_at.max(from)).num_milliseconds();
+            if let (Some(id), true) = (pick(classifier.classify(&s)), ms > 0) {
+                *out.entry(id).or_default() += ms;
             }
         }
+        out.values_mut().for_each(|v| *v /= 1000);
         Ok(out)
     }
 
@@ -834,30 +836,17 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Bir uygulamanın pencere başlıklarına göre süre dağılımı.
+    /// Bir uygulamanın pencere başlıklarına göre süre dağılımı (cihazlar arası çakışmalar
+    /// [`Self::app_totals`] gibi bir kez sayılır).
     pub fn title_totals(
         &self,
         app_id: &str,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> Result<Vec<UsageTotal>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT title, title, SUM(MIN(ended_at, ?3) - MAX(started_at, ?2)) / 1000 AS secs
-             FROM sessions
-             WHERE deleted_at IS NULL AND app_id = ?1
-               AND started_at < ?3 AND ended_at > ?2
-               AND started_at >= ?2 - (SELECT max_duration FROM session_stats)
-             GROUP BY title
-             ORDER BY secs DESC, 1",
-        )?;
-        let rows = stmt.query_map(params![app_id, ms(from), ms(to)], |r| {
-            Ok(UsageTotal {
-                key: r.get(0)?,
-                label: r.get(1)?,
-                seconds: r.get(2)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        self.totals(from, to, |s| {
+            (s.app_id == app_id).then_some((&s.title, &s.title))
+        })
     }
 
     /// `key` ile gruplanmış toplam süre. Bilgisayarlar arası çakışmalar bir kez sayılır ve
@@ -1076,7 +1065,8 @@ mod tests {
         b.title = "Gmail".into();
         let mut c = session("Safari", None, 90, 150);
         c.title = "GitHub".into();
-        for s in [&a, &b, &c, &session("Code", None, 0, 500)] {
+        // Başka uygulama sayılmaz (çakışan oturum başka cihaz demek olurdu, bu yüzden sonra).
+        for s in [&a, &b, &c, &session("Code", None, 150, 500)] {
             store.upsert_session(s).unwrap();
         }
         let got: Vec<_> = store
@@ -1089,6 +1079,50 @@ mod tests {
             got,
             [("GitHub".to_string(), 120), ("Gmail".to_string(), 30)]
         );
+    }
+
+    #[test]
+    fn title_totals_count_device_overlaps_once() {
+        let store = Store::open_in_memory().unwrap();
+        let mut a = session("Safari", None, 0, 60);
+        a.title = "GitHub".into();
+        let mut b = session("Safari", None, 30, 90);
+        b.title = "GitHub".into();
+        store.upsert_session(&a).unwrap();
+        store.upsert_session(&b).unwrap();
+        // İkinci oturum başka bilgisayardan: 30–60 arası iki kez sayılmamalı.
+        store
+            .conn()
+            .execute(
+                "UPDATE sessions SET device_id = ?1 WHERE id = ?2",
+                params![Uuid::new_v4().to_string(), b.id.to_string()],
+            )
+            .unwrap();
+        let got = store
+            .title_totals("com.test.Safari", t(0), t(1000))
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].seconds, 90);
+    }
+
+    #[test]
+    fn tag_totals_sum_milliseconds_before_rounding() {
+        let store = Store::open_in_memory().unwrap();
+        let dev = store
+            .tags()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.name == "Geliştirme")
+            .unwrap();
+        // Üç 1,5 saniyelik oturum 4,5 saniyedir (→ 4); tek tek kırpılsa 3 olurdu.
+        for i in 0..3 {
+            let mut s = session("Code", None, i * 10, i * 10);
+            s.app_id = "com.microsoft.VSCode".into();
+            s.ended_at = s.started_at + chrono::Duration::milliseconds(1500);
+            store.upsert_session(&s).unwrap();
+        }
+        let totals = store.category_totals(t(0), t(1000)).unwrap();
+        assert_eq!(totals.get(&dev.id), Some(&4));
     }
 
     #[test]

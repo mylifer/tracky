@@ -40,21 +40,25 @@ pub fn trends(sessions: &[Session], classifier: &Classifier, bounds: &[DateTime<
             if b <= a {
                 continue;
             }
-            let secs = (b - a).num_seconds();
+            // Milisaniye toplanır, en sonda saniyeye çevrilir (oturum başına kırpılmaz).
+            let ms = (b - a).num_milliseconds();
             categories
                 .entry(class.category.clone())
-                .or_insert_with(|| vec![0; n])[i] += secs;
+                .or_insert_with(|| vec![0; n])[i] += ms;
             if class.project.is_some() {
                 projects
                     .entry(class.project.clone())
-                    .or_insert_with(|| vec![0; n])[i] += secs;
+                    .or_insert_with(|| vec![0; n])[i] += ms;
             }
         }
     }
     let sorted = |map: HashMap<Option<String>, Vec<i64>>| {
         let mut v: Vec<Series> = map
             .into_iter()
-            .map(|(id, seconds)| Series { id, seconds })
+            .map(|(id, ms)| Series {
+                id,
+                seconds: ms.into_iter().map(|m| m / 1000).collect(),
+            })
             .collect();
         v.sort_by(|a, b| {
             let total = |s: &Series| s.seconds.iter().sum::<i64>();
@@ -140,5 +144,20 @@ mod tests {
             .map(|s| (s.id.as_deref(), s.seconds.clone()))
             .collect();
         assert_eq!(proj, [(Some("kum"), vec![3 * 3600, 3600])]);
+    }
+
+    #[test]
+    fn sums_milliseconds_before_rounding() {
+        let sessions: Vec<Session> = (0..4)
+            .map(|i| {
+                let mut x = s("code", "a", 1, 1);
+                x.started_at += Duration::seconds(i * 10);
+                x.ended_at = x.started_at + Duration::milliseconds(1500);
+                x
+            })
+            .collect();
+        let r = trends(&sessions, &Classifier::new(&[], &[]), &[t(0), t(24)]);
+        // 4 × 1,5 sn = 6 sn; oturum başına kırpılsa 4 olurdu.
+        assert_eq!(r.categories[0].seconds, [6]);
     }
 }

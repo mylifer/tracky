@@ -4965,6 +4965,7 @@ name = "tracky-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "percent-encoding",
  "rusqlite",
  "serde",
  "serde_json",

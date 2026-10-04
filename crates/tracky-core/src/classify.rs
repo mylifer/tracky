@@ -93,7 +93,7 @@ pub struct Rule {
     pub pattern: String,
 }
 
-/// Kuralların baktığı alanlar, küçük harfe çevrilmiş.
+/// Kuralların baktığı alanlar, küçük harfe çevrilmiş (başlık [`crate::search::fold`] ile).
 struct Subject<'a> {
     app_id: &'a str,
     title: &'a str,
@@ -104,23 +104,37 @@ struct Subject<'a> {
 impl Rule {
     pub fn matches(&self, app_id: &str, title: &str) -> bool {
         self.matches_lower(
-            &self.pattern.to_lowercase(),
+            &self.prepared_pattern(),
             &Subject {
                 app_id: &app_id.to_lowercase(),
-                title: &title.to_lowercase(),
+                title: &crate::search::fold(title),
                 address: None,
             },
         )
     }
 
-    /// Oturum (adresiyle birlikte) kurala uyuyor mu? `pattern` kuralın küçük harfli desenidir.
+    /// Karşılaştırmaya hazır desen: başlık deseni Türkçe I/İ/ı farkı gözetmeden
+    /// ([`crate::search::fold`]), adres deseni adresle aynı `alan/yol` biçiminde
+    /// ([`crate::url_util::normalize_pattern`]; eski sürümde kaydedilmiş desenler de),
+    /// uygulama deseni yalnızca küçük harfe çevrilir.
+    pub fn prepared_pattern(&self) -> String {
+        match self.field {
+            RuleField::Title => crate::search::fold(&self.pattern),
+            RuleField::Domain => crate::url_util::normalize_pattern(&self.pattern)
+                .unwrap_or_else(|| self.pattern.to_lowercase()),
+            RuleField::App => self.pattern.to_lowercase(),
+        }
+    }
+
+    /// Oturum (adresiyle birlikte) kurala uyuyor mu? `pattern` kuralın
+    /// [`Rule::prepared_pattern`] ile hazırlanmış desenidir.
     pub fn matches_session(&self, pattern: &str, session: &Session) -> bool {
         let address = session.url.as_deref().and_then(crate::url_util::host_path);
         self.matches_lower(
             pattern,
             &Subject {
                 app_id: &session.app_id.to_lowercase(),
-                title: &session.title.to_lowercase(),
+                title: &crate::search::fold(&session.title),
                 address: address.as_deref(),
             },
         )
@@ -164,7 +178,7 @@ pub struct Classification {
 /// Kuralları önceliğe göre dizer: adres ve başlık kuralları uygulama kurallarından
 /// daha özeldir ve önce denenir (örn. Safari'de "Google E-Tablolar" → Ofis).
 pub struct Classifier {
-    /// (kural, küçük harfli desen)
+    /// (kural, [`Rule::prepared_pattern`] ile hazırlanmış desen)
     category_rules: Vec<(Rule, String)>,
     project_rules: Vec<(Rule, String)>,
     /// Var olan kategoriler: silinmiş bir kategoriye verilmiş elle atama yok sayılır.
@@ -200,7 +214,7 @@ impl Classifier {
             rules
                 .into_iter()
                 .map(|r| {
-                    let pattern = r.pattern.to_lowercase();
+                    let pattern = r.prepared_pattern();
                     (r, pattern)
                 })
                 .collect()
@@ -245,7 +259,7 @@ impl Classifier {
 
     /// `address` tarayıcı adresinin `alan/yol` biçimidir ([`crate::url_util::host_path`]).
     fn classify_with(&self, app_id: &str, title: &str, address: Option<&str>) -> Classification {
-        let (app_id, title) = (app_id.to_lowercase(), title.to_lowercase());
+        let (app_id, title) = (app_id.to_lowercase(), crate::search::fold(title));
         let subject = Subject {
             app_id: &app_id,
             title: &title,
@@ -481,6 +495,34 @@ mod tests {
             c.classify_parts("com.other", "x"),
             Classification::default()
         );
+    }
+
+    #[test]
+    fn title_rules_ignore_turkish_i_casing() {
+        let tags = [tag("ist", TagKind::Project), tag("ilik", TagKind::Category)];
+        let rules = [
+            rule("ist", RuleField::Title, "istanbul"),
+            rule("ilik", RuleField::Title, "ILIK"),
+        ];
+        let c = Classifier::new(&tags, &rules);
+        let class = c.classify_parts("com.other", "İstanbul Ofis — ılık");
+        assert_eq!(class.project.as_deref(), Some("ist"));
+        assert_eq!(class.category.as_deref(), Some("ilik"));
+        assert!(rules[0].matches("com.other", "İSTANBUL"));
+        assert!(rule("x", RuleField::Title, "İstanbul").matches("x", "istanbul"));
+        assert!(rules[1].matches("x", "ılık hava"));
+        let mut s = Session::start(
+            crate::model::ActiveWindow {
+                app_id: "com.other".into(),
+                app_name: "Other".into(),
+                title: "ILIK".into(),
+                url: None,
+            },
+            chrono::Utc::now(),
+        );
+        assert!(rules[1].matches_session(&rules[1].prepared_pattern(), &s));
+        s.title = "soğuk".into();
+        assert!(!rules[1].matches_session(&rules[1].prepared_pattern(), &s));
     }
 
     #[test]

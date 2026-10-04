@@ -23,6 +23,7 @@ const IGNORED_UNASSIGNED_KEY: &str = "ignored_unassigned";
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RowState {
     id: String,
+    device_id: String,
     started_at: i64,
     ended_at: i64,
     category_id: Option<String>,
@@ -75,15 +76,17 @@ impl Store {
 
     fn row_states(&self, condition: &str, args: impl rusqlite::Params) -> Result<Vec<RowState>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, started_at, ended_at, category_id, project_id FROM sessions WHERE {condition}"
+            "SELECT id, device_id, started_at, ended_at, category_id, project_id
+             FROM sessions WHERE {condition}"
         ))?;
         let rows = stmt.query_map(args, |r| {
             Ok(RowState {
                 id: r.get(0)?,
-                started_at: r.get(1)?,
-                ended_at: r.get(2)?,
-                category_id: r.get(3)?,
-                project_id: r.get(4)?,
+                device_id: r.get(1)?,
+                started_at: r.get(2)?,
+                ended_at: r.get(3)?,
+                category_id: r.get(4)?,
+                project_id: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -95,17 +98,35 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         if let Some((start, end)) = snap.extent {
             let known: HashSet<&str> = snap.rows.iter().map(|r| r.id.as_str()).collect();
+            let own = self.device_id.to_string();
+            // Düzenleme yalnızca bu cihazın elle kaydını ya da görüntüdeki bir satırın
+            // parçasını (aynı cihaz, satırın eski aralığı içinde) ekler. Bu arada başka
+            // cihazdan gelen kayıt da aynı aralıkta yeni görünür; o silinmemeli.
             let created: Vec<String> = self
                 .conn
                 .prepare(
-                    "SELECT id FROM sessions
+                    "SELECT id, device_id, started_at, ended_at FROM sessions
                      WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1
                        AND started_at < ?3 AND updated_at >= ?3",
                 )?
-                .query_map(params![start, end, snap.at], |r| r.get::<_, String>(0))?
+                .query_map(params![start, end, snap.at], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?
                 .into_iter()
-                .filter(|id| !known.contains(id.as_str()))
+                .filter(|(id, device, a, b)| {
+                    !known.contains(id.as_str())
+                        && (*device == own
+                            || snap.rows.iter().any(|r| {
+                                r.device_id == *device && r.started_at <= *a && *b <= r.ended_at
+                            }))
+                })
+                .map(|(id, ..)| id)
                 .collect();
             for id in created {
                 self.conn.execute(
@@ -393,6 +414,37 @@ mod tests {
         assert_ne!(state(&store), before);
         store.restore_snapshot(&snap).unwrap();
         assert_eq!(state(&store), before);
+    }
+
+    #[test]
+    fn undo_keeps_rows_pulled_from_another_device() {
+        let store = Store::open_in_memory().unwrap();
+        let p = project(&store, "kum");
+        let set_device = |id: &Uuid| {
+            store
+                .conn()
+                .execute(
+                    "UPDATE sessions SET device_id = ?1 WHERE id = ?2",
+                    params![Uuid::new_v4().to_string(), id.to_string()],
+                )
+                .unwrap();
+        };
+        // Başka cihazın bitmiş oturumu: bölünen parçaları geri almada silinmeli.
+        let foreign = session("a", 0, 60);
+        store.upsert_session(&foreign).unwrap();
+        set_device(&foreign.id);
+        let before = state(&store);
+        let snap = store.snapshot_range(t(30), t(40)).unwrap();
+        store.set_project_between(t(30), t(40), Some(&p)).unwrap();
+        // Düzenlemeden sonra üçüncü bir cihazdan aralığa düşen kayıt gelir: kalmalı.
+        let pulled = session("b", 20, 50);
+        store.upsert_session(&pulled).unwrap();
+        set_device(&pulled.id);
+        store.restore_snapshot(&snap).unwrap();
+        let mut expected = before;
+        expected.push((20, 50, None));
+        expected.sort();
+        assert_eq!(state(&store), expected);
     }
 
     #[test]

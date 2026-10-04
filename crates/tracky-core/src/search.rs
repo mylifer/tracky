@@ -76,35 +76,40 @@ pub fn search(
     if needle.is_empty() {
         return result;
     }
+    // Süreler milisaniye olarak toplanır, en sonda saniyeye çevrilir (oturum başına kırpılmaz).
     let mut apps: HashMap<&str, (&str, i64)> = HashMap::new();
     let mut titles: HashMap<(&str, &str), i64> = HashMap::new();
+    let mut total_ms = 0;
+    let mut days_ms = vec![0; day_starts.len()];
     for s in sessions {
         if !matches(s, &needle) {
             continue;
         }
         let (start, end) = (s.started_at.max(from), s.ended_at.min(to));
-        let secs = (end - start).num_seconds();
-        if secs <= 0 {
+        let ms = (end - start).num_milliseconds();
+        if ms <= 0 {
             continue;
         }
-        result.total_seconds += secs;
+        total_ms += ms;
         // Gece yarısını aşan oturum günlere bölünür.
         for (i, &day) in day_starts.iter().enumerate() {
             let next = day_starts.get(i + 1).copied().unwrap_or(to);
-            let part = (end.min(next) - start.max(day)).num_seconds();
+            let part = (end.min(next) - start.max(day)).num_milliseconds();
             if part > 0 {
-                result.days[i] += part;
+                days_ms[i] += part;
             }
         }
-        apps.entry(&s.app_id).or_insert((&s.app_name, 0)).1 += secs;
-        *titles.entry((&s.app_name, &s.title)).or_default() += secs;
+        apps.entry(&s.app_id).or_insert((&s.app_name, 0)).1 += ms;
+        *titles.entry((&s.app_name, &s.title)).or_default() += ms;
     }
+    result.total_seconds = total_ms / 1000;
+    result.days = days_ms.into_iter().map(|ms| ms / 1000).collect();
     result.apps = apps
         .into_iter()
-        .map(|(id, (name, seconds))| SearchApp {
+        .map(|(id, (name, ms))| SearchApp {
             app_id: id.to_string(),
             app_name: name.to_string(),
-            seconds,
+            seconds: ms / 1000,
         })
         .collect();
     result
@@ -112,10 +117,10 @@ pub fn search(
         .sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.app_name.cmp(&b.app_name)));
     result.titles = titles
         .into_iter()
-        .map(|((app, title), seconds)| SearchTitle {
+        .map(|((app, title), ms)| SearchTitle {
             app_name: app.to_string(),
             title: title.to_string(),
-            seconds,
+            seconds: ms / 1000,
         })
         .collect();
     result
@@ -185,6 +190,25 @@ mod tests {
         assert_eq!(apps, [("Code", 7200), ("Terminal", 7200), ("Chrome", 1800)]);
         assert_eq!(r.titles[0].seconds, 7200);
         assert_eq!(r.titles.len(), 4);
+    }
+
+    #[test]
+    fn sums_milliseconds_before_rounding() {
+        let sessions: Vec<Session> = (0..4)
+            .map(|i| {
+                let start = t(1) + Duration::seconds(i * 10);
+                s(
+                    "Code",
+                    "tracky",
+                    start,
+                    start + Duration::milliseconds(1500),
+                )
+            })
+            .collect();
+        let r = search(&sessions, "tracky", t(0), t(24), &[t(0)]);
+        // 4 × 1,5 sn = 6 sn; oturum başına kırpılsa 4 olurdu.
+        assert_eq!((r.total_seconds, r.days[0]), (6, 6));
+        assert_eq!((r.apps[0].seconds, r.titles[0].seconds), (6, 6));
     }
 
     #[test]
