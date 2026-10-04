@@ -262,9 +262,10 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    // Dock'ta ikon yok; uygulama yalnızca menü çubuğunda yaşar.
+    // Dock'ta ve uygulama değiştiricide (⌘⇥) görünür; pencere kapansa da takip menü
+    // çubuğunda sürer, Dock simgesine tıklamak pencereyi geri açar.
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    app.set_activation_policy(tauri::ActivationPolicy::Regular);
     effects::apply(app);
 
     let dir = app.path().app_data_dir()?;
@@ -411,6 +412,12 @@ pub fn run() {
         .expect("Kum başlatılamadı");
 
     app.run(|app, event| {
+        // Pencere kapalıyken Dock simgesine tıklanınca pencereyi göster.
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { .. } = event {
+            show_main_window(app);
+            return;
+        }
         if let RunEvent::Exit = event {
             sync::shutdown(app);
             calendar::shutdown(app);
