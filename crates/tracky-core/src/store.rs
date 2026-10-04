@@ -329,7 +329,19 @@ impl Store {
         Ok(())
     }
 
-    /// `[from, to)` ile kesişen oturumlar, başlangıca göre sıralı.
+    /// Raporlar için: `[from, to)` ile kesişen oturumlar, bilgisayarlar arası çakışmalar
+    /// bir kez sayılacak şekilde birleştirilmiş ([`crate::model::merge_devices`]).
+    pub fn merged_sessions_between(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<Session>> {
+        Ok(crate::model::merge_devices(
+            self.sessions_between(from, to)?,
+        ))
+    }
+
+    /// `[from, to)` ile kesişen oturumlar (ham, cihazlar üst üste binebilir), başlangıca göre sıralı.
     pub fn sessions_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, app_id, app_name, title, url, domain, started_at, ended_at, category_id,
@@ -849,7 +861,7 @@ impl Store {
         to: DateTime<Utc>,
         day_starts: &[DateTime<Utc>],
     ) -> Result<crate::search::SearchResult> {
-        let sessions = self.sessions_between(from, to)?;
+        let sessions = self.merged_sessions_between(from, to)?;
         Ok(crate::search::search(
             &sessions, query, from, to, day_starts,
         ))
@@ -864,7 +876,7 @@ impl Store {
     ) -> Result<String> {
         let needle = crate::search::fold(query.trim());
         let sessions: Vec<Session> = self
-            .sessions_between(from, to)?
+            .merged_sessions_between(from, to)?
             .into_iter()
             .filter(|s| !needle.is_empty() && crate::search::matches(s, &needle))
             .map(|mut s| {
@@ -884,7 +896,7 @@ impl Store {
         let (Some(first), Some(last)) = (bounds.first(), bounds.last()) else {
             return Ok(Default::default());
         };
-        let sessions = self.sessions_between(*first, *last)?;
+        let sessions = self.merged_sessions_between(*first, *last)?;
         let classifier = Classifier::new(&self.tags()?, &self.rules()?);
         Ok(crate::trends::trends(&sessions, &classifier, bounds))
     }
@@ -942,7 +954,7 @@ impl Store {
         meetings: &[Meeting],
     ) -> Result<Vec<TimesheetEntry>> {
         self.propose_from(
-            &self.sessions_between(day_start, day_end)?,
+            &self.merged_sessions_between(day_start, day_end)?,
             day_start,
             day_end,
             meetings,
@@ -1134,7 +1146,8 @@ impl Store {
 
     /// Son iki haftanın oturumlarından proje ve kategori önerileri.
     pub fn suggestions(&self, now: DateTime<Utc>) -> Result<Suggestions> {
-        let sessions = self.sessions_between(now - chrono::Duration::days(SUGGEST_DAYS), now)?;
+        let sessions =
+            self.merged_sessions_between(now - chrono::Duration::days(SUGGEST_DAYS), now)?;
         let dismissed: HashSet<String> = self
             .setting::<Vec<String>>(DISMISSED_SUGGESTIONS_KEY)?
             .unwrap_or_default()
@@ -1222,7 +1235,7 @@ impl Store {
         day_starts: &[DateTime<Utc>],
         with_timeline: bool,
     ) -> Result<Report> {
-        let sessions = self.sessions_between(from, to)?;
+        let sessions = self.merged_sessions_between(from, to)?;
         let tags = self.tags()?;
         let classifier = Classifier::new(&tags, &self.rules()?);
         let mut report = report::build(
@@ -1358,7 +1371,7 @@ impl Store {
     ) -> Result<std::collections::HashMap<String, i64>> {
         let classifier = Classifier::new(&self.tags()?, &self.rules()?);
         let mut out = std::collections::HashMap::new();
-        for s in self.sessions_between(from, to)? {
+        for s in self.merged_sessions_between(from, to)? {
             let secs = (s.ended_at.min(to) - s.started_at.max(from)).num_seconds();
             if let (Some(id), true) = (pick(classifier.classify(&s)), secs > 0) {
                 *out.entry(id).or_default() += secs;
@@ -1791,6 +1804,24 @@ mod tests {
         assert_eq!(left[0].entry.details, "Loyalty ekranları");
         assert!(left[0].exported_at.is_some());
         assert!(left.iter().all(|e| e.id != extra_id));
+    }
+
+    #[test]
+    fn report_counts_overlapping_devices_once() {
+        let store = Store::open_in_memory().unwrap();
+        // İki bilgisayar: 0–3600 dizüstü, 1800–2400 masaüstü (eşitlemeyle gelmiş gibi).
+        store
+            .upsert_session(&session("Video", None, 0, 3600))
+            .unwrap();
+        store
+            .upsert_session(&session("Figma", None, 1800, 2400))
+            .unwrap();
+        let r = store.report(t(0), t(3600), &[t(0)], false).unwrap();
+        assert_eq!(r.total_seconds, 3600);
+        let figma = r.apps.iter().find(|a| a.app_name == "Figma").unwrap();
+        assert_eq!(figma.seconds, 600);
+        // Ham kayıtlar değişmez.
+        assert_eq!(store.sessions_between(t(0), t(3600)).unwrap().len(), 2);
     }
 
     #[test]
