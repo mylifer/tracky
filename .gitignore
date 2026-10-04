@@ -9,3 +9,6 @@ app/src-tauri/gen/
 # Kullanıcının zaman çizelgesi şablonu (kişisel veri)
 sablon.xlsx
 *.yedek-*.xlsx
+
+# Deponun eski bir kopyası (0.3.2); gerekirse silinebilir
+app/tracky/
