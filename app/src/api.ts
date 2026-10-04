@@ -55,7 +55,7 @@ export type WorkBlock = {
   switches: number;
   topApps: { appName: string; seconds: number }[];
 };
-/** Çalışma blokları ve molalar (çekirdekte `FocusStats`). */
+/** Çalışma blokları ve molalar. */
 export type WorkStats = {
   activeSeconds: number;
   breakSeconds: number;
@@ -89,7 +89,7 @@ export type Report = {
   timeline: Segment[];
   windows: WindowSpan[];
   tags: Tag[];
-  focus: WorkStats;
+  work: WorkStats;
 };
 
 export type ProjectSuggestion = { key: string; name: string; seconds: number; apps: string[] };

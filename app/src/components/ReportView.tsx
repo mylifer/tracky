@@ -350,7 +350,7 @@ export default function ReportView(p: Props) {
                       ) : p.mode === "day" ? (
                         <DayCalendar
                           from={from}
-                          blocks={report.focus.blocks}
+                          blocks={report.work.blocks}
                           segments={report.timeline}
                           tags={tags}
                           meetings={meetings}
@@ -363,7 +363,7 @@ export default function ReportView(p: Props) {
                       ) : (
                         <WeekCalendar
                           from={from}
-                          blocks={report.focus.blocks}
+                          blocks={report.work.blocks}
                           dayTotals={report.days.map((d) => d.seconds)}
                           tags={tags}
                           onSelectDay={p.onSelectDay}

@@ -1,18 +1,23 @@
-use std::collections::{HashMap, HashSet};
+//! SQLite depolama: göçler, oturumlar, ayarlar ve raporlama sorguları. Sınıflandırma
+//! (etiketler, kurallar, müşteriler, öneriler) `taxonomy`, zaman çizelgesi `timesheet`
+//! alt modülündedir.
+
+mod taxonomy;
+mod timesheet;
+
+use std::collections::HashMap;
 use std::path::Path;
 
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::classify::{
-    Classifier, Client, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind, default_id,
-};
+use crate::classify::{Classifier, TagKind};
 use crate::model::{MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
-use crate::suggest::{self, Suggestions};
-use crate::timesheet::{self, EntryKind, Meeting, MeetingProject, TimesheetConfig, TimesheetEntry};
+
+pub use timesheet::{SavedEntry, SplitMeetings};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -178,26 +183,6 @@ DROP TABLE focus_timers;
 "#,
 ];
 
-/// Onaylanmış zaman çizelgesi kaydı.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SavedEntry {
-    pub id: String,
-    #[serde(flatten)]
-    pub entry: TimesheetEntry,
-    /// Excel'e aktarıldığı an; doluysa kayıt değiştirilemez.
-    pub exported_at: Option<DateTime<Utc>>,
-}
-
-fn parse_kind(s: &str) -> Option<EntryKind> {
-    match s {
-        "Working" => Some(EntryKind::Working),
-        "Online" => Some(EntryKind::Online),
-        "F2F" => Some(EntryKind::F2F),
-        _ => None,
-    }
-}
-
 /// `[?1, ?2)` ile kesişen oturumlar. Üçüncü koşul sonucu değiştirmez (kesişen her oturum
 /// en uzun oturumdan kısadır), yalnızca indeksin alt sınırıdır.
 const OVERLAPS: &str = "started_at < ?2 AND ended_at > ?1
@@ -208,17 +193,7 @@ const OVERLAPS: &str = "started_at < ?2 AND ended_at > ?1
 /// geride olabilir.
 const FOREIGN_LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;
 
-const DEFAULTS_SEEDED_KEY: &str = "default_tags_seeded";
-
 const PRIVACY_KEY: &str = "privacy";
-/// Zaman çizelgesi ayarları.
-const TIMESHEET_KEY: &str = "timesheet";
-/// Takvim toplantı serilerinin elle verilen projesi (UID → proje; `null`: yoksay).
-const MEETING_ASSIGNMENTS_KEY: &str = "meeting_assignments";
-/// Yoksayılan öneri anahtarları.
-const DISMISSED_SUGGESTIONS_KEY: &str = "dismissed_suggestions";
-/// Öneriler bu kadar günlük geçmişe bakar.
-const SUGGEST_DAYS: i64 = 14;
 
 /// Bir zaman aralığında bir anahtar (uygulama, domain...) için toplam süre.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -227,9 +202,6 @@ pub struct UsageTotal {
     pub label: String,
     pub seconds: i64,
 }
-
-/// (Projesi belli toplantılar ve projeleri, hiçbir projeye düşmeyen toplantılar).
-pub type SplitMeetings = (Vec<(Meeting, String)>, Vec<Meeting>);
 
 pub struct Store {
     conn: Connection,
@@ -399,41 +371,6 @@ impl Store {
     /// Domain başına toplam süre (yalnızca URL'si bilinen oturumlar).
     pub fn domain_totals(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<UsageTotal>> {
         self.totals(from, to, |s| s.domain.as_ref().map(|d| (d, d)))
-    }
-
-    /// İlk açılışta varsayılan kategorileri ekler (kullanıcı silerse geri gelmez).
-    fn seed_default_tags(&self) -> Result<()> {
-        if self.setting::<bool>(DEFAULTS_SEEDED_KEY)?.is_some() {
-            return Ok(());
-        }
-        for (position, (name, color, apps, titles)) in DEFAULT_CATEGORIES.iter().enumerate() {
-            // Kimlikler adlardan türetilir: her cihaz aynı varsayılanları aynı
-            // kimlikle üretir, senkronizasyonda kopya oluşmaz.
-            let tag = Tag {
-                id: default_id(&format!("category:{name}")),
-                kind: TagKind::Category,
-                name: name.to_string(),
-                color: *color,
-            };
-            self.upsert_tag(&tag, position as i64)?;
-            let patterns = apps
-                .iter()
-                .map(|p| (RuleField::App, p))
-                .chain(titles.iter().map(|p| (RuleField::Title, p)));
-            for (field, pattern) in patterns {
-                self.upsert_rule(&Rule {
-                    id: default_id(&format!("rule:{name}:{}:{pattern}", field.as_str())),
-                    tag_id: tag.id.clone(),
-                    field,
-                    pattern: pattern.to_string(),
-                })?;
-            }
-        }
-        // Varsayılanlar "en eski sürüm" sayılır: başka bir cihazdaki gerçek bir
-        // düzenleme, sonradan kurulan cihazın tohumuna her zaman üstün gelir.
-        self.conn
-            .execute_batch("UPDATE tags SET updated_at = 0; UPDATE rules SET updated_at = 0;")?;
-        self.save_setting(DEFAULTS_SEEDED_KEY, &true)
     }
 
     /// Oturumu yumuşak siler (örn. boşta kalma sonrası geçersiz kalan kayıt).
@@ -641,21 +578,6 @@ impl Store {
         Ok(session)
     }
 
-    fn require_tag(&self, id: &str, kind: TagKind) -> Result<()> {
-        let found: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT kind FROM tags WHERE id = ?1 AND deleted_at IS NULL",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match found {
-            Some(k) if k == kind.as_str() => Ok(()),
-            _ => Err(StoreError::Invalid(format!("etiket bulunamadı: {id}"))),
-        }
-    }
-
     /// Senkronizasyon başka hesaba/projeye bağlandığında: imleçleri sil, her şeyi
     /// yeniden gönderilecek işaretle.
     pub fn reset_sync_state(&self) -> Result<()> {
@@ -666,243 +588,6 @@ impl Store {
              UPDATE rules SET synced_at = NULL;
              UPDATE clients SET synced_at = NULL;",
         )?;
-        Ok(())
-    }
-
-    pub fn tags(&self) -> Result<Vec<Tag>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, kind, name, color FROM tags
-             WHERE deleted_at IS NULL ORDER BY kind, position, name",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, u8>(3)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (id, kind, name, color) = row?;
-            let kind = TagKind::parse(&kind)
-                .ok_or_else(|| StoreError::Invalid(format!("bilinmeyen etiket türü: {kind}")))?;
-            Ok(Tag {
-                id,
-                kind,
-                name,
-                color,
-            })
-        })
-        .collect()
-    }
-
-    /// Ekler ya da günceller; `position` yalnızca eklemede kullanılır.
-    pub fn upsert_tag(&self, tag: &Tag, position: i64) -> Result<()> {
-        if !(1..=8).contains(&tag.color) {
-            return Err(StoreError::Invalid(format!(
-                "renk 1-8 olmalı: {}",
-                tag.color
-            )));
-        }
-        self.conn.execute(
-            "INSERT INTO tags (id, kind, name, color, position, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (id) DO UPDATE SET
-                name = excluded.name, color = excluded.color,
-                updated_at = MAX(excluded.updated_at, tags.updated_at + 1)",
-            params![
-                tag.id,
-                tag.kind.as_str(),
-                tag.name.trim(),
-                tag.color,
-                position,
-                ms(Utc::now())
-            ],
-        )?;
-        Ok(())
-    }
-
-    /// Müşteriler, sıralı.
-    pub fn clients(&self) -> Result<Vec<Client>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name FROM clients WHERE deleted_at IS NULL ORDER BY position, name",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(Client {
-                id: r.get(0)?,
-                name: r.get(1)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    pub fn upsert_client(&self, client: &Client, position: i64) -> Result<()> {
-        if client.name.trim().is_empty() {
-            return Err(StoreError::Invalid("müşteri adı boş olamaz".into()));
-        }
-        self.conn.execute(
-            "INSERT INTO clients (id, name, position, updated_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (id) DO UPDATE SET
-                name = excluded.name, deleted_at = NULL,
-                updated_at = MAX(excluded.updated_at, clients.updated_at + 1)",
-            params![client.id, client.name.trim(), position, ms(Utc::now())],
-        )?;
-        Ok(())
-    }
-
-    /// Müşteriyi yumuşak siler; projeleri silinmez, müşterisiz kalır.
-    pub fn delete_client(&self, id: &str) -> Result<()> {
-        let now = ms(Utc::now());
-        let tx = self.conn.unchecked_transaction()?;
-        self.conn.execute(
-            "UPDATE clients SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
-            params![id, now],
-        )?;
-        self.conn.execute(
-            "UPDATE tags SET client_id = NULL, updated_at = MAX(?2, updated_at + 1)
-             WHERE client_id = ?1",
-            params![id, now],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Proje → müşteri (yalnızca müşterisi olan ve müşterisi silinmemiş projeler).
-    pub fn project_clients(&self) -> Result<HashMap<String, String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT t.id, t.client_id FROM tags t JOIN clients c ON c.id = t.client_id
-             WHERE t.kind = 'project' AND t.deleted_at IS NULL AND c.deleted_at IS NULL",
-        )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Projeyi müşteriye bağlar (`None`: müşterisiz).
-    pub fn set_project_client(&self, project_id: &str, client_id: Option<&str>) -> Result<()> {
-        self.require_tag(project_id, TagKind::Project)?;
-        if let Some(c) = client_id {
-            let found: Option<i64> = self
-                .conn
-                .query_row(
-                    "SELECT 1 FROM clients WHERE id = ?1 AND deleted_at IS NULL",
-                    [c],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if found.is_none() {
-                return Err(StoreError::Invalid(format!("müşteri bulunamadı: {c}")));
-            }
-        }
-        self.conn.execute(
-            "UPDATE tags SET client_id = ?2, updated_at = MAX(?3, updated_at + 1)
-             WHERE id = ?1 AND client_id IS NOT ?2",
-            params![project_id, client_id, ms(Utc::now())],
-        )?;
-        Ok(())
-    }
-
-    /// Yumuşak siler; kuralları da birlikte silinir.
-    pub fn delete_tag(&self, id: &str) -> Result<()> {
-        let now = ms(Utc::now());
-        self.conn.execute(
-            "UPDATE tags SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
-            params![id, now],
-        )?;
-        self.conn.execute(
-            "UPDATE rules SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1)
-             WHERE tag_id = ?1 AND deleted_at IS NULL",
-            params![id, now],
-        )?;
-        Ok(())
-    }
-
-    pub fn rules(&self) -> Result<Vec<Rule>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, tag_id, field, pattern FROM rules
-             WHERE deleted_at IS NULL ORDER BY position, rowid",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (id, tag_id, field, pattern) = row?;
-            let field = RuleField::parse(&field)
-                .ok_or_else(|| StoreError::Invalid(format!("bilinmeyen kural alanı: {field}")))?;
-            Ok(Rule {
-                id,
-                tag_id,
-                field,
-                pattern,
-            })
-        })
-        .collect()
-    }
-
-    pub fn upsert_rule(&self, rule: &Rule) -> Result<()> {
-        let pattern = rule.pattern.trim();
-        if pattern.is_empty() {
-            return Err(StoreError::Invalid("kural deseni boş olamaz".into()));
-        }
-        self.conn.execute(
-            "INSERT INTO rules (id, tag_id, field, pattern, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (id) DO UPDATE SET
-                tag_id = excluded.tag_id, field = excluded.field,
-                pattern = excluded.pattern,
-                updated_at = MAX(excluded.updated_at, rules.updated_at + 1)",
-            params![
-                rule.id,
-                rule.tag_id,
-                rule.field.as_str(),
-                pattern,
-                ms(Utc::now())
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn delete_rule(&self, id: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE rules SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
-            params![id, ms(Utc::now())],
-        )?;
-        Ok(())
-    }
-
-    /// Bir uygulamayı bir kategoriye atar: mevcut uygulama kurallarını kaldırıp yenisini ekler.
-    /// `tag_id: None` uygulamayı kategorisiz bırakır.
-    pub fn assign_app_category(&self, app_id: &str, tag_id: Option<&str>) -> Result<()> {
-        let tags = self.tags()?;
-        let is_category = |id: &str| {
-            tags.iter()
-                .any(|t| t.id == id && t.kind == TagKind::Category)
-        };
-        // Kategori verilirken yalnızca bu uygulamanın kendi (tam) kuralları kalkar: önek
-        // kuralları (`com.jetbrains.*`) başka uygulamaları da kapsar, onlara dokunulmaz;
-        // tam kural sınıflandırmada önek kuralından önce gelir. Kategorisiz bırakmak için
-        // uygulamayı kapsayan önek kuralları da kaldırılmalıdır.
-        for rule in self.rules()? {
-            if rule.field == RuleField::App
-                && is_category(&rule.tag_id)
-                && (tag_id.is_none() || !rule.pattern.ends_with('*'))
-                && rule.matches(app_id, "")
-            {
-                self.delete_rule(&rule.id)?;
-            }
-        }
-        if let Some(tag_id) = tag_id {
-            self.upsert_rule(&Rule {
-                id: Uuid::new_v4().to_string(),
-                tag_id: tag_id.to_string(),
-                field: RuleField::App,
-                pattern: app_id.to_string(),
-            })?;
-        }
         Ok(())
     }
 
@@ -952,324 +637,6 @@ impl Store {
         let sessions = self.merged_sessions_between(*first, *last)?;
         let classifier = Classifier::new(&self.tags()?, &self.rules()?);
         Ok(crate::trends::trends(&sessions, &classifier, bounds))
-    }
-
-    pub fn timesheet_config(&self) -> Result<TimesheetConfig> {
-        Ok(self.setting(TIMESHEET_KEY)?.unwrap_or_default())
-    }
-
-    pub fn save_timesheet_config(&self, config: &TimesheetConfig) -> Result<()> {
-        self.save_setting(TIMESHEET_KEY, config)
-    }
-
-    /// Toplantı serilerinin elle verilen projeleri (UID → proje; `None`: yoksayıldı).
-    pub fn meeting_assignments(&self) -> Result<HashMap<String, Option<String>>> {
-        Ok(self.setting(MEETING_ASSIGNMENTS_KEY)?.unwrap_or_default())
-    }
-
-    /// Toplantı serisini projeye atar (`None`: zaman çizelgesine alma).
-    pub fn assign_meeting(&self, uid: &str, project: Option<&str>) -> Result<()> {
-        let mut all = self.meeting_assignments()?;
-        all.insert(uid.to_string(), project.map(str::to_string));
-        self.save_setting(MEETING_ASSIGNMENTS_KEY, &all)
-    }
-
-    /// Yoksayılan toplantıları geri getirir; sayısını döndürür.
-    pub fn restore_ignored_meetings(&self) -> Result<usize> {
-        let mut all = self.meeting_assignments()?;
-        let before = all.len();
-        all.retain(|_, p| p.is_some());
-        self.save_setting(MEETING_ASSIGNMENTS_KEY, &all)?;
-        Ok(before - all.len())
-    }
-
-    /// Toplantıları projesine göre ayırır: (projesi belli olanlar, hiçbir projeye düşmeyenler).
-    pub fn classify_meetings(&self, meetings: &[Meeting]) -> Result<SplitMeetings> {
-        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
-        let assigned = self.meeting_assignments()?;
-        let (mut known, mut unassigned) = (Vec::new(), Vec::new());
-        for m in meetings {
-            match timesheet::meeting_project(m, &classifier, &assigned) {
-                MeetingProject::Project(p) => known.push((m.clone(), p)),
-                MeetingProject::Unassigned => unassigned.push(m.clone()),
-                MeetingProject::Ignored => {}
-            }
-        }
-        Ok((known, unassigned))
-    }
-
-    /// Günün (`day_start`–`day_end`, yerel gün) oturumlarından ve takvim toplantılarından
-    /// iş kaydı önerileri.
-    pub fn propose_timesheet(
-        &self,
-        day_start: DateTime<Utc>,
-        day_end: DateTime<Utc>,
-        meetings: &[Meeting],
-    ) -> Result<Vec<TimesheetEntry>> {
-        self.propose_from(
-            &self.merged_sessions_between(day_start, day_end)?,
-            day_start,
-            day_end,
-            meetings,
-        )
-    }
-
-    /// Yalnızca toplantılardan iş kaydı önerileri (takip edilen süre olmadan).
-    pub fn propose_meetings(
-        &self,
-        day_start: DateTime<Utc>,
-        day_end: DateTime<Utc>,
-        meetings: &[Meeting],
-    ) -> Result<Vec<TimesheetEntry>> {
-        self.propose_from(&[], day_start, day_end, meetings)
-    }
-
-    fn propose_from(
-        &self,
-        sessions: &[Session],
-        day_start: DateTime<Utc>,
-        day_end: DateTime<Utc>,
-        meetings: &[Meeting],
-    ) -> Result<Vec<TimesheetEntry>> {
-        let tags = self.tags()?;
-        let classifier = Classifier::new(&tags, &self.rules()?);
-        let names = tags
-            .iter()
-            .filter(|t| t.kind == TagKind::Project)
-            .map(|t| (t.id.clone(), t.name.clone()))
-            .collect();
-        let (meetings, _) = self.classify_meetings(meetings)?;
-        Ok(timesheet::propose(
-            sessions,
-            &meetings,
-            &classifier,
-            &names,
-            &self.timesheet_config()?,
-            day_start,
-            day_end,
-        ))
-    }
-
-    /// `[from, to]` tarihleri (dahil) arasındaki onaylanmış kayıtlar, tarih ve saate göre.
-    pub fn timesheet_entries(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<SavedEntry>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, date, start, hours, kind, details, party, project_id, division, exported_at,
-                    actual_hours
-             FROM timesheet_entries WHERE date >= ?1 AND date <= ?2 ORDER BY date, start",
-        )?;
-        let rows = stmt.query_map(params![from.to_string(), to.to_string()], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, f64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, String>(7)?,
-                r.get::<_, String>(8)?,
-                r.get::<_, Option<i64>>(9)?,
-                r.get::<_, Option<f64>>(10)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (
-                id,
-                date,
-                start,
-                hours,
-                kind,
-                details,
-                party,
-                project_id,
-                division,
-                exported,
-                actual,
-            ) = row?;
-            let bad = |what: &str| StoreError::Invalid(format!("zaman çizelgesi {what}: {id}"));
-            Ok(SavedEntry {
-                entry: TimesheetEntry {
-                    date: NaiveDate::parse_from_str(&date, "%Y-%m-%d")
-                        .map_err(|_| bad("tarihi"))?,
-                    start: NaiveTime::parse_from_str(&start, "%H:%M").map_err(|_| bad("saati"))?,
-                    hours,
-                    actual_hours: actual,
-                    kind: parse_kind(&kind).ok_or_else(|| bad("türü"))?,
-                    details,
-                    party,
-                    project_id,
-                    division,
-                },
-                exported_at: exported.map(from_ms),
-                id,
-            })
-        })
-        .collect()
-    }
-
-    /// Günün aktarılmamış kayıtlarını verilenlerle değiştirir (onaylama, yeniden öneri).
-    /// Excel'e aktarılmış kayıtlara dokunulmaz ve aktarılan iş yeniden eklenmez
-    /// ([`timesheet::without_exported`]); yoksa bir sonraki aktarımda dosyaya iki kez yazılırdı.
-    pub fn replace_timesheet_day(&self, date: NaiveDate, entries: &[TimesheetEntry]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        self.conn.execute(
-            "DELETE FROM timesheet_entries WHERE date = ?1 AND exported_at IS NULL",
-            [date.to_string()],
-        )?;
-        let exported: Vec<TimesheetEntry> = self
-            .timesheet_entries(date, date)?
-            .into_iter()
-            .map(|e| e.entry)
-            .collect();
-        for e in timesheet::without_exported(entries, &exported) {
-            self.insert_entry(&Uuid::new_v4().to_string(), &e)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Kaydı ekler ya da (aynı kimlikle) günceller; aktarılmış kayıt değiştirilemez.
-    pub fn save_timesheet_entry(&self, id: Option<&str>, entry: &TimesheetEntry) -> Result<String> {
-        if !(entry.hours > 0.0 && entry.hours <= 24.0) {
-            return Err(StoreError::Invalid("saat 0 ile 24 arasında olmalı".into()));
-        }
-        let id = id.map_or_else(|| Uuid::new_v4().to_string(), str::to_string);
-        let exported: Option<Option<i64>> = self
-            .conn
-            .query_row(
-                "SELECT exported_at FROM timesheet_entries WHERE id = ?1",
-                [&id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if matches!(exported, Some(Some(_))) {
-            return Err(StoreError::Invalid(
-                "Excel'e aktarılmış kayıt değiştirilemez".into(),
-            ));
-        }
-        self.conn
-            .execute("DELETE FROM timesheet_entries WHERE id = ?1", [&id])?;
-        self.insert_entry(&id, entry)?;
-        Ok(id)
-    }
-
-    pub fn delete_timesheet_entry(&self, id: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM timesheet_entries WHERE id = ?1 AND exported_at IS NULL",
-            [id],
-        )?;
-        Ok(())
-    }
-
-    /// Excel'e aktarılan kayıtları işaretler.
-    pub fn mark_timesheet_exported(&self, ids: &[String], at: DateTime<Utc>) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        for id in ids {
-            self.conn.execute(
-                "UPDATE timesheet_entries SET exported_at = ?2 WHERE id = ?1",
-                params![id, ms(at)],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn insert_entry(&self, id: &str, e: &TimesheetEntry) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO timesheet_entries
-                (id, date, start, hours, kind, details, party, project_id, division, created_at,
-                 actual_hours)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                id,
-                e.date.to_string(),
-                e.start.format("%H:%M").to_string(),
-                e.hours,
-                e.kind.label(),
-                e.details.trim(),
-                e.party.trim(),
-                e.project_id,
-                e.division.trim(),
-                ms(Utc::now()),
-                e.actual_hours,
-            ],
-        )?;
-        Ok(())
-    }
-
-    /// Son iki haftanın oturumlarından proje ve kategori önerileri.
-    pub fn suggestions(&self, now: DateTime<Utc>) -> Result<Suggestions> {
-        let sessions =
-            self.merged_sessions_between(now - chrono::Duration::days(SUGGEST_DAYS), now)?;
-        let dismissed: HashSet<String> = self
-            .setting::<Vec<String>>(DISMISSED_SUGGESTIONS_KEY)?
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        Ok(suggest::suggest(
-            &sessions,
-            &self.tags()?,
-            &self.rules()?,
-            &dismissed,
-        ))
-    }
-
-    /// Öneriyi bir daha gösterme.
-    pub fn dismiss_suggestion(&self, key: &str) -> Result<()> {
-        let mut keys = self
-            .setting::<Vec<String>>(DISMISSED_SUGGESTIONS_KEY)?
-            .unwrap_or_default();
-        if !keys.iter().any(|k| k == key) {
-            keys.push(key.to_string());
-            self.save_setting(DISMISSED_SUGGESTIONS_KEY, &keys)?;
-        }
-        Ok(())
-    }
-
-    /// Önerilen projeyi ekler: proje etiketi ve adıyla bir başlık kuralı.
-    pub fn accept_project_suggestion(&self, name: &str) -> Result<Tag> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(StoreError::Invalid("proje adı boş olamaz".into()));
-        }
-        let tags = self.tags()?;
-        // Arayüzdeki gibi: önce hiç kullanılmamış, yoksa en az kullanılan renk.
-        let color = (1..=8u8)
-            .min_by_key(|c| tags.iter().filter(|t| t.color == *c).count())
-            .unwrap_or(1);
-        let tag = Tag {
-            id: Uuid::new_v4().to_string(),
-            kind: TagKind::Project,
-            name: name.to_string(),
-            color,
-        };
-        self.upsert_tag(&tag, tags.len() as i64)?;
-        self.upsert_rule(&Rule {
-            id: Uuid::new_v4().to_string(),
-            tag_id: tag.id.clone(),
-            field: RuleField::Title,
-            pattern: name.to_string(),
-        })?;
-        Ok(tag)
-    }
-
-    /// Önerilen kategori kuralını ekler (uygulama ya da başlık).
-    pub fn accept_category_suggestion(
-        &self,
-        field: RuleField,
-        pattern: &str,
-        category_id: &str,
-    ) -> Result<()> {
-        self.require_tag(category_id, TagKind::Category)?;
-        match field {
-            RuleField::App => self.assign_app_category(pattern, Some(category_id)),
-            RuleField::Title => self.upsert_rule(&Rule {
-                id: Uuid::new_v4().to_string(),
-                tag_id: category_id.to_string(),
-                field,
-                pattern: pattern.to_string(),
-            }),
-        }
     }
 
     /// Tüm oturumların CSV dökümü.
@@ -1479,6 +846,8 @@ fn from_ms(v: i64) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classify::{Client, DEFAULT_CATEGORIES, Tag};
+    use crate::timesheet::{EntryKind, TimesheetConfig, TimesheetEntry};
 
     fn t(secs: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(1_700_000_000 + secs, 0).unwrap()

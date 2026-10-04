@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 
+use crate::blocks::{self, Activity, WorkStats};
 use crate::classify::{Classifier, Tag};
-use crate::focus::{self, Activity, FocusStats};
 use crate::model::Session;
 
 /// Bir kategori ya da proje için toplam. `id: None` = kategorisiz / projesiz.
@@ -73,8 +73,8 @@ pub struct Report {
     /// Pencere başlığı düzeyinde zaman çizelgesi (yalnızca zaman çizelgesi istenince).
     pub windows: Vec<WindowSpan>,
     pub tags: Vec<Tag>,
-    /// Tüm aralığın odak analizi (bloklar yalnızca zaman çizelgesi istenince doldurulur).
-    pub focus: FocusStats,
+    /// Tüm aralığın blok ve mola analizi (bloklar yalnızca zaman çizelgesi istenince doldurulur).
+    pub work: WorkStats,
 }
 
 /// Kırpılmış oturum dilimi: (başlangıç, bitiş, oturum, kategori, proje).
@@ -108,7 +108,7 @@ pub fn build(
     let mut timeline: Vec<Segment> = Vec::new();
     let mut windows: Vec<WindowSpan> = Vec::new();
     let mut total = 0;
-    // Odak analizi için kırpılmış etkinlikler: (başlangıç, bitiş, oturum, kategori, proje).
+    // Blok analizi için kırpılmış etkinlikler: (başlangıç, bitiş, oturum, kategori, proje).
     let mut spans: Vec<Span> = Vec::new();
 
     for s in sessions {
@@ -176,16 +176,16 @@ pub fn build(
         }
     }
 
-    let mut per_day: Vec<FocusStats> = day_starts
+    let mut per_day: Vec<WorkStats> = day_starts
         .iter()
         .enumerate()
         .map(|(i, start)| {
             let end = day_starts.get(i + 1).copied().unwrap_or(to);
-            focus::analyze(&activities(&spans, *start, end))
+            blocks::analyze(&activities(&spans, *start, end))
         })
         .collect();
     if per_day.is_empty() {
-        per_day.push(focus::analyze(&activities(&spans, from, to)));
+        per_day.push(blocks::analyze(&activities(&spans, from, to)));
     }
 
     let mut apps: Vec<AppBucket> = apps
@@ -218,13 +218,13 @@ pub fn build(
         timeline,
         windows,
         tags: tags.to_vec(),
-        focus: {
+        work: {
             // Çok günlü aralıkta günler ayrı analiz edilip birleştirilir
-            // (gece boşlukları mola sayılmasın, skor gün gün hesaplansın).
+            // (gece boşlukları mola sayılmasın, bloklar gün sınırında bölünsün).
             let mut stats = if per_day.len() == 1 {
                 per_day.pop().unwrap_or_default()
             } else {
-                focus::merge(per_day)
+                blocks::merge(per_day)
             };
             if !with_timeline {
                 stats.blocks.clear();
@@ -234,7 +234,7 @@ pub fn build(
     }
 }
 
-/// `[from, to)` aralığına kırpılmış odak etkinlikleri.
+/// `[from, to)` aralığına kırpılmış etkinlikler.
 fn activities<'a>(
     spans: &'a [Span<'a>],
     from: DateTime<Utc>,
@@ -354,8 +354,8 @@ mod tests {
         assert_eq!(r.days[1].seconds, 100);
         assert_eq!(r.timeline.len(), 3);
         // Gün sınırını aşan oturum her gün ayrı blok olur.
-        assert_eq!(r.focus.blocks.len(), 3);
-        assert_eq!(r.focus.switches, 1);
+        assert_eq!(r.work.blocks.len(), 3);
+        assert_eq!(r.work.switches, 1);
         assert_eq!((r.timeline[0].start, r.timeline[0].end), (t(0), t(150)));
     }
 

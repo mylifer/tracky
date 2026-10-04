@@ -35,7 +35,7 @@ export default function Summary({
   limits,
   projectGoals,
 }: Props) {
-  const f = report.focus;
+  const f = report.work;
   const target = dailyHours * 3600 * activeDays(report, days);
   const ratio = target ? report.totalSeconds / target : 0;
   const breakSecs = f.breakSeconds;

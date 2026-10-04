@@ -44,7 +44,9 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 ```
 crates/tracky-core/       Platformdan bağımsız çekirdek
   engine.rs               Gözlemleri oturumlara çevirir (idle, uyku, kısa geçişler)
-  store.rs                SQLite: göçler, oturum kaydı, ayarlar, raporlama sorguları
+  store/                  SQLite: göçler, oturum kaydı, ayarlar, raporlama sorguları; taxonomy.rs
+                          (etiketler, kurallar, müşteriler, öneriler), timesheet.rs (zaman çizelgesi)
+  blocks.rs               Takvimdeki çalışma blokları, molalar, bağlam değişimi
   privacy.rs              Gizlilik: duraklatma, hariç uygulamalar, başlık gizleme
   browser.rs              Tarayıcı tanıma, sekme adı temizleme, gizli pencere tespiti
   platform.rs             Her OS'un uygulayacağı ActivityProvider trait'i
