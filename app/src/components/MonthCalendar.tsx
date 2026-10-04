@@ -40,16 +40,19 @@ export default function MonthCalendar({
         const isToday = +date === +now;
         const level = Math.min(1, d.seconds / target);
         return (
+          // Gelecek günler soluk ama açılabilir: o günün toplantıları görünür.
           <button
             key={i}
-            disabled={future}
             onClick={() => onSelectDay(isoDate(date))}
             title={
               d.seconds
                 ? `${formatDuration(d.seconds)} çalışma · ${formatDuration(d.focusSeconds)} odak · skor ${d.focusScore}`
                 : undefined
             }
-            className="relative flex min-h-[84px] flex-col items-start overflow-hidden rounded-lg border p-2 text-left transition-colors hover:border-primary/60 disabled:opacity-40"
+            className={cn(
+              "relative flex min-h-[84px] flex-col items-start overflow-hidden rounded-lg border p-2 text-left transition-colors hover:border-primary/60",
+              future && "opacity-50",
+            )}
             style={{ background: `color-mix(in srgb, var(--primary) ${Math.round(level * 16)}%, var(--card))` }}
           >
             <span

@@ -145,20 +145,49 @@ pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResu
         .collect()
 }
 
+/// Gün takvimindeki toplantı: serinin projesi (elle atanan ya da kuraldan) ile.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarMeeting {
+    #[serde(flatten)]
+    meeting: Meeting,
+    project_id: Option<String>,
+    /// Seri zaman çizelgesine alınmıyor (yoksayıldı).
+    ignored: bool,
+}
+
 /// `start` gününden itibaren `days` günün takvim toplantıları (gün takviminde gösterilir).
 #[tauri::command]
 pub async fn calendar_meetings(
     app: AppHandle,
     start: String,
     days: u32,
-) -> CmdResult<Vec<Meeting>> {
+) -> CmdResult<Vec<CalendarMeeting>> {
     let first = parse_date(&start)?;
     let days = days.clamp(1, 62);
-    Ok(crate::calendar::meetings(
+    let meetings = crate::calendar::meetings(
         &app,
         local_midnight(first),
         local_midnight(first + Days::new(days.into())),
-    ))
+    );
+    let (known, unassigned) = lock(&app.state::<Shared>().store)
+        .classify_meetings(&meetings)
+        .map_err(err)?;
+    Ok(meetings
+        .into_iter()
+        .map(|meeting| {
+            let project_id = known
+                .iter()
+                .find(|(m, _)| *m == meeting)
+                .map(|(_, p)| p.clone());
+            let ignored = project_id.is_none() && !unassigned.contains(&meeting);
+            CalendarMeeting {
+                meeting,
+                project_id,
+                ignored,
+            }
+        })
+        .collect())
 }
 
 /// Günün önerilerini kaydeder (onaylar); onaylı günde "yeniden öner" olarak da kullanılır.

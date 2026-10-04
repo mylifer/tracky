@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Hourglass, ZoomIn, ZoomOut } from "lucide-react";
-import { api, type CategoryLimit, type Meeting, type ProjectGoal, type Report, type Tag } from "../api";
+import { api, type CalendarMeeting, type CategoryLimit, type ProjectGoal, type Report, type Tag } from "../api";
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
 import { tagMap } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
@@ -9,7 +9,15 @@ import { AppList, Legend } from "./Breakdown";
 import AppTimeline from "./AppTimeline";
 import { DayCalendar, HOUR_PX, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
-import { EditContext, type EntryDraft, ManualEntry, RangeMenu, type RangeSelection } from "./SessionEdit";
+import {
+  EditContext,
+  type EntryDraft,
+  ManualEntry,
+  MeetingMenu,
+  type MeetingSelection,
+  RangeMenu,
+  type RangeSelection,
+} from "./SessionEdit";
 import Summary from "./Summary";
 import Toolbar from "./Toolbar";
 import { Button } from "./ui/button";
@@ -91,7 +99,7 @@ export default function ReportView(p: Props) {
   // Gün takviminde toplantılar; `null`: takvim bağlı değil (sütun gizlenir).
   // Hangi günün toplantıları olduğu da tutulur: gün değişince yenisi gelene kadar önceki
   // günün toplantıları yeni güne çizilmesin.
-  const [meetingsOf, setMeetingsOf] = useState<{ start: string; list: Meeting[] } | null>(null);
+  const [meetingsOf, setMeetingsOf] = useState<{ start: string; list: CalendarMeeting[] } | null>(null);
   const [calendarOn, setCalendarOn] = useState(false);
   const [calendarRev, setCalendarRev] = useState(0);
   useEffect(() => {
@@ -155,21 +163,25 @@ export default function ReportView(p: Props) {
   const [calendarView, setCalendarView] = useCalendarView();
   const [preview, setPreview] = useState<[number, number] | null>(null);
   const [selection, setSelection] = useState<RangeSelection | null>(null);
-  const closeSelection = useCallback(() => setSelection(null), []);
+  const [meetingSel, setMeetingSel] = useState<MeetingSelection | null>(null);
+  const closeSelection = useCallback(() => {
+    setSelection(null);
+    setMeetingSel(null);
+  }, []);
   // Seçim menüsü eski günün zamanlarını taşır; gün değişince kapanır.
   useEffect(closeSelection, [p.start, p.mode, closeSelection]);
   const selectRange = useCallback(
     (start: number, end: number, x: number, y: number) => setSelection({ start, end, x, y }),
     [],
   );
-  const openDraft = useCallback((start: number, end: number) => {
+  const openDraft = useCallback((start: number, end: number, label?: string, project?: string | null) => {
     const hm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
     // Form dakika hassasiyetinde: başlangıç yukarı, bitiş aşağı yuvarlanır ki komşu oturumlarla çakışmasın.
     const a = new Date(Math.ceil(start / 60_000) * 60_000);
     const b = new Date(Math.floor(end / 60_000) * 60_000);
     // Gece yarısını aşan boşluk günün sonunda kesilir (saat alanı 24:00 alamaz).
     const to = isoDate(b) === isoDate(a) ? hm(b) : "23:59";
-    setDraft((d) => ({ date: isoDate(a), from: hm(a), to, seq: (d?.seq ?? 0) + 1 }));
+    setDraft((d) => ({ date: isoDate(a), from: hm(a), to, seq: (d?.seq ?? 0) + 1, label, project }));
     setPreview([start, end]);
   }, []);
   const editCtx = useMemo(() => ({ categories, projects, onChanged: load }), [categories, projects, load]);
@@ -266,14 +278,7 @@ export default function ReportView(p: Props) {
           >
             {mode.current}
           </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={p.onNext}
-            disabled={isLive}
-            aria-label="Sonraki"
-            title="Sonraki (→)"
-          >
+          <Button variant="ghost" size="icon-sm" onClick={p.onNext} aria-label="Sonraki" title="Sonraki (→)">
             <ChevronRight />
           </Button>
         </div>
@@ -350,6 +355,7 @@ export default function ReportView(p: Props) {
                           timers={report.focusTimers}
                           tags={tags}
                           meetings={meetings}
+                          onMeeting={(meeting, x, y) => setMeetingSel({ meeting, x, y })}
                           onEmpty={openDraft}
                           onRange={selectRange}
                           preview={preview}
@@ -377,6 +383,15 @@ export default function ReportView(p: Props) {
                         projects={projects}
                         onAddEntry={openDraft}
                         onChanged={load}
+                        onClose={closeSelection}
+                      />
+                    )}
+                    {meetingSel && (
+                      <MeetingMenu
+                        selection={meetingSel}
+                        projects={projects}
+                        onAddEntry={openDraft}
+                        onChanged={() => setCalendarRev((r) => r + 1)}
                         onClose={closeSelection}
                       />
                     )}

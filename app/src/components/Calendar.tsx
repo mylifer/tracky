@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Briefcase, CalendarDays, Shapes, Video, Zap } from "lucide-react";
-import type { FocusTimer, Meeting, Segment, Tag, WorkBlock } from "../api";
+import type { CalendarMeeting, FocusTimer, Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
@@ -438,6 +438,7 @@ export function DayCalendar({
   tags,
   timers = [],
   meetings = null,
+  onMeeting,
   onEmpty,
   onRange,
   preview,
@@ -449,7 +450,9 @@ export function DayCalendar({
   tags: Map<string, Tag>;
   timers?: FocusTimer[];
   /** Takvim toplantıları; `null`: takvim bağlı değil (sütun gösterilmez). */
-  meetings?: Meeting[] | null;
+  meetings?: CalendarMeeting[] | null;
+  /** Toplantıya tıklanınca (projeye atama menüsü) ve tıklanan nokta. */
+  onMeeting?: (m: CalendarMeeting, x: number, y: number) => void;
   onEmpty?: (start: number, end: number) => void;
   /** Sürükleyerek seçilen aralık (zaman damgası) ve bırakılan nokta. */
   onRange?: (start: number, end: number, x: number, y: number) => void;
@@ -532,7 +535,13 @@ export function DayCalendar({
         {showMeetings && (
           <Column range={range} className="col-start-3 row-start-1">
             {meetingSpans.map(({ m, ...span }, i) => (
-              <MeetingBlock key={`${m.uid}-${m.start}-${i}`} m={m} onRange={onRange} {...blockGeometry(span, top)} />
+              <MeetingBlock
+                key={`${m.uid}-${m.start}-${i}`}
+                m={m}
+                project={m.projectId ? tags.get(m.projectId) : undefined}
+                onClick={onMeeting}
+                {...blockGeometry(span, top)}
+              />
             ))}
             <NowLine day={from} range={range} />
           </Column>
@@ -584,44 +593,78 @@ export function DayCalendar({
   );
 }
 
-/** Takvim toplantısı; tıklayınca aralığı için atama menüsü (kayıt ekle, projeye ata). */
+/** Takvim toplantısı; projesi varsa proje renginde. Tıklayınca projeye atama menüsü. */
 function MeetingBlock({
   m,
+  project,
   top,
   height,
-  onRange,
+  onClick,
 }: {
-  m: Meeting;
+  m: CalendarMeeting;
+  project?: Tag;
   top: number;
   height: number;
-  onRange?: (start: number, end: number, x: number, y: number) => void;
+  onClick?: (m: CalendarMeeting, x: number, y: number) => void;
 }) {
   const a = new Date(m.start);
   const b = new Date(m.end);
   const time = `${formatTime(a)}–${formatTime(b)}`;
-  const tip = [m.subject || "(konusuz)", `${time} · ${formatDuration((+b - +a) / 1000)}`, m.location]
+  const tip = [
+    m.subject || "(konusuz)",
+    `${time} · ${formatDuration((+b - +a) / 1000)}`,
+    m.location,
+    project && `Proje: ${project.name}`,
+  ]
     .filter(Boolean)
     .join("\n");
   const Icon = m.online ? Video : CalendarDays;
+  const color = project ? tagColor(project) : undefined;
   return (
     <button
       type="button"
-      disabled={!onRange}
-      className="absolute inset-x-0.5 overflow-hidden rounded-[5px] border border-dashed border-primary/50 bg-primary/8 px-1.5 text-left text-primary enabled:cursor-pointer enabled:hover:bg-primary/15"
-      style={{ top, height }}
-      title={onRange ? `${tip}\nTıkla: bu aralığa kayıt ekle ya da projeye ata` : tip}
+      disabled={!onClick}
+      className={cn(
+        "absolute inset-x-0.5 overflow-hidden rounded-[5px] border px-1.5 text-left enabled:cursor-pointer",
+        project
+          ? "border-l-[3px] text-foreground enabled:hover:brightness-95 dark:enabled:hover:brightness-125"
+          : "border-dashed border-primary/50 bg-primary/8 text-primary enabled:hover:bg-primary/15",
+        m.ignored && "opacity-50",
+      )}
+      style={
+        color
+          ? {
+              top,
+              height,
+              borderColor: `color-mix(in srgb, ${color} 45%, transparent)`,
+              borderLeftColor: color,
+              background: `color-mix(in srgb, ${color} 14%, var(--card))`,
+            }
+          : { top, height }
+      }
+      title={onClick ? `${tip}\nTıkla: projeye ata ya da kayıt ekle` : tip}
       aria-label={tip}
-      onClick={(e) => onRange?.(+a, +b, e.clientX, e.clientY)}
+      onClick={(e) => {
+        // Klavyeyle basılınca imleç konumu yok: menü bloğun yanında açılır.
+        const r = e.currentTarget.getBoundingClientRect();
+        const [x, y] = e.detail === 0 ? [r.right, r.top] : [e.clientX, e.clientY];
+        onClick?.(m, x, y);
+      }}
     >
       {height >= LABEL_MIN_PX && (
         <span className={cn("flex h-full flex-col", height >= FULL_LABEL_PX ? "py-1" : "justify-center")}>
           <span className="flex items-center gap-1">
-            <Icon className="size-3 shrink-0" />
+            <Icon className="size-3 shrink-0" style={color ? { color } : undefined} />
             <span className="truncate text-[11px] leading-tight font-semibold">{m.subject || "(konusuz)"}</span>
           </span>
           {height >= FULL_LABEL_PX && (
-            <span className="truncate text-[10px] leading-tight text-primary/75 tabular">
-              {time}
+            <span
+              className={cn(
+                "truncate text-[10px] leading-tight tabular",
+                project ? "text-muted-foreground" : "text-primary/75",
+              )}
+            >
+              {project ? `${project.name} · ${time}` : time}
               {m.location && ` · ${m.location}`}
             </span>
           )}

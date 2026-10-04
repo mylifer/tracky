@@ -154,6 +154,12 @@ export type Meeting = {
   location: string;
   online: boolean;
 };
+/** Gün takvimindeki toplantı: serinin projesi (elle ya da kuraldan) ile. */
+export type CalendarMeeting = Meeting & {
+  projectId: string | null;
+  /** Seri zaman çizelgesine alınmıyor. */
+  ignored: boolean;
+};
 export type TimesheetDay = {
   date: string;
   approved: boolean;
@@ -297,7 +303,7 @@ export const api = {
   assignMeeting: (uid: string, projectId: string | null, date: string) =>
     invoke<void>("assign_meeting", { uid, projectId, date }),
   /** `start` gününden itibaren `days` günün takvim toplantıları; takvim bağlı değilse boş. */
-  meetings: (start: string, days: number) => invoke<Meeting[]>("calendar_meetings", { start, days }),
+  meetings: (start: string, days: number) => invoke<CalendarMeeting[]>("calendar_meetings", { start, days }),
   calendarStatus: () => invoke<CalendarStatus>("calendar_status"),
   setCalendarUrl: (url: string | null) => invoke<CalendarStatus>("set_calendar_url", { url }),
   refreshCalendar: () => invoke<void>("refresh_calendar"),

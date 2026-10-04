@@ -142,7 +142,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   const thisMonth = isoDate(startOfMonth(today()));
   const dayDate = parseIsoDate(day);
 
-  // Seçili dönem bugünü içeriyor mu? (İleri gidilemez, "Bugün" düğmesi pasif.)
+  // Seçili dönem bugünü içeriyor mu? ("Bugün" düğmesi pasif.)
   const atCurrent =
     view === "day"
       ? day === todayIso
@@ -152,8 +152,8 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           ? month === thisMonth
           : true;
 
+  // Gelecek de gezilebilir: takvimdeki yaklaşan toplantılar görünsün.
   function step(n: number) {
-    if (n > 0 && atCurrent) return;
     if (view === "day") setDay(shift(day, n));
     else if (view === "week") setWeek(shift(week, 7 * n));
     else if (view === "month") setMonth(isoDate(addMonths(parseIsoDate(month), n)));

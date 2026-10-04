@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { ChevronDown, PenLine, Plus, Trash2, X } from "lucide-react";
-import { api, formatDuration, NO_PROJECT, type Tag } from "../api";
+import { api, type CalendarMeeting, formatDuration, NO_PROJECT, type Tag } from "../api";
 import { formatTime, isoDate, parseIsoDate } from "../lib/dates";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -94,6 +94,58 @@ export const useEdit = () => useContext(EditContext);
 /** Takvimde sürükleyerek seçilen aralık ve menünün açılacağı nokta. */
 export type RangeSelection = { start: number; end: number; x: number; y: number };
 
+/** İmlecin yanında açılan küçük menü; dışına tıklayınca ya da Esc ile kapanır. */
+function FloatingMenu({
+  x,
+  y,
+  label,
+  onClose,
+  children,
+}: {
+  x: number;
+  y: number;
+  label: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const width = 264;
+  const left = Math.min(x + 12, window.innerWidth - width - 12);
+  const top = Math.min(y, window.innerHeight - 240);
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onPointerDown={onClose} />
+      <div
+        role="dialog"
+        aria-label={label}
+        className="fixed z-50 space-y-3 rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg"
+        style={{ left, top, width }}
+      >
+        {children}
+      </div>
+    </>
+  );
+}
+
+function MenuHeader({ title, sub, onClose }: { title: React.ReactNode; sub: React.ReactNode; onClose: () => void }) {
+  return (
+    <div className="flex items-start justify-between gap-2">
+      <div className="min-w-0">
+        <div className="text-sm font-medium tabular">{title}</div>
+        <div className="text-xs text-muted-foreground tabular">{sub}</div>
+      </div>
+      <Button size="icon-sm" variant="ghost" className="-mt-1 -mr-1 shrink-0" onClick={onClose} aria-label="Kapat">
+        <X />
+      </Button>
+    </div>
+  );
+}
+
 /**
  * Seçilen aralık için menü: içindeki kayıtları kategoriye ata, elle kayıt ekle ya da sil.
  * Bırakılan noktanın yanında açılır; dışına tıklayınca ya da Esc ile kapanır.
@@ -118,6 +170,7 @@ export function RangeMenu({
   // Gelecek kaydedilemez ve silinecek bir şey de yoktur: bitiş şimdiye kırpılır.
   const end = Math.min(selection.end, Date.now());
   const start = Math.min(selection.start, end);
+  const future = selection.start >= Date.now();
   const iso = (t: number) => new Date(t).toISOString();
   const run = (f: () => Promise<unknown>) =>
     f().then(
@@ -131,54 +184,32 @@ export function RangeMenu({
       },
     );
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const width = 264;
-  const left = Math.min(selection.x + 12, window.innerWidth - width - 12);
-  const top = Math.min(selection.y, window.innerHeight - 220);
   return (
-    <>
-      <div className="fixed inset-0 z-40" onPointerDown={onClose} />
-      <div
-        role="dialog"
-        aria-label="Seçilen aralık"
-        className="fixed z-50 space-y-3 rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg"
-        style={{ left, top, width }}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <div className="text-sm font-medium tabular">
-              {formatTime(new Date(selection.start))} – {formatTime(new Date(selection.end))}
-            </div>
-            <div className="text-xs text-muted-foreground">
-              {formatDuration((selection.end - selection.start) / 1000)}
-            </div>
-          </div>
-          <Button size="icon-sm" variant="ghost" className="-mt-1 -mr-1" onClick={onClose} aria-label="Kapat">
-            <X />
-          </Button>
-        </div>
-        {end > start && (
-          <ProjectAssign
-            projects={projects}
-            onChange={(id) => run(() => api.setRangeProject(iso(start), iso(end), id))}
-          />
-        )}
-        {end > start && (
-          <CategorySelect
-            value={null}
-            onChange={(id) => run(() => api.setRangeCategory(iso(start), iso(end), id))}
-            categories={categories}
-            noneLabel="Kurallara göre"
-            placeholder="İçindeki kayıtları kategoriye ata…"
-            className="w-full"
-            aria-label="Aralığın kategorisi"
-          />
-        )}
+    <FloatingMenu x={selection.x} y={selection.y} label="Seçilen aralık" onClose={onClose}>
+      <MenuHeader
+        title={`${formatTime(new Date(selection.start))} – ${formatTime(new Date(selection.end))}`}
+        sub={formatDuration((selection.end - selection.start) / 1000)}
+        onClose={onClose}
+      />
+      {future && <p className="text-xs text-muted-foreground">Bu aralık henüz gelmedi; kayıt eklenemez.</p>}
+      {end > start && (
+        <ProjectAssign
+          projects={projects}
+          onChange={(id) => run(() => api.setRangeProject(iso(start), iso(end), id))}
+        />
+      )}
+      {end > start && (
+        <CategorySelect
+          value={null}
+          onChange={(id) => run(() => api.setRangeCategory(iso(start), iso(end), id))}
+          categories={categories}
+          noneLabel="Kurallara göre"
+          placeholder="İçindeki kayıtları kategoriye ata…"
+          className="w-full"
+          aria-label="Aralığın kategorisi"
+        />
+      )}
+      {!future && (
         <div className="flex gap-2">
           <Button
             size="sm"
@@ -209,9 +240,114 @@ export function RangeMenu({
               </Button>
             ))}
         </div>
-        {error && <p className="text-xs text-destructive selectable">{error}</p>}
-      </div>
-    </>
+      )}
+      {error && <p className="text-xs text-destructive selectable">{error}</p>}
+    </FloatingMenu>
+  );
+}
+
+/** Takvimde tıklanan toplantı ve menünün açılacağı nokta. */
+export type MeetingSelection = { meeting: CalendarMeeting; x: number; y: number };
+
+const IGNORE = "__yoksay__";
+
+/**
+ * Toplantı menüsü: toplantı serisini projeye ata (zaman çizelgesine o projeyle girer;
+ * gelecekteki toplantılar da atanabilir). Toplantı sırasında bilgisayar kullanılmadığından
+ * aralıkta çoğu zaman kayıt yoktur; geçmiş toplantı için elle kayıt eklemek de buradan.
+ */
+export function MeetingMenu({
+  selection,
+  projects,
+  onAddEntry,
+  onChanged,
+  onClose,
+}: {
+  selection: MeetingSelection;
+  projects: Tag[];
+  onAddEntry: (start: number, end: number, label: string, projectId: string | null) => void;
+  onChanged: () => void;
+  onClose: () => void;
+}) {
+  const m = selection.meeting;
+  const a = new Date(m.start);
+  const b = new Date(m.end);
+  const [value, setValue] = useState(m.projectId ?? (m.ignored ? IGNORE : PLACEHOLDER));
+  const [error, setError] = useState<string | null>(null);
+  const tag = projects.find((p) => p.id === value);
+  const subject = m.subject || "(konusuz)";
+
+  function assign(v: string) {
+    const before = value;
+    setValue(v);
+    setError(null);
+    api.assignMeeting(m.uid, v === IGNORE ? null : v, isoDate(a)).then(onChanged, (e) => {
+      setValue(before);
+      setError(message(e));
+    });
+  }
+
+  return (
+    <FloatingMenu x={selection.x} y={selection.y} label="Toplantı" onClose={onClose}>
+      <MenuHeader
+        title={<span className="line-clamp-2 break-words">{subject}</span>}
+        sub={`${formatTime(a)} – ${formatTime(b)} · ${formatDuration((+b - +a) / 1000)}`}
+        onClose={onClose}
+      />
+      {projects.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          Projeye atamak için önce kenar çubuğundaki Projeler sayfasından bir proje ekle.
+        </p>
+      ) : (
+        <label className="block space-y-1">
+          <span className="text-[11px] text-muted-foreground">Proje</span>
+          <span className="relative flex items-center">
+            <i
+              className="pointer-events-none absolute left-2.5 size-2 rounded-full"
+              style={{ background: tagColor(tag) }}
+              aria-hidden
+            />
+            <select
+              value={value}
+              aria-label="Toplantının projesi"
+              onChange={(e) => e.target.value !== PLACEHOLDER && assign(e.target.value)}
+              className="h-8 w-full appearance-none rounded-md border bg-transparent pr-7 pl-6 text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-input/30"
+            >
+              {value === PLACEHOLDER && (
+                <option value={PLACEHOLDER} disabled>
+                  Projeye ata…
+                </option>
+              )}
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+              <option value={IGNORE}>Zaman çizelgesine alma</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" aria-hidden />
+          </span>
+          <span className="block text-[11px] text-muted-foreground">
+            Serinin tüm tekrarlarına uygulanır; zaman çizelgesine bu projeyle girer.
+          </span>
+        </label>
+      )}
+      {+a < Date.now() && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="w-full"
+          onClick={() => {
+            const project = value === PLACEHOLDER || value === IGNORE ? null : value;
+            onAddEntry(+a, Math.min(+b, Date.now()), m.subject, project);
+            onClose();
+          }}
+        >
+          <PenLine /> Toplantıyı elle kayıt olarak ekle
+        </Button>
+      )}
+      {error && <p className="text-xs text-destructive selectable">{error}</p>}
+    </FloatingMenu>
   );
 }
 
@@ -282,7 +418,14 @@ export function BlockActions({
 
 /** "Kayıt ekle": bilgisayar dışında geçen süreyi (toplantı, okuma) elle ekler. */
 /** Takvimdeki boş alana tıklanınca formu o aralıkla açma isteği. */
-export type EntryDraft = { date: string; from: string; to: string; seq: number };
+export type EntryDraft = {
+  date: string;
+  from: string;
+  to: string;
+  seq: number;
+  label?: string;
+  project?: string | null;
+};
 
 export function ManualEntry({
   day,
@@ -315,6 +458,8 @@ export function ManualEntry({
     setDate(draft.date);
     setFrom(draft.from);
     setTo(draft.to);
+    if (draft.label !== undefined) setLabel(draft.label);
+    if (draft.project !== undefined) setProject(draft.project);
     setError(null);
     setOpen(true);
   }, [draft]);
