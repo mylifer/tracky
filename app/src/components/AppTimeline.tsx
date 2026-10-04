@@ -192,20 +192,34 @@ export default function AppTimeline({
         if (p.b <= startMs || p.a >= startMs + spanMs) return null;
         const a = x(p.day, p.a);
         const b = x(p.day, p.b);
+        const props = {
+          className: cn(
+            "absolute inset-y-1 rounded-[3px]",
+            muted && "opacity-70",
+            onSelectSpan &&
+              "cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
+          ),
+          style: { left: `${a * 100}%`, width: `max(2px, ${(b - a) * 100}%)`, background: spanColor(w) },
+          onMouseEnter: (e: React.MouseEvent) => setHover({ span: w, x: e.clientX, y: e.clientY }),
+          onMouseMove: (e: React.MouseEvent) => setHover({ span: w, x: e.clientX, y: e.clientY }),
+          onMouseLeave: () => setHover(null),
+        };
+        if (!onSelectSpan) return <span key={`${i}:${p.day}`} {...props} />;
+        const label = `${w.appName}${w.title ? ` · ${w.title}` : ""} · ${formatTime(new Date(w.start))}–${formatTime(new Date(w.end))}`;
         return (
-          <span
+          <button
             key={`${i}:${p.day}`}
-            className={cn("absolute inset-y-1 rounded-[3px]", muted && "opacity-70", onSelectSpan && "cursor-pointer")}
-            style={{ left: `${a * 100}%`, width: `max(2px, ${(b - a) * 100}%)`, background: spanColor(w) }}
-            onMouseEnter={(e) => setHover({ span: w, x: e.clientX, y: e.clientY })}
-            onMouseMove={(e) => setHover({ span: w, x: e.clientX, y: e.clientY })}
-            onMouseLeave={() => setHover(null)}
+            type="button"
+            aria-label={`${label}: projeye ya da kategoriye ata`}
+            {...props}
             onClick={(e) => {
-              if (!onSelectSpan) return;
               // Satırın açılıp kapanmasını tetiklemesin.
               e.stopPropagation();
               setHover(null);
-              onSelectSpan(+new Date(w.start), +new Date(w.end), e.clientX, e.clientY);
+              // Klavyeyle (Enter/Boşluk) basılınca imleç konumu yok: menü çubuğun yanında açılır.
+              const r = e.currentTarget.getBoundingClientRect();
+              const [px, py] = e.detail === 0 ? [r.left + r.width / 2, r.bottom] : [e.clientX, e.clientY];
+              onSelectSpan(+new Date(w.start), +new Date(w.end), px, py);
             }}
           />
         );
@@ -287,12 +301,13 @@ export default function AppTimeline({
           const manual = app.appId.startsWith("kum.manual/");
           return (
             <li key={app.key}>
-              <button
-                className={cn(row, "w-full py-0.5 text-left hover:bg-accent/50")}
-                onClick={() => toggle(app.key)}
-                aria-expanded={expanded}
-              >
-                <span className="flex min-w-0 items-center gap-1.5 text-xs">
+              {/* Satır düğme değil: içindeki çubuklar ayrı düğmeler (klavyeyle de seçilebilsin). */}
+              <div className={cn(row, "py-0.5 hover:bg-accent/50")}>
+                <button
+                  className="flex min-w-0 items-center gap-1.5 self-stretch text-left text-xs"
+                  onClick={() => toggle(app.key)}
+                  aria-expanded={expanded}
+                >
                   <ChevronRight
                     className={cn(
                       "size-3 shrink-0 text-muted-foreground transition-transform",
@@ -306,12 +321,13 @@ export default function AppTimeline({
                   )}
                   <span className="min-w-0 flex-1 truncate font-medium">{app.label}</span>
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular">{formatDuration(app.secs)}</span>
-                </span>
-                <span data-track className="relative block h-7 overflow-hidden">
+                </button>
+                {/* Çubukların arasına tıklamak da satırı açar (fareyle; klavyede soldaki düğme). */}
+                <span data-track className="relative block h-7 overflow-hidden" onClick={() => toggle(app.key)}>
                   {grid}
                   {bars(app)}
                 </span>
-              </button>
+              </div>
               {expanded && (
                 <ul className="pb-1">
                   {app.titles.map((t) => (
