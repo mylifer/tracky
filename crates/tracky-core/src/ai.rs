@@ -512,6 +512,8 @@ mod tests {
             subject: "Sprint planlama".into(),
             location: String::new(),
             online: true,
+            organizer: None,
+            attendees: Vec::new(),
         };
         let day = vec![row(10, 0, EntryKind::Online, "Sprint planlama")];
         let a = row_activity(
