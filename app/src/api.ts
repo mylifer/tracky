@@ -296,6 +296,8 @@ export const api = {
   /** Toplantı serisini projeye ata; `null` yoksayar. */
   assignMeeting: (uid: string, projectId: string | null, date: string) =>
     invoke<void>("assign_meeting", { uid, projectId, date }),
+  /** `start` gününden itibaren `days` günün takvim toplantıları; takvim bağlı değilse boş. */
+  meetings: (start: string, days: number) => invoke<Meeting[]>("calendar_meetings", { start, days }),
   calendarStatus: () => invoke<CalendarStatus>("calendar_status"),
   setCalendarUrl: (url: string | null) => invoke<CalendarStatus>("set_calendar_url", { url }),
   refreshCalendar: () => invoke<void>("refresh_calendar"),

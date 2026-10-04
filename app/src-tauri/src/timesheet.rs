@@ -142,6 +142,22 @@ pub async fn timesheet_days(app: AppHandle, start: String, days: u32) -> CmdResu
         .collect()
 }
 
+/// `start` gününden itibaren `days` günün takvim toplantıları (gün takviminde gösterilir).
+#[tauri::command]
+pub async fn calendar_meetings(
+    app: AppHandle,
+    start: String,
+    days: u32,
+) -> CmdResult<Vec<Meeting>> {
+    let first = parse_date(&start)?;
+    let days = days.clamp(1, 62);
+    Ok(crate::calendar::meetings(
+        &app,
+        local_midnight(first),
+        local_midnight(first + Days::new(days.into())),
+    ))
+}
+
 /// Günün önerilerini kaydeder (onaylar); onaylı günde "yeniden öner" olarak da kullanılır.
 /// Excel'e aktarılmış kayıtlar korunur.
 #[tauri::command]

@@ -377,6 +377,7 @@ pub fn run() {
             timesheet::import_timesheet_template,
             timesheet::export_timesheet,
             timesheet::assign_meeting,
+            timesheet::calendar_meetings,
             timesheet::sheet_script,
             timesheet::connect_sheet,
             timesheet::disconnect_sheet,

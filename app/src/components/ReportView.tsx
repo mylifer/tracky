@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Hourglass, ZoomIn, ZoomOut } from "lucide-react";
-import { api, type CategoryLimit, type ProjectGoal, type Report, type Tag } from "../api";
+import { api, type CategoryLimit, type Meeting, type ProjectGoal, type Report, type Tag } from "../api";
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
 import { tagMap } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
@@ -87,6 +87,32 @@ export default function ReportView(p: Props) {
 
   useEffect(load, [load]);
   useTauriEvent(api.onSync, load);
+
+  // Gün takviminde toplantılar; `null`: takvim bağlı değil (sütun gizlenir).
+  const [meetings, setMeetings] = useState<Meeting[] | null>(null);
+  const [calendarOn, setCalendarOn] = useState(false);
+  const [calendarRev, setCalendarRev] = useState(0);
+  useEffect(() => {
+    api.calendarStatus().then(
+      (s) => setCalendarOn(!!s.url),
+      () => {},
+    );
+  }, []);
+  useTauriEvent(api.onCalendar, (s) => {
+    setCalendarOn(!!s.url);
+    setCalendarRev((r) => r + 1);
+  });
+  useEffect(() => {
+    if (!calendarOn || p.mode !== "day") return setMeetings(null);
+    let live = true;
+    api.meetings(p.start, 1).then(
+      (m) => live && setMeetings(m),
+      () => live && setMeetings(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [calendarOn, calendarRev, p.mode, p.start]);
 
   const from = parseIsoDate(p.start);
   const end = addDays(from, days);
@@ -316,6 +342,7 @@ export default function ReportView(p: Props) {
                           segments={report.timeline}
                           timers={report.focusTimers}
                           tags={tags}
+                          meetings={meetings}
                           onEmpty={openDraft}
                           onRange={selectRange}
                           preview={preview}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gapAround, HOUR_PX, smallLabels, subMarks } from "./Calendar";
+import { categoryBuckets, gapAround, HOUR_PX, subMarks } from "./Calendar";
 
 const MIN = 60_000;
 const day = +new Date(2026, 9, 1);
@@ -23,27 +23,31 @@ describe("boş alana tıklama", () => {
   });
 });
 
-describe("kısa çubuk etiketleri", () => {
-  // 1 dakika = 1 piksel; çubuk yüksekliği blockGeometry'de 2 piksel kısalır.
-  const range = { first: 0, last: 24, px: 60 };
-  const top = (t: number) => (t - day) / MIN;
-  const app = (name: string, a: number, b: number) => ({ ...span(day + a * MIN, day + b * MIN), appName: name });
-
-  it("içine sığmayanlara etiket koyar, çarpışınca kaydırır, çok kayacaksa atlar", () => {
-    const labels = smallLabels(
-      [app("Uzun", 0, 30), app("A", 30, 34), app("B", 34, 38), app("C", 38, 42), app("D", 42, 46), app("E", 46, 50)],
-      top,
-      range,
-    );
-    // C ve D çok kayacağı için atlanır; E'ye gelince yer açılmıştır.
-    expect(labels.map((l) => l.name)).toEqual(["A", "B", "E"]);
-    // Her etiket bir öncekinin altında, üst üste binmeden.
-    labels.slice(1).forEach((l, i) => expect(l.y).toBeGreaterThanOrEqual(labels[i].y + 11));
+describe("kategori şeridi", () => {
+  const seg = (a: number, b: number, categoryId: string | null) => ({
+    ...span(a, b),
+    appName: "x",
+    title: "",
+    categoryId,
   });
 
-  it("bir sonraki adlı çubuğun yazısını örtmez", () => {
-    const labels = smallLabels([app("A", 0, 4), app("Uzun", 6, 40)], top, range);
-    expect(labels).toEqual([]);
+  it("her aralığa en çok süren kategoriyi verir, boş aralığı atlar", () => {
+    const buckets = categoryBuckets(
+      [seg(at(9), at(9, 10), "dev"), seg(at(9, 10), at(9, 15), null), seg(at(9, 20), at(9, 25), null)],
+      day,
+      15,
+    );
+    expect(buckets.map((b) => [b.start, b.categoryId])).toEqual([
+      [at(9), "dev"],
+      [at(9, 15), null],
+    ]);
+    expect(buckets[0].coverage).toBe(1);
+    expect(buckets[0].shares.map((c) => c.id)).toEqual(["dev", null]);
+    expect(buckets[1].coverage).toBeCloseTo(1 / 3);
+  });
+
+  it("çok kısa takip edilen aralığı göstermez", () => {
+    expect(categoryBuckets([seg(at(10), at(10) + 10_000, "dev")], day, 15)).toEqual([]);
   });
 });
 

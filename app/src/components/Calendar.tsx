@@ -1,9 +1,9 @@
 import { useMemo, useRef, useState } from "react";
-import { Briefcase, Zap } from "lucide-react";
-import type { FocusTimer, Segment, Tag, WorkBlock } from "../api";
+import { Briefcase, CalendarDays, Shapes, Video, Zap } from "lucide-react";
+import type { FocusTimer, Meeting, Segment, Tag, WorkBlock } from "../api";
 import { formatDuration } from "../api";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
-import { UNCATEGORIZED, tagColor, tagInk } from "../lib/tags";
+import { UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { BlockActions, useEdit } from "./SessionEdit";
@@ -16,9 +16,6 @@ const HOUR_MS = 3600_000;
 const FULL_LABEL_PX = 40;
 /** Bundan alçak bloklarda yazı yok (yalnızca renk; ayrıntı ipucunda). */
 const LABEL_MIN_PX = 15;
-/** Uygulamalar sütunu: bundan yüksek çubukta normal, arada küçük yazı; daha kısada ad sağda etiket. */
-const APP_LABEL_PX = 18;
-const SMALL_LABEL_PX = 9;
 
 /** Gösterilen saatler ve bir saatin piksel yüksekliği (yakınlaştırmayla değişir). */
 type Range = { first: number; last: number; px: number };
@@ -433,13 +430,14 @@ function blockGeometry(b: { start: string; end: string }, top: (t: number) => nu
   return { top: t, height: Math.max(3, top(+new Date(b.end)) - t - 2) };
 }
 
-/** Gün takvimi: Oturumlar · Uygulamalar · Odak şeridi. */
+/** Gün takvimi: Oturumlar · Toplantılar (takvim bağlıysa) · Kategori şeridi · Odak şeridi. */
 export function DayCalendar({
   from,
   blocks,
   segments,
   tags,
   timers = [],
+  meetings = null,
   onEmpty,
   onRange,
   preview,
@@ -450,6 +448,8 @@ export function DayCalendar({
   segments: Segment[];
   tags: Map<string, Tag>;
   timers?: FocusTimer[];
+  /** Takvim toplantıları; `null`: takvim bağlı değil (sütun gösterilmez). */
+  meetings?: Meeting[] | null;
   onEmpty?: (start: number, end: number) => void;
   /** Sürükleyerek seçilen aralık (zaman damgası) ve bırakılan nokta. */
   onRange?: (start: number, end: number, x: number, y: number) => void;
@@ -457,11 +457,22 @@ export function DayCalendar({
   /** Bir saatin yüksekliği (yakınlaştırma). */
   hourPx?: number;
 }) {
-  const range = useMemo(() => hourRange(from, [...blocks, ...segments], hourPx), [from, blocks, segments, hourPx]);
+  const range = useMemo(
+    () => hourRange(from, [...blocks, ...segments, ...(meetings ?? [])], hourPx),
+    [from, blocks, segments, meetings, hourPx],
+  );
   const top = topFn(+from, range);
-  // Kısa uygulama dilimlerini aynı uygulamanın komşularıyla birleştir (takvimde okunur kalsın).
-  const apps = useMemo(() => mergeSegments(segments), [segments]);
-  const grid = "grid grid-cols-[40px_minmax(0,1fr)_minmax(0,1fr)_8px] gap-x-2";
+  const step = range.px >= 150 ? 5 : 15;
+  const buckets = useMemo(() => categoryBuckets(segments, +from, step), [segments, from, step]);
+  const showMeetings = meetings !== null;
+  const grid = cn(
+    "grid gap-x-2",
+    showMeetings
+      ? "grid-cols-[40px_minmax(0,1fr)_minmax(0,0.6fr)_10px_8px]"
+      : "grid-cols-[40px_minmax(0,1fr)_10px_8px]",
+  );
+  const strip = showMeetings ? "col-start-4" : "col-start-3";
+  const focus = showMeetings ? "col-start-5" : "col-start-4";
 
   return (
     <div>
@@ -470,7 +481,10 @@ export function DayCalendar({
       >
         <span />
         <span>Oturumlar</span>
-        <span>Uygulamalar</span>
+        {showMeetings && <span>Toplantılar</span>}
+        <span title="Kategori: her aralıkta en çok süren">
+          <Shapes className="size-3" />
+        </span>
         <span title="Odak blokları">
           <Zap className="size-3 text-focus" />
         </span>
@@ -479,9 +493,9 @@ export function DayCalendar({
         <div className="col-start-1 row-start-1">
           <HourRail range={range} />
         </div>
-        {/* Odak zamanlayıcıları iki sütunun arkasında; bloklar arasındaki boşluklarda görünür. */}
+        {/* Odak zamanlayıcıları oturumların arkasında; bloklar arasındaki boşluklarda görünür. */}
         <div
-          className="relative col-span-2 col-start-2 row-start-1 -mx-1"
+          className="relative col-start-2 row-start-1 -mx-1"
           style={{ height: (range.last - range.first) * range.px }}
         >
           <FocusBands timers={timers} top={top} />
@@ -504,42 +518,45 @@ export function DayCalendar({
           <Preview range={preview} top={top} />
           <NowLine day={from} range={range} />
         </Column>
-        <Column range={range} className="col-start-3 row-start-1">
-          {apps.map((s, i) => {
-            const { top: t, height: h } = blockGeometry(s, top);
-            const tag = s.categoryId ? tags.get(s.categoryId) : undefined;
-            const tip = `${s.appName}${s.title ? " — " + s.title : ""}\n${formatTime(new Date(s.start))}–${formatTime(new Date(s.end))} · ${formatDuration((+new Date(s.end) - +new Date(s.start)) / 1000)}`;
-            // Tıklayınca bu uygulama diliminin aralığı için atama menüsü (projeye/kategoriye ata).
+        {showMeetings && (
+          <Column range={range} className="col-start-3 row-start-1">
+            {meetings.map((m, i) => (
+              <MeetingBlock key={`${m.uid}-${m.start}-${i}`} m={m} onRange={onRange} {...blockGeometry(m, top)} />
+            ))}
+            <NowLine day={from} range={range} />
+          </Column>
+        )}
+        <div className={cn("relative row-start-1", strip)} style={{ height: (range.last - range.first) * range.px }}>
+          {buckets.map((b) => {
+            const t = top(b.start);
+            const tag = b.categoryId ? tags.get(b.categoryId) : undefined;
+            const tip = [
+              `${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))}`,
+              ...b.shares.map(
+                (c) => `${(c.id ? tags.get(c.id)?.name : null) ?? UNCATEGORIZED} %${Math.round(c.share * 100)}`,
+              ),
+            ].join("\n");
             return (
               <button
-                key={i}
+                key={b.start}
                 type="button"
                 disabled={!onRange}
-                className={cn(
-                  "absolute inset-x-0.5 flex items-center overflow-hidden rounded-[4px] px-1.5 text-left font-medium enabled:cursor-pointer enabled:hover:brightness-95 dark:enabled:hover:brightness-125",
-                  h >= APP_LABEL_PX ? "text-[10px]" : "text-[9px] leading-none",
-                )}
-                style={{ top: t, height: h, background: tagColor(tag), color: tagInk(tag) }}
-                title={onRange ? `${tip}\nTıkla: projeye ya da kategoriye ata` : tip}
-                aria-label={`${s.appName} ${formatTime(new Date(s.start))}–${formatTime(new Date(s.end))}`}
-                onClick={(e) => onRange?.(+new Date(s.start), +new Date(s.end), e.clientX, e.clientY)}
-              >
-                {h >= SMALL_LABEL_PX && <span className="truncate">{s.appName}</span>}
-              </button>
+                className="absolute inset-x-0 rounded-[2px] enabled:cursor-pointer enabled:hover:brightness-90 dark:enabled:hover:brightness-125"
+                style={{
+                  top: t,
+                  height: Math.max(2, top(b.end) - t - 1),
+                  background: tagColor(tag),
+                  // Aralığın az kısmı takip edildiyse soluk.
+                  opacity: 0.35 + 0.65 * b.coverage,
+                }}
+                title={onRange ? `${tip}\nTıkla: kategoriye ya da projeye ata` : tip}
+                aria-label={tip}
+                onClick={(e) => onRange?.(b.start, b.end, e.clientX, e.clientY)}
+              />
             );
           })}
-          {smallLabels(apps, top, range).map((l) => (
-            <span
-              key={l.key}
-              className="pointer-events-none absolute right-1 z-10 max-w-[75%] truncate rounded-[3px] bg-card/90 px-1 text-[9px] leading-[10px] font-medium text-foreground shadow-xs ring-1 ring-border/60"
-              style={{ top: l.y }}
-            >
-              {l.name}
-            </span>
-          ))}
-          <NowLine day={from} range={range} />
-        </Column>
-        <div className="relative col-start-4 row-start-1" style={{ height: (range.last - range.first) * range.px }}>
+        </div>
+        <div className={cn("relative row-start-1", focus)} style={{ height: (range.last - range.first) * range.px }}>
           {blocks.map((b) => {
             const g = blockGeometry(b, top);
             return (
@@ -553,6 +570,53 @@ export function DayCalendar({
         </div>
       </div>
     </div>
+  );
+}
+
+/** Takvim toplantısı; tıklayınca aralığı için atama menüsü (kayıt ekle, projeye ata). */
+function MeetingBlock({
+  m,
+  top,
+  height,
+  onRange,
+}: {
+  m: Meeting;
+  top: number;
+  height: number;
+  onRange?: (start: number, end: number, x: number, y: number) => void;
+}) {
+  const a = new Date(m.start);
+  const b = new Date(m.end);
+  const time = `${formatTime(a)}–${formatTime(b)}`;
+  const tip = [m.subject || "(konusuz)", `${time} · ${formatDuration((+b - +a) / 1000)}`, m.location]
+    .filter(Boolean)
+    .join("\n");
+  const Icon = m.online ? Video : CalendarDays;
+  return (
+    <button
+      type="button"
+      disabled={!onRange}
+      className="absolute inset-x-0.5 overflow-hidden rounded-[5px] border border-dashed border-primary/50 bg-primary/8 px-1.5 text-left text-primary enabled:cursor-pointer enabled:hover:bg-primary/15"
+      style={{ top, height }}
+      title={onRange ? `${tip}\nTıkla: bu aralığa kayıt ekle ya da projeye ata` : tip}
+      aria-label={tip}
+      onClick={(e) => onRange?.(+a, +b, e.clientX, e.clientY)}
+    >
+      {height >= LABEL_MIN_PX && (
+        <span className={cn("flex h-full flex-col", height >= FULL_LABEL_PX ? "py-1" : "justify-center")}>
+          <span className="flex items-center gap-1">
+            <Icon className="size-3 shrink-0" />
+            <span className="truncate text-[11px] leading-tight font-semibold">{m.subject || "(konusuz)"}</span>
+          </span>
+          {height >= FULL_LABEL_PX && (
+            <span className="truncate text-[10px] leading-tight text-primary/75 tabular">
+              {time}
+              {m.location && ` · ${m.location}`}
+            </span>
+          )}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -656,49 +720,48 @@ export function WeekCalendar({
   );
 }
 
-/** Etiket yüksekliği ve kendi çubuğundan en çok bu kadar aşağı kayabilir (piksel). */
-const CHIP_PX = 11;
-const CHIP_MAX_SHIFT = 12;
+export type CategoryBucket = {
+  start: number;
+  end: number;
+  /** En çok süren kategori. */
+  categoryId: string | null;
+  /** Aralığın takip edilen oranı (0–1). */
+  coverage: number;
+  /** Kategorilerin takip edilen süredeki payı, büyükten küçüğe. */
+  shares: { id: string | null; share: number }[];
+};
+
+/** Bundan az takip edilen aralık şeritte boş kalır. */
+const BUCKET_MIN_MS = 30_000;
 
 /**
- * İçine ad sığmayan kısa çubuklar için sağda küçük etiketler: çubuğun hizasına konur, öncekine
- * çarparsa aşağı kayar; çok kayacaksa ya da bir sonraki adlı çubuğun yazısını örtecekse atlanır
- * (ad yine üzerine gelince görünür).
+ * Günü `stepMin` dakikalık aralıklara böler (duvar saatiyle); her aralık o sürede en çok
+ * süren kategoriyi alır. Takip edilmeyen aralıklar atlanır.
  */
-export function smallLabels(
-  apps: { start: string; end: string; appName: string }[],
-  top: (t: number) => number,
-  range: { first: number; last: number; px: number },
-): { key: number; y: number; name: string }[] {
-  const geo = apps.map((s) => blockGeometry(s, top));
-  const bottom = (range.last - range.first) * range.px;
-  const out: { key: number; y: number; name: string }[] = [];
-  let cursor = -Infinity;
-  geo.forEach(({ top: t, height: h }, i) => {
-    if (h >= SMALL_LABEL_PX) {
-      cursor = Math.max(cursor, t + h);
-      return;
-    }
-    const want = t + h / 2 - CHIP_PX / 2;
-    const y = Math.max(want, cursor);
-    const nextNamed = geo.slice(i + 1).find((g) => g.height >= SMALL_LABEL_PX)?.top ?? bottom;
-    if (y - want > CHIP_MAX_SHIFT || y + CHIP_PX > nextNamed) return;
-    out.push({ key: i, y, name: apps[i].appName });
-    cursor = y + CHIP_PX + 1;
-  });
-  return out;
-}
-
-/** Aynı uygulamanın 2 dakikadan yakın dilimlerini birleştirir. */
-function mergeSegments(segments: Segment[]): Segment[] {
-  const out: Segment[] = [];
+export function categoryBuckets(segments: Segment[], dayStart: number, stepMin: number): CategoryBucket[] {
+  const step = stepMin * MIN;
+  const count = Math.ceil((24 * HOUR_MS) / step);
+  const sums: Map<string | null, number>[] = Array.from({ length: count }, () => new Map());
   for (const s of segments) {
-    const last = out[out.length - 1];
-    if (last && last.appName === s.appName && +new Date(s.start) - +new Date(last.end) < 120_000) {
-      last.end = s.end;
-    } else {
-      out.push({ ...s });
+    const a = wallMs(+new Date(s.start), dayStart);
+    const b = wallMs(+new Date(s.end), dayStart);
+    for (let i = Math.max(0, Math.floor(a / step)); i < count && i * step < b; i++) {
+      const ms = Math.min(b, (i + 1) * step) - Math.max(a, i * step);
+      if (ms > 0) sums[i].set(s.categoryId, (sums[i].get(s.categoryId) ?? 0) + ms);
     }
   }
+  const out: CategoryBucket[] = [];
+  sums.forEach((m, i) => {
+    const total = [...m.values()].reduce((x, y) => x + y, 0);
+    if (total < BUCKET_MIN_MS) return;
+    const shares = [...m.entries()].sort((x, y) => y[1] - x[1]).map(([id, ms]) => ({ id, share: ms / total }));
+    out.push({
+      start: fromWallMs(i * step, dayStart),
+      end: fromWallMs((i + 1) * step, dayStart),
+      categoryId: shares[0].id,
+      coverage: Math.min(1, total / step),
+      shares,
+    });
+  });
   return out;
 }
