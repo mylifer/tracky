@@ -122,7 +122,9 @@ function Column({
       style={{ height: (range.last - range.first) * range.px }}
       title={interactive ? "Boş alana tıkla: elle kayıt · sürükle: aralığı seç" : undefined}
       onPointerDown={(e) => {
-        if (!interactive || e.button !== 0) return;
+        // Bloğun ayrıntı kartı gibi portallardaki olaylar da React ağacında buraya yayılır;
+        // yalnızca sütunun kendi alanında başlayan basışlar sürükleme başlatır.
+        if (!interactive || e.button !== 0 || !e.currentTarget.contains(e.target as Node)) return;
         const at = snap(offsetAt(e.currentTarget, e.clientY));
         if ((e.target as HTMLElement).closest("button")) {
           if (onRange) pending.current = { a: at, y0: e.clientY };
