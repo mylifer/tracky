@@ -22,6 +22,13 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("geçersiz kayıt: {0}")]
     Invalid(String),
+    /// Aralıkta başka bilgisayarda süren bir oturum var: o bilgisayar oturumu kaydetmeye
+    /// devam ettiği için buradaki değişiklik ilk eşitlemede ezilirdi.
+    #[error(
+        "Bu aralıkta diğer bilgisayarda şu an süren bir oturum var; değişiklik eşitlemede \
+         kaybolurdu. Oturum bittikten birkaç dakika sonra tekrar dene."
+    )]
+    ForeignLiveSession,
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -191,6 +198,11 @@ fn parse_kind(s: &str) -> Option<EntryKind> {
 /// en uzun oturumdan kısadır), yalnızca indeksin alt sınırıdır.
 const OVERLAPS: &str = "started_at < ?2 AND ended_at > ?1
     AND started_at >= ?1 - (SELECT max_duration FROM session_stats)";
+
+/// Başka cihazın oturumu, bitişi bu kadar yakın olduğu sürece "sürüyor" sayılır. Cihazlar
+/// 5 dakikada bir eşitlediği için buradaki kopya o cihazın gerçek durumundan ~10 dakika
+/// geride olabilir.
+const FOREIGN_LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;
 
 const DEFAULTS_SEEDED_KEY: &str = "default_tags_seeded";
 
@@ -442,6 +454,7 @@ impl Store {
         if let Some(id) = category_id {
             self.require_tag(id, TagKind::Category)?;
         }
+        self.ensure_no_foreign_live(from, to)?;
         let tx = self.conn.unchecked_transaction()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
@@ -468,6 +481,7 @@ impl Store {
         if let Some(id) = project_id.filter(|id| *id != crate::classify::NO_PROJECT) {
             self.require_tag(id, TagKind::Project)?;
         }
+        self.ensure_no_foreign_live(from, to)?;
         let tx = self.conn.unchecked_transaction()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
@@ -485,6 +499,7 @@ impl Store {
     /// `[from, to)` içindeki süreyi yumuşak siler; sınırı aşan oturumların dışarıda
     /// kalan kısmı korunur. Silinen satır sayısı.
     pub fn delete_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
+        self.ensure_no_foreign_live(from, to)?;
         let tx = self.conn.unchecked_transaction()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
@@ -496,6 +511,33 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(n)
+    }
+
+    /// Aralıkta başka cihazın hâlâ sürüyor olabilecek oturumu varsa düzenlemeyi reddeder.
+    /// O cihaz süren oturumu birkaç saniyede bir yeniden kaydeder; satırın tamamı son
+    /// yazanla eşitlendiği için buradaki bölme, silme ya da atama geri alınırdı.
+    /// Elle eklenen kayıtlar sürmez, kapsam dışıdır.
+    fn ensure_no_foreign_live(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<()> {
+        let live: bool = self.conn.query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM sessions
+                 WHERE deleted_at IS NULL AND {OVERLAPS}
+                   AND device_id != ?3 AND ended_at > ?4
+                   AND substr(app_id, 1, length(?5)) != ?5)"
+            ),
+            params![
+                ms(from),
+                ms(to),
+                self.device_id.to_string(),
+                ms(Utc::now()) - FOREIGN_LIVE_WINDOW_MS,
+                format!("{MANUAL_APP_ID}/"),
+            ],
+            |r| r.get(0),
+        )?;
+        if live {
+            return Err(StoreError::ForeignLiveSession);
+        }
+        Ok(())
     }
 
     /// `[from, to)` sınırını aşan oturumları sınırlarda böler; sonra aralıkla
@@ -1701,6 +1743,50 @@ mod tests {
             .assign_app_category("com.microsoft.teams2", None)
             .unwrap();
         assert_eq!(category(&store), None);
+    }
+
+    #[test]
+    fn edits_refuse_another_devices_live_session() {
+        let now = Utc::now();
+        let mut live = session("Code", None, 0, 0);
+        live.started_at = now - chrono::Duration::hours(1);
+        live.ended_at = now;
+        let (from, to) = (
+            now - chrono::Duration::minutes(30),
+            now - chrono::Duration::minutes(20),
+        );
+
+        // Kendi cihazının süren oturumu düzenlenebilir.
+        let own = Store::open_in_memory().unwrap();
+        own.upsert_session(&live).unwrap();
+        assert_eq!(own.delete_between(from, to).unwrap(), 1);
+
+        // Başka cihazınki reddedilir ve hiçbir şey bölünmez.
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_session(&live).unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE sessions SET device_id = ?1",
+                params![Uuid::new_v4().to_string()],
+            )
+            .unwrap();
+        for result in [
+            store.set_category_between(from, to, None),
+            store.set_project_between(from, to, None),
+            store.delete_between(from, to),
+        ] {
+            assert!(matches!(result, Err(StoreError::ForeignLiveSession)));
+        }
+        assert_eq!(store.sessions_between(from, to).unwrap().len(), 1);
+
+        // Bittikten (pencere geçtikten) sonra düzenlenebilir.
+        let ended = ms(now) - FOREIGN_LIVE_WINDOW_MS - 1;
+        store
+            .conn()
+            .execute("UPDATE sessions SET ended_at = ?1", params![ended])
+            .unwrap();
+        assert_eq!(store.delete_between(from, to).unwrap(), 1);
     }
 
     #[test]
