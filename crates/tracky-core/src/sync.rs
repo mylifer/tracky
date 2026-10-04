@@ -55,8 +55,19 @@ struct Table {
     cols: &'static [(&'static str, Col)],
 }
 
-/// Sıra önemli: kurallar etiketlere başvurur, önce etiketler uygulanır.
+/// Sıra önemli: kurallar etiketlere başvurur, önce etiketler uygulanır. Etiketlerin müşterisi
+/// (`client_id`) yabancı anahtar değildir; müşteri sonra gelse de etiket uygulanır.
 const TABLES: &[Table] = &[
+    Table {
+        name: "clients",
+        cols: &[
+            ("id", Col::Text),
+            ("name", Col::Text),
+            ("position", Col::Int),
+            ("updated_at", Col::Time),
+            ("deleted_at", Col::OptTime),
+        ],
+    },
     Table {
         name: "tags",
         cols: &[
@@ -65,6 +76,7 @@ const TABLES: &[Table] = &[
             ("name", Col::Text),
             ("color", Col::Int),
             ("position", Col::Int),
+            ("client_id", Col::OptText),
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
         ],
@@ -163,7 +175,11 @@ pub fn run(
         // Etiketler çekildikten sonra başka cihaz yeni etiket + kural eklemiş olabilir:
         // kuralın etiketi yerelde yoksa etiketleri yeniden çekip bir kez daha dene.
         if table.name == "rules" && result.as_ref().is_err_and(is_foreign_key_error) {
-            let _ = pull_table(store, remote, &TABLES[0], &mut writer);
+            let tags = TABLES
+                .iter()
+                .find(|t| t.name == "tags")
+                .expect("etiket tablosu");
+            let _ = pull_table(store, remote, tags, &mut writer);
             result = pull_table(store, remote, table, &mut writer);
         }
         match result {
@@ -851,5 +867,43 @@ mod tests {
         run(&b, &mut remote, "u1").unwrap();
         let got = lock(&b).sessions_between(s.started_at, s.ended_at).unwrap();
         assert_eq!(got[0].project_id.as_deref(), Some(project.id.as_str()));
+    }
+
+    #[test]
+    fn clients_and_project_links_sync_between_devices() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let project = lock(&a).accept_project_suggestion("Trumore").unwrap();
+        let togg = crate::classify::Client {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Togg".into(),
+        };
+        lock(&a).upsert_client(&togg, 0).unwrap();
+        lock(&a)
+            .set_project_client(&project.id, Some(&togg.id))
+            .unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        assert_eq!(lock(&b).clients().unwrap(), std::slice::from_ref(&togg));
+        assert_eq!(
+            lock(&b).project_clients().unwrap().get(&project.id),
+            Some(&togg.id)
+        );
+        // B'de müşteri silinince A'da da silinir, proje müşterisiz kalır.
+        lock(&b).delete_client(&togg.id).unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        assert!(lock(&a).clients().unwrap().is_empty());
+        assert!(lock(&a).project_clients().unwrap().is_empty());
+        assert_eq!(
+            lock(&a)
+                .tags()
+                .unwrap()
+                .iter()
+                .filter(|t| t.id == project.id)
+                .count(),
+            1
+        );
     }
 }

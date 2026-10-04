@@ -43,6 +43,14 @@ pub struct Tag {
     pub color: u8,
 }
 
+/// Müşteri: projeler bir müşteriye bağlanabilir (raporda müşteri bazında toplam).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Client {
+    pub id: String,
+    pub name: String,
+}
+
 /// Kuralın neye baktığı.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

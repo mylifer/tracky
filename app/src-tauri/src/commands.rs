@@ -6,7 +6,9 @@ use tauri::{AppHandle, Manager};
 use tracky_core::search::SearchResult;
 use tracky_core::suggest::Suggestions;
 use tracky_core::trends::Trends;
-use tracky_core::{Goals, PrivacySettings, Report, Rule, RuleField, Tag, TagKind, UsageTotal};
+use tracky_core::{
+    Client, Goals, PrivacySettings, Report, Rule, RuleField, Tag, TagKind, UsageTotal,
+};
 
 use crate::lock;
 use crate::tracking::{Command, GOALS_KEY, Shared, local_midnight};
@@ -95,6 +97,9 @@ pub async fn app_titles_between(
 pub struct Taxonomy {
     tags: Vec<Tag>,
     rules: Vec<Rule>,
+    clients: Vec<Client>,
+    /// Proje → müşteri.
+    project_clients: std::collections::HashMap<String, String>,
 }
 
 #[tauri::command]
@@ -104,7 +109,43 @@ pub async fn get_taxonomy(app: AppHandle) -> CmdResult<Taxonomy> {
     Ok(Taxonomy {
         tags: store.tags().map_err(err)?,
         rules: store.rules().map_err(err)?,
+        clients: store.clients().map_err(err)?,
+        project_clients: store.project_clients().map_err(err)?,
     })
+}
+
+/// Müşteri ekler (`id` yoksa) ya da adını değiştirir; kaydedileni döndürür.
+#[tauri::command]
+pub async fn save_client(app: AppHandle, id: Option<String>, name: String) -> CmdResult<Client> {
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let client = Client {
+        id: id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        name: name.trim().to_string(),
+    };
+    let position = store.clients().map_err(err)?.len() as i64;
+    store.upsert_client(&client, position).map_err(err)?;
+    Ok(client)
+}
+
+/// Müşteriyi siler; projeleri kalır, müşterisiz olur.
+#[tauri::command]
+pub async fn delete_client(app: AppHandle, id: String) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .delete_client(&id)
+        .map_err(err)
+}
+
+/// Projeyi müşteriye bağlar (`null`: müşterisiz).
+#[tauri::command]
+pub async fn set_project_client(
+    app: AppHandle,
+    project_id: String,
+    client_id: Option<String>,
+) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .set_project_client(&project_id, client_id.as_deref())
+        .map_err(err)
 }
 
 #[derive(Deserialize)]

@@ -5,7 +5,9 @@ use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::classify::{Classifier, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind, default_id};
+use crate::classify::{
+    Classifier, Client, DEFAULT_CATEGORIES, Rule, RuleField, Tag, TagKind, default_id,
+};
 use crate::model::{FocusTimer, MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
@@ -150,6 +152,18 @@ CREATE INDEX timesheet_entries_date ON timesheet_entries (date);
     r#"
 -- Zaman çizelgesi: takip edilen gerçek süre (saat); "hours" çeyrek saate yuvarlanmış olandır.
 ALTER TABLE timesheet_entries ADD COLUMN actual_hours REAL;
+"#,
+    r#"
+-- Müşteriler; projeler bir müşteriye bağlanabilir (tags.client_id, yalnızca projelerde).
+CREATE TABLE clients (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    position   INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    synced_at  INTEGER
+);
+ALTER TABLE tags ADD COLUMN client_id TEXT;
 "#,
 ];
 
@@ -591,7 +605,8 @@ impl Store {
             "DELETE FROM settings WHERE key LIKE 'sync_cursor:%';
              UPDATE sessions SET synced_at = NULL;
              UPDATE tags SET synced_at = NULL;
-             UPDATE rules SET synced_at = NULL;",
+             UPDATE rules SET synced_at = NULL;
+             UPDATE clients SET synced_at = NULL;",
         )?;
         Ok(())
     }
@@ -645,6 +660,85 @@ impl Store {
                 position,
                 ms(Utc::now())
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Müşteriler, sıralı.
+    pub fn clients(&self) -> Result<Vec<Client>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name FROM clients WHERE deleted_at IS NULL ORDER BY position, name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Client {
+                id: r.get(0)?,
+                name: r.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn upsert_client(&self, client: &Client, position: i64) -> Result<()> {
+        if client.name.trim().is_empty() {
+            return Err(StoreError::Invalid("müşteri adı boş olamaz".into()));
+        }
+        self.conn.execute(
+            "INSERT INTO clients (id, name, position, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (id) DO UPDATE SET
+                name = excluded.name, deleted_at = NULL,
+                updated_at = MAX(excluded.updated_at, clients.updated_at + 1)",
+            params![client.id, client.name.trim(), position, ms(Utc::now())],
+        )?;
+        Ok(())
+    }
+
+    /// Müşteriyi yumuşak siler; projeleri silinmez, müşterisiz kalır.
+    pub fn delete_client(&self, id: &str) -> Result<()> {
+        let now = ms(Utc::now());
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn.execute(
+            "UPDATE clients SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
+            params![id, now],
+        )?;
+        self.conn.execute(
+            "UPDATE tags SET client_id = NULL, updated_at = MAX(?2, updated_at + 1)
+             WHERE client_id = ?1",
+            params![id, now],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Proje → müşteri (yalnızca müşterisi olan ve müşterisi silinmemiş projeler).
+    pub fn project_clients(&self) -> Result<HashMap<String, String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.client_id FROM tags t JOIN clients c ON c.id = t.client_id
+             WHERE t.kind = 'project' AND t.deleted_at IS NULL AND c.deleted_at IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Projeyi müşteriye bağlar (`None`: müşterisiz).
+    pub fn set_project_client(&self, project_id: &str, client_id: Option<&str>) -> Result<()> {
+        self.require_tag(project_id, TagKind::Project)?;
+        if let Some(c) = client_id {
+            let found: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM clients WHERE id = ?1 AND deleted_at IS NULL",
+                    [c],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if found.is_none() {
+                return Err(StoreError::Invalid(format!("müşteri bulunamadı: {c}")));
+            }
+        }
+        self.conn.execute(
+            "UPDATE tags SET client_id = ?2, updated_at = MAX(?3, updated_at + 1)
+             WHERE id = ?1 AND client_id IS NOT ?2",
+            params![project_id, client_id, ms(Utc::now())],
         )?;
         Ok(())
     }
@@ -1697,6 +1791,54 @@ mod tests {
         assert_eq!(left[0].entry.details, "Loyalty ekranları");
         assert!(left[0].exported_at.is_some());
         assert!(left.iter().all(|e| e.id != extra_id));
+    }
+
+    #[test]
+    fn projects_link_to_clients() {
+        let store = Store::open_in_memory().unwrap();
+        let p = store.accept_project_suggestion("Trumore").unwrap();
+        let togg = Client {
+            id: Uuid::new_v4().to_string(),
+            name: " Togg ".into(),
+        };
+        store.upsert_client(&togg, 0).unwrap();
+        assert_eq!(store.clients().unwrap()[0].name, "Togg");
+        store.set_project_client(&p.id, Some(&togg.id)).unwrap();
+        assert_eq!(store.project_clients().unwrap().get(&p.id), Some(&togg.id));
+        // Projeyi yeniden adlandırmak müşterisini bozmaz.
+        store
+            .upsert_tag(
+                &Tag {
+                    name: "Trumore 2".into(),
+                    ..p.clone()
+                },
+                0,
+            )
+            .unwrap();
+        assert_eq!(store.project_clients().unwrap().get(&p.id), Some(&togg.id));
+        // Olmayan müşteri ya da kategori bağlanamaz; boş ad kaydedilmez.
+        assert!(store.set_project_client(&p.id, Some("yok")).is_err());
+        let cat = store.tags().unwrap()[0].id.clone();
+        assert!(store.set_project_client(&cat, Some(&togg.id)).is_err());
+        assert!(
+            store
+                .upsert_client(
+                    &Client {
+                        id: "x".into(),
+                        name: " ".into()
+                    },
+                    1
+                )
+                .is_err()
+        );
+        // Müşterisiz yapılabilir; müşteri silinince proje kalır, bağlantı kalkar.
+        store.set_project_client(&p.id, None).unwrap();
+        assert!(store.project_clients().unwrap().is_empty());
+        store.set_project_client(&p.id, Some(&togg.id)).unwrap();
+        store.delete_client(&togg.id).unwrap();
+        assert!(store.clients().unwrap().is_empty());
+        assert!(store.project_clients().unwrap().is_empty());
+        assert!(store.tags().unwrap().iter().any(|t| t.id == p.id));
     }
 
     #[test]

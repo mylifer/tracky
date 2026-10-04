@@ -1,8 +1,15 @@
-import type { Tag } from "../api";
+import type { Client, Tag } from "../api";
 
 /** Kategorisiz süre için nötr renk ve ad. */
 export const UNCATEGORIZED = "Kategorisiz";
 export const NO_PROJECT = "Projesiz";
+export const NO_CLIENT = "Müşterisiz";
+
+/** Müşterinin rengi: listedeki sırasına göre paletten (müşterinin ayrı bir rengi yok). */
+export function clientColor(clients: Client[], id: string | null | undefined): string {
+  const i = id ? clients.findIndex((c) => c.id === id) : -1;
+  return i < 0 ? "var(--c0)" : `var(--c${(i % 8) + 1})`;
+}
 
 /** Etiketin renk değişkeni; kategorisiz = nötr gri. Renk sıraya değil varlığa bağlıdır. */
 export function tagColor(tag: Tag | undefined): string {

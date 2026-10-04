@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ChevronRight, FolderKanban, Plus, Search, Tags, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, FolderKanban, Plus, Search, Tags, Trash2, X } from "lucide-react";
 import {
   api,
   formatDuration,
+  type Client,
   type Rule,
   type RuleField,
   type Suggestions,
@@ -27,7 +28,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { addDays, isoDate, today } from "../lib/dates";
-import { nextColor } from "../lib/tags";
+import { clientColor, NO_CLIENT, nextColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 
 /** Sayfaya göre metinler: projeler başlıktaki sözcüklerle, kategoriler uygulamalarla çalışır. */
@@ -72,6 +73,8 @@ export default function TagsPage({
 }) {
   const text = TEXT[kind];
   const [tags, setTags] = useState<Tag[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [links, setLinks] = useState<Record<string, string>>({});
   const [rules, setRules] = useState<Rule[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestions>({ projects: [], categories: [] });
   const [apps, setApps] = useState<UsageTotal[]>([]);
@@ -83,6 +86,8 @@ export default function TagsPage({
   const load = useCallback(async () => {
     const t = await api.taxonomy();
     setTags(t.tags);
+    setClients(t.clients);
+    setLinks(t.projectClients);
     setRules(t.rules);
     // Kural eklenip silindikçe öneriler değişir (örn. proje eklenince önerisi kalkar).
     const s = await api.suggestions().catch(() => null);
@@ -128,6 +133,7 @@ export default function TagsPage({
         <AddTag
           kind={kind}
           allTags={tags}
+          clients={clients}
           onAdded={async (id) => {
             await load();
             setOpen(id);
@@ -165,20 +171,36 @@ export default function TagsPage({
         ) : shown.length === 0 ? (
           <p className="px-1 text-xs text-muted-foreground">“{query}” ile eşleşen yok.</p>
         ) : (
-          <ul className="divide-y rounded-xl border bg-card shadow-xs">
-            {shown.map((t) => (
-              <TagItem
-                key={t.id}
-                tag={t}
-                rules={rules.filter((r) => r.tagId === t.id)}
-                apps={apps}
-                seconds={usage.get(t.id) ?? 0}
-                open={open === t.id}
-                onToggle={() => setOpen(open === t.id ? null : t.id)}
-                run={run}
-              />
-            ))}
-          </ul>
+          // Projeler müşteriye göre gruplanır (müşteri yoksa tek liste); müşterisizler en sonda.
+          groups(kind, shown, clients, links).map((g) => (
+            <div key={g.id ?? "none"} className="space-y-1.5">
+              {g.title && (
+                <div className="flex items-center gap-2 px-1 pt-1 text-xs font-medium">
+                  <i className="size-2 rounded-full" style={{ background: clientColor(clients, g.id) }} />
+                  <span className={cn(!g.id && "text-muted-foreground")}>{g.title}</span>
+                  <span className="ml-auto font-normal text-muted-foreground tabular">
+                    {formatDuration(g.tags.reduce((s, t) => s + (usage.get(t.id) ?? 0), 0))}
+                  </span>
+                </div>
+              )}
+              <ul className="divide-y rounded-xl border bg-card shadow-xs">
+                {g.tags.map((t) => (
+                  <TagItem
+                    key={t.id}
+                    tag={t}
+                    rules={rules.filter((r) => r.tagId === t.id)}
+                    apps={apps}
+                    clients={clients}
+                    clientId={links[t.id] ?? null}
+                    seconds={usage.get(t.id) ?? 0}
+                    open={open === t.id}
+                    onToggle={() => setOpen(open === t.id ? null : t.id)}
+                    run={run}
+                  />
+                ))}
+              </ul>
+            </div>
+          ))
         )}
       </section>
     </Page>
@@ -187,19 +209,75 @@ export default function TagsPage({
 
 type Run = (f: () => Promise<unknown>) => () => Promise<void>;
 
+/** Projeleri müşteriye göre gruplar; kategoriler ya da hiç müşteri yoksa başlıksız tek grup. */
+function groups(kind: TagKind, tags: Tag[], clients: Client[], links: Record<string, string>) {
+  if (kind !== "project" || clients.length === 0) return [{ id: null, title: null, tags }];
+  const out = clients
+    .map((c) => ({
+      id: c.id as string | null,
+      title: c.name as string | null,
+      tags: tags.filter((t) => links[t.id] === c.id),
+    }))
+    .filter((g) => g.tags.length > 0);
+  const none = tags.filter((t) => !links[t.id]);
+  if (none.length) out.push({ id: null, title: NO_CLIENT, tags: none });
+  return out;
+}
+
+/** Projenin müşterisi: yerel açılır liste (kartın içinde ayrı katman açmaz). */
+function ClientSelect({
+  clients,
+  value,
+  onChange,
+  className,
+}: {
+  clients: Client[];
+  value: string | null;
+  onChange: (id: string | null) => void;
+  className?: string;
+}) {
+  return (
+    <span className={cn("relative inline-flex items-center", className)}>
+      <i
+        className="pointer-events-none absolute left-2.5 size-2 rounded-full"
+        style={{ background: clientColor(clients, value) }}
+        aria-hidden
+      />
+      <select
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="h-8 w-full appearance-none rounded-md border bg-transparent pr-7 pl-6 text-xs hover:bg-accent dark:bg-input/30"
+        aria-label="Müşteri"
+      >
+        <option value="">{NO_CLIENT}</option>
+        {clients.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" aria-hidden />
+    </span>
+  );
+}
+
 /** En üstteki ekleme alanı. */
 function AddTag({
   kind,
   allTags,
+  clients,
   onAdded,
   onError,
 }: {
   kind: TagKind;
   allTags: Tag[];
+  clients: Client[];
   onAdded: (id: string) => void;
   onError: (e: string) => void;
 }) {
   const [name, setName] = useState("");
+  // Yeni projenin müşterisi; art arda aynı müşteriye proje eklenirken seçili kalır.
+  const [client, setClient] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const text = TEXT[kind];
   const exists = allTags.some(
@@ -216,6 +294,7 @@ function AddTag({
           const tag = await api.saveTag({ kind, name: name.trim(), color: nextColor(allTags) });
           // Kuralsız proje hiç süre toplamaz: adı, başlıkta aranan sözcük olarak eklenir.
           if (kind === "project") await api.addRule(tag.id, "title", tag.name);
+          if (kind === "project" && client) await api.setProjectClient(tag.id, client);
           setName("");
           onAdded(tag.id);
         } catch (err) {
@@ -233,6 +312,9 @@ function AddTag({
           placeholder={text.add}
           aria-label={text.add}
         />
+        {kind === "project" && clients.length > 0 && (
+          <ClientSelect clients={clients} value={client} onChange={setClient} className="w-40" />
+        )}
         <Button type="submit" size="sm" disabled={!name.trim() || exists || busy}>
           <Plus /> Ekle
         </Button>
@@ -271,6 +353,8 @@ function TagItem({
   tag,
   rules,
   apps,
+  clients,
+  clientId,
   seconds,
   open,
   onToggle,
@@ -279,6 +363,8 @@ function TagItem({
   tag: Tag;
   rules: Rule[];
   apps: UsageTotal[];
+  clients: Client[];
+  clientId: string | null;
   seconds: number;
   open: boolean;
   onToggle: () => void;
@@ -316,6 +402,21 @@ function TagItem({
       {open && (
         <div className="space-y-4 border-t bg-muted/20 px-4 py-3.5 pl-11">
           <NameAndColor tag={tag} run={run} />
+          {tag.kind === "project" && (
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-medium text-muted-foreground">Müşteri</div>
+              {clients.length > 0 ? (
+                <ClientSelect
+                  clients={clients}
+                  value={clientId}
+                  onChange={(id) => run(() => api.setProjectClient(tag.id, id))()}
+                  className="w-56"
+                />
+              ) : (
+                <p className="text-xs text-muted-foreground">Müşteri yok; kenar çubuğundaki Müşteriler'den ekle.</p>
+              )}
+            </div>
+          )}
           {(text.primary === "title" ? (["title", "app"] as const) : (["app", "title"] as const)).map((field) => (
             <RuleList key={field} tag={tag} field={field} rules={rules} apps={apps} run={run} />
           ))}

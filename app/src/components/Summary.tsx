@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, TrendingDown, TrendingUp } from "lucide-react";
-import type { CategoryLimit, ProjectGoal, Report, Tag } from "../api";
-import { formatDuration } from "../api";
-import { NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
+import type { CategoryLimit, ProjectGoal, Report, Tag, Taxonomy } from "../api";
+import { api, formatDuration } from "../api";
+import { clientColor, NO_CLIENT, NO_PROJECT, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import type { Mode } from "./ReportView";
 import { ScoreRing, scoreLabel } from "./Stats";
@@ -161,27 +161,34 @@ function Delta({ now, before, unit }: { now: number; before?: number; unit: stri
   );
 }
 
-type Tab = "categories" | "projects" | "apps";
+type Tab = "categories" | "projects" | "clients" | "apps";
 
 function BreakdownCard({ report, tags }: { report: Report; tags: Map<string, Tag> }) {
   const [tab, setTab] = useState<Tab>("categories");
+  // Müşteriler raporda yok; projelerin müşterisi buradan alınır, süre müşteriye göre toplanır.
+  const [taxonomy, setTaxonomy] = useState<Taxonomy | null>(null);
+  useEffect(() => {
+    if (tab === "clients") api.taxonomy().then(setTaxonomy, () => {});
+  }, [tab, report]);
   const items =
-    tab === "apps"
-      ? report.apps.map((a) => ({
-          key: a.appId,
-          name: a.appName,
-          secs: a.seconds,
-          color: tagColor(a.categoryId ? tags.get(a.categoryId) : undefined),
-        }))
-      : (tab === "categories" ? report.categories : report.projects).map((b) => {
-          const tag = b.id ? tags.get(b.id) : undefined;
-          return {
-            key: b.id ?? "none",
-            name: tag?.name ?? (tab === "categories" ? UNCATEGORIZED : NO_PROJECT),
-            secs: b.seconds,
-            color: tagColor(tag),
-          };
-        });
+    tab === "clients"
+      ? byClient(report, taxonomy)
+      : tab === "apps"
+        ? report.apps.map((a) => ({
+            key: a.appId,
+            name: a.appName,
+            secs: a.seconds,
+            color: tagColor(a.categoryId ? tags.get(a.categoryId) : undefined),
+          }))
+        : (tab === "categories" ? report.categories : report.projects).map((b) => {
+            const tag = b.id ? tags.get(b.id) : undefined;
+            return {
+              key: b.id ?? "none",
+              name: tag?.name ?? (tab === "categories" ? UNCATEGORIZED : NO_PROJECT),
+              secs: b.seconds,
+              color: tagColor(tag),
+            };
+          });
   const top = items.slice(0, 5);
   const rest = items.slice(5).reduce((s, i) => s + i.secs, 0);
   const donut = rest > 0 ? [...top, { key: "rest", name: "Diğer", secs: rest, color: "var(--c0)" }] : top;
@@ -193,6 +200,7 @@ function BreakdownCard({ report, tags }: { report: Report; tags: Map<string, Tag
           <TabsList className="w-full">
             <TabsTrigger value="categories">Kategoriler</TabsTrigger>
             <TabsTrigger value="projects">Projeler</TabsTrigger>
+            <TabsTrigger value="clients">Müşteriler</TabsTrigger>
             <TabsTrigger value="apps">Uygulamalar</TabsTrigger>
           </TabsList>
         </Tabs>
@@ -219,6 +227,24 @@ function BreakdownCard({ report, tags }: { report: Report; tags: Map<string, Tag
       </CardContent>
     </Card>
   );
+}
+
+/** Projelerin süresi müşteriye göre; müşterisi olmayan proje ve projesiz süre "Müşterisiz". */
+function byClient(report: Report, taxonomy: Taxonomy | null) {
+  if (!taxonomy) return [];
+  const totals = new Map<string, number>();
+  for (const b of report.projects) {
+    const client = (b.id && taxonomy.projectClients[b.id]) || "none";
+    totals.set(client, (totals.get(client) ?? 0) + b.seconds);
+  }
+  return [...totals.entries()]
+    .map(([key, secs]) => ({
+      key,
+      name: taxonomy.clients.find((c) => c.id === key)?.name ?? NO_CLIENT,
+      secs,
+      color: clientColor(taxonomy.clients, key === "none" ? null : key),
+    }))
+    .sort((a, b) => (a.key === "none" ? 1 : b.key === "none" ? -1 : b.secs - a.secs));
 }
 
 /** Halka grafik; dilimler arasında küçük boşluk. */

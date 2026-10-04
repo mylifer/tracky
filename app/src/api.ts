@@ -32,7 +32,14 @@ export const NO_PROJECT = "00000000-0000-0000-0000-000000000000";
 export type Tag = { id: string; kind: TagKind; name: string; color: number };
 export type RuleField = "app" | "title";
 export type Rule = { id: string; tagId: string; field: RuleField; pattern: string };
-export type Taxonomy = { tags: Tag[]; rules: Rule[] };
+export type Client = { id: string; name: string };
+export type Taxonomy = {
+  tags: Tag[];
+  rules: Rule[];
+  clients: Client[];
+  /** Proje → müşteri. */
+  projectClients: Record<string, string>;
+};
 
 export type Bucket = { id: string | null; seconds: number };
 export type AppBucket = { appId: string; appName: string; categoryId: string | null; seconds: number };
@@ -255,6 +262,11 @@ export const api = {
   appTitlesBetween: (appId: string, start: string, days: number) =>
     invoke<UsageTotal[]>("app_titles_between", { appId, start, days }),
   taxonomy: () => invoke<Taxonomy>("get_taxonomy"),
+  saveClient: (id: string | null, name: string) => invoke<Client>("save_client", { id, name }),
+  deleteClient: (id: string) => invoke<void>("delete_client", { id }),
+  /** Projeyi müşteriye bağla; `null` müşterisiz yapar. */
+  setProjectClient: (projectId: string, clientId: string | null) =>
+    invoke<void>("set_project_client", { projectId, clientId }),
   saveTag: (tag: { id?: string; kind: TagKind; name: string; color: number }) => invoke<Tag>("save_tag", { tag }),
   deleteTag: (id: string) => invoke<void>("delete_tag", { id }),
   addRule: (tagId: string, field: RuleField, pattern: string) => invoke<void>("add_rule", { tagId, field, pattern }),

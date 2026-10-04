@@ -288,6 +288,29 @@ fn apply_template(
     if let Some(p) = template.parties.first() {
         config.default_party = p.clone();
     }
+    // Firma müşteri olur; dosyadaki birimlerin (projelerin) müşterisi yoksa ona bağlanır.
+    let client_id = match config.company.trim() {
+        "" => None,
+        company => {
+            let clients = store.clients().map_err(err)?;
+            let id = match clients
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(company))
+            {
+                Some(c) => c.id.clone(),
+                None => {
+                    let c = tracky_core::Client {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        name: company.to_string(),
+                    };
+                    store.upsert_client(&c, clients.len() as i64).map_err(err)?;
+                    c.id
+                }
+            };
+            Some(id)
+        }
+    };
+    let linked = store.project_clients().map_err(err)?;
     let mut created = Vec::new();
     for division in &template.divisions {
         let tags = store.tags().map_err(err)?;
@@ -317,6 +340,11 @@ fn apply_template(
                 tag.id
             }
         };
+        if let Some(client) = &client_id
+            && !linked.contains_key(&id)
+        {
+            store.set_project_client(&id, Some(client)).map_err(err)?;
+        }
         if !config.projects.iter().any(|m| m.project_id == id) {
             config.projects.push(ProjectMapping {
                 project_id: id,

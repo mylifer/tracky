@@ -11,6 +11,7 @@ import {
   Settings2,
   Tags,
   FolderKanban,
+  Building2,
 } from "lucide-react";
 import { api, formatDuration, type AppStatus, type Suggestions, type TrackingStatus } from "./api";
 import FocusCard from "./components/FocusCard";
@@ -37,6 +38,7 @@ import { useUpdate } from "./lib/useUpdate";
 import { cn } from "./lib/utils";
 import Onboarding from "./Onboarding";
 import TagsPage from "./pages/TagsPage";
+import ClientsPage from "./pages/ClientsPage";
 import Search, { type SearchState } from "./pages/Search";
 import Trends from "./pages/Trends";
 import Timesheet from "./pages/Timesheet";
@@ -44,7 +46,7 @@ import Settings from "./pages/Settings";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
 type Mode = "day" | "week" | "month";
-type View = Mode | "timesheet" | "trends" | "search" | "projects" | "categories" | "settings";
+type View = Mode | "timesheet" | "trends" | "search" | "clients" | "projects" | "categories" | "settings";
 
 const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
   { id: "day", label: "Gün", icon: <CalendarDays /> },
@@ -56,6 +58,7 @@ const TITLES: Partial<Record<View, string>> = {
   timesheet: "Zaman çizelgesi",
   trends: "Eğilimler",
   search: "Ara",
+  clients: "Müşteriler",
   projects: "Projeler",
   categories: "Kategoriler",
   settings: "Ayarlar",
@@ -220,6 +223,9 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
             </NavItem>
           </NavSection>
           <NavSection title="Düzenle">
+            <NavItem icon={<Building2 />} active={view === "clients"} onClick={() => setView("clients")}>
+              Müşteriler
+            </NavItem>
             <NavItem
               icon={<FolderKanban />}
               active={view === "projects"}
@@ -301,6 +307,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                   }}
                 />
               )}
+              {view === "clients" && <ClientsPage onOpenProjects={() => setView("projects")} />}
               {view === "projects" && <TagsPage key="project" kind="project" onSuggestions={onSuggestions} />}
               {view === "categories" && <TagsPage key="category" kind="category" onSuggestions={onSuggestions} />}
               {view === "settings" && <Settings status={status} onChange={refresh} section={settingsSection} />}
