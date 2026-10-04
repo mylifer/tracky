@@ -26,10 +26,27 @@ export type UsageTotal = { key: string; label: string; seconds: number };
 export type TagKind = "category" | "project";
 /** Oturuma elle verilen "proje yok" (kurala uysa da projeye sayılmaz); çekirdekteki `NO_PROJECT`. */
 export const NO_PROJECT = "00000000-0000-0000-0000-000000000000";
-export type Tag = { id: string; kind: TagKind; name: string; color: number };
+export type Tag = {
+  id: string;
+  kind: TagKind;
+  name: string;
+  color: number;
+  /** Arşivdeki proje: seçicilerde görünmez, yeni süre toplamaz (yalnızca `taxonomy` doldurur). */
+  archived?: boolean;
+  /** Sözleşme bütçesi (adam-gün; yalnızca `taxonomy` doldurur). */
+  budgetDays?: number | null;
+};
 export type RuleField = "app" | "title" | "domain";
 export type Rule = { id: string; tagId: string; field: RuleField; pattern: string };
-export type Client = { id: string; name: string };
+export type Client = { id: string; name: string; budgetDays?: number | null };
+/** Proje ya da müşterinin bütçesi ve bugüne kadar harcanan süre. */
+export type BudgetUsage = { id: string; budgetDays: number; budgetSeconds: number; usedSeconds: number };
+export type Budgets = {
+  /** Bir adam-günün saati (zaman çizelgesi ayarı; yoksa 8). */
+  dayHours: number;
+  projects: BudgetUsage[];
+  clients: BudgetUsage[];
+};
 export type Taxonomy = {
   tags: Tag[];
   rules: Rule[];
@@ -312,6 +329,14 @@ export const api = {
   setProjectClient: (projectId: string, clientId: string | null) =>
     invoke<void>("set_project_client", { projectId, clientId }),
   saveTag: (tag: { id?: string; kind: TagKind; name: string; color: number }) => invoke<Tag>("save_tag", { tag }),
+  /** Projeyi arşivler; geri alma numarasını döndürür. */
+  archiveProject: (id: string) => invoke<number>("archive_project", { id }),
+  /** Projeyi arşivden çıkarır; geri alma numarasını döndürür. */
+  unarchiveProject: (id: string) => invoke<number>("unarchive_project", { id }),
+  /** Sözleşme bütçesi (adam-gün); `null` kaldırır. */
+  setProjectBudget: (id: string, days: number | null) => invoke<void>("set_project_budget", { id, days }),
+  setClientBudget: (id: string, days: number | null) => invoke<void>("set_client_budget", { id, days }),
+  budgets: () => invoke<Budgets>("get_budgets"),
   /** Geri alma numarasını döndürür. */
   deleteTag: (id: string) => invoke<number>("delete_tag", { id }),
   addRule: (tagId: string, field: RuleField, pattern: string) => invoke<number>("add_rule", { tagId, field, pattern }),

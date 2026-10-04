@@ -48,12 +48,17 @@ enum Col {
     Int,
     Time,
     OptTime,
+    OptReal,
 }
 
 struct Table {
     name: &'static str,
     /// İlk sütun `id`, `updated_at` her tabloda var.
     cols: &'static [(&'static str, Col)],
+    /// Sonradan eklenen, eski sunucu şemasında bulunmayabilecek sütunlar (0007: arşiv ve
+    /// bütçe). Sunucuda yoksa satırlar onlarsız gönderilir; çekilen satırda yoksa yerel değer
+    /// korunur.
+    optional: &'static [&'static str],
 }
 
 /// Sıra önemli: kurallar etiketlere başvurur, önce etiketler uygulanır. Etiketlerin müşterisi
@@ -65,9 +70,11 @@ const TABLES: &[Table] = &[
             ("id", Col::Text),
             ("name", Col::Text),
             ("position", Col::Int),
+            ("budget_days", Col::OptReal),
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
         ],
+        optional: &["budget_days"],
     },
     Table {
         name: "tags",
@@ -78,9 +85,12 @@ const TABLES: &[Table] = &[
             ("color", Col::Int),
             ("position", Col::Int),
             ("client_id", Col::OptText),
+            ("archived_at", Col::OptTime),
+            ("budget_days", Col::OptReal),
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
         ],
+        optional: &["archived_at", "budget_days"],
     },
     Table {
         name: "rules",
@@ -93,6 +103,7 @@ const TABLES: &[Table] = &[
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
         ],
+        optional: &[],
     },
     Table {
         name: "sessions",
@@ -111,6 +122,7 @@ const TABLES: &[Table] = &[
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
         ],
+        optional: &[],
     },
 ];
 
@@ -130,6 +142,9 @@ pub struct SyncSummary {
     pub pulled: usize,
     /// Bu sürümün kabul etmediği (geçersiz ya da kısıtı ihlal eden) uzak satırlar.
     pub skipped: usize,
+    /// Sunucu şeması eski (0007 çalıştırılmamış): proje arşivi ve bütçeler gönderilemedi;
+    /// bunları taşıyan satırlar şema güncellenince yeniden gönderilir.
+    pub outdated_schema: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -163,7 +178,14 @@ pub fn run(
         if table.name == "rules" && tags_failed {
             continue;
         }
-        match push_table(store, remote, table, user_id, &mut writer) {
+        match push_table(
+            store,
+            remote,
+            table,
+            user_id,
+            &mut writer,
+            &mut summary.outdated_schema,
+        ) {
             Ok(n) => summary.pushed += n,
             Err(e) => {
                 tags_failed |= table.name == "tags";
@@ -227,6 +249,16 @@ fn missing_writer(e: &str) -> bool {
     e.contains(WRITER)
 }
 
+/// Sunucuda tablonun isteğe bağlı sütunlarından biri yok mu? PostgREST bilinmeyen sütunu
+/// "Could not find the 'archived_at' column of 'tags' in the schema cache" diye reddeder.
+/// Yalnızca bu kalıba bakılır: aynı sütunun bir kısıt hatası eksik sütun sayılmamalı.
+fn missing_optional(table: &Table, e: &str) -> bool {
+    table
+        .optional
+        .iter()
+        .any(|c| e.contains(&format!("'{c}' column")) || e.contains(&format!("column \"{c}\"")))
+}
+
 fn lock(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
     store.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -237,17 +269,25 @@ fn push_table(
     table: &Table,
     user_id: &str,
     writer: &mut Option<&str>,
+    outdated: &mut bool,
 ) -> Result<usize, SyncError> {
     let mut total = 0;
+    // Bu çalıştırmada isteğe bağlı sütunlar sunucuda yok mu?
+    let mut full = true;
     for _ in 0..MAX_BATCHES {
         let rows = unsynced(&lock(store), table, PUSH_BATCH)?;
         if rows.is_empty() {
             break;
         }
-        let payload = |writer: Option<&str>| -> Vec<Value> {
+        let payload = |writer: Option<&str>, full: bool| -> Vec<Value> {
             rows.iter()
                 .map(|(row, _, _)| {
                     let mut row = row.clone();
+                    if !full {
+                        for c in table.optional {
+                            row.remove(*c);
+                        }
+                    }
                     row.insert("user_id".into(), Value::String(user_id.into()));
                     if let Some(w) = writer {
                         row.insert(WRITER.into(), Value::String(w.into()));
@@ -256,10 +296,18 @@ fn push_table(
                 })
                 .collect()
         };
-        let mut result = remote.push(table.name, &payload(*writer));
-        if writer.is_some() && result.as_ref().is_err_and(|e| missing_writer(e)) {
-            *writer = None;
-            result = remote.push(table.name, &payload(None));
+        let mut result = remote.push(table.name, &payload(*writer, full));
+        // Eski şemada `writer` ve 0007 sütunları ayrı ayrı reddedilebilir: her biri bir kez.
+        for _ in 0..2 {
+            match &result {
+                Err(e) if writer.is_some() && missing_writer(e) => *writer = None,
+                Err(e) if full && missing_optional(table, e) => {
+                    full = false;
+                    *outdated = true;
+                }
+                _ => break,
+            }
+            result = remote.push(table.name, &payload(*writer, full));
         }
         result.map_err(|e| {
             // 0.2 ile eklenen sütun sunucuda yoksa kullanıcıya ne yapacağını söyle.
@@ -277,10 +325,22 @@ fn push_table(
                 SyncError::Remote(e)
             }
         })?;
-        // Gönderilen sürüm işaretlenir; arada yerelde güncellenen satır kirli kalır.
-        let marked = mark_synced(&lock(store), table, &rows)?;
+        // Gönderilen sürüm işaretlenir; arada yerelde güncellenen satır kirli kalır. Eski
+        // şemaya isteğe bağlı sütunları dolu olan satır eksik gitti: işaretlenmez, sunucu
+        // güncellenince tamamı gönderilir (o satırlar her çalıştırmada yeniden gönderilir).
+        let (complete, partial): (Vec<Pending>, Vec<Pending>) =
+            rows.iter().cloned().partition(|(row, _, _)| {
+                full || table
+                    .optional
+                    .iter()
+                    .all(|c| row.get(*c).is_none_or(Value::is_null))
+            });
+        let marked = mark_synced(&lock(store), table, &complete)?;
+        // Diğer cihazlar eksik sürümü aynı `updated_at` ile aldı; tam sürüm onlara ancak daha
+        // yeniyse uygulanır. Bu yüzden bir milisaniye ilerletilir.
+        bump(&lock(store), table, &partial)?;
         total += rows.len();
-        if rows.len() < PUSH_BATCH || marked == 0 {
+        if rows.len() < PUSH_BATCH || marked == 0 || !partial.is_empty() {
             break;
         }
     }
@@ -403,6 +463,10 @@ fn unsynced(store: &Store, table: &Table, limit: usize) -> Result<Vec<Pending>, 
                 Col::OptTime => r
                     .get::<_, Option<i64>>(i)?
                     .map_or(Value::Null, |v| Value::String(iso(v))),
+                Col::OptReal => r
+                    .get::<_, Option<f64>>(i)?
+                    .and_then(serde_json::Number::from_f64)
+                    .map_or(Value::Null, Value::Number),
             };
             if *name == "id" {
                 id = r.get(i)?;
@@ -434,20 +498,39 @@ fn mark_synced(store: &Store, table: &Table, rows: &[Pending]) -> Result<usize, 
     Ok(marked)
 }
 
+/// Satırların `updated_at`'ini (arada değişmediyse) bir milisaniye ilerletir.
+fn bump(store: &Store, table: &Table, rows: &[Pending]) -> Result<(), SyncError> {
+    let sql = format!(
+        "UPDATE {} SET updated_at = updated_at + 1 WHERE id = ?1 AND updated_at = ?2",
+        table.name
+    );
+    for (_, id, updated) in rows {
+        store.conn().execute(&sql, rusqlite::params![id, updated])?;
+    }
+    Ok(())
+}
+
 /// Uzak satırı yerelde uygular; yerel sürüm daha yeniyse dokunmaz. Değişen satır sayısı.
 fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, SyncError> {
     let obj = row
         .as_object()
         .ok_or_else(|| SyncError::Invalid(row.to_string()))?;
-    let mut values = Vec::with_capacity(table.cols.len() + 1);
+    // Eski sunucunun hiç göndermediği isteğe bağlı sütunlar yazılmaz: yerel değer korunur.
+    let cols: Vec<&(&str, Col)> = table
+        .cols
+        .iter()
+        .filter(|(name, _)| !table.optional.contains(name) || obj.contains_key(*name))
+        .collect();
+    let mut values = Vec::with_capacity(cols.len() + 1);
     let mut updated = 0;
-    for (name, col) in table.cols {
+    for (name, col) in cols.iter().copied() {
         let v = obj.get(*name).unwrap_or(&Value::Null);
         let bad = || SyncError::Invalid(format!("{}.{name}: {v}", table.name));
         let sql = match (col, v) {
             (Col::Text, Value::String(s)) => SqlValue::Text(s.clone()),
             (Col::OptText, Value::String(s)) => SqlValue::Text(s.clone()),
-            (Col::OptText | Col::OptTime, Value::Null) => SqlValue::Null,
+            (Col::OptText | Col::OptTime | Col::OptReal, Value::Null) => SqlValue::Null,
+            (Col::OptReal, Value::Number(n)) => SqlValue::Real(n.as_f64().ok_or_else(bad)?),
             (Col::Int, Value::Number(n)) => SqlValue::Integer(n.as_i64().ok_or_else(bad)?),
             (Col::Time | Col::OptTime, Value::String(s)) => {
                 SqlValue::Integer(parse_time(s).map_err(|_| bad())?.timestamp_millis())
@@ -463,7 +546,7 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
     }
     values.push(SqlValue::Integer(updated)); // synced_at
 
-    let names: Vec<&str> = table.cols.iter().map(|c| c.0).collect();
+    let names: Vec<&str> = cols.iter().map(|c| c.0).collect();
     let placeholders: Vec<String> = (1..=names.len() + 1).map(|i| format!("?{i}")).collect();
     let updates: Vec<String> = names
         .iter()
@@ -535,6 +618,8 @@ mod tests {
         legacy: bool,
         /// Bir sonraki çekmenin hemen ardından (başka cihazlarca) yazılacak satırlar.
         write_after_pull: Vec<(String, Value)>,
+        /// Sunucuda olmayan sütunlar (0007 öncesi şema).
+        missing: Vec<&'static str>,
     }
 
     const NO_WRITER: &str = "Could not find the 'writer' column in the schema cache";
@@ -544,6 +629,15 @@ mod tests {
             self.pushes += 1;
             if self.legacy && rows.iter().any(|r| r.get(WRITER).is_some()) {
                 return Err(NO_WRITER.into());
+            }
+            if let Some(c) = self
+                .missing
+                .iter()
+                .find(|c| rows.iter().any(|r| r.get(**c).is_some()))
+            {
+                return Err(format!(
+                    "Could not find the '{c}' column of '{table}' in the schema cache"
+                ));
             }
             let t = self.rows.entry(table.into()).or_default();
             for row in rows {
@@ -1008,5 +1102,127 @@ mod tests {
                 ("Safari".to_string(), 60)
             ]
         );
+    }
+    #[test]
+    fn archive_and_budgets_sync_between_devices() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let project = lock(&a).accept_project_suggestion("Trumore").unwrap();
+        let togg = crate::classify::Client {
+            id: Uuid::new_v4().to_string(),
+            name: "Togg".into(),
+        };
+        lock(&a).upsert_client(&togg, 0).unwrap();
+        lock(&a)
+            .set_project_budget(&project.id, Some(12.5))
+            .unwrap();
+        lock(&a).set_client_budget(&togg.id, Some(40.0)).unwrap();
+        lock(&a).archive_project(&project.id).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+
+        let extras = lock(&b).tag_extras().unwrap();
+        let got = &extras[&project.id];
+        assert_eq!(got.budget_days, Some(12.5));
+        assert_eq!(
+            got.archived_at.map(|t| t.timestamp_millis()),
+            lock(&a).tag_extras().unwrap()[&project.id]
+                .archived_at
+                .map(|t| t.timestamp_millis())
+        );
+        assert_eq!(
+            lock(&b).client_budgets().unwrap().get(&togg.id),
+            Some(&40.0)
+        );
+        // Arşivdeki projenin kuralı B'de de sınıflandırmaz.
+        assert!(
+            lock(&b)
+                .rules()
+                .unwrap()
+                .iter()
+                .all(|r| r.tag_id != project.id)
+        );
+
+        // B arşivden çıkarıp bütçeyi kaldırır; A'ya ulaşır.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        lock(&b).unarchive_project(&project.id).unwrap();
+        lock(&b).set_project_budget(&project.id, None).unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        assert!(!lock(&a).tag_extras().unwrap().contains_key(&project.id));
+        assert!(
+            lock(&a)
+                .rules()
+                .unwrap()
+                .iter()
+                .any(|r| r.tag_id == project.id)
+        );
+    }
+
+    #[test]
+    fn old_server_without_0007_still_syncs_and_catches_up() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote {
+            missing: vec!["archived_at", "budget_days"],
+            ..Default::default()
+        };
+        let project = lock(&a).accept_project_suggestion("Trumore").unwrap();
+        let plain = lock(&a).accept_project_suggestion("Kum").unwrap();
+        lock(&a)
+            .set_project_budget(&project.id, Some(10.0))
+            .unwrap();
+        lock(&a).upsert_session(&session("Code", 60)).unwrap();
+
+        // Eski şema: eşitleme sürer, yalnızca arşiv/bütçe gönderilemez ve bildirilir.
+        let summary = run(&a, &mut remote, "u1").unwrap();
+        assert!(summary.outdated_schema);
+        assert!(remote.rows["tags"].contains_key(&plain.id));
+        assert!(
+            remote.rows["tags"]
+                .values()
+                .all(|r| r.get("budget_days").is_none())
+        );
+        run(&b, &mut remote, "u1").unwrap();
+        assert_eq!(totals(&b), vec![("Code".to_string(), 60)]);
+        assert_eq!(
+            lock(&b).tags().unwrap().len(),
+            lock(&a).tags().unwrap().len()
+        );
+        // B'nin yerel bütçesi, sütunu taşımayan uzak satırla silinmez.
+        lock(&b).set_project_budget(&plain.id, Some(3.0)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        lock(&a)
+            .upsert_tag(
+                &Tag {
+                    name: "Kum 2".into(),
+                    ..plain.clone()
+                },
+                0,
+            )
+            .unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        let tags = lock(&b).tags().unwrap();
+        assert_eq!(
+            tags.iter().find(|t| t.id == plain.id).unwrap().name,
+            "Kum 2"
+        );
+        assert_eq!(
+            lock(&b).tag_extras().unwrap()[&plain.id].budget_days,
+            Some(3.0)
+        );
+
+        // Sunucu güncellenince bekleyen bütçe kendiliğinden gönderilir.
+        remote.missing.clear();
+        let summary = run(&a, &mut remote, "u1").unwrap();
+        assert!(!summary.outdated_schema);
+        run(&b, &mut remote, "u1").unwrap();
+        assert_eq!(
+            lock(&b).tag_extras().unwrap()[&project.id].budget_days,
+            Some(10.0)
+        );
+        assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 0);
     }
 }

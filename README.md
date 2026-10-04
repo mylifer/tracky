@@ -59,6 +59,12 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 32. Zaman çizelgesi açıklamaları: kaydın iş anahtarları ve süreye göre en önemli başlıkları (yerel, ücretsiz)
 - [x] 33. Görünüm: kum tonlarında marka rengi, hedef halkaları, canlı kart, iskelet yükleme, sayfa geçişleri,
       okunur hata mesajları, karşılamada proje adımı (elle ya da zaman çizelgesi şablonundan)
+- [x] 34. Proje arşivi: biten proje arşivlenir; seçicilerden kalkar, kuralları yeni süreyi sınıflandırmaz, önerilere
+      ve hedef bildirimlerine girmez. Geçmiş kayıtlar ve rapor toplamları korunur (kurala uyan eski oturumlar
+      arşivlerken projeye sabitlenir). Projeler sayfasında kapalı "Arşiv" bölümü; arşivleme geri alınabilir, eşitlenir
+- [x] 35. Sözleşme bütçesi: proje ve müşteri başına anlaşılan adam-gün (zaman çizelgesindeki gün saatiyle, yoksa
+      8 sa); bugüne kadar yazılan süreyle kıyas Projeler, Müşteriler ve Eğilimler'de (kalan bütçe eğrisi, bu hızla
+      kaç haftada biteceği). %80'de ve dolunca birer kez bildirim; eşitlenir
 
 ## Yapı
 
@@ -76,6 +82,7 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
   classify.rs             Kategoriler, projeler, kurallar ve varsayılan kategoriler
   calendar.rs             iCalendar (.ics) ayrıştırma: tekrar kuralları, VTIMEZONE, istisnalar
   timesheet.rs            Oturum ve toplantılardan günlük iş kaydı önerileri
+  budget.rs               Sözleşme bütçeleri: adam-gün, harcanan süre, %80/%100 bildirimleri
   report.rs               Gün/hafta raporu (kategori, proje, uygulama, gün, zaman çizelgesi)
   tracker.rs              Gözlem → gizlilik → motor → depolama hattı
   url_util.rs             URL'den domain çıkarma, adres temizleme, web sitesi kuralı eşleştirme
@@ -172,13 +179,16 @@ iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
 Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birleşik rapor için:
 
 1. [supabase.com](https://supabase.com) üzerinde ücretsiz bir proje oluştur.
-2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0006_…`) çalıştır.
+2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0007_…`) çalıştır.
    Önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli. `0003_writer.sql`
    cihazların kendi gönderdiklerini geri indirmesini önler; çalıştırılmazsa eşitleme eskisi gibi sürer.
    `0004_session_project.sql` elle verilen projeleri eşitler; Kum 0.4'ten itibaren gereklidir.
    `0005_clients.sql` müşterileri ve projelerin müşterisini eşitler; Kum 0.6'dan itibaren gereklidir.
    `0006_domain_rules.sql` web sitesi kurallarını eşitler; çalıştırılmazsa web sitesi kuralı eklenen
    cihazda eşitleme `rules_field_check` hatası verir.
+   `0007_archive_budget.sql` proje arşivini ve sözleşme bütçelerini eşitler. Çalıştırılmazsa eşitleme sürer
+   (Kum bu sütunları göndermeden yeniden dener ve Ayarlar'da uyarır), yalnızca arşiv ve bütçeler diğer
+   cihazlara geçmez; dosya sonradan çalıştırılınca bekleyenler kendiliğinden gönderilir.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.

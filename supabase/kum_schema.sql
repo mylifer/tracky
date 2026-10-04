@@ -1,5 +1,5 @@
 -- Kum'u başka bir uygulamanın Supabase projesinde, ayrı "kum" şemasında kurar (ücretsiz plandaki
--- proje sınırına takılmamak için). 0001–0006 göçlerinin "kum" şemasına uyarlanmış hâlidir;
+-- proje sınırına takılmamak için). 0001–0007 göçlerinin "kum" şemasına uyarlanmış hâlidir;
 -- SQL Editor'da bir kez çalıştırın, tekrar çalıştırmak zararsızdır. Ardından Project Settings →
 -- Data API → Exposed schemas listesine "kum" ekleyin ve Kum'da Ayarlar → Senkronizasyon →
 -- Şema alanına "kum" yazın. Diğer uygulamanın tablolarına ve ayarlarına dokunmaz.
@@ -150,6 +150,19 @@ create policy "kendi satırları" on kum.clients for all to authenticated
 alter table kum.rules drop constraint if exists rules_field_check;
 alter table kum.rules add constraint rules_field_check
     check (field in ('app', 'title', 'domain'));
+
+-- ===== 0007_archive_budget.sql =====
+-- Proje arşivi (tags.archived_at) ve sözleşme bütçesi (adam-gün; tags/clients.budget_days).
+alter table kum.tags add column if not exists archived_at timestamptz;
+alter table kum.tags add column if not exists budget_days double precision;
+alter table kum.clients add column if not exists budget_days double precision;
+
+alter table kum.tags drop constraint if exists tags_budget_days_check;
+alter table kum.tags add constraint tags_budget_days_check
+    check (budget_days is null or budget_days > 0);
+alter table kum.clients drop constraint if exists clients_budget_days_check;
+alter table kum.clients add constraint clients_budget_days_check
+    check (budget_days is null or budget_days > 0);
 
 -- Erişim: oturum açmış kullanıcılar (satır güvenliğiyle yalnız kendi satırları) ve sunucu rolü.
 grant all on all tables in schema kum to authenticated, service_role;

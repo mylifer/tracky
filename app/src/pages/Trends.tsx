@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Search as SearchIcon } from "lucide-react";
-import { api, formatDuration, type Tag, type Trends as TrendsData } from "../api";
+import {
+  api,
+  formatDuration,
+  type Budgets,
+  type BudgetUsage,
+  type Client,
+  type Tag,
+  type Trends as TrendsData,
+} from "../api";
 import { ErrorText, Page } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { addDays, formatDate } from "../lib/dates";
-import { UNCATEGORIZED, tagColor } from "../lib/tags";
+import { UNCATEGORIZED, clientColor, tagColor } from "../lib/tags";
+import { budgetRatio, budgetState, burnDown, formatDays, weeksLeft } from "../lib/budget";
 import { cn } from "../lib/utils";
 import { friendlyError } from "../lib/feedback";
 
@@ -32,16 +41,22 @@ export default function Trends({
   const [patterns, setPatterns] = useState<Map<string, string>>(new Map());
   // Proje → haftalık hedef (saniye).
   const [targets, setTargets] = useState<Map<string, number>>(new Map());
+  const [budgets, setBudgets] = useState<Budgets | null>(null);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [links, setLinks] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
-    Promise.all([api.trends(weeks), api.taxonomy(), api.goals()]).then(
-      ([d, t, g]) => {
+    Promise.all([api.trends(weeks), api.taxonomy(), api.goals(), api.budgets().catch(() => null)]).then(
+      ([d, t, g, b]) => {
         setTargets(new Map((g.projectGoals ?? []).map((x) => [x.projectId, x.minutes * 60])));
         if (!live) return;
         setData(d);
         setTags(new Map(t.tags.map((x) => [x.id, x])));
+        setBudgets(b);
+        setClients(t.clients);
+        setLinks(t.projectClients);
         const first = new Map<string, string>();
         for (const r of t.rules) if (r.field === "title" && !first.has(r.tagId)) first.set(r.tagId, r.pattern);
         setPatterns(first);
@@ -144,6 +159,9 @@ export default function Trends({
           </p>
         </section>
       ) : null}
+      {data && budgets && shownKind === "projects" && budgets.projects.length + budgets.clients.length > 0 && (
+        <BudgetSection data={data} budgets={budgets} tags={tags} clients={clients} links={links} weeks={weeks} />
+      )}
     </Page>
   );
 }
@@ -237,6 +255,168 @@ function Row({
           </span>
           <span className="text-right text-[13px] text-muted-foreground tabular">
             {formatDuration(Math.round(avg))}
+          </span>
+        </>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Sözleşme bütçeleri: her proje ve müşteri için kalan adam-günün dönem boyunca nasıl azaldığı
+ * (haftalık süreden geriye doğru hesaplanır), kalan ve bu hızla kaç haftada biteceği.
+ */
+function BudgetSection({
+  data,
+  budgets,
+  tags,
+  clients,
+  links,
+  weeks,
+}: {
+  data: TrendsData;
+  budgets: Budgets;
+  tags: Map<string, Tag>;
+  clients: Client[];
+  links: Record<string, string>;
+  weeks: number;
+}) {
+  const weeklyOf = (projectIds: string[]) =>
+    data.periods.map((_, i) =>
+      projectIds.reduce((sum, id) => sum + (data.projects.find((s) => s.id === id)?.seconds[i] ?? 0), 0),
+    );
+  const rows = [
+    ...budgets.projects.map((u) => {
+      const tag = tags.get(u.id);
+      return { key: `p:${u.id}`, name: tag?.name ?? "Proje", color: tagColor(tag), usage: u, weekly: weeklyOf([u.id]) };
+    }),
+    ...budgets.clients.map((u) => ({
+      key: `c:${u.id}`,
+      name: clients.find((c) => c.id === u.id)?.name ?? "Müşteri",
+      color: clientColor(clients, u.id),
+      usage: u,
+      weekly: weeklyOf(Object.keys(links).filter((p) => links[p] === u.id)),
+    })),
+  ].sort((a, b) => budgetRatio(b.usage) - budgetRatio(a.usage));
+  return (
+    <section className="space-y-2">
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_88px_88px] items-end gap-3 px-4 text-[11px] text-muted-foreground">
+        <span className="text-[13px] font-semibold text-foreground">Sözleşme bütçeleri</span>
+        <span>Kalan adam-gün, son {weeks} hafta</span>
+        <span className="text-right">Kalan</span>
+        <span className="text-right" title="Süren hafta hariç son 4 haftanın ortalama hızıyla">
+          Bu hızla
+        </span>
+      </div>
+      <ul className="divide-y rounded-xl border bg-card shadow-xs">
+        {rows.map(({ key, ...r }) => (
+          <BurnRow key={key} {...r} periods={data.periods} dayHours={budgets.dayHours} />
+        ))}
+      </ul>
+      <p className="px-1 text-xs text-muted-foreground">
+        Bütçe bugüne kadar yazılan tüm süreyle kıyaslanır; bir adam-gün {String(budgets.dayHours).replace(".", ",")}{" "}
+        saat (Zaman çizelgesi ayarı). Müşteri satırı bağlı projelerin toplamıdır.
+      </p>
+    </section>
+  );
+}
+
+function BurnRow({
+  name,
+  color,
+  usage,
+  weekly,
+  periods,
+  dayHours,
+}: {
+  name: string;
+  color: string;
+  usage: BudgetUsage;
+  weekly: number[];
+  periods: string[];
+  dayHours: number;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const points = burnDown(usage.budgetSeconds, usage.usedSeconds, weekly);
+  const remaining = points[points.length - 1];
+  const top = Math.max(usage.budgetSeconds, ...points);
+  const bottom = Math.min(0, ...points);
+  const y = (v: number) => 34 - ((v - bottom) / Math.max(1, top - bottom)) * 32;
+  const x = (i: number) => (i / Math.max(1, points.length - 1)) * 100;
+  const line = budgetState(usage) === "over" ? "var(--destructive)" : color;
+  const left = weeksLeft(remaining, weekly);
+  const days = (v: number) => formatDays(Math.abs(v), dayHours);
+  const status = (v: number) => `${days(v)} ag ${v < 0 ? "aşıldı" : "kaldı"}`;
+  // Nokta 0 dönemin başı, i. nokta (i-1). haftanın sonu; son nokta şimdi.
+  const pointLabel = (i: number) =>
+    i === 0
+      ? `${formatDate(new Date(periods[0]))} başı`
+      : i === points.length - 1
+        ? "şimdi"
+        : `${formatDate(addDays(new Date(periods[i - 1]), 6))} sonu`;
+  return (
+    <li className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_88px_88px] items-center gap-3 px-4 py-2.5">
+      <span className="flex min-w-0 items-center gap-2">
+        <i className="size-2 shrink-0 rounded-full" style={{ background: color }} />
+        <span className="min-w-0">
+          <span className="block truncate text-[13px] font-medium">{name}</span>
+          <span className="block text-[11px] text-muted-foreground tabular">
+            {days(usage.usedSeconds)} / {days(usage.budgetSeconds)} ag · %{Math.round(budgetRatio(usage) * 100)}
+          </span>
+        </span>
+      </span>
+      <span className="relative h-9" onMouseLeave={() => setHover(null)}>
+        <svg viewBox="0 0 100 36" preserveAspectRatio="none" className="absolute inset-0 size-full overflow-visible">
+          {bottom < 0 && (
+            <line
+              x1={0}
+              x2={100}
+              y1={y(0)}
+              y2={y(0)}
+              stroke="var(--border)"
+              strokeDasharray="2 2"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+          <polyline
+            points={points.map((v, i) => `${x(i)},${y(v)}`).join(" ")}
+            fill="none"
+            stroke={line}
+            strokeWidth={2}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+        {hover !== null && (
+          <i
+            className="pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-card"
+            style={{ left: `${x(hover)}%`, top: `${(y(points[hover]) / 36) * 100}%`, background: line }}
+          />
+        )}
+        <span className="absolute inset-0 flex">
+          {points.map((v, i) => (
+            <span
+              key={i}
+              className="h-full flex-1"
+              onMouseEnter={() => setHover(i)}
+              aria-label={`${pointLabel(i)}: ${status(v)}`}
+            />
+          ))}
+        </span>
+      </span>
+      {hover !== null ? (
+        <span className="col-span-2 text-right text-xs tabular">
+          <span className="text-muted-foreground">{pointLabel(hover)} · </span>
+          {status(points[hover])}
+        </span>
+      ) : (
+        <>
+          <span className={cn("text-right text-[13px] tabular", remaining < 0 && "text-destructive")}>
+            {remaining < 0 ? `−${days(remaining)}` : days(remaining)} ag
+          </span>
+          <span className="text-right text-[13px] text-muted-foreground tabular">
+            {left === null ? "—" : left < 1 ? "<1 hafta" : `~${Math.round(left)} hafta`}
           </span>
         </>
       )}
