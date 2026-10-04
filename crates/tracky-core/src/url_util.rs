@@ -1,5 +1,64 @@
 use url::Url;
 
+/// Kayda girecek URL: sorgu (`?…`) ve parça (`#…`) atılır; bunlar çoğu zaman oturum
+/// anahtarı, arama ya da kişisel veri taşır ve sınıflandırmaya bir şey katmaz. Yalnızca
+/// http(s) adresleri kalır.
+pub fn sanitize(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    domain_of(raw)?;
+    let mut url = if raw.contains("://") {
+        Url::parse(raw).ok()?
+    } else {
+        Url::parse(&format!("https://{raw}")).ok()?
+    };
+    url.set_query(None);
+    url.set_fragment(None);
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    Some(url.to_string())
+}
+
+/// Alan adı kuralları için URL'nin `alan/yol` biçimi (küçük harf, `www.` ve şema yok,
+/// sondaki `/` yok): `https://www.GitHub.com/Firma/` → `github.com/firma`.
+pub fn host_path(raw: &str) -> Option<String> {
+    let domain = domain_of(raw)?;
+    let raw = raw.trim();
+    let rest = raw.split_once("://").map_or(raw, |(_, r)| r);
+    let path = rest
+        .find('/')
+        .map_or("", |i| &rest[i..])
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    Some(format!("{domain}{}", path.to_lowercase()))
+}
+
+/// Alan adı kuralı deseni, eşleşen `alan/yol` (bkz. [`host_path`]) ile karşılaştırılır:
+/// `github.com` hem `github.com/...` hem `gist.github.com` adreslerine uyar,
+/// `github.com/firma` yalnızca o yolun altındakilere. İkisi de küçük harfli olmalı.
+pub fn pattern_matches(pattern: &str, host_path: &str) -> bool {
+    let pattern = pattern.trim_end_matches('/');
+    if pattern.is_empty() {
+        return false;
+    }
+    let (p_host, p_path) = pattern
+        .split_once('/')
+        .map_or((pattern, ""), |(h, p)| (h, p));
+    let (host, path) = host_path
+        .split_once('/')
+        .map_or((host_path, ""), |(h, p)| (h, p));
+    let host_ok = host == p_host || host.ends_with(&format!(".{p_host}"));
+    let path_ok = p_path.is_empty() || path == p_path || path.starts_with(&format!("{p_path}/"));
+    host_ok && path_ok
+}
+
+/// Kullanıcının yazdığı alan adı desenini düzgünleştirir: şema, `www.`, sorgu ve sondaki
+/// `/` atılır, küçük harfe çevrilir. Adres değilse `None`.
+pub fn normalize_pattern(raw: &str) -> Option<String> {
+    host_path(raw.trim().trim_start_matches("*."))
+}
+
 /// URL'den raporlamada kullanılacak domaini çıkarır (`www.` atılır).
 ///
 /// Tarayıcıların adres çubuğundan okunan değer çoğu zaman şemasızdır
@@ -30,7 +89,7 @@ pub fn domain_of(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::domain_of;
+    use super::*;
 
     #[test]
     fn extracts_domains() {
@@ -50,6 +109,40 @@ mod tests {
             domain_of("Docs.Google.com").as_deref(),
             Some("docs.google.com")
         );
+    }
+
+    #[test]
+    fn sanitizes_urls_and_matches_patterns() {
+        assert_eq!(
+            sanitize("https://user:pw@mail.google.com/mail/u/0/?tab=rm#inbox/123").as_deref(),
+            Some("https://mail.google.com/mail/u/0/")
+        );
+        assert_eq!(
+            sanitize("github.com/firma/repo?token=x").as_deref(),
+            Some("https://github.com/firma/repo")
+        );
+        assert_eq!(sanitize("chrome://settings"), None);
+        assert_eq!(sanitize("Google'da ara"), None);
+
+        assert_eq!(
+            host_path("https://www.GitHub.com/Firma/Repo/?x=1").as_deref(),
+            Some("github.com/firma/repo")
+        );
+        assert_eq!(host_path("github.com").as_deref(), Some("github.com"));
+        assert_eq!(
+            normalize_pattern(" https://www.Jira.togg.com/ ").as_deref(),
+            Some("jira.togg.com")
+        );
+        assert_eq!(normalize_pattern("*.togg.com").as_deref(), Some("togg.com"));
+
+        assert!(pattern_matches("github.com", "github.com/firma/repo"));
+        assert!(pattern_matches("github.com", "gist.github.com"));
+        assert!(!pattern_matches("github.com", "notgithub.com"));
+        assert!(pattern_matches("github.com/firma", "github.com/firma/repo"));
+        assert!(pattern_matches("github.com/firma", "github.com/firma"));
+        assert!(!pattern_matches("github.com/firma", "github.com/firmab"));
+        assert!(!pattern_matches("github.com/firma", "github.com"));
+        assert!(!pattern_matches("", "github.com"));
     }
 
     #[test]

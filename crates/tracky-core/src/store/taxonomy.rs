@@ -228,22 +228,37 @@ impl Store {
                 r.get::<_, String>(3)?,
             ))
         })?;
-        rows.map(|row| {
-            let (id, tag_id, field, pattern) = row?;
-            let field = RuleField::parse(&field)
-                .ok_or_else(|| StoreError::Invalid(format!("bilinmeyen kural alanı: {field}")))?;
-            Ok(Rule {
-                id,
-                tag_id,
-                field,
-                pattern,
-            })
+        // Daha yeni bir sürümün eşitlediği, bu sürümün tanımadığı kural türü atlanır: tek bir
+        // kural yüzünden raporların hepsi açılmaz olmasın.
+        rows.filter_map(|row| match row {
+            Ok((id, tag_id, field, pattern)) => RuleField::parse(&field).map(|field| {
+                Ok(Rule {
+                    id,
+                    tag_id,
+                    field,
+                    pattern,
+                })
+            }),
+            Err(e) => Some(Err(e.into())),
         })
         .collect()
     }
 
     pub fn upsert_rule(&self, rule: &Rule) -> Result<()> {
-        let pattern = rule.pattern.trim();
+        let normalized;
+        let pattern = match rule.field {
+            RuleField::Domain => {
+                normalized =
+                    crate::url_util::normalize_pattern(&rule.pattern).ok_or_else(|| {
+                        StoreError::Invalid(format!(
+                            "geçerli bir web adresi değil: {}",
+                            rule.pattern
+                        ))
+                    })?;
+                normalized.as_str()
+            }
+            _ => rule.pattern.trim(),
+        };
         if pattern.is_empty() {
             return Err(StoreError::Invalid("kural deseni boş olamaz".into()));
         }
@@ -371,7 +386,7 @@ impl Store {
         self.require_tag(category_id, TagKind::Category)?;
         match field {
             RuleField::App => self.assign_app_category(pattern, Some(category_id)),
-            RuleField::Title => self.upsert_rule(&Rule {
+            RuleField::Title | RuleField::Domain => self.upsert_rule(&Rule {
                 id: Uuid::new_v4().to_string(),
                 tag_id: category_id.to_string(),
                 field,

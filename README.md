@@ -41,6 +41,9 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 24. Boşta geçen süre: bilgisayardan uzakta (3 dk girdi yok ya da uyku) geçen süre takvimde taralı "Boşta"
       bloğu olur; çalışma süresine sayılmaz, tıklayıp projeye/kategoriye atanınca ya da elle kayda çevrilince
       sayılır (zaman çizelgesine F2F girer). En uzun boşluk ayarlanabilir (varsayılan 3 sa; gece kaydedilmez)
+- [x] 25. Web sitesi kuralları: tarayıcının adresi okunur (macOS'ta Erişilebilirlik, Windows'ta UI Automation),
+      sorgu ve parça atılarak saklanır; `jira.togg.com` ya da `github.com/firma` gibi kurallar projeye/kategoriye
+      bağlar. Gizli pencerelerde ve başlığı gizlenen uygulamalarda adres kaydedilmez
 
 ## Yapı
 
@@ -50,7 +53,7 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
   store/                  SQLite: göçler, oturum kaydı, ayarlar, raporlama sorguları; taxonomy.rs
                           (etiketler, kurallar, müşteriler, öneriler), timesheet.rs (zaman çizelgesi)
   blocks.rs               Takvimdeki çalışma blokları, molalar, bağlam değişimi
-  privacy.rs              Gizlilik: duraklatma, hariç uygulamalar, başlık gizleme
+  privacy.rs              Gizlilik: duraklatma, hariç uygulamalar, başlık gizleme, adres temizleme
   browser.rs              Tarayıcı tanıma, sekme adı temizleme, gizli pencere tespiti
   platform.rs             Her OS'un uygulayacağı ActivityProvider trait'i
   classify.rs             Kategoriler, projeler, kurallar ve varsayılan kategoriler
@@ -58,8 +61,8 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
   timesheet.rs            Oturum ve toplantılardan günlük iş kaydı önerileri
   report.rs               Gün/hafta raporu (kategori, proje, uygulama, gün, zaman çizelgesi)
   tracker.rs              Gözlem → gizlilik → motor → depolama hattı
-  url_util.rs             URL'den domain çıkarma (ileride eklenti için)
-crates/tracky-platform/   macOS (Erişilebilirlik API) ve Windows (Win32) gözlemcileri
+  url_util.rs             URL'den domain çıkarma, adres temizleme, web sitesi kuralı eşleştirme
+crates/tracky-platform/   macOS (Erişilebilirlik API) ve Windows (Win32, UI Automation) gözlemcileri
 crates/tracky-probe/      Takibi terminalden denemek için araç
 crates/tracky-sync/       Supabase istemcisi (Auth + PostgREST)
 crates/tracky-xlsx/       Zaman çizelgesini Excel dosyasına ya da (Apps Script ile) Google Sheets'e ekleme
@@ -151,11 +154,13 @@ iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
 Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birleşik rapor için:
 
 1. [supabase.com](https://supabase.com) üzerinde ücretsiz bir proje oluştur.
-2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0005_…`) çalıştır.
+2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0006_…`) çalıştır.
    Önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli. `0003_writer.sql`
    cihazların kendi gönderdiklerini geri indirmesini önler; çalıştırılmazsa eşitleme eskisi gibi sürer.
    `0004_session_project.sql` elle verilen projeleri eşitler; Kum 0.4'ten itibaren gereklidir.
    `0005_clients.sql` müşterileri ve projelerin müşterisini eşitler; Kum 0.6'dan itibaren gereklidir.
+   `0006_domain_rules.sql` web sitesi kurallarını eşitler; çalıştırılmazsa web sitesi kuralı eklenen
+   cihazda eşitleme `rules_field_check` hatası verir.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.

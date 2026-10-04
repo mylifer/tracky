@@ -1,10 +1,13 @@
+use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr;
+use std::time::{Duration, Instant};
 
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::{CFString, CFStringRef};
+use core_foundation::url::CFURL;
 use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
 use core_foundation_sys::dictionary::CFDictionaryGetValue;
 use core_foundation_sys::number::{
@@ -13,6 +16,7 @@ use core_foundation_sys::number::{
 use objc2_app_kit::NSRunningApplication;
 use tracky_core::{ActiveWindow, ActivityProvider};
 
+use crate::address::{AddressCache, looks_like_address};
 use crate::{Permissions, PlatformError};
 
 type AXUIElementRef = *const c_void;
@@ -32,6 +36,12 @@ const ANY_INPUT_EVENT: u32 = !0;
 /// Sistem varsayılanı 6 sn: donmuş bir uygulama öndeyken saniyelik takip döngüsü ve
 /// menü çubuğu her öznitelik için bu kadar takılırdı.
 const AX_TIMEOUT_SECS: f32 = 1.0;
+
+/// Tarayıcı adresini ararken erişilebilirlik ağacında en çok bu kadar öğeye bakılır ve
+/// en çok bu kadar beklenir; adres çubuğu ve web alanı ağacın üst katlarındadır.
+const ADDRESS_MAX_NODES: usize = 300;
+const ADDRESS_MAX_DEPTH: u32 = 14;
+const ADDRESS_BUDGET: Duration = Duration::from_millis(150);
 
 /// Ekran kilitli / ekran koruyucu açıkken öne gelen sistem süreçleri.
 const IGNORED_BUNDLES: &[&str] = &["com.apple.loginwindow", "com.apple.ScreenSaver.Engine"];
@@ -65,7 +75,9 @@ unsafe extern "C" {
 const ON_SCREEN_WINDOWS: u32 = (1 << 0) | (1 << 4);
 
 #[derive(Debug, Default)]
-pub struct SystemProvider;
+pub struct SystemProvider {
+    addresses: AddressCache,
+}
 
 impl ActivityProvider for SystemProvider {
     type Error = PlatformError;
@@ -80,7 +92,7 @@ impl ActivityProvider for SystemProvider {
         &mut self,
         read_title: &dyn Fn(&str) -> bool,
     ) -> Result<Option<ActiveWindow>, PlatformError> {
-        objc2::rc::autoreleasepool(|_| active_window(read_title))
+        objc2::rc::autoreleasepool(|_| active_window(read_title, &mut self.addresses))
     }
 
     fn idle_seconds(&mut self) -> Result<u64, PlatformError> {
@@ -103,7 +115,10 @@ fn set_ax_timeout() {
     });
 }
 
-fn active_window(read_title: &dyn Fn(&str) -> bool) -> Result<Option<ActiveWindow>, PlatformError> {
+fn active_window(
+    read_title: &dyn Fn(&str) -> bool,
+    addresses: &mut AddressCache,
+) -> Result<Option<ActiveWindow>, PlatformError> {
     if !is_trusted() {
         return Err(PlatformError::PermissionDenied);
     }
@@ -136,18 +151,94 @@ fn active_window(read_title: &dyn Fn(&str) -> bool) -> Result<Option<ActiveWindo
         .map(|s| s.to_string())
         .unwrap_or_else(|| app_id.clone());
 
-    let title = if read_title(&app_id) {
+    // Başlığı okunmayan uygulamanın (gizlilik) adresi de okunmaz.
+    let readable = read_title(&app_id);
+    let title = if readable {
         window_title(&app)?
     } else {
         String::new()
+    };
+    let url = if readable && tracky_core::browser::is_browser(&app_id) {
+        addresses.get(&app_id, &title, || browser_address(&app))
+    } else {
+        None
     };
 
     Ok(Some(ActiveWindow {
         app_id,
         app_name,
         title,
-        url: None,
+        url,
     }))
+}
+
+/// Tarayıcının öndeki penceresindeki adres. Safari'de web alanının `AXURL` özniteliği (tam
+/// adres), Chromium tabanlılarda ve Firefox'ta adres çubuğunun metni (çoğu zaman şemasız)
+/// okunur. Ağaç genişlik öncelikli, sınırlı gezilir; web içeriğinin içine inilmez.
+fn browser_address(app: &CFType) -> Option<String> {
+    let window = ["AXFocusedWindow", "AXMainWindow"]
+        .into_iter()
+        .find_map(|name| attribute(app, name).ok().flatten())?;
+    let started = Instant::now();
+    let mut queue = VecDeque::from([(window, 0u32)]);
+    let mut visited = 0;
+    let mut address_bar: Option<String> = None;
+    while let Some((element, depth)) = queue.pop_front() {
+        visited += 1;
+        if visited > ADDRESS_MAX_NODES || started.elapsed() > ADDRESS_BUDGET {
+            break;
+        }
+        match string_attribute(&element, "AXRole").as_deref() {
+            Some("AXWebArea") => {
+                let url = attribute(&element, "AXURL")
+                    .ok()
+                    .flatten()
+                    .and_then(|u| u.downcast::<CFURL>())
+                    .map(|u| u.get_string().to_string());
+                if url.is_some() {
+                    return url;
+                }
+                continue;
+            }
+            Some("AXTextField" | "AXComboBox") => {
+                if address_bar.is_none() {
+                    address_bar =
+                        string_attribute(&element, "AXValue").filter(|v| looks_like_address(v));
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if depth < ADDRESS_MAX_DEPTH {
+            queue.extend(children(&element).into_iter().map(|c| (c, depth + 1)));
+        }
+    }
+    address_bar
+}
+
+fn string_attribute(element: &CFType, name: &'static str) -> Option<String> {
+    attribute(element, name)
+        .ok()
+        .flatten()
+        .and_then(|v| v.downcast::<CFString>())
+        .map(|v| v.to_string())
+}
+
+/// `AXChildren` dizisinin öğeleri.
+fn children(element: &CFType) -> Vec<CFType> {
+    let Ok(Some(list)) = attribute(element, "AXChildren") else {
+        return Vec::new();
+    };
+    let array: CFArrayRef = list.as_CFTypeRef().cast();
+    // SAFETY: AXChildren bir CFArray döndürür; öğeler dizinin ömrü boyunca geçerli,
+    // Get kuralıyla sarılınca kendi referanslarını tutar.
+    unsafe {
+        (0..CFArrayGetCount(array))
+            .map(|i| CFArrayGetValueAtIndex(array, i))
+            .filter(|p| !p.is_null())
+            .map(|p| CFType::wrap_under_get_rule(p))
+            .collect()
+    }
 }
 
 /// Uygulamanın öndeki penceresinin başlığı.
@@ -342,6 +433,14 @@ pub fn diagnose() -> String {
         Err(e) => out += &format!(" Windows=HATA({e})"),
     }
     out += &format!(" → sonuç={:?}", window_title(&app));
+    if let Some(r) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+        && let Some(id) = r.bundleIdentifier().map(|s| s.to_string())
+        && tracky_core::browser::is_browser(&id)
+    {
+        let started = Instant::now();
+        let address = browser_address(&app);
+        out += &format!(" adres={address:?} ({} ms)", started.elapsed().as_millis());
+    }
     out
 }
 

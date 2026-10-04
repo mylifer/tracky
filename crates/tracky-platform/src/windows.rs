@@ -20,6 +20,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 use windows_sys::core::BOOL;
 
+use crate::address::{AddressCache, looks_like_address};
 use crate::{Permissions, PlatformError};
 
 /// UWP uygulamalarını barındıran süreç; gerçek uygulama alt penceredir.
@@ -31,6 +32,8 @@ const IGNORED_EXES: &[&str] = &["LockApp.exe"];
 pub struct SystemProvider {
     /// exe yolu -> görünen ad (sürüm bilgisini her saniye okumamak için).
     names: HashMap<String, String>,
+    addresses: AddressCache,
+    automation: Automation,
 }
 
 impl ActivityProvider for SystemProvider {
@@ -67,16 +70,25 @@ impl ActivityProvider for SystemProvider {
             .entry(path.clone())
             .or_insert_with(|| display_name(&path))
             .clone();
-        let title = if read_title(&path) {
+        // Başlığı okunmayan uygulamanın (gizlilik) adresi de okunmaz.
+        let readable = read_title(&path);
+        let title = if readable {
             window_text(hwnd)
         } else {
             String::new()
+        };
+        let url = if readable && tracky_core::browser::is_browser(&path) {
+            let automation = &mut self.automation;
+            self.addresses
+                .get(&path, &title, || automation.browser_address(hwnd))
+        } else {
+            None
         };
         Ok(Some(ActiveWindow {
             app_id: path,
             app_name,
             title,
-            url: None,
+            url,
         }))
     }
 
@@ -102,6 +114,69 @@ pub fn diagnose() -> String {
         provider.active_window(),
         provider.idle_seconds()
     )
+}
+
+/// UI Automation istemcisi; ilk kullanımda bir kez oluşturulur.
+#[derive(Default)]
+struct Automation {
+    client: Option<windows::Win32::UI::Accessibility::IUIAutomation>,
+    tried: bool,
+}
+
+impl std::fmt::Debug for Automation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Automation")
+            .field("ready", &self.client.is_some())
+            .finish()
+    }
+}
+
+impl Automation {
+    /// Tarayıcı penceresindeki adres çubuğunun metni: pencerenin ağacındaki ilk düzenleme
+    /// alanı (Chrome, Edge, Brave ve Firefox'ta adres çubuğu, araç çubuğu içerikten önce gelir).
+    fn browser_address(&mut self, hwnd: HWND) -> Option<String> {
+        use windows::Win32::System::Variant::VARIANT;
+        use windows::Win32::UI::Accessibility::{
+            IUIAutomationValuePattern, TreeScope_Descendants, UIA_ControlTypePropertyId,
+            UIA_EditControlTypeId, UIA_ValuePatternId,
+        };
+        let client = self.client()?;
+        // SAFETY: COM çağrıları bu iş parçacığında başlatılmış COM üzerinde; `hwnd` öndeki
+        // pencere (kapanmışsa çağrı hata döner).
+        unsafe {
+            let root = client
+                .ElementFromHandle(windows::Win32::Foundation::HWND(hwnd))
+                .ok()?;
+            let is_edit = client
+                .CreatePropertyCondition(
+                    UIA_ControlTypePropertyId,
+                    &VARIANT::from(UIA_EditControlTypeId.0),
+                )
+                .ok()?;
+            let edit = root.FindFirst(TreeScope_Descendants, &is_edit).ok()?;
+            let value: IUIAutomationValuePattern =
+                edit.GetCurrentPatternAs(UIA_ValuePatternId).ok()?;
+            let text = value.CurrentValue().ok()?.to_string();
+            looks_like_address(&text).then_some(text)
+        }
+    }
+
+    fn client(&mut self) -> Option<&windows::Win32::UI::Accessibility::IUIAutomation> {
+        use windows::Win32::System::Com::{
+            CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+        };
+        use windows::Win32::UI::Accessibility::CUIAutomation;
+        if !self.tried {
+            self.tried = true;
+            // SAFETY: COM bu iş parçacığında başlatılır (zaten başlatıldıysa dönen hata
+            // önemsiz); UI Automation her iş parçacığı modelinde çalışır.
+            self.client = unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()
+            };
+        }
+        self.client.as_ref()
+    }
 }
 
 pub fn permissions() -> Permissions {

@@ -1,5 +1,5 @@
 -- Kum'u başka bir uygulamanın Supabase projesinde, ayrı "kum" şemasında kurar (ücretsiz plandaki
--- proje sınırına takılmamak için). 0001–0005 göçlerinin "kum" şemasına uyarlanmış hâlidir;
+-- proje sınırına takılmamak için). 0001–0006 göçlerinin "kum" şemasına uyarlanmış hâlidir;
 -- SQL Editor'da bir kez çalıştırın, tekrar çalıştırmak zararsızdır. Ardından Project Settings →
 -- Data API → Exposed schemas listesine "kum" ekleyin ve Kum'da Ayarlar → Senkronizasyon →
 -- Şema alanına "kum" yazın. Diğer uygulamanın tablolarına ve ayarlarına dokunmaz.
@@ -144,6 +144,12 @@ drop policy if exists "kendi satırları" on kum.clients;
 create policy "kendi satırları" on kum.clients for all to authenticated
     using (user_id = (select auth.uid()))
     with check (user_id = (select auth.uid()));
+
+-- ===== 0006_domain_rules.sql =====
+-- Kurallar tarayıcı adresine de bakabilir (rules.field = 'domain').
+alter table kum.rules drop constraint if exists rules_field_check;
+alter table kum.rules add constraint rules_field_check
+    check (field in ('app', 'title', 'domain'));
 
 -- Erişim: oturum açmış kullanıcılar (satır güvenliğiyle yalnız kendi satırları) ve sunucu rolü.
 grant all on all tables in schema kum to authenticated, service_role;

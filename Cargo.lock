@@ -4984,6 +4984,7 @@ dependencies = [
  "objc2-foundation",
  "thiserror 2.0.21",
  "tracky-core",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

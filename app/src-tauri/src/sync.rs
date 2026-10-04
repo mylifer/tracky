@@ -124,10 +124,15 @@ fn refresh(app: &AppHandle, client: &Client, auth: &AuthSession) -> Result<AuthS
     Ok(fresh)
 }
 
-/// Sunucu şeması eskiyse (müşteriler tablosu ya da sütunu yok) ne yapılacağını söyler.
+/// Sunucu şeması eskiyse (müşteriler tablosu ya da sütunu yok, web sitesi kuralı kabul
+/// edilmiyor) ne yapılacağını söyler.
 fn migration_hint(message: String) -> String {
     let lower = message.to_lowercase();
-    if lower.contains("client")
+    if lower.contains("rules_field_check") {
+        format!(
+            "{message} — Supabase SQL Editor'da supabase/migrations/0006_domain_rules.sql dosyasını bir kez çalıştır"
+        )
+    } else if lower.contains("client")
         && (lower.contains("does not exist") || lower.contains("could not find"))
     {
         format!(

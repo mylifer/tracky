@@ -47,7 +47,7 @@ const TEXT = {
   category: {
     title: "Kategoriler",
     intro:
-      "Kategori, zamanın ne tür işe gittiğini gösterir (Tasarım, İletişim…). Her oturum tek kategoriye girer; başlık kuralları uygulama kurallarından önce gelir.",
+      "Kategori, zamanın ne tür işe gittiğini gösterir (Tasarım, İletişim…). Her oturum tek kategoriye girer; web sitesi ve başlık kuralları uygulama kurallarından önce gelir.",
     add: "Yeni kategori adı",
     addHint: "Ekledikten sonra kategoriye uygulamaları ata.",
     primary: "app" as RuleField,
@@ -340,11 +340,12 @@ function foreignRule(r: Rule): boolean {
   return false;
 }
 
-/** Kural özeti: "2 sözcük · 1 uygulama". */
+/** Kural özeti: "2 sözcük · 1 site · 1 uygulama". */
 function summary(rules: Rule[]) {
   const words = rules.filter((r) => r.field === "title").length;
+  const sites = rules.filter((r) => r.field === "domain").length;
   const apps = rules.filter((r) => r.field === "app" && !foreignRule(r)).length;
-  const parts = [words && `${words} sözcük`, apps && `${apps} uygulama`].filter(Boolean);
+  const parts = [words && `${words} sözcük`, sites && `${sites} site`, apps && `${apps} uygulama`].filter(Boolean);
   return parts.length ? parts.join(" · ") : "Kural yok: süre toplamaz";
 }
 
@@ -417,7 +418,10 @@ function TagItem({
               )}
             </div>
           )}
-          {(text.primary === "title" ? (["title", "app"] as const) : (["app", "title"] as const)).map((field) => (
+          {(text.primary === "title"
+            ? (["title", "domain", "app"] as const)
+            : (["app", "domain", "title"] as const)
+          ).map((field) => (
             <RuleList key={field} tag={tag} field={field} rules={rules} apps={apps} run={run} />
           ))}
           <div className="flex justify-end">
@@ -498,6 +502,17 @@ const FIELD_TEXT: Record<RuleField, { title: string; hint: string; none: string 
     hint: "Bu uygulamalarda geçen süre buraya yazılır (başlık kuralı başka yere götürmedikçe).",
     none: "Uygulama yok",
   },
+  domain: {
+    title: "Web siteleri",
+    hint: "Tarayıcıda bu adreslerde geçen süre. “togg.com” alt alan adlarını da kapsar, “github.com/firma” yalnızca o yolun altını.",
+    none: "Site yok",
+  },
+};
+
+/** Sözcük ve site kuralları yazılarak eklenir; uygulamalar listeden seçilir. */
+const TYPED: Partial<Record<RuleField, { placeholder: string; label: string }>> = {
+  title: { placeholder: "Sözcük ekle…", label: "Başlıkta aranacak sözcük" },
+  domain: { placeholder: "örn. jira.togg.com", label: "Web sitesi adresi" },
 };
 
 /** Bir türdeki kurallar (sözcükler ya da uygulamalar) ve ekleme. */
@@ -520,6 +535,7 @@ function RuleList({
   const shown = mine.filter((r) => !foreignRule(r));
   const hidden = mine.filter(foreignRule);
   const t = FIELD_TEXT[field];
+  const typed = TYPED[field];
   return (
     <div className="space-y-1.5">
       <div>
@@ -552,14 +568,14 @@ function RuleList({
             +{hidden.length} başka işletim sistemi için
           </span>
         )}
-        {field === "title" ? (
+        {typed ? (
           <form
             className="flex items-center gap-1"
             onSubmit={(e) => {
               e.preventDefault();
               if (!word.trim()) return;
               run(async () => {
-                await api.addRule(tag.id, "title", word.trim());
+                await api.addRule(tag.id, field, word.trim());
                 setWord("");
               })();
             }}
@@ -568,8 +584,8 @@ function RuleList({
               className="h-7 w-40 text-xs"
               value={word}
               onChange={(e) => setWord(e.target.value)}
-              placeholder="Sözcük ekle…"
-              aria-label="Başlıkta aranacak sözcük"
+              placeholder={typed.placeholder}
+              aria-label={typed.label}
             />
             {word.trim() && (
               <Button type="submit" size="sm" variant="outline" className="h-7">

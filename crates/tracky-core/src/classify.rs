@@ -60,6 +60,9 @@ pub enum RuleField {
     App,
     /// Pencere başlığı deseni içeriyor mu (büyük/küçük harf duyarsız).
     Title,
+    /// Tarayıcıdaki adres: `github.com` alan adına ve alt alan adlarına, `github.com/firma`
+    /// yalnızca o yolun altına uyar ([`crate::url_util::pattern_matches`]).
+    Domain,
 }
 
 impl RuleField {
@@ -67,6 +70,7 @@ impl RuleField {
         match self {
             RuleField::App => "app",
             RuleField::Title => "title",
+            RuleField::Domain => "domain",
         }
     }
 
@@ -74,6 +78,7 @@ impl RuleField {
         match s {
             "app" => Some(RuleField::App),
             "title" => Some(RuleField::Title),
+            "domain" => Some(RuleField::Domain),
             _ => None,
         }
     }
@@ -88,21 +93,35 @@ pub struct Rule {
     pub pattern: String,
 }
 
+/// Kuralların baktığı alanlar, küçük harfe çevrilmiş.
+struct Subject<'a> {
+    app_id: &'a str,
+    title: &'a str,
+    /// Tarayıcı adresinin `alan/yol` biçimi ([`crate::url_util::host_path`]).
+    address: Option<&'a str>,
+}
+
 impl Rule {
     pub fn matches(&self, app_id: &str, title: &str) -> bool {
         self.matches_lower(
             &self.pattern.to_lowercase(),
-            &app_id.to_lowercase(),
-            &title.to_lowercase(),
+            &Subject {
+                app_id: &app_id.to_lowercase(),
+                title: &title.to_lowercase(),
+                address: None,
+            },
         )
     }
 
     /// Desen ve girdiler önceden küçük harfe çevrilmiş olarak (sınıflandırıcı
     /// desenleri bir kez çevirir, her oturum için değil).
-    fn matches_lower(&self, pattern: &str, app_id: &str, title: &str) -> bool {
+    fn matches_lower(&self, pattern: &str, subject: &Subject) -> bool {
         match self.field {
-            RuleField::App => app_matches(pattern, app_id),
-            RuleField::Title => !pattern.is_empty() && title.contains(pattern),
+            RuleField::App => app_matches(pattern, subject.app_id),
+            RuleField::Title => !pattern.is_empty() && subject.title.contains(pattern),
+            RuleField::Domain => subject
+                .address
+                .is_some_and(|a| crate::url_util::pattern_matches(pattern, a)),
         }
     }
 }
@@ -129,7 +148,7 @@ pub struct Classification {
     pub project: Option<String>,
 }
 
-/// Kuralları önceliğe göre dizer: başlık kuralları uygulama kurallarından
+/// Kuralları önceliğe göre dizer: adres ve başlık kuralları uygulama kurallarından
 /// daha özeldir ve önce denenir (örn. Safari'de "Google E-Tablolar" → Ofis).
 pub struct Classifier {
     /// (kural, küçük harfli desen)
@@ -153,11 +172,16 @@ impl Classifier {
                 None => {}
             }
         }
-        // Kararlı sıralama: başlık kuralları, sonra tam uygulama kuralları, sonra önek
-        // (`*`) kuralları; aynı türdekilerin kendi sırası korunur. Böylece tek bir uygulamaya
-        // verilen kategori, onu da kapsayan önek kuralını (örn. `com.jetbrains.*`) ezer.
+        // Kararlı sıralama: adres kuralları (yolu olan önce: daha özel), başlık kuralları,
+        // sonra tam uygulama kuralları, sonra önek (`*`) kuralları; aynı türdekilerin kendi
+        // sırası korunur. Böylece tek bir uygulamaya verilen kategori, onu da kapsayan önek
+        // kuralını (örn. `com.jetbrains.*`) ezer.
         for list in [&mut category_rules, &mut project_rules] {
-            list.sort_by_key(|r| (r.field != RuleField::Title, r.pattern.ends_with('*')));
+            list.sort_by_key(|r| match r.field {
+                RuleField::Domain => (0, !r.pattern.contains('/')),
+                RuleField::Title => (1, false),
+                RuleField::App => (2, r.pattern.ends_with('*')),
+            });
         }
         let lowered = |rules: Vec<Rule>| -> Vec<(Rule, String)> {
             rules
@@ -187,7 +211,8 @@ impl Classifier {
     /// Elle verilen kategori ve proje (hâlâ varsa) kurallardan önce gelir. [`NO_PROJECT`]
     /// kurala uysa da projesiz demektir.
     pub fn classify(&self, session: &Session) -> Classification {
-        let mut class = self.classify_parts(&session.app_id, &session.title);
+        let address = session.url.as_deref().and_then(crate::url_util::host_path);
+        let mut class = self.classify_with(&session.app_id, &session.title, address.as_deref());
         if let Some(id) = &session.category_id
             && self.categories.contains(id)
         {
@@ -202,11 +227,21 @@ impl Classifier {
     }
 
     pub fn classify_parts(&self, app_id: &str, title: &str) -> Classification {
+        self.classify_with(app_id, title, None)
+    }
+
+    /// `address` tarayıcı adresinin `alan/yol` biçimidir ([`crate::url_util::host_path`]).
+    fn classify_with(&self, app_id: &str, title: &str, address: Option<&str>) -> Classification {
         let (app_id, title) = (app_id.to_lowercase(), title.to_lowercase());
+        let subject = Subject {
+            app_id: &app_id,
+            title: &title,
+            address,
+        };
         let first = |rules: &[(Rule, String)]| {
             rules
                 .iter()
-                .find(|(r, p)| r.matches_lower(p, &app_id, &title))
+                .find(|(r, p)| r.matches_lower(p, &subject))
                 .map(|(r, _)| r.tag_id.clone())
         };
         Classification {
@@ -218,9 +253,14 @@ impl Classifier {
     /// Uygulamanın kendi kategorisi (yalnızca uygulama kuralları; listede göstermek için).
     pub fn app_category(&self, app_id: &str) -> Option<String> {
         let app_id = app_id.to_lowercase();
+        let subject = Subject {
+            app_id: &app_id,
+            title: "",
+            address: None,
+        };
         self.category_rules
             .iter()
-            .find(|(r, p)| r.field == RuleField::App && r.matches_lower(p, &app_id, ""))
+            .find(|(r, p)| r.field == RuleField::App && r.matches_lower(p, &subject))
             .map(|(r, _)| r.tag_id.clone())
     }
 }
@@ -428,6 +468,48 @@ mod tests {
             c.classify_parts("com.other", "x"),
             Classification::default()
         );
+    }
+
+    #[test]
+    fn domain_rules_match_the_browser_address_first() {
+        let tags = [
+            tag("browse", TagKind::Category),
+            tag("dev", TagKind::Category),
+            tag("togg", TagKind::Project),
+            tag("kum", TagKind::Project),
+        ];
+        let rules = [
+            rule("browse", RuleField::App, "com.apple.Safari"),
+            rule("dev", RuleField::Domain, "github.com"),
+            rule("togg", RuleField::Domain, "togg.com"),
+            rule("togg", RuleField::Title, "kum"), // yolu olan adres kuralı bunu ezer
+            rule("kum", RuleField::Domain, "github.com/mylifer/tracky"),
+        ];
+        let c = Classifier::new(&tags, &rules);
+        let mut s = Session::start(
+            crate::model::ActiveWindow {
+                app_id: "com.apple.Safari".into(),
+                app_name: "Safari".into(),
+                title: "kum: issues".into(),
+                url: Some("https://github.com/mylifer/tracky/issues?q=1".into()),
+            },
+            chrono::Utc::now(),
+        );
+        assert_eq!(
+            c.classify(&s),
+            Classification {
+                category: Some("dev".into()),
+                project: Some("kum".into())
+            }
+        );
+        s.url = Some("https://jira.togg.com/browse/X-1".into());
+        assert_eq!(c.classify(&s).project.as_deref(), Some("togg"));
+        assert_eq!(c.classify(&s).category.as_deref(), Some("browse"));
+        // Adres yoksa adres kuralları uymaz.
+        s.url = None;
+        s.title = "Haberler".into();
+        assert_eq!(c.classify(&s).category.as_deref(), Some("browse"));
+        assert_eq!(c.classify(&s).project, None);
     }
 
     #[test]

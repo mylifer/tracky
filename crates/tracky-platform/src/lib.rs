@@ -20,6 +20,9 @@ use windows as imp;
 
 pub use imp::SystemProvider;
 
+#[cfg(any(target_os = "macos", windows))]
+mod address;
+
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
     #[error("Erişilebilirlik izni verilmedi")]

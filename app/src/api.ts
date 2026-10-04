@@ -27,7 +27,7 @@ export type TagKind = "category" | "project";
 /** Oturuma elle verilen "proje yok" (kurala uysa da projeye sayılmaz); çekirdekteki `NO_PROJECT`. */
 export const NO_PROJECT = "00000000-0000-0000-0000-000000000000";
 export type Tag = { id: string; kind: TagKind; name: string; color: number };
-export type RuleField = "app" | "title";
+export type RuleField = "app" | "title" | "domain";
 export type Rule = { id: string; tagId: string; field: RuleField; pattern: string };
 export type Client = { id: string; name: string };
 export type Taxonomy = {

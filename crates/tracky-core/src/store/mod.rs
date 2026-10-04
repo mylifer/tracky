@@ -181,6 +181,25 @@ ALTER TABLE tags ADD COLUMN client_id TEXT;
 -- Odak zamanlayıcısı kaldırıldı.
 DROP TABLE focus_timers;
 "#,
+    r#"
+-- Kurallar tarayıcı adresine de bakabilir (field = 'domain'). SQLite CHECK kısıtını
+-- değiştiremediği için tablo yeniden kurulur; satırlar ve eşitleme durumu korunur.
+CREATE TABLE rules_new (
+    id         TEXT PRIMARY KEY,
+    tag_id     TEXT NOT NULL REFERENCES tags (id),
+    field      TEXT NOT NULL CHECK (field IN ('app', 'title', 'domain')),
+    pattern    TEXT NOT NULL,
+    position   INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    synced_at  INTEGER
+);
+INSERT INTO rules_new (rowid, id, tag_id, field, pattern, position, updated_at, deleted_at, synced_at)
+    SELECT rowid, id, tag_id, field, pattern, position, updated_at, deleted_at, synced_at FROM rules;
+DROP TABLE rules;
+ALTER TABLE rules_new RENAME TO rules;
+CREATE INDEX rules_tag ON rules (tag_id);
+"#,
 ];
 
 /// `[?1, ?2)` ile kesişen oturumlar. Üçüncü koşul sonucu değiştirmez (kesişen her oturum
@@ -876,7 +895,7 @@ fn from_ms(v: i64) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classify::{Client, DEFAULT_CATEGORIES, Tag};
+    use crate::classify::{Client, DEFAULT_CATEGORIES, Rule, RuleField, Tag};
     use crate::timesheet::{EntryKind, TimesheetConfig, TimesheetEntry};
 
     fn t(secs: i64) -> DateTime<Utc> {
@@ -1613,6 +1632,59 @@ mod tests {
                 .add_manual_session("Okuma", t(0), t(300), None, None)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn domain_rules_are_normalized_and_classify_by_url() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.accept_project_suggestion("Togg").unwrap();
+        let rule = |pattern: &str| Rule {
+            id: Uuid::new_v4().to_string(),
+            tag_id: project.id.clone(),
+            field: RuleField::Domain,
+            pattern: pattern.into(),
+        };
+        store
+            .upsert_rule(&rule("https://www.Jira.Togg.com/"))
+            .unwrap();
+        assert!(store.upsert_rule(&rule("toplantı notları")).is_err());
+        assert!(
+            store
+                .rules()
+                .unwrap()
+                .iter()
+                .any(|r| r.field == RuleField::Domain && r.pattern == "jira.togg.com")
+        );
+        store
+            .upsert_session(&session(
+                "Safari",
+                Some("https://jira.togg.com/browse/T-1"),
+                0,
+                600,
+            ))
+            .unwrap();
+        assert_eq!(
+            store.project_totals(t(0), t(3600)).unwrap()[&project.id],
+            600
+        );
+    }
+
+    #[test]
+    fn unknown_rule_fields_from_newer_versions_are_skipped() {
+        let store = Store::open_in_memory().unwrap();
+        let before = store.rules().unwrap().len();
+        let tag = store.tags().unwrap()[0].id.clone();
+        // Bu sürümün tanımadığı bir tür (CHECK'i atlatmak için doğrudan yazılır).
+        store
+            .conn()
+            .execute_batch(&format!(
+                "PRAGMA ignore_check_constraints = ON;
+                 INSERT INTO rules (id, tag_id, field, pattern, updated_at)
+                 VALUES ('x', '{tag}', 'gelecek', 'p', 0);
+                 PRAGMA ignore_check_constraints = OFF;"
+            ))
+            .unwrap();
+        assert_eq!(store.rules().unwrap().len(), before);
     }
 
     #[test]

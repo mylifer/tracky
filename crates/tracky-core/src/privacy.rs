@@ -55,9 +55,13 @@ impl PrivacySettings {
             || (is_browser
                 && self.hide_private_windows
                 && browser::is_private_window(&window.title));
+        if hide || !is_browser {
+            window.url = None;
+        } else {
+            window.url = window.url.as_deref().and_then(crate::url_util::sanitize);
+        }
         if hide {
             window.title = HIDDEN_TITLE.to_string();
-            window.url = None;
         } else if is_browser {
             window.title = browser::clean_title(&window.title);
         }
@@ -182,6 +186,29 @@ mod tests {
                 .title,
             "a - Google Chrome"
         );
+    }
+
+    #[test]
+    fn browser_urls_are_kept_without_query_and_dropped_when_hidden() {
+        let s = PrivacySettings::default();
+        let mut w = w("com.google.Chrome", "Gelen kutusu - Google Chrome");
+        w.url = Some("https://mail.google.com/mail/u/0/?tab=rm#inbox".into());
+        assert_eq!(
+            s.apply(w.clone()).unwrap().url.as_deref(),
+            Some("https://mail.google.com/mail/u/0/")
+        );
+        let mut private = w.clone();
+        private.title = "Yeni sekme (Gizli) - Google Chrome".into();
+        assert_eq!(s.apply(private).unwrap().url, None);
+        let hidden = PrivacySettings {
+            hidden_title_apps: vec!["com.google.Chrome".into()],
+            ..Default::default()
+        };
+        assert_eq!(hidden.apply(w.clone()).unwrap().url, None);
+        // Tarayıcı olmayan uygulamanın adresi kaydedilmez.
+        let mut other = w;
+        other.app_id = "com.example.app".into();
+        assert_eq!(s.apply(other).unwrap().url, None);
     }
 
     #[test]

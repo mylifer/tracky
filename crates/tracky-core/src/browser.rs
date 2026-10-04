@@ -1,7 +1,8 @@
 //! Tarayıcı pencereleri: tanıma, başlık temizleme ve gizli pencere tespiti.
 //!
-//! URL okumak yerine pencere başlığını (= aktif sekmenin adı) kullanıyoruz;
-//! böylece macOS'ta Otomasyon izni gerekmiyor.
+//! Sınıflandırma çoğunlukla pencere başlığına (= aktif sekmenin adı) dayanır. Adres de
+//! okunabildiğinde (macOS'ta Erişilebilirlik, Windows'ta UI Automation; Otomasyon izni
+//! gerekmez) web sitesi kuralları için kullanılır; gizli pencerelerde kaydedilmez.
 
 /// macOS bundle id'leri.
 const MAC_BUNDLES: &[&str] = &[
