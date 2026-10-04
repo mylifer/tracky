@@ -17,7 +17,7 @@ use crate::lock;
 use crate::tracking::Shared;
 
 const CONFIG_KEY: &str = "sync_config";
-const AUTH_KEY: &str = "sync_auth";
+pub(crate) const AUTH_KEY: &str = "sync_auth";
 /// Yerel eşitleme durumunun ait olduğu "proje|kullanıcı".
 const OWNER_KEY: &str = "sync_owner";
 /// Arka planda bu aralıkla eşitlenir.
@@ -277,6 +277,14 @@ pub async fn sync_sign_out(app: AppHandle) -> CmdResult<SyncStatus> {
     clear(&app, AUTH_KEY)?;
     *lock(&app.state::<SyncWorker>().last) = None;
     Ok(status(&app))
+}
+
+/// Yedekten geri yüklemeden sonra (açılışta, eşitleme başlamadan): oturumdan çıkılır ve
+/// hesap bağı unutulur; kullanıcı yeniden giriş yapınca eşitleme baştan başlar. Bağlantı
+/// ayarları (adres, anahtar) kalır.
+pub(crate) fn forget_session(store: &tracky_core::Store) -> Result<(), tracky_core::StoreError> {
+    store.save_setting(AUTH_KEY, &serde_json::Value::Null)?;
+    store.save_setting(OWNER_KEY, &serde_json::Value::Null)
 }
 
 /// Bağlantıyı tamamen kaldırır (yerel veriler kalır).

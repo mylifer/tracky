@@ -135,9 +135,15 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             }
         }
         "update" => {
-            if let Err(e) = crate::updater::install(app) {
-                eprintln!("güncelleme kurulamadı: {e}");
-            }
+            // Kurulum (paketi açma, uygulamayı değiştirme) ana iş parçacığını tutmasın.
+            let app = app.clone();
+            let _ = std::thread::Builder::new()
+                .name("kum-install".into())
+                .spawn(move || {
+                    if let Err(e) = crate::updater::install(&app) {
+                        eprintln!("güncelleme kurulamadı: {e}");
+                    }
+                });
         }
         "quit" => app.exit(0),
         "pause_15" | "pause_60" | "pause_tomorrow" => {

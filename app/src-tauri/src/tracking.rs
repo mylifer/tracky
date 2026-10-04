@@ -45,6 +45,10 @@ pub const PAUSE_UNTIL_KEY: &str = "pause_until";
 const WEEKLY_SENT_KEY: &str = "weekly_summary_week";
 /// Aktarım hatırlatmasının en son yapıldığı haftanın pazartesisi.
 const EXPORT_REMINDED_KEY: &str = "export_reminder_week";
+/// Gün sonu özetinin en son gösterildiği gün.
+const DAY_SUMMARY_SENT_KEY: &str = "day_summary_day";
+/// Günlük hedef bildiriminin en son gösterildiği gün.
+const GOAL_NOTIFIED_KEY: &str = "goal_notified_day";
 /// Yeni haftada bu kadar çalışılınca geçen haftanın özeti gösterilir.
 const WEEKLY_AFTER_SECS: i64 = 5 * 60;
 /// Geçen hafta bundan az çalışıldıysa özet gösterilmez (örn. ilk kurulum).
@@ -85,12 +89,23 @@ pub fn run(
     let (mut weekly_sent, mut export_reminded): (Option<NaiveDate>, Option<NaiveDate>) = {
         let shared = app.state::<Shared>();
         let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+        // Gün içinde yeniden açıldı: bugün gösterilmiş bildirimler tekrarlanmasın. Açılış saatine
+        // göre tahmin edilmez; yoksa 18.00'den sonra açılan günün özeti hiç gösterilmezdi.
+        if let Some(day) = store
+            .setting::<NaiveDate>(DAY_SUMMARY_SENT_KEY)
+            .ok()
+            .flatten()
+        {
+            coach.mark_summary_sent(day);
+        }
+        if let Some(day) = store.setting::<NaiveDate>(GOAL_NOTIFIED_KEY).ok().flatten() {
+            coach.mark_goal_notified(day);
+        }
         (
             store.setting(WEEKLY_SENT_KEY).ok().flatten(),
             store.setting(EXPORT_REMINDED_KEY).ok().flatten(),
         )
     };
-    let mut first_refresh = true;
     let mut limits_primed = false;
     let mut project_goals_primed = false;
     let mut ticks = 0u32;
@@ -180,23 +195,18 @@ pub fn run(
         let local = Local::now();
         let today = local.date_naive();
         let minute = local.hour() * 60 + local.minute();
-        if std::mem::take(&mut first_refresh) {
-            // Gün içinde yeniden açıldı: bu bildirimler zaten gösterilmiş olabilir.
-            if status.today_seconds >= goals.daily_seconds() {
-                coach.mark_goal_notified(today);
-            }
-            if goals.day_summary_at.is_some_and(|at| minute >= at) {
-                coach.mark_summary_sent(today);
-            }
-        }
         let active = status.current.is_some() && !status.paused;
         for nudge in coach.observe(&goals, now, active, today, status.today_seconds) {
+            if matches!(nudge, Nudge::GoalReached { .. }) {
+                remember_day(&app, GOAL_NOTIFIED_KEY, today);
+            }
             notify(&app, &nudge, &limit_names);
         }
         if coach
             .observe_summary(&goals, today, minute, status.today_seconds)
             .is_some()
         {
+            remember_day(&app, DAY_SUMMARY_SENT_KEY, today);
             notify_day_summary(&app, &goals, now);
         }
         let week = week_start(today);
@@ -249,6 +259,15 @@ pub fn run(
     let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = tracker.shutdown(&store, Utc::now()) {
         eprintln!("{e}");
+    }
+}
+
+/// Günde bir kez gösterilen bildirimin gününü kaydeder (yeniden açılışta tekrarlanmasın).
+fn remember_day(app: &AppHandle, key: &str, day: NaiveDate) {
+    let shared = app.state::<Shared>();
+    let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = store.save_setting(key, &day) {
+        eprintln!("bildirim günü kaydedilemedi: {e}");
     }
 }
 

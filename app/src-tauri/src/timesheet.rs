@@ -33,6 +33,17 @@ impl Drop for ExportGuard {
     }
 }
 
+/// Aktarım sürerken kayıtları değiştiren komutları reddeder: aktarım, yazdığı kayıtları sonunda
+/// "aktarıldı" işaretler; arada değişen kayıt dosyaya eski haliyle yazılmış ya da hiç
+/// yazılmamışken işaretlenirdi. Depo kilidi tutulurken çağrılmalı (aktarım bekleyen kayıtları
+/// aynı kilit altında okur).
+fn not_exporting() -> CmdResult<()> {
+    if EXPORTING.load(Ordering::Acquire) {
+        return Err("Zaman çizelgesi aktarılıyor; aktarım bitince tekrar dene.".into());
+    }
+    Ok(())
+}
+
 /// Geçmiş açıklamalar (otomatik tamamlama), şablondan içe aktarılır.
 const DETAILS_KEY: &str = "timesheet_details";
 const MAX_DETAILS: usize = 300;
@@ -246,6 +257,7 @@ pub async fn approve_timesheet_day(app: AppHandle, date: String) -> CmdResult<()
     let meetings = crate::calendar::meetings(&app, from, to);
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
+    not_exporting()?;
     let proposed = store.propose_timesheet(from, to, &meetings).map_err(err)?;
     store.replace_timesheet_day(date, &proposed).map_err(err)
 }
@@ -268,13 +280,23 @@ pub async fn assign_meeting(
         .collect();
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
+    not_exporting()?;
+    let approved = !store.timesheet_entries(date, date).map_err(err)?.is_empty();
+    // Önceki atamayla güne eklenmiş satırlar: yeniden atamada (A→B ya da yoksay) kaldırılır,
+    // yoksa eski satırlar kalıp saatler iki kez yazılırdı.
+    let before = if approved {
+        store.propose_meetings(from, to, &meetings).map_err(err)?
+    } else {
+        Vec::new()
+    };
     store
         .assign_meeting(&uid, project_id.as_deref())
         .map_err(err)?;
-    if project_id.is_some() && !store.timesheet_entries(date, date).map_err(err)?.is_empty() {
-        for entry in store.propose_meetings(from, to, &meetings).map_err(err)? {
-            store.save_timesheet_entry(None, &entry).map_err(err)?;
-        }
+    if approved {
+        let after = store.propose_meetings(from, to, &meetings).map_err(err)?;
+        store
+            .replace_meeting_entries(date, &before, &after)
+            .map_err(err)?;
     }
     Ok(())
 }
@@ -285,16 +307,20 @@ pub async fn save_timesheet_entry(
     id: Option<String>,
     entry: TimesheetEntry,
 ) -> CmdResult<String> {
-    lock(&app.state::<Shared>().store)
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    not_exporting()?;
+    store
         .save_timesheet_entry(id.as_deref(), &entry)
         .map_err(err)
 }
 
 #[tauri::command]
 pub async fn delete_timesheet_entry(app: AppHandle, id: String) -> CmdResult<()> {
-    lock(&app.state::<Shared>().store)
-        .delete_timesheet_entry(&id)
-        .map_err(err)
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    not_exporting()?;
+    store.delete_timesheet_entry(&id).map_err(err)
 }
 
 /// Açıklama önerileri: şablondan gelenler ve son kaydedilenler.

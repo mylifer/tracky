@@ -8,8 +8,9 @@
 //! - Uzak taraf her satıra sunucu saatiyle `server_updated_at` verir; çekme
 //!   bu imleçten sonrasını ister.
 //! - Gönderilen satırlar `writer` (bu açılışın kimliği) taşır; çekme, sunucudaki
-//!   son sürümü bu kurulumun yazdığı satırları atlar ve sonunda imleci en yeni
-//!   sunucu zamanına taşır (kendi satırları çekilmese de imleç onları geçer).
+//!   son sürümü bu kurulumun yazdığı satırları atlar ve her şey çekildiyse sonunda imleci
+//!   çekmeden önceki en yeni sunucu zamanına taşır (kendi satırları çekilmese de imleç
+//!   onları geçer).
 //!   Sütunu olmayan eski şemada (0003 öncesi) filtre olmadan çalışılır.
 //!
 //! Ağ çağrıları sırasında depo kilidi tutulmaz; takip sürerken senkronizasyon
@@ -292,11 +293,31 @@ fn pull_table(
     table: &Table,
     writer: &mut Option<&str>,
 ) -> Result<(usize, usize), SyncError> {
+    pull_pages(store, remote, table, writer, MAX_BATCHES)
+}
+
+fn pull_pages(
+    store: &Mutex<Store>,
+    remote: &mut dyn Remote,
+    table: &Table,
+    writer: &mut Option<&str>,
+    max_batches: usize,
+) -> Result<(usize, usize), SyncError> {
     let key = format!("sync_cursor:{}", table.name);
     let mut cursor: Option<String> = lock(store).setting(&key)?;
+    // Kendi satırları filtrelenirse imleç onların gerisinde kalır; her şey çekilince en yeni
+    // sunucu zamanına taşınır. Bu zaman çekmeden *önce* alınır: çekme sürerken yazılan bir
+    // satır, imleç onun ötesine atlayıp kaçırılmasın.
+    let latest = match writer {
+        Some(_) => remote
+            .latest(table.name, cursor.as_deref())
+            .map_err(SyncError::Remote)?,
+        None => None,
+    };
     let mut since = cursor.as_deref().map(overlap);
     let (mut total, mut skipped) = (0, 0);
-    for _ in 0..MAX_BATCHES {
+    let mut drained = false;
+    for _ in 0..max_batches {
         let mut result = remote.pull(table.name, since.as_deref(), *writer, PULL_BATCH);
         if writer.is_some() && result.as_ref().is_err_and(|e| missing_writer(e)) {
             *writer = None;
@@ -304,6 +325,7 @@ fn pull_table(
         }
         let rows = result.map_err(SyncError::Remote)?;
         if rows.is_empty() {
+            drained = true;
             break;
         }
         let newest = rows
@@ -331,23 +353,25 @@ fn pull_table(
             // Hata olursa geri alınır; imleç de ilerlemez, satırlar tekrar çekilir.
             tx.commit()?;
         }
-        if rows.len() < PULL_BATCH || newest.is_none() {
+        if rows.len() < PULL_BATCH {
+            drained = true;
             break;
         }
-        since = newest;
+        let Some(newest) = newest else {
+            break;
+        };
+        // Sayfa sınırında aynı sunucu zamanlı satırlar bölünebilir: sonraki sayfa sınırın
+        // kendisini de kapsar (zaten uygulanan satırlar yeniden uygulanınca değişmez).
+        since = Some(just_before(&newest));
     }
-    // Kendi satırları filtrelendiyse imleç onların gerisinde kaldı: her şey çekildikten
-    // sonra en yeni sunucu zamanına taşınır. Bu arada yazılmış bir satır kaçarsa bir
-    // sonraki çalıştırmanın imleç örtüşmesi onu yine çeker.
-    if writer.is_some() {
-        let newest = remote
-            .latest(table.name, cursor.as_deref())
-            .map_err(SyncError::Remote)?;
-        if let Some(newest) = newest
-            && cursor.as_deref().is_none_or(|c| later(&newest, c))
-        {
-            lock(store).save_setting(&key, &newest)?;
-        }
+    // Yalnızca her şey çekildiyse (son sayfa kısa ya da boş) imleç baştaki en yeni zamana
+    // atlar. Parti sınırına takıldıysa imleç son çekilen sayfada kalır; kalanı sonraki
+    // çalıştırma çeker (yoksa çekilmemiş satırlar kalıcı olarak atlanırdı).
+    if drained
+        && let Some(latest) = latest
+        && cursor.as_deref().is_none_or(|c| later(&latest, c))
+    {
+        lock(store).save_setting(&key, &latest)?;
     }
     Ok((total, skipped))
 }
@@ -477,6 +501,13 @@ fn later(a: &str, b: &str) -> bool {
     }
 }
 
+/// Sunucu zamanından bir mikrosaniye önce (sunucu zamanları mikrosaniye çözünürlüklü).
+fn just_before(at: &str) -> String {
+    parse_time(at)
+        .map(|t| (t - Duration::microseconds(1)).to_rfc3339_opts(SecondsFormat::Micros, true))
+        .unwrap_or_else(|_| at.to_string())
+}
+
 fn overlap(cursor: &str) -> String {
     parse_time(cursor)
         .map(|t| {
@@ -502,6 +533,8 @@ mod tests {
         pushes: usize,
         /// 0003 öncesi şema: `writer` sütunu yok.
         legacy: bool,
+        /// Bir sonraki çekmenin hemen ardından (başka cihazlarca) yazılacak satırlar.
+        write_after_pull: Vec<(String, Value)>,
     }
 
     const NO_WRITER: &str = "Could not find the 'writer' column in the schema cache";
@@ -556,6 +589,9 @@ mod tests {
             });
             rows.sort_by_key(|r| r["server_updated_at"].as_str().unwrap().to_string());
             rows.truncate(limit);
+            for (table, row) in std::mem::take(&mut self.write_after_pull) {
+                self.push(&table, &[row])?;
+            }
             Ok(rows)
         }
 
@@ -912,6 +948,65 @@ mod tests {
                 .filter(|t| t.id == project.id)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn cursor_stays_when_pull_stops_before_draining() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        for _ in 0..(PULL_BATCH * 2 + 10) {
+            lock(&a).upsert_session(&session("Code", 1)).unwrap();
+        }
+        run(&a, &mut remote, "u1").unwrap();
+        // Parti sınırına takılan çekme: imleç en yeni sunucu zamanına atlamamalı.
+        let sessions = TABLES.iter().find(|t| t.name == "sessions").unwrap();
+        let device = lock(&b).instance_id().to_string();
+        let mut writer = Some(device.as_str());
+        pull_pages(&b, &mut remote, sessions, &mut writer, 1).unwrap();
+        let latest = remote.latest("sessions", None).unwrap().unwrap();
+        let cursor: Option<String> = lock(&b).setting("sync_cursor:sessions").unwrap();
+        assert!(later(&latest, cursor.as_deref().unwrap()));
+        // Sonraki çalıştırma kalanını çeker.
+        run(&b, &mut remote, "u1").unwrap();
+        assert_eq!(
+            totals(&b),
+            vec![("Code".to_string(), (PULL_BATCH * 2 + 10) as i64)]
+        );
+    }
+
+    #[test]
+    fn rows_written_during_pull_are_not_skipped() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        lock(&a).upsert_session(&session("Code", 60)).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        // B çekerken iki başka cihaz yazar; ikincisi imleç örtüşmesinden daha geç.
+        let template = remote.rows["sessions"].values().next().unwrap().clone();
+        for (app, writer) in [("Safari", "c"), ("Mail", "d")] {
+            let mut row = template.clone();
+            row["id"] = Value::String(Uuid::new_v4().to_string());
+            row["app_name"] = Value::String(app.into());
+            row["writer"] = Value::String(writer.into());
+            remote.write_after_pull.push(("sessions".into(), row));
+        }
+        // Etiketler önce çekilir; satırları oturum çekmesinin ardından yazdırmak için
+        // yalnızca oturum tablosu çekilir.
+        let sessions = TABLES.iter().find(|t| t.name == "sessions").unwrap();
+        let device = lock(&b).instance_id().to_string();
+        let mut writer = Some(device.as_str());
+        pull_table(&b, &mut remote, sessions, &mut writer).unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        assert_eq!(
+            totals(&b),
+            vec![
+                ("Code".to_string(), 60),
+                ("Mail".to_string(), 60),
+                ("Safari".to_string(), 60)
+            ]
         );
     }
 }

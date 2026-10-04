@@ -248,6 +248,21 @@ pub(crate) fn navigate(app: &AppHandle, target: &str) {
     let _ = app.emit("navigate", target);
 }
 
+/// Arka plan işlerini durdurur; takip süren oturumu yazıp bitene kadar beklenir. Olağan
+/// kapanışta ve Windows'ta güncelleme kurulumundan önce (kurulum süreci kendisi sonlandırır,
+/// `RunEvent::Exit` gelmez) çağrılır; ikinci çağrı bir şey yapmaz.
+pub(crate) fn shutdown_workers(app: &AppHandle) {
+    sync::shutdown(app);
+    calendar::shutdown(app);
+    let worker = app.state::<Worker>();
+    let _ = worker.tx.send(Command::Shutdown);
+    // Kilit join'den önce bırakılır; takip iş parçacığı bitmeyi beklerken tutulmasın.
+    let handle = lock(&worker.handle).take();
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
+}
+
 pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -267,6 +282,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("yedek geri yüklenemedi: {e}");
     }
     let store = Store::open(dir.join(backup::DB_FILE))?;
+    // Eşitleme başlamadan: geri yüklenen veritabanının eşitleme durumunu sıfırla.
+    if let Err(e) = backup::finish_restore(&dir, &store) {
+        eprintln!("geri yükleme sonrası eşitleme durumu sıfırlanamadı: {e}");
+    }
 
     if store.setting::<bool>(AUTOSTART_INIT_KEY)?.is_none() {
         if let Err(e) = app.autolaunch().enable() {
@@ -447,15 +466,7 @@ pub fn run() {
             return;
         }
         if let RunEvent::Exit = event {
-            sync::shutdown(app);
-            calendar::shutdown(app);
-            let worker = app.state::<Worker>();
-            let _ = worker.tx.send(Command::Shutdown);
-            // Kilit join'den önce bırakılır; takip iş parçacığı bitmeyi beklerken tutulmasın.
-            let handle = lock(&worker.handle).take();
-            if let Some(handle) = handle {
-                let _ = handle.join();
-            }
+            shutdown_workers(app);
         }
     });
 }

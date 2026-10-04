@@ -3,6 +3,7 @@
 //! kullanıcı onayıyla yapar (Windows'ta kurulum uygulamayı kapattığı için).
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -23,6 +24,8 @@ const TICK: Duration = Duration::from_secs(60);
 /// bayrağını sonsuza dek açık tutup sonraki tüm denetimleri durdurmasın.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Windows'ta kurulumdan hemen önce takip ve arka plan işleri durduruldu.
+static STOPPED_FOR_INSTALL: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,9 +99,17 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
     }
     set(app, |s| s.error = None);
     let result = async {
+        let handle = app.clone();
         let checked = app
             .updater_builder()
             .timeout(CHECK_TIMEOUT)
+            // Windows'ta kurulum süreci uygulamayı kendisi kapatır, `RunEvent::Exit` gelmez:
+            // takip süren oturumu önce burada yazsın. Eklentinin varsayılan temizliği de yapılır.
+            .on_before_exit(move || {
+                STOPPED_FOR_INSTALL.store(true, Ordering::Release);
+                crate::shutdown_workers(&handle);
+                handle.cleanup_before_exit();
+            })
             .build()
             .map_err(message)?
             .check()
@@ -197,6 +208,10 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
             s.available = None;
             s.error = Some(msg.clone());
         });
+        // Takip kurulumdan önce durdurulduysa yeniden başla; yoksa uygulama takipsiz kalırdı.
+        if STOPPED_FOR_INSTALL.load(Ordering::Acquire) {
+            app.request_restart();
+        }
         return Err(msg);
     }
     // `restart()` ana iş parçacığından çağrılınca `RunEvent::Exit` atlanır: takip son
