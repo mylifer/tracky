@@ -180,6 +180,29 @@ export type EntryView = TimesheetEntry & {
   /** Takipte değişti: işin bir kısmı raporda başka projeye alınmış; projede kalan süre (saat). */
   stale: number | null;
 };
+/** Firmanın dosyasındaki (Excel ya da Sheets) bir kayıt satırı. */
+export type FileRow = {
+  /** Dosyadaki satır numarası (yazarken ipucu). */
+  row: number;
+  date: string;
+  /** "HH:MM:SS"; hücre boşsa ya da saat değilse `null`. */
+  start: string | null;
+  hours: number | null;
+  kind: string;
+  details: string;
+  party: string;
+  division: string;
+  consultant: string;
+};
+/** Dosyadaki satır: Kum aktardıysa kaydının kimliğiyle. */
+export type SheetRowView = FileRow & { entryId: string | null };
+export type SheetRows = {
+  rows: SheetRowView[];
+  /** Bu çizelgeye aktarılmış olup dosyada bulunamayan kayıtlar. */
+  missing: string[];
+  /** Dosyada değiştirildiği için Kum'da da güncellenen kayıt sayısı. */
+  synced: number;
+};
 /** Takvimden (Outlook) bir toplantı. */
 export type Meeting = {
   /** Serinin kimliği: tekrarlayan toplantının hepsinde aynı. */
@@ -489,11 +512,24 @@ export const api = {
   timesheetDays: (timesheetId: string, start: string, days: number) =>
     invoke<TimesheetDay[]>("timesheet_days", { timesheetId, start, days }),
   /** Satırı kaydeder: kaydedilmişi günceller, canlı satırı (`id` yok) ya da elle eklenen satırı ekler; kimliği döner. */
-  saveTimesheetEntry: (id: string | null, entry: TimesheetEntry) =>
-    invoke<string>("save_timesheet_entry", { id, entry: plainEntry(entry) }),
+  /** Aktarılmış satır dosyadaki satırıyla birlikte değişir (`sheetRow`: dosyadaki satır numarası). */
+  saveTimesheetEntry: (id: string | null, entry: TimesheetEntry, sheetRow?: number | null) =>
+    invoke<string>("save_timesheet_entry", { id, entry: plainEntry(entry), sheetRow: sheetRow ?? null }),
   /** Satırı gizler (siler); canlı satır gizlenmiş olarak kaydedilir. Kimliği döner. */
-  dismissTimesheetEntry: (id: string | null, entry: TimesheetEntry) =>
-    invoke<string>("dismiss_timesheet_entry", { id, entry: plainEntry(entry) }),
+  /** Aktarılmış satır dosyadan da kaldırılır. */
+  dismissTimesheetEntry: (id: string | null, entry: TimesheetEntry, sheetRow?: number | null) =>
+    invoke<string>("dismiss_timesheet_entry", { id, entry: plainEntry(entry), sheetRow: sheetRow ?? null }),
+  /** Çizelgenin dosyasındaki dönemin satırları (Kum'un aktardıkları kayıtlarıyla eşlenmiş). */
+  sheetRows: (timesheetId: string, start: string, days: number) =>
+    invoke<SheetRows>("sheet_rows", { timesheetId, start, days }),
+  /** Dosyada Kum dışında girilmiş satırı değiştirir (tarih değiştiyse satır taşınır); yazılan satırın numarası. */
+  saveSheetRow: (timesheetId: string, expect: FileRow, row: FileRow) =>
+    invoke<number>("save_sheet_row", { timesheetId, expect: plainFileRow(expect), row: plainFileRow(row) }),
+  /** Silinen dosya satırını gününe geri ekler; yazılan satırın numarası. */
+  restoreSheetRow: (timesheetId: string, row: FileRow) =>
+    invoke<number>("restore_sheet_row", { timesheetId, row: plainFileRow(row) }),
+  deleteSheetRow: (timesheetId: string, expect: FileRow) =>
+    invoke<void>("delete_sheet_row", { timesheetId, expect: plainFileRow(expect) }),
   undismissTimesheetEntries: (ids: string[]) => invoke<void>("undismiss_timesheet_entries", { ids }),
   /** Günün gizlenen satırlarını geri getirir. */
   restoreHiddenEntries: (timesheetId: string, date: string) =>
@@ -602,6 +638,20 @@ function plainEntry(e: TimesheetEntry): TimesheetEntry {
     projectId: e.projectId,
     division: e.division,
     coverage: e.coverage ?? null,
+  };
+}
+
+function plainFileRow(r: FileRow): FileRow {
+  return {
+    row: r.row,
+    date: r.date,
+    start: r.start,
+    hours: r.hours,
+    kind: r.kind,
+    details: r.details,
+    party: r.party,
+    division: r.division,
+    consultant: r.consultant,
   };
 }
 

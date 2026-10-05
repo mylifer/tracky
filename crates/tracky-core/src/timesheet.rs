@@ -19,6 +19,10 @@
 //! ([`TimesheetEntry::coverage`]) saklar; bu aralıklar yeni önerilerden düşülür ([`propose`]).
 //! Sonradan atanan iş kaydedilmiş satırlara dokunmadan yeni satır olarak gelir, aynı iş iki kez
 //! yazılmaz.
+//!
+//! Firmanın dosyasındaki satırlar ([`FileRow`]) da okunur: Kum'un aktardığı satırlar dosyadaki
+//! satırlarıyla eşlenir ([`link_file_rows`]), Kum dışında girilen satırlar ayrıca gösterilir.
+//! Aktarılmış satır düzenlenince değişiklik dosyadaki satırına da yazılır.
 
 use std::collections::{HashMap, HashSet};
 
@@ -835,6 +839,104 @@ fn minute(t: NaiveTime) -> (u32, u32) {
     (t.hour(), t.minute())
 }
 
+/// Firmanın dosyasındaki (Excel ya da Sheets) bir kayıt satırı: Kum'un aktardığı ya da elle
+/// girilmiş.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRow {
+    /// Dosyadaki satır numarası (yazarken ipucu; satır kaymışsa içeriğinden bulunur).
+    pub row: u32,
+    pub date: NaiveDate,
+    pub start: Option<NaiveTime>,
+    pub hours: Option<f64>,
+    pub kind: String,
+    pub details: String,
+    pub party: String,
+    pub division: String,
+    pub consultant: String,
+}
+
+impl FileRow {
+    /// Kum'un satırının dosyadaki hali (`row`: bilinen satır numarası ya da 0).
+    pub fn of(e: &TimesheetEntry, row: u32) -> Self {
+        Self {
+            row,
+            date: e.date,
+            start: Some(e.start),
+            hours: Some(e.hours),
+            kind: e.kind.label().to_string(),
+            details: e.details.trim().to_string(),
+            party: e.party.trim().to_string(),
+            division: e.division.trim().to_string(),
+            consultant: String::new(),
+        }
+    }
+
+    fn same_start(&self, e: &TimesheetEntry) -> bool {
+        self.date == e.date && self.start.map(minute) == Some(minute(e.start))
+    }
+
+    /// Kum'un satırıyla birebir aynı (dosyaya yazıldığı gibi duruyor).
+    pub fn matches(&self, e: &TimesheetEntry) -> bool {
+        self.same_start(e)
+            && self.hours.is_some_and(|h| (h - e.hours).abs() < 1e-6)
+            && self.kind.trim() == e.kind.label()
+            && self.details.trim() == e.details.trim()
+            && self.party.trim() == e.party.trim()
+            && self.division.trim().eq_ignore_ascii_case(e.division.trim())
+    }
+
+    /// Kum'un satırı dosyada değiştirilmiş hali olabilir: aynı gün ve başlangıç, tür ya da
+    /// açıklama aynı.
+    fn near(&self, e: &TimesheetEntry) -> bool {
+        self.same_start(e)
+            && (self.kind.trim() == e.kind.label() || self.details.trim() == e.details.trim())
+    }
+
+    /// Kum'un satırı dosyadaki değerleriyle (tür tanınmıyorsa ya da başlangıç ya da saat boşsa
+    /// `None`). Proje, gerçek süre ve aralıklar Kum'da kalır.
+    pub fn apply(&self, e: &TimesheetEntry) -> Option<TimesheetEntry> {
+        let kind = match self.kind.trim() {
+            "Working" => EntryKind::Working,
+            "Online" => EntryKind::Online,
+            "F2F" => EntryKind::F2F,
+            _ => return None,
+        };
+        Some(TimesheetEntry {
+            date: self.date,
+            start: self.start?,
+            hours: self.hours.filter(|h| *h > 0.0 && *h <= 24.0)?,
+            kind,
+            details: self.details.trim().to_string(),
+            party: self.party.trim().to_string(),
+            division: self.division.trim().to_string(),
+            ..e.clone()
+        })
+    }
+}
+
+/// Dosyanın satırlarını Kum'un aktardığı satırlarla eşler: her dosya satırı için eşlendiği
+/// Kum satırının sırası. Önce birebir aynı olanlar, sonra dosyada değiştirilmiş olabilecekler
+/// ([`FileRow::near`]); bir satır en çok bir satırla eşlenir. Eşlenmeyen dosya satırı Kum dışında
+/// girilmiştir; eşlenmeyen Kum satırı dosyada silinmiş ya da başlangıcı değiştirilmiştir.
+pub fn link_file_rows(rows: &[FileRow], entries: &[&TimesheetEntry]) -> Vec<Option<usize>> {
+    let mut out = vec![None; rows.len()];
+    let mut used = vec![false; entries.len()];
+    let passes: [fn(&FileRow, &TimesheetEntry) -> bool; 2] = [FileRow::matches, FileRow::near];
+    for pass in passes {
+        for (i, row) in rows.iter().enumerate() {
+            if out[i].is_some() {
+                continue;
+            }
+            if let Some(j) = (0..entries.len()).find(|&j| !used[j] && pass(row, entries[j])) {
+                used[j] = true;
+                out[i] = Some(j);
+            }
+        }
+    }
+    out
+}
+
 /// Birleştirme reddedilir: satırlar aynı güne ve projeye ait değil ya da ikiden az.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MergeError {
@@ -1267,6 +1369,66 @@ mod tests {
         assert_eq!(merge(&other), Err(MergeError::Projects));
         other[1].date = other[1].date.succ_opt().unwrap();
         assert_eq!(merge(&other), Err(MergeError::Days));
+    }
+
+    #[test]
+    fn file_rows_link_to_exported_rows() {
+        let (classifier, names, config, sheet) = setup();
+        let sessions = [
+            s("Figma", "Trumore Loyalty — Figma", 0, 60, None),
+            s("Figma", "Trumore Rapor — Figma", 120, 180, None),
+            s("Figma", "Trumore Sunum — Figma", 240, 270, None),
+        ];
+        let rows = day(&sessions, &[], &classifier, &names, &config, &sheet);
+        let entries: Vec<&TimesheetEntry> = rows.iter().collect();
+        let written: Vec<FileRow> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, e)| FileRow::of(e, i as u32 + 2))
+            .collect();
+        // Elle girilmiş satır (Kum'da yok) ve dosyada değiştirilmiş açıklama.
+        let mut file = written.clone();
+        file[1].details = "Aylık rapor (düzeltildi)".into();
+        file[1].hours = Some(1.5);
+        let manual = FileRow {
+            row: 9,
+            date: rows[0].date,
+            start: NaiveTime::from_hms_opt(16, 0, 0),
+            hours: Some(1.0),
+            kind: "F2F".into(),
+            details: "Atölye".into(),
+            ..Default::default()
+        };
+        file.push(manual.clone());
+        // Sunumun başlangıcı dosyada değişti: eşlenmez.
+        file[2].start = NaiveTime::from_hms_opt(8, 0, 0);
+        file[2].kind = "Online".into();
+        file[2].details = "başka".into();
+        assert_eq!(
+            link_file_rows(&file, &entries),
+            [Some(0), Some(1), None, None]
+        );
+        assert!(written[0].matches(&rows[0]) && !file[1].matches(&rows[1]));
+        // Değiştirilen satır Kum'a dosyadaki haliyle geçer; aralıkları korunur.
+        let synced = file[1].apply(&rows[1]).unwrap();
+        assert_eq!(
+            (synced.details.as_str(), synced.hours),
+            ("Aylık rapor (düzeltildi)", 1.5)
+        );
+        assert_eq!(synced.coverage, rows[1].coverage);
+        assert!(file[1].matches(&synced));
+        // Türü tanınmayan ya da saati boş satır Kum'a geçmez.
+        assert!(
+            FileRow {
+                hours: None,
+                ..file[1].clone()
+            }
+            .apply(&rows[1])
+            .is_none()
+        );
+        // Aynı satır iki kez eşlenmez.
+        let twice = vec![written[0].clone(), written[0].clone()];
+        assert_eq!(link_file_rows(&twice, &entries), [Some(0), None]);
     }
 
     #[test]

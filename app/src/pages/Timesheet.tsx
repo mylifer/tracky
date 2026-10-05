@@ -11,6 +11,7 @@ import {
   FileSpreadsheet,
   FolderKanban,
   Loader2,
+  RefreshCw,
   RotateCcw,
   Settings2,
   Sheet,
@@ -27,7 +28,10 @@ import {
   type EntryKind,
   type EntryView,
   type Exported,
+  type FileRow,
   type RowRef,
+  type SheetRows,
+  type SheetRowView,
   type Tag,
   type Timesheet as TimesheetInfo,
   type TimesheetConfig,
@@ -55,6 +59,8 @@ import {
   today,
 } from "../lib/dates";
 import { ProjectSelect } from "../components/ProjectSelect";
+import { MonthBoard, WeekBoard } from "../components/TimesheetBoard";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
@@ -69,6 +75,7 @@ import {
   mergeProblem,
   needsDetails,
   started,
+  summarizeDay,
   type CloseReport,
 } from "../lib/timesheet";
 
@@ -380,6 +387,8 @@ export default function Timesheet({
   const [closing, setClosing] = useState(false);
   // Yapay zekâyla yazma açık ve anahtar girilmiş (Ayarlar → Yapay zekâ).
   const [ai, setAi] = useState(false);
+  // Hafta ve ay panosunda satırları açılan gün (dönemin dışındaysa varsayılan gün).
+  const [picked, setPicked] = useState<string | null>(null);
   // Seçili satırlar (anahtarlarıyla): birleştir, gönder, sil.
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   useEffect(() => {
@@ -388,6 +397,12 @@ export default function Timesheet({
       () => {},
     );
   }, []);
+
+  // Çizelgenin dosyasındaki satırlar (gün ve hafta görünümünde): hangi çizelge ve aralığın
+  // olduğu, okunuyor mu, okunamadıysa neden.
+  const [file, setFile] = useState<{ of: string; data: SheetRows } | null>(null);
+  const [fileError, setFileError] = useState<{ of: string; message: string } | null>(null);
+  const [fileLoading, setFileLoading] = useState(false);
 
   // Hafta hızla değiştirilince geç gelen eski yanıt yenisinin üzerine yazmasın.
   const loadSeq = useRef(0);
@@ -417,6 +432,32 @@ export default function Timesheet({
     api.calendarStatus().then(setCalendar, () => {});
   }, [load]);
   useChanged(load);
+
+  const fileSeq = useRef(0);
+  const fileSheet = config?.timesheets.find((t) => t.id === sheetId) ?? config?.timesheets[0];
+  const fileOf =
+    fileSheet && (fileSheet.sheetUrl || fileSheet.filePath) ? `${fileSheet.id}/${start}/${rangeDays}` : null;
+  /** Dosyanın satırlarını okur; dosyada değiştirilen satırlar Kum'a geçtiyse günler yeniden yüklenir. */
+  const loadFile = useCallback(async () => {
+    const seq = ++fileSeq.current;
+    if (!fileOf || !fileSheet) return;
+    setFileLoading(true);
+    try {
+      const data = await api.sheetRows(fileSheet.id, start, rangeDays);
+      if (seq !== fileSeq.current) return;
+      setFile({ of: fileOf, data });
+      setFileError(null);
+      if (data.synced > 0) await load();
+    } catch (e) {
+      if (seq === fileSeq.current) setFileError({ of: fileOf, message: friendlyError(e) });
+    } finally {
+      if (seq === fileSeq.current) setFileLoading(false);
+    }
+    // `fileSheet` her yüklemede yeni nesne: yalnızca kimliği ve dosyası önemli.
+  }, [fileOf, fileSheet?.sheetUrl, fileSheet?.filePath, start, rangeDays, load]);
+  useEffect(() => {
+    loadFile();
+  }, [loadFile]);
   // Takvim arka planda yenilenince toplantılar değişmiş olabilir.
   useTauriEvent(api.onCalendar, (s) => {
     setCalendar(s);
@@ -449,6 +490,11 @@ export default function Timesheet({
       setError(friendlyError(e));
     }
   };
+  /** Dosyaya da yazan işlemler: sonra dosyanın satırları yeniden okunur (hata olsa da). */
+  const runFile: Run = (f) => async () => {
+    await run(f)();
+    void loadFile();
+  };
 
   /** Satırları çizelgenin dosyasına gönderir (canlı satırlar önce kaydedilir). */
   const send = async (rows: EntryView[], after?: () => void) => {
@@ -464,6 +510,7 @@ export default function Timesheet({
     } finally {
       setExporting(false);
       await load();
+      void loadFile();
     }
   };
 
@@ -495,17 +542,33 @@ export default function Timesheet({
     .filter((p): p is Tag => !!p);
 
   const all = days.flatMap((d) => d.entries);
+  // Dosyanın bu döneme ait satırları (eski aralığın yanıtı gösterilmez).
+  const fileData = file && file.of === fileOf ? file.data : null;
+  const fileRowOf = new Map<string, number>();
+  for (const r of fileData?.rows ?? []) if (r.entryId) fileRowOf.set(r.entryId, r.row);
+  const missing = new Set(fileData?.missing ?? []);
+  const outside = (fileData?.rows ?? []).filter((r) => !r.entryId);
+  const outsideHours = new Map<string, number>();
+  for (const r of outside) outsideHours.set(r.date, (outsideHours.get(r.date) ?? 0) + (r.hours ?? 0));
   const unsent = all.filter((e) => !e.exported);
   // Toplu gönderim yalnızca başlamış işi gönderir; ilerideki satırlar seçilerek gönderilebilir.
   const now = new Date();
   const pending = unsent.filter((e) => started(e, now));
   const later = unsent.length - pending.length;
   const selectedRows = unsent.filter((e) => selected.has(e.key));
-  const report = closeReport(days, config.dayHours, isoDate(today()));
-  const total = all.reduce((s, e) => s + e.hours, 0);
+  const report = closeReport(days, config.dayHours, isoDate(today()), outsideHours);
+  const total = all.reduce((s, e) => s + e.hours, 0) + outside.reduce((s, r) => s + (r.hours ?? 0), 0);
   const totalActual = all.reduce((s, e) => s + worked(e), 0);
   const byDivision = new Map<string, number>();
   for (const e of all) byDivision.set(e.division, (byDivision.get(e.division) ?? 0) + e.hours);
+  for (const r of outside) byDivision.set(r.division, (byDivision.get(r.division) ?? 0) + (r.hours ?? 0));
+  const fileState: FileState = !fileOf
+    ? { kind: "off" }
+    : fileData
+      ? { kind: "ready", rowOf: fileRowOf, missing }
+      : fileError?.of === fileOf
+        ? { kind: "error" }
+        : { kind: "loading" };
   const current = isoDate(range(mode, today()).start);
   const step = (n: number) => {
     const a = parseIsoDate(start);
@@ -523,6 +586,56 @@ export default function Timesheet({
     else return;
     e.preventDefault();
   };
+  // Panoda açılan gün: seçilen, yoksa bugün (dönemdeyse), yoksa satırı olan ilk gün.
+  const todayIso = isoDate(today());
+  const shown =
+    days.find((d) => d.date === picked)?.date ??
+    days.find((d) => d.date === todayIso)?.date ??
+    days.find((d) => d.entries.length > 0 || outsideHours.has(d.date))?.date ??
+    days[0]?.date;
+  const shownDay = days.find((d) => d.date === shown);
+  /** Günün kartını açıp gösterir (dönem denetiminin "göster" bağlantısı). */
+  const showDayCard = (iso: string, focusEmpty = false) => {
+    setPicked(iso);
+    setTimeout(() => showDay(iso, focusEmpty), 60);
+  };
+  // Birimlerin renk sırası: çizelgenin projelerinin birimleri, dosyadaki birimler, sonra satırlarda görülenler.
+  const divisionList: string[] = [];
+  const addDivision = (d: string) => {
+    const t = d.trim();
+    if (!divisionList.some((x) => x.toLocaleLowerCase("tr") === t.toLocaleLowerCase("tr"))) divisionList.push(t);
+  };
+  for (const m of sheet.projects) addDivision(defaultDivision(sheet, projects, m.projectId));
+  for (const d of sheet.divisions) addDivision(d);
+  for (const e of all) addDivision(e.division);
+  for (const r of outside) addDivision(r.division);
+  const summaries = days.map((d) =>
+    summarizeDay(
+      d,
+      outside.filter((r) => r.date === d.date),
+      config.dayHours,
+      todayIso,
+    ),
+  );
+  const dayCard = (d: TimesheetDay, alwaysShow: boolean) => (
+    <DayCard
+      key={d.date}
+      day={d}
+      config={config}
+      sheet={sheet}
+      projects={projects}
+      onOpenDay={onOpenDay}
+      onReviewDay={onReviewDay}
+      run={run}
+      runFile={runFile}
+      file={fileState}
+      outside={outside.filter((r) => r.date === d.date)}
+      ai={ai}
+      selected={selected}
+      onToggle={toggle}
+      alwaysShow={alwaysShow}
+    />
+  );
   const toggle = (rowKeys: string[], on: boolean) =>
     setSelected((s) => {
       const next = new Set(s);
@@ -663,6 +776,17 @@ export default function Timesheet({
         </Button>
       </div>
       <ErrorText>{error}</ErrorText>
+      {fileOf && (
+        <FileNotice
+          sheets={!!sheet.sheetUrl}
+          rows={fileData?.rows.length ?? null}
+          outside={outside.length}
+          missing={missing.size}
+          loading={fileLoading}
+          error={fileError?.of === fileOf ? fileError.message : null}
+          onReload={() => void loadFile()}
+        />
+      )}
       {notice && (
         <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs">
           <Check className="mt-0.5 size-3.5 shrink-0 text-success" />
@@ -682,6 +806,7 @@ export default function Timesheet({
                 } finally {
                   setUndoing(false);
                   await load();
+                  void loadFile();
                 }
               }}
             >
@@ -715,6 +840,7 @@ export default function Timesheet({
           onSend={() => send(pending, () => setClosing(false))}
           onOpenDay={onOpenDay}
           onReviewDay={onReviewDay}
+          onShowDay={showDayCard}
           run={run}
         />
       )}
@@ -732,27 +858,32 @@ export default function Timesheet({
           ))}
       </datalist>
 
-      {days.map((d) => (
-        <DayCard
-          key={d.date}
-          day={d}
-          config={config}
-          sheet={sheet}
-          projects={projects}
-          onOpenDay={onOpenDay}
-          onReviewDay={onReviewDay}
-          run={run}
-          ai={ai}
-          selected={selected}
-          onToggle={toggle}
-          // Gün görünümünde boş gün de gösterilir (yoksa sayfa boş kalır).
-          alwaysShow={mode === "day"}
-        />
-      ))}
-      {mode !== "day" && days.length > 0 && days.every((d) => d.entries.length === 0) && (
-        <p className="px-1 text-sm text-muted-foreground">
-          Bu dönemde kayıt yok. Raporda (gün, hafta) bu çizelgenin projelerine atadığın süre burada satır olur.
-        </p>
+      {mode === "day" ? (
+        // Gün görünümünde boş gün de gösterilir (yoksa sayfa boş kalır).
+        days.map((d) => dayCard(d, true))
+      ) : (
+        <>
+          {mode === "week" ? (
+            <WeekBoard
+              summaries={summaries}
+              divisions={divisionList}
+              dayHours={config.dayHours}
+              selected={shown ?? null}
+              onSelect={setPicked}
+              todayIso={todayIso}
+            />
+          ) : (
+            <MonthBoard
+              summaries={summaries}
+              divisions={divisionList}
+              dayHours={config.dayHours}
+              selected={shown ?? null}
+              onSelect={setPicked}
+              todayIso={todayIso}
+            />
+          )}
+          {shownDay && dayCard(shownDay, true)}
+        </>
       )}
       {selectedRows.length > 0 && (
         <SelectionBar
@@ -770,6 +901,119 @@ export default function Timesheet({
 }
 
 type Run = (f: () => Promise<unknown>) => () => Promise<void>;
+
+/**
+ * Dosyanın satırlarının durumu: okunduysa Kum'un aktardığı kayıtların dosyadaki satır numarası
+ * ve dosyada bulunamayan kayıtlar. Aktarılmış satır yalnızca dosyadaki satırı bilinince düzenlenir.
+ */
+type FileState =
+  { kind: "off" | "loading" | "error" } | { kind: "ready"; rowOf: Map<string, number>; missing: Set<string> };
+
+/** Dosyanın adı, ekleriyle: "tablodan", "Excel dosyasından"… */
+function fileWords(sheets: boolean) {
+  return sheets
+    ? { from: "tablodan", to: "tabloya", of: "tablonun", Of: "Tablonun", in: "tabloda", inAdj: "tablodaki" }
+    : {
+        from: "Excel dosyasından",
+        to: "Excel dosyasına",
+        of: "Excel dosyasının",
+        Of: "Excel dosyasının",
+        in: "Excel dosyasında",
+        inAdj: "Excel dosyasındaki",
+      };
+}
+
+/** Betik eski: yeni işlemleri (satırları okuma, değiştirme) tanımıyor. */
+const OUTDATED = "betik eski";
+
+/**
+ * Dosyadaki satırların durumu: kaç satır okundu, kaçı Kum dışında girilmiş, okunamadıysa neden.
+ * Betik eskiyse yeni betik kopyalanıp dağıtım güncellenir (adres değişmez).
+ */
+function FileNotice({
+  sheets,
+  rows,
+  outside,
+  missing,
+  loading,
+  error,
+  onReload,
+}: {
+  sheets: boolean;
+  rows: number | null;
+  outside: number;
+  missing: number;
+  loading: boolean;
+  error: string | null;
+  onReload: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const where = sheets ? "Tablodaki" : "Excel dosyasındaki";
+  const outdated = !!error?.includes(OUTDATED);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(await api.sheetScript());
+      setCopied(true);
+    } catch (e) {
+      toast(friendlyError(e), { tone: "error" });
+    }
+  };
+  const reload = (
+    <button
+      className={cn(FIX_LINK, "flex items-center gap-1")}
+      disabled={loading}
+      onClick={onReload}
+      title={`${where} satırları yeniden oku`}
+    >
+      {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+      {loading ? "okunuyor…" : "yenile"}
+    </button>
+  );
+  if (error)
+    return (
+      <div className="space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <TriangleAlert className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span className="min-w-0 flex-1 selectable">
+            {outdated
+              ? "Tablodaki betik eski: satırları buradan okuyup değiştirmek için yeni betik gerekiyor."
+              : `${where} satırlar okunamadı: ${error}`}
+          </span>
+          {reload}
+        </div>
+        {outdated && (
+          <div className="flex flex-wrap items-center gap-2 pl-5.5 text-muted-foreground">
+            <Button size="sm" variant="outline" className="h-6 text-[11px]" onClick={copy}>
+              {copied ? <Check /> : <Copy />} {copied ? "Kopyalandı" : "Yeni betiği kopyala"}
+            </Button>
+            <span>
+              Tabloda <b>Uzantılar → Apps Script</b>'te içindekini silip yapıştır, kaydet; sonra{" "}
+              <b>Dağıt → Dağıtımları yönet → ✎ → Sürüm: Yeni sürüm → Dağıt</b>. Adres değişmez.
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 px-1 text-[11px] text-muted-foreground">
+      {sheets ? <Sheet className="size-3" /> : <FileSpreadsheet className="size-3" />}
+      {rows === null ? (
+        <span>{where} satırlar okunuyor…</span>
+      ) : (
+        <span>
+          {where} {rows} satır
+          {outside > 0 && ` · ${outside} satır Kum dışında girilmiş`}
+          {missing > 0 && (
+            <span className="text-amber-700 dark:text-amber-400">
+              {` · gönderilen ${missing} satır dosyada bulunamadı`}
+            </span>
+          )}
+        </span>
+      )}
+      {rows !== null && reload}
+    </div>
+  );
+}
 
 /** Seçili satırların işlemleri: birleştir, gönder, sil. */
 function SelectionBar({
@@ -913,6 +1157,7 @@ function ClosePanel({
   onSend,
   onOpenDay,
   onReviewDay,
+  onShowDay,
   run,
 }: {
   title: string;
@@ -931,11 +1176,13 @@ function ClosePanel({
   onSend: () => void;
   onOpenDay: (iso: string) => void;
   onReviewDay: (iso: string) => void;
+  /** Günün kartını açıp gösterir; `focusEmpty` ise ilk boş açıklamaya odaklanır. */
+  onShowDay: (iso: string, focusEmpty?: boolean) => void;
   run: Run;
 }) {
   const label = (iso: string) => <span className="w-24 shrink-0 capitalize">{dayFmt.format(parseIsoDate(iso))}</span>;
   const show = (iso: string, focusEmpty = false) => (
-    <button className={FIX_LINK} onClick={() => showDay(iso, focusEmpty)}>
+    <button className={FIX_LINK} onClick={() => onShowDay(iso, focusEmpty)}>
       göster
     </button>
   );
@@ -1190,6 +1437,9 @@ function DayCard({
   onOpenDay,
   onReviewDay,
   run,
+  runFile,
+  file,
+  outside,
   ai,
   selected,
   onToggle,
@@ -1202,6 +1452,11 @@ function DayCard({
   onOpenDay: (iso: string) => void;
   onReviewDay: (iso: string) => void;
   run: Run;
+  /** Dosyaya da yazan işlemler (sonra dosyanın satırları yeniden okunur). */
+  runFile: Run;
+  file: FileState;
+  /** Günün dosyada Kum dışında girilmiş satırları. */
+  outside: SheetRowView[];
   /** Yapay zekâyla yazma açık. */
   ai: boolean;
   selected: Set<string>;
@@ -1231,14 +1486,28 @@ function DayCard({
     return list;
   }, [sheet, projects]);
   const date = parseIsoDate(day.date);
-  const total = day.entries.reduce((s, e) => s + e.hours, 0);
+  const outsideHours = outside.reduce((s, r) => s + (r.hours ?? 0), 0);
+  const total = day.entries.reduce((s, e) => s + e.hours, 0) + outsideHours;
   const totalActual = day.entries.reduce((s, e) => s + worked(e), 0);
   const exported = day.entries.length > 0 && day.entries.every((e) => e.exported);
-  const empty = day.entries.length === 0 && day.unassignedSeconds < 60 && day.meetings.length === 0 && day.hidden === 0;
+  const empty =
+    day.entries.length === 0 &&
+    outside.length === 0 &&
+    day.unassignedSeconds < 60 &&
+    day.meetings.length === 0 &&
+    day.hidden === 0;
   const weekend = date.getDay() === 0 || date.getDay() === 6;
   if (empty && weekend && !alwaysShow) return null;
   // Günlük saatten sapma (bugün ve öncesi; ileri tarihli gün henüz bitmedi).
-  const diff = day.date <= isoDate(today()) ? hoursDiff(day, config.dayHours) : 0;
+  const diff = day.date <= isoDate(today()) ? hoursDiff(day, config.dayHours, outsideHours) : 0;
+  // Kum'un satırları ve dosyada Kum dışında girilmiş satırlar, başlangıca göre (başlangıcı
+  // olmayan dosya satırları sonda).
+  const lines: ({ entry: EntryView; row?: undefined } | { row: SheetRowView; entry?: undefined })[] = [
+    ...day.entries.map((entry) => ({ entry })),
+    ...outside.map((row) => ({ row })),
+  ];
+  const startOf = (l: (typeof lines)[number]) => (l.entry ? l.entry.start : (l.row.start ?? "99"));
+  lines.sort((a, b) => startOf(a).localeCompare(startOf(b)));
   const missing = day.entries.some(needsDetails);
   const open = day.entries.filter((e) => !e.exported);
   // Kaydedilmiş (düzenlenmiş, elle eklenmiş) ya da gizlenmiş satır varsa sıfırlanabilir.
@@ -1392,7 +1661,7 @@ function DayCard({
           )}
         </span>
       </div>
-      {day.entries.length > 0 && (
+      {lines.length > 0 && (
         // Dar pencerede açıklama sütunu ezilmesin: satırlar kart içinde yatay kayar.
         <div className="overflow-x-auto border-t">
           <div className={cn("grid items-center gap-2 px-4 pt-2 text-[11px] text-muted-foreground", ROW_GRID)}>
@@ -1415,17 +1684,31 @@ function DayCard({
             <span />
           </div>
           <ul className="pb-1.5">
-            {day.entries.map((e) => (
-              <EntryRow
-                key={e.key}
-                entry={e}
-                divisions={divisions}
-                projects={projects}
-                run={run}
-                selected={selected.has(e.key)}
-                onSelect={(on) => onToggle([e.key], on)}
-              />
-            ))}
+            {lines.map(({ entry: e, row }) =>
+              e ? (
+                <EntryRow
+                  key={e.key}
+                  entry={e}
+                  divisions={divisions}
+                  projects={projects}
+                  run={run}
+                  runFile={runFile}
+                  file={file}
+                  sheets={!!sheet.sheetUrl}
+                  sheetId={sheet.id}
+                  selected={selected.has(e.key)}
+                  onSelect={(on) => onToggle([e.key], on)}
+                />
+              ) : (
+                <FileRowItem
+                  key={`dosya-${row.row}-${row.start}-${row.details}`}
+                  row={row}
+                  sheet={sheet}
+                  divisions={divisions}
+                  runFile={runFile}
+                />
+              ),
+            )}
           </ul>
         </div>
       )}
@@ -1544,6 +1827,10 @@ function EntryRow({
   divisions,
   projects,
   run,
+  runFile,
+  file,
+  sheets,
+  sheetId,
   selected,
   onSelect,
 }: {
@@ -1552,10 +1839,19 @@ function EntryRow({
   divisions: string[];
   projects: Tag[];
   run: Run;
+  runFile: Run;
+  file: FileState;
+  /** Çizelge Google Sheets'e bağlı (değilse Excel). */
+  sheets: boolean;
+  sheetId: string;
   selected: boolean;
   onSelect: (on: boolean) => void;
 }) {
-  const editable = !entry.exported;
+  // Aktarılmış satır dosyadaki satırı bulunduysa düzenlenir; değişiklik dosyaya da yazılır.
+  const fileRow = entry.exported && entry.id && file.kind === "ready" ? file.rowOf.get(entry.id) : undefined;
+  const lost = entry.exported && !!entry.id && file.kind === "ready" && file.missing.has(entry.id);
+  const editable = !entry.exported || fileRow !== undefined;
+  const w = fileWords(sheets);
   const [draft, setDraft] = useState(entry);
   // Her yeniden yüklemede satırlar yeni nesne olarak gelir; yalnızca içerik değişince taslak
   // yenilenir ve henüz kaydedilmemiş yazılanlar yeni içeriğin üzerinde kalır (başka satırın
@@ -1573,26 +1869,65 @@ function EntryRow({
     });
   }, [entryJson]);
   // Canlı satır ilk düzenlemede kaydedilir (aralıklarıyla); sonra kimliğiyle güncellenir.
-  const save = (next: EntryView) => run(() => api.saveTimesheetEntry(entry.id, next))();
+  // Aktarılmış satır önce dosyadaki satırına, sonra Kum'a yazılır.
+  const save = (next: EntryView) =>
+    entry.exported
+      ? runFile(() => api.saveTimesheetEntry(entry.id, next, fileRow))()
+      : run(() => api.saveTimesheetEntry(entry.id, next))();
   const commit = () => {
     const next = { ...draft, details: draft.details.trim(), party: draft.party.trim() };
+    // Dosyadaki satırın açıklaması boşaltılmaz.
+    if (entry.exported && !next.details) return setDraft({ ...draft, details: entry.details });
     if (EDITABLE.some((k) => next[k] !== entry[k])) save(next);
+  };
+  // Aktarılmış satır dosyadan da silinir; geri alınınca satır geri gelir ve yeniden gönderilir.
+  const remove = () => {
+    if (!entry.exported || !entry.id) return run(() => dismissRows([entry]))();
+    const id = entry.id;
+    return runFile(async () => {
+      await api.dismissTimesheetEntry(id, entry, fileRow);
+      toast(`Satır ${w.from} da silindi`, {
+        action: {
+          label: "Geri al",
+          run: () =>
+            runFile(async () => {
+              await api.undismissTimesheetEntries([id]);
+              await api.exportTimesheet(sheetId, [{ id, entry }]);
+              toast(`Satır ${w.to} geri eklendi`, { tone: "success" });
+            })(),
+        },
+      });
+    })();
   };
   const project = projects.find((p) => p.id === entry.projectId);
   const options =
     divisions.some((d) => d === draft.division) || !draft.division ? divisions : [...divisions, draft.division];
   const cell = "h-7 px-1.5 text-xs";
   // Açıklaması boş satır gönderilemez: hafifçe vurgulanır.
-  const missing = editable && !draft.details.trim();
+  const missing = !entry.exported && !draft.details.trim();
   const stale = isStale(entry);
+  const sentTitle =
+    fileRow !== undefined
+      ? `Gönderildi: ${w.of} ${fileRow}. satırı. Değişiklikler oraya da yazılır.`
+      : lost
+        ? `Gönderildi, ama ${w.in} bulunamadı (orada silinmiş ya da başlangıcı değiştirilmiş olabilir).`
+        : file.kind === "loading"
+          ? `Gönderildi; ${w.inAdj} satırı aranıyor…`
+          : "Gönderildi";
 
   return (
     <li className={cn(stale && "bg-amber-500/5")}>
       <div className={cn("grid items-center gap-2 px-4 py-1", ROW_GRID, !editable && "text-muted-foreground")}>
-        {editable ? (
+        {!entry.exported ? (
           <SelectBox checked={selected} onChange={onSelect} label="Satırı seç" />
+        ) : lost ? (
+          <TriangleAlert className="size-3.5 text-amber-600 dark:text-amber-400" aria-label={sentTitle}>
+            <title>{sentTitle}</title>
+          </TriangleAlert>
         ) : (
-          <Check className="size-3.5 text-success" aria-label="Gönderildi" />
+          <Check className="size-3.5 text-success" aria-label={sentTitle}>
+            <title>{sentTitle}</title>
+          </Check>
         )}
         <Input
           type="time"
@@ -1681,9 +2016,13 @@ function EntryRow({
             size="icon-sm"
             variant="ghost"
             className="size-7 text-muted-foreground hover:text-destructive"
-            aria-label="Satırı sil"
-            title="Sil; bildirimden geri alınır"
-            onClick={run(() => dismissRows([entry]))}
+            aria-label={entry.exported ? `Satırı ${w.from} da sil` : "Satırı sil"}
+            title={
+              entry.exported
+                ? `Sil: satır ${w.from} da silinir; bildirimden geri alınır`
+                : "Sil; bildirimden geri alınır"
+            }
+            onClick={remove}
           >
             <Trash2 />
           </Button>
@@ -1697,14 +2036,239 @@ function EntryRow({
           {entry.stale! > 0
             ? `Takipte değişti: işin bir kısmı raporda başka projeye alınmış, projede ${actual(entry.stale!)} kaldı.`
             : "Takipte değişti: bu satırın işi raporda başka projeye alınmış."}
+          {entry.exported && ` Güncellenince ${w.inAdj} satırı da değişir.`}
           <button
-            className="rounded font-medium underline underline-offset-2 hover:text-foreground"
-            onClick={run(() => refreshRows([entry.id!]))}
+            className="rounded font-medium underline underline-offset-2 hover:text-foreground disabled:opacity-50"
+            disabled={entry.exported && fileRow === undefined}
+            onClick={(entry.exported ? runFile : run)(() => refreshRows([entry.id!]))}
           >
             {entry.stale! > 0 ? "Güncelle" : "Kaldır"}
           </button>
         </div>
       )}
+    </li>
+  );
+}
+
+/** Dosya satırında düzenlenen alanlar. */
+type FileDraft = Pick<FileRow, "start" | "hours" | "kind" | "details" | "party" | "division">;
+
+/**
+ * Dosyada Kum dışında girilmiş satır: Kum'da kaydı yok, doğrudan dosyadaki satır değişir.
+ * Simgesinden tarihi değiştirilir (satır dosyada yeni gününe taşınır). Silme bildirimden geri
+ * alınır; başlangıcı, saati ya da türü eksik satır geri eklenemeyeceği için iki tıklamayla silinir.
+ */
+function FileRowItem({
+  row,
+  sheet,
+  divisions,
+  runFile,
+}: {
+  row: SheetRowView;
+  sheet: TimesheetInfo;
+  divisions: string[];
+  runFile: Run;
+}) {
+  const pick = (r: FileRow): FileDraft => ({
+    start: r.start,
+    hours: r.hours,
+    kind: r.kind,
+    details: r.details,
+    party: r.party,
+    division: r.division,
+  });
+  const [draft, setDraft] = useState<FileDraft>(() => pick(row));
+  const rowJson = JSON.stringify(row);
+  useEffect(() => setDraft(pick(JSON.parse(rowJson))), [rowJson]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const t = setTimeout(() => setConfirmDelete(false), 4000);
+    return () => clearTimeout(t);
+  }, [confirmDelete]);
+  const w = fileWords(!!sheet.sheetUrl);
+  const clean = (next: FileDraft) => ({ ...next, details: next.details.trim(), party: next.party.trim() });
+  const save = (next: FileDraft) => {
+    const c = clean(next);
+    const changed = (Object.keys(c) as (keyof FileDraft)[]).some((k) => c[k] !== row[k]);
+    if (!changed || !c.start || !c.hours) return;
+    runFile(() => api.saveSheetRow(sheet.id, row, { ...row, ...c }))();
+  };
+  // Dosyaya yeniden yazılabilir: başlangıcı, saati ve türü geçerli (geri ekleme, taşıma).
+  const complete = (r: FileDraft) => !!r.start && !!r.hours && KINDS.includes(r.kind as EntryKind);
+  const restorable = complete(row);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveTo, setMoveTo] = useState(row.date);
+  /** Satırı başka güne taşır; bildirimden geri alınır (eski gününe döner). */
+  const move = () => {
+    const date = moveTo;
+    if (!date || date === row.date) return;
+    setMoveOpen(false);
+    const next: FileRow = { ...row, ...clean(draft), date };
+    runFile(async () => {
+      const at = await api.saveSheetRow(sheet.id, row, next);
+      toast(`Satır ${dayFmt.format(parseIsoDate(date))} gününe taşındı`, {
+        tone: "success",
+        action: {
+          label: "Geri al",
+          run: () => runFile(() => api.saveSheetRow(sheet.id, { ...next, row: at }, row))(),
+        },
+      });
+    })();
+  };
+  const remove = () => {
+    if (!restorable && !confirmDelete) return setConfirmDelete(true);
+    setConfirmDelete(false);
+    runFile(async () => {
+      await api.deleteSheetRow(sheet.id, row);
+      toast(
+        `Satır ${w.from} silindi`,
+        restorable
+          ? {
+              action: {
+                label: "Geri al",
+                run: () =>
+                  runFile(async () => {
+                    await api.restoreSheetRow(sheet.id, row);
+                    toast(`Satır ${w.to} geri eklendi`, { tone: "success" });
+                  })(),
+              },
+            }
+          : { tone: "success" },
+      );
+    })();
+  };
+  const kinds = KINDS.includes(draft.kind as EntryKind) || !draft.kind ? KINDS : [...KINDS, draft.kind];
+  const options =
+    divisions.some((d) => d === draft.division) || !draft.division ? divisions : [...divisions, draft.division];
+  const cell = "h-7 px-1.5 text-xs";
+  const title = `${w.Of} ${row.row}. satırı; Kum dışında girilmiş. Değişiklikler doğrudan oraya yazılır. Tıkla: tarihi değiştir.`;
+  const Icon = sheet.sheetUrl ? Sheet : FileSpreadsheet;
+
+  return (
+    <li className="bg-muted/30">
+      <div className={cn("grid items-center gap-2 px-4 py-1", ROW_GRID)}>
+        <Popover
+          open={moveOpen}
+          onOpenChange={(o) => {
+            setMoveOpen(o);
+            if (o) setMoveTo(row.date);
+          }}
+        >
+          <PopoverTrigger asChild>
+            <button
+              className="-m-1 grid size-6 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              title={title}
+              aria-label={`${w.Of} ${row.row}. satırı: tarihi değiştir`}
+            >
+              <Icon className="size-3.5" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-64 space-y-2.5 p-3">
+            <p className="text-xs text-muted-foreground">
+              {w.Of} {row.row}. satırı · Kum dışında girilmiş
+            </p>
+            <label className="block space-y-1 text-xs font-medium">
+              <span>Tarih</span>
+              <Input
+                type="date"
+                className="h-8 text-xs"
+                value={moveTo}
+                onChange={(e) => setMoveTo(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && move()}
+              />
+            </label>
+            {!complete(draft) && (
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                Taşımak için başlangıç, saat ve tür dolu olmalı.
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setMoveOpen(false)}>
+                Vazgeç
+              </Button>
+              <Button size="sm" disabled={!moveTo || moveTo === row.date || !complete(draft)} onClick={move}>
+                Taşı
+              </Button>
+            </div>
+          </PopoverContent>
+        </Popover>
+        <Input
+          type="time"
+          className={cell}
+          value={draft.start?.slice(0, 5) ?? ""}
+          onChange={(e) => setDraft({ ...draft, start: e.target.value ? `${e.target.value}:00` : null })}
+          onBlur={() => save(draft)}
+          aria-label="Başlangıç"
+        />
+        <Input
+          type="number"
+          step="0.25"
+          min="0.25"
+          className={cn(cell, "w-16 tabular")}
+          value={draft.hours == null ? "" : Number(draft.hours.toFixed(2))}
+          onChange={(e) => setDraft({ ...draft, hours: e.target.value === "" ? null : Number(e.target.value) })}
+          onBlur={() => save(draft)}
+          aria-label="Saat"
+        />
+        <Select value={draft.kind} onValueChange={(kind) => save({ ...draft, kind })}>
+          <SelectTrigger size="sm" className="h-7 text-xs" aria-label="Tür">
+            <SelectValue placeholder="Tür" />
+          </SelectTrigger>
+          <SelectContent>
+            {kinds.map((k) => (
+              <SelectItem key={k} value={k}>
+                {k}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Input
+          className={cell}
+          list="timesheet-details"
+          value={draft.details}
+          onChange={(e) => setDraft({ ...draft, details: e.target.value })}
+          onBlur={() => save(draft)}
+          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          aria-label="Açıklama"
+        />
+        <Input
+          className={cell}
+          list="timesheet-parties"
+          value={draft.party}
+          onChange={(e) => setDraft({ ...draft, party: e.target.value })}
+          onBlur={() => save(draft)}
+          aria-label="Taraf"
+        />
+        <Select value={draft.division} onValueChange={(division) => save({ ...draft, division })}>
+          <SelectTrigger size="sm" className="h-7 min-w-0 text-xs" aria-label="Birim">
+            <SelectValue placeholder="Birim seç" />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((d) => (
+              <SelectItem key={d} value={d}>
+                {d}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="icon-sm"
+          variant={confirmDelete ? "destructive" : "ghost"}
+          className={cn("size-7", !confirmDelete && "text-muted-foreground hover:text-destructive")}
+          aria-label={confirmDelete ? `Satırı ${w.from} sil: onayla` : `Satırı ${w.from} sil`}
+          title={
+            restorable
+              ? `Sil: satır ${w.from} silinir; bildirimden geri alınır`
+              : confirmDelete
+                ? `Onaylamak için tekrar tıkla: satır ${w.from} silinir`
+                : `Sil: başlangıcı, saati ya da türü eksik satır geri eklenemez; iki tıklamayla silinir`
+          }
+          onClick={remove}
+        >
+          {confirmDelete ? <Check /> : <Trash2 />}
+        </Button>
+      </div>
     </li>
   );
 }

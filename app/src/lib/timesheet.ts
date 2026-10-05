@@ -21,9 +21,12 @@ export function needsDetails(e: EntryView) {
   return !e.exported && !e.details.trim();
 }
 
-/** Kaydedildikten sonra işi raporda başka projeye alınmış satır (güncellenmeden gönderilmez). */
+/**
+ * Kaydedildikten sonra işi raporda başka projeye alınmış satır: aktarılmamışsa güncellenmeden
+ * gönderilmez, aktarılmışsa güncellenince dosyadaki satırı da değişir.
+ */
 export function isStale(e: EntryView) {
-  return !e.exported && e.stale != null;
+  return e.stale != null;
 }
 
 /**
@@ -38,18 +41,19 @@ export function started(e: TimesheetEntry, now: Date) {
   return e.start.slice(0, 5) <= hm;
 }
 
-/** Satır gönderilemez: açıklaması boş ya da takipte değişmiş. */
+/** Aktarılmamış satır gönderilemez: açıklaması boş ya da takipte değişmiş. */
 export function blocked(e: EntryView) {
-  return needsDetails(e) || isStale(e);
+  return !e.exported && (needsDetails(e) || isStale(e));
 }
 
 /**
- * Günün firmaya yazılan saatinin günlük saatten farkı (+ fazla, − eksik). Hafta sonu, kaydı
- * olmayan ve tamamı aktarılmış (kapanmış) günlerde 0.
+ * Günün firmaya yazılan saatinin günlük saatten farkı (+ fazla, − eksik); `extra` dosyada Kum
+ * dışında girilmiş satırların saati. Hafta sonu, Kum'da kaydı olmayan ve tamamı aktarılmış
+ * (kapanmış) günlerde 0.
  */
-export function hoursDiff(day: TimesheetDay, dayHours: number) {
+export function hoursDiff(day: TimesheetDay, dayHours: number, extra = 0) {
   if (!isWeekday(day.date) || day.entries.length === 0 || day.entries.every((e) => e.exported)) return 0;
-  const diff = day.entries.reduce((s, e) => s + e.hours, 0) - dayHours;
+  const diff = day.entries.reduce((s, e) => s + e.hours, 0) + extra - dayHours;
   return Math.abs(diff) < HOURS_EPSILON ? 0 : diff;
 }
 
@@ -72,8 +76,16 @@ export type CloseReport = {
   issues: number;
 };
 
-/** Dönemin günlerini kapatmadan önce denetler; bugünden sonraki günlere bakılmaz. */
-export function closeReport(days: TimesheetDay[], dayHours: number, todayIso: string): CloseReport {
+/**
+ * Dönemin günlerini kapatmadan önce denetler; bugünden sonraki günlere bakılmaz. `extra`: gün
+ * başına dosyada Kum dışında girilmiş satırların saati.
+ */
+export function closeReport(
+  days: TimesheetDay[],
+  dayHours: number,
+  todayIso: string,
+  extra: Map<string, number> = new Map(),
+): CloseReport {
   const r: CloseReport = {
     unassigned: [],
     meetings: [],
@@ -88,9 +100,9 @@ export function closeReport(days: TimesheetDay[], dayHours: number, todayIso: st
     if (d.date > todayIso) continue;
     if (d.unassignedSeconds >= UNASSIGNED_MIN) r.unassigned.push({ date: d.date, seconds: d.unassignedSeconds });
     if (d.meetings.length > 0) r.meetings.push(d.date);
-    const diff = hoursDiff(d, dayHours);
+    const diff = hoursDiff(d, dayHours, extra.get(d.date) ?? 0);
     if (diff !== 0) r.hours.push({ date: d.date, hours: dayHours + diff, diff });
-    if (isWeekday(d.date) && d.entries.length === 0) r.empty.push(d.date);
+    if (isWeekday(d.date) && d.entries.length === 0 && !extra.get(d.date)) r.empty.push(d.date);
     const blank = d.entries.filter(needsDetails).length;
     if (blank > 0) r.details.push({ date: d.date, rows: blank });
     const stale = d.entries.filter(isStale);
@@ -146,4 +158,64 @@ export function copyDetails(
     out.push({ entry: e, details: texts[Math.min(i, texts.length - 1)] });
   }
   return out;
+}
+
+/** Günün dosyada Kum dışında girilmiş satırı (özet için yalnızca saati ve birimi). */
+export type OutsideRow = { hours: number | null; division: string };
+
+/** Hafta ve ay panolarında bir gün. */
+export type DaySummary = {
+  date: string;
+  /** Firmaya yazılan saat: Kum'un satırları ve dosyada Kum dışında girilenler. */
+  hours: number;
+  /** Birim başına saat, büyükten küçüğe. */
+  divisions: { division: string; hours: number }[];
+  /** Gönderilmemiş Kum satırı sayısı. */
+  unsent: number;
+  /** Satırı var ve Kum'un satırlarının hepsi gönderilmiş. */
+  sent: boolean;
+  /** Hiç satırı yok. */
+  empty: boolean;
+  /** Günlük saatten fark (bugün ve öncesi; bkz. [hoursDiff]). */
+  diff: number;
+  /** Bakılacaklar, okunur cümlelerle. */
+  problems: string[];
+};
+
+/** Günün özeti: hafta ve ay panolarında hücre, durum ve ipucu. */
+export function summarizeDay(day: TimesheetDay, outside: OutsideRow[], dayHours: number, todayIso: string): DaySummary {
+  const by = new Map<string, number>();
+  const add = (division: string, hours: number) => by.set(division, (by.get(division) ?? 0) + hours);
+  for (const e of day.entries) add(e.division, e.hours);
+  for (const r of outside) add(r.division, r.hours ?? 0);
+  const extra = outside.reduce((s, r) => s + (r.hours ?? 0), 0);
+  const hours = [...by.values()].reduce((s, h) => s + h, 0);
+  const unsent = day.entries.filter((e) => !e.exported).length;
+  const blank = day.entries.filter(needsDetails).length;
+  const stale = day.entries.filter(isStale).length;
+  const problems: string[] = [];
+  if (blank) problems.push(`${blank} satırın açıklaması boş`);
+  if (stale) problems.push(`${stale} satır takipte değişti`);
+  if (day.meetings.length) problems.push(`${day.meetings.length} toplantının projesi belli değil`);
+  if (day.date <= todayIso && day.unassignedSeconds >= UNASSIGNED_MIN)
+    problems.push(`${Math.round(day.unassignedSeconds / 60)} dk atanmamış süre`);
+  return {
+    date: day.date,
+    hours,
+    divisions: [...by.entries()]
+      .filter(([, h]) => h > 0)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "tr"))
+      .map(([division, h]) => ({ division, hours: h })),
+    unsent,
+    sent: day.entries.length > 0 && unsent === 0,
+    empty: day.entries.length === 0 && outside.length === 0,
+    diff: day.date <= todayIso ? hoursDiff(day, dayHours, extra) : 0,
+    problems,
+  };
+}
+
+/** Birimin rengi: listedeki sırasına göre paletten (birimin kendi rengi yok). */
+export function divisionColor(divisions: string[], division: string): string {
+  const i = divisions.findIndex((d) => d.toLocaleLowerCase("tr") === division.toLocaleLowerCase("tr"));
+  return i < 0 ? "var(--c0)" : `var(--c${(i % 8) + 1})`;
 }

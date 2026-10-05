@@ -2,6 +2,10 @@
 //! projelerin işini alır), günün satırları (kaydedilmiş satırlar ve takipten gelen canlı
 //! öneriler), satırları düzenleme, gizleme ve birleştirme, şablonu içe aktarma ve satırları
 //! çizelgenin Excel dosyasına ya da Google Sheets tablosuna ekleme.
+//!
+//! Dosyadaki satırlar da okunur: Kum'un aktardığı satırlar dosyadaki satırlarıyla eşlenir,
+//! Kum dışında girilen satırlar ayrıca gösterilir ve buradan değiştirilir. Aktarılmış satır
+//! düzenlenince, silinince ya da takipte değişip güncellenince dosyadaki satırı da değişir.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +17,7 @@ use tauri_plugin_dialog::DialogExt;
 use tracky_core::meeting_suggest::{MeetingSuggester, MeetingSuggestion};
 use tracky_core::store::{DayRow, TimesheetContext};
 use tracky_core::timesheet::{
-    self, Meeting, Piece, ProjectMapping, Timesheet, TimesheetConfig, TimesheetEntry,
+    self, FileRow, Meeting, Piece, ProjectMapping, Timesheet, TimesheetConfig, TimesheetEntry,
 };
 use tracky_core::{Rule, RuleField, Store, Tag, TagKind};
 
@@ -72,6 +76,142 @@ fn not_exporting() -> CmdResult<()> {
         return Err("Zaman çizelgesi aktarılıyor; aktarım bitince tekrar dene.".into());
     }
     Ok(())
+}
+
+/// Dosyaya tek satır yazan komutlar da aktarım bayrağını tutar: aktarımla ya da birbirleriyle
+/// aynı anda dosyaya yazılmasın.
+fn begin_write() -> CmdResult<ExportGuard> {
+    if EXPORTING.swap(true, Ordering::Acquire) {
+        return Err("Zaman çizelgesi dosyasına yazılıyor; bitince tekrar dene.".into());
+    }
+    Ok(ExportGuard)
+}
+
+/// Çizelgenin kayıtlarının yazıldığı yer: Google Sheets (bağlıysa) ya da Excel dosyası.
+#[derive(Clone)]
+enum FileTarget {
+    Sheets { url: String, token: String },
+    Excel { path: std::path::PathBuf },
+}
+
+impl FileTarget {
+    fn of(sheet: &Timesheet, token: &str) -> CmdResult<Self> {
+        match (&sheet.sheet_url, &sheet.file_path) {
+            (Some(url), _) => Ok(Self::Sheets {
+                url: url.clone(),
+                token: token.to_string(),
+            }),
+            (None, Some(path)) => Ok(Self::Excel { path: path.into() }),
+            (None, None) => Err(NO_TARGET.into()),
+        }
+    }
+
+    /// Çizelgenin ve yazıldığı yerin bilgileri (depo kilidi tutulurken).
+    fn load(store: &Store, timesheet_id: &str) -> CmdResult<(Timesheet, Self)> {
+        let config = store.timesheet_config().map_err(err)?;
+        let sheet = config.timesheet(timesheet_id).cloned().ok_or(NO_SHEET)?;
+        let target = Self::of(&sheet, &config.sheet_token)?;
+        Ok((sheet, target))
+    }
+
+    async fn list(&self, from: NaiveDate, to: NaiveDate) -> CmdResult<Vec<FileRow>> {
+        let target = self.clone();
+        let rows = tauri::async_runtime::spawn_blocking(move || match &target {
+            Self::Sheets { url, token } => tracky_xlsx::sheets::list(url, token, from, to),
+            Self::Excel { path } => tracky_xlsx::list(path, from, to),
+        })
+        .await
+        .map_err(err)?
+        .map_err(err)?;
+        Ok(rows.into_iter().map(file_row).collect())
+    }
+
+    async fn update(
+        &self,
+        consultant: &str,
+        expect: &FileRow,
+        row: &TimesheetEntry,
+    ) -> CmdResult<u32> {
+        let (target, consultant) = (self.clone(), consultant.to_string());
+        let (expect, row) = (sheet_row(expect), xlsx_row(row));
+        tauri::async_runtime::spawn_blocking(move || match &target {
+            Self::Sheets { url, token } => {
+                tracky_xlsx::sheets::update(url, token, &consultant, &expect, &row)
+            }
+            Self::Excel { path } => tracky_xlsx::update(path, &consultant, &expect, &row),
+        })
+        .await
+        .map_err(err)?
+        .map_err(err)
+    }
+
+    async fn insert(&self, consultant: &str, row: &TimesheetEntry) -> CmdResult<u32> {
+        let (target, consultant, row) = (self.clone(), consultant.to_string(), xlsx_row(row));
+        tauri::async_runtime::spawn_blocking(move || match &target {
+            Self::Sheets { url, token } => {
+                tracky_xlsx::sheets::insert(url, token, &consultant, &row)
+            }
+            Self::Excel { path } => tracky_xlsx::insert(path, &consultant, &row),
+        })
+        .await
+        .map_err(err)?
+        .map_err(err)
+    }
+
+    /// `id`: satırı Kum aktardıysa kaydın kimliği (Sheets betiği onu unutur; yeniden gönderilebilir).
+    async fn remove(&self, expect: &FileRow, id: Option<&str>) -> CmdResult<()> {
+        let (target, expect, id) = (self.clone(), sheet_row(expect), id.map(str::to_string));
+        tauri::async_runtime::spawn_blocking(move || match &target {
+            Self::Sheets { url, token } => {
+                tracky_xlsx::sheets::remove(url, token, &expect, id.as_deref())
+            }
+            Self::Excel { path } => tracky_xlsx::remove(path, &expect),
+        })
+        .await
+        .map_err(err)?
+        .map_err(err)
+    }
+}
+
+fn file_row(s: tracky_xlsx::SheetRow) -> FileRow {
+    FileRow {
+        row: s.row,
+        date: s.date,
+        start: s.start,
+        hours: s.hours,
+        kind: s.kind,
+        details: s.details,
+        party: s.party,
+        division: s.division,
+        consultant: s.consultant,
+    }
+}
+
+fn sheet_row(f: &FileRow) -> tracky_xlsx::SheetRow {
+    tracky_xlsx::SheetRow {
+        row: f.row,
+        date: f.date,
+        start: f.start,
+        hours: f.hours,
+        kind: f.kind.clone(),
+        details: f.details.clone(),
+        party: f.party.clone(),
+        division: f.division.clone(),
+        consultant: f.consultant.clone(),
+    }
+}
+
+/// Kaydın dosyaya yazılan hali.
+fn xlsx_row(e: &TimesheetEntry) -> tracky_xlsx::Row {
+    tracky_xlsx::Row {
+        date: e.date,
+        start: e.start,
+        hours: e.hours,
+        kind: e.kind.label().to_string(),
+        details: e.details.trim().to_string(),
+        party: e.party.trim().to_string(),
+        division: e.division.trim().to_string(),
+    }
 }
 
 /// Geçmiş açıklamalar (otomatik tamamlama), şablondan içe aktarılır.
@@ -368,34 +508,263 @@ pub async fn assign_meeting(
         .map_err(err)
 }
 
+/// Aktarılmış satır ve aktarıldığı çizelgenin dosyası; satır aktarılmamışsa `None` (depo kilidi
+/// tutulurken).
+fn exported_entry(
+    store: &Store,
+    id: Option<&str>,
+) -> CmdResult<Option<(tracky_core::store::SavedEntry, Timesheet, FileTarget)>> {
+    let Some(saved) = id
+        .map(|id| store.timesheet_entry(id))
+        .transpose()
+        .map_err(err)?
+        .flatten()
+        .filter(|s| s.exported_at.is_some() && !s.dismissed)
+    else {
+        return Ok(None);
+    };
+    let sheet_id = saved.timesheet_id.clone().unwrap_or_default();
+    let (sheet, target) = FileTarget::load(store, &sheet_id).map_err(|e| {
+        if e == NO_SHEET {
+            "Satırın aktarıldığı zaman çizelgesi artık yok; değiştirilemez.".to_string()
+        } else {
+            e
+        }
+    })?;
+    Ok(Some((saved, sheet, target)))
+}
+
 /// Satırı kaydeder: kaydedilmiş satırı günceller, canlı öneriyi ya da elle eklenen satırı ekler.
+/// Aktarılmış satırda değişiklik önce dosyadaki satırına yazılır (`sheet_row`: dosyadaki satır
+/// numarası, bilinmiyorsa satır içeriğinden bulunur), sonra Kum'a.
 #[tauri::command]
 pub async fn save_timesheet_entry(
     app: AppHandle,
     id: Option<String>,
     entry: TimesheetEntry,
+    sheet_row: Option<u32>,
 ) -> CmdResult<String> {
-    let shared = app.state::<Shared>();
-    let store = lock(&shared.store);
-    not_exporting()?;
-    store
-        .save_timesheet_entry(id.as_deref(), &entry)
-        .map_err(err)
+    let exported = {
+        let shared = app.state::<Shared>();
+        let store = lock(&shared.store);
+        not_exporting()?;
+        match exported_entry(&store, id.as_deref())? {
+            Some(found) => found,
+            None => {
+                return store
+                    .save_timesheet_entry(id.as_deref(), &entry)
+                    .map_err(err);
+            }
+        }
+    };
+    let _guard = begin_write()?;
+    let (saved, sheet, target) = exported;
+    // Yalnızca satırın alanları değişir; proje, tarih, gerçek süre ve aralıklar Kum'da kalır.
+    let entry = TimesheetEntry {
+        date: saved.entry.date,
+        project_id: saved.entry.project_id.clone(),
+        actual_hours: saved.entry.actual_hours,
+        coverage: saved.entry.coverage.clone(),
+        ..entry
+    };
+    if !(entry.hours > 0.0 && entry.hours <= 24.0) {
+        return Err("saat 0 ile 24 arasında olmalı".into());
+    }
+    if entry.details.trim().is_empty() {
+        return Err("Açıklama boş olamaz: satır firmanın dosyasında.".into());
+    }
+    let expect = FileRow::of(&saved.entry, sheet_row.unwrap_or(0));
+    target.update(&sheet.consultant, &expect, &entry).await?;
+    lock(&app.state::<Shared>().store)
+        .save_exported_entry(&saved.id, &entry, false)
+        .map_err(err)?;
+    Ok(saved.id)
 }
 
 /// Satırı gizler (siler); canlı öneri gizlenmiş olarak kaydedilir. Satırın kimliği döner.
+/// Aktarılmış satır dosyadan da kaldırılır (geri alınmaz; "geri getir" ile yeniden gönderilir).
 #[tauri::command]
 pub async fn dismiss_timesheet_entry(
     app: AppHandle,
     id: Option<String>,
     entry: TimesheetEntry,
+    sheet_row: Option<u32>,
 ) -> CmdResult<String> {
+    let exported = {
+        let shared = app.state::<Shared>();
+        let store = lock(&shared.store);
+        not_exporting()?;
+        match exported_entry(&store, id.as_deref())? {
+            Some(found) => found,
+            None => {
+                return store
+                    .dismiss_timesheet_entry(id.as_deref(), &entry)
+                    .map_err(err);
+            }
+        }
+    };
+    let _guard = begin_write()?;
+    let (saved, _, target) = exported;
+    let expect = FileRow::of(&saved.entry, sheet_row.unwrap_or(0));
+    target.remove(&expect, Some(&saved.id)).await?;
+    lock(&app.state::<Shared>().store)
+        .withdraw_exported_entry(&saved.id, true)
+        .map_err(err)?;
+    Ok(saved.id)
+}
+
+/// Dosyadaki bir satır ve (Kum aktardıysa) Kum'daki kaydı.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetRowView {
+    #[serde(flatten)]
+    row: FileRow,
+    /// Satırı Kum aktardıysa kaydın kimliği; Kum dışında girilen satırda `None`.
+    entry_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetRows {
+    /// Dönemin dosyadaki satırları (başka danışmanlarınki hariç), dosyadaki sırayla.
+    rows: Vec<SheetRowView>,
+    /// Bu çizelgeye aktarılmış olup dosyada bulunamayan Kum kayıtları (dosyada silinmiş ya da
+    /// başlangıcı değiştirilmiş).
+    missing: Vec<String>,
+    /// Dosyada değiştirildiği için Kum'da da güncellenen kayıt sayısı (satırlar yeniden okunmalı).
+    synced: usize,
+}
+
+/// `timesheet_id` çizelgesinin dosyasındaki `start` gününden itibaren `days` günün satırları.
+/// Kum'un aktardığı satırlar kayıtlarıyla eşlenir ([`timesheet::link_file_rows`]); dosyada
+/// değiştirilmiş satırın değerleri Kum'daki kayda da geçer (firmaya giden dosyadakidir).
+#[tauri::command]
+pub async fn sheet_rows(
+    app: AppHandle,
+    timesheet_id: String,
+    start: String,
+    days: u32,
+) -> CmdResult<SheetRows> {
+    let first = parse_date(&start)?;
+    let last = first + Days::new(u64::from(days.clamp(1, 62)) - 1);
+    let (sheet, target) = FileTarget::load(&lock(&app.state::<Shared>().store), &timesheet_id)?;
+    let mut rows = target.list(first, last).await?;
+    // Ortak tabloda başka danışmanların satırları gösterilmez.
+    let me = sheet.consultant.trim().to_lowercase();
+    rows.retain(|r| {
+        let who = r.consultant.trim().to_lowercase();
+        me.is_empty() || who.is_empty() || who == me
+    });
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    not_exporting()?;
-    store
-        .dismiss_timesheet_entry(id.as_deref(), &entry)
-        .map_err(err)
+    let exported: Vec<tracky_core::store::SavedEntry> = store
+        .timesheet_entries(first, last)
+        .map_err(err)?
+        .into_iter()
+        .filter(|s| s.exported_at.is_some() && s.timesheet_id.as_deref() == Some(sheet.id.as_str()))
+        .collect();
+    let entries: Vec<&TimesheetEntry> = exported.iter().map(|s| &s.entry).collect();
+    let links = timesheet::link_file_rows(&rows, &entries);
+    // Aktarım sürerken Kum'daki kayıtlara dokunulmaz (bir sonraki okumada eşitlenir).
+    let can_sync = not_exporting().is_ok();
+    let mut synced = 0;
+    for (row, link) in rows.iter().zip(&links) {
+        let Some(j) = *link else { continue };
+        if !can_sync || row.matches(entries[j]) {
+            continue;
+        }
+        if let Some(fresh) = row.apply(entries[j]) {
+            store
+                .save_exported_entry(&exported[j].id, &fresh, false)
+                .map_err(err)?;
+            synced += 1;
+        }
+    }
+    let linked: std::collections::HashSet<usize> = links.iter().flatten().copied().collect();
+    Ok(SheetRows {
+        missing: (0..exported.len())
+            .filter(|j| !linked.contains(j))
+            .map(|j| exported[j].id.clone())
+            .collect(),
+        rows: rows
+            .into_iter()
+            .zip(links)
+            .map(|(row, link)| SheetRowView {
+                row,
+                entry_id: link.map(|j| exported[j].id.clone()),
+            })
+            .collect(),
+        synced,
+    })
+}
+
+/// Dosyadaki satırın yeni değerleri Kum'un satır biçiminde (başlangıç, saat ve tür geçerli olmalı).
+fn file_entry(row: FileRow) -> CmdResult<TimesheetEntry> {
+    let (Some(start), Some(hours)) = (row.start, row.hours) else {
+        return Err("Başlangıç ve saat dolu olmalı.".into());
+    };
+    if !(hours > 0.0 && hours <= 24.0) {
+        return Err("saat 0 ile 24 arasında olmalı".into());
+    }
+    let kind = match row.kind.trim() {
+        "Working" => timesheet::EntryKind::Working,
+        "Online" => timesheet::EntryKind::Online,
+        "F2F" => timesheet::EntryKind::F2F,
+        k => return Err(format!("bilinmeyen tür: {k}")),
+    };
+    Ok(TimesheetEntry {
+        date: row.date,
+        start,
+        hours,
+        actual_hours: None,
+        kind,
+        details: row.details,
+        party: row.party,
+        project_id: String::new(),
+        division: row.division,
+        coverage: None,
+    })
+}
+
+/// Dosyada Kum dışında girilmiş satırı değiştirir: `expect` satırın okunan hali, `row` yeni
+/// değerleri. Tarih değiştiyse satır dosyada yeni gününe taşınır. Yazılan satırın numarası.
+#[tauri::command]
+pub async fn save_sheet_row(
+    app: AppHandle,
+    timesheet_id: String,
+    expect: FileRow,
+    row: FileRow,
+) -> CmdResult<u32> {
+    let _guard = begin_write()?;
+    let (sheet, target) = FileTarget::load(&lock(&app.state::<Shared>().store), &timesheet_id)?;
+    let entry = file_entry(row)?;
+    target.update(&sheet.consultant, &expect, &entry).await
+}
+
+/// Silinen dosya satırını geri ekler (gününe, Kum'un aktarımıyla aynı kurallarla). Yazılan satırın
+/// numarası.
+#[tauri::command]
+pub async fn restore_sheet_row(
+    app: AppHandle,
+    timesheet_id: String,
+    row: FileRow,
+) -> CmdResult<u32> {
+    let _guard = begin_write()?;
+    let (sheet, target) = FileTarget::load(&lock(&app.state::<Shared>().store), &timesheet_id)?;
+    let entry = file_entry(row)?;
+    target.insert(&sheet.consultant, &entry).await
+}
+
+/// Dosyada Kum dışında girilmiş satırı kaldırır (günün tek satırıysa boşaltılır).
+#[tauri::command]
+pub async fn delete_sheet_row(
+    app: AppHandle,
+    timesheet_id: String,
+    expect: FileRow,
+) -> CmdResult<()> {
+    let _guard = begin_write()?;
+    let (_, target) = FileTarget::load(&lock(&app.state::<Shared>().store), &timesheet_id)?;
+    target.remove(&expect, None).await
 }
 
 /// Gizlenen satırları geri getirir (gizlemenin geri alınması).
@@ -474,7 +843,8 @@ pub async fn unmerge_timesheet_entries(
 }
 
 /// Takipte değişen satırları günceller: süreleri projede kalan işe iner, hiç iş kalmayan
-/// satır silinir. Silinen satır sayısı.
+/// satır silinir. Aktarılmış satırın dosyadaki satırı da güncellenir ya da kaldırılır. Silinen
+/// satır sayısı.
 #[tauri::command]
 pub async fn refresh_timesheet_entries(app: AppHandle, ids: Vec<String>) -> CmdResult<usize> {
     let dates: Vec<NaiveDate> = {
@@ -496,24 +866,58 @@ pub async fn refresh_timesheet_entries(app: AppHandle, ids: Vec<String>) -> CmdR
         local_midnight(*first),
         local_midnight(*last + Days::new(1)),
     );
-    let shared = app.state::<Shared>();
-    let store = lock(&shared.store);
-    not_exporting()?;
-    let ctx = store.timesheet_context().map_err(err)?;
-    let mut pieces = DayPieces {
-        store: &store,
-        ctx: &ctx,
-        meetings: &meetings,
-        days: HashMap::new(),
-    };
-    let mut removed = 0;
-    for id in &ids {
-        let Some(saved) = store.timesheet_entry(id).map_err(err)? else {
-            continue;
+    let (mut removed, remote) = {
+        let shared = app.state::<Shared>();
+        let store = lock(&shared.store);
+        not_exporting()?;
+        let ctx = store.timesheet_context().map_err(err)?;
+        let mut pieces = DayPieces {
+            store: &store,
+            ctx: &ctx,
+            meetings: &meetings,
+            days: HashMap::new(),
         };
-        let day = pieces.get(saved.entry.date)?;
-        if !store.refresh_timesheet_entry(id, day).map_err(err)? {
-            removed += 1;
+        let mut removed = 0;
+        // Aktarılmış satırlar: (kayıt, yeni hali; işi kalmadıysa `None`, çizelgenin dosyası).
+        let mut remote = Vec::new();
+        for id in &ids {
+            let Some(saved) = store.timesheet_entry(id).map_err(err)? else {
+                continue;
+            };
+            let day = pieces.get(saved.entry.date)?;
+            if let Some((saved, sheet, target)) = exported_entry(&store, Some(id))? {
+                if timesheet::stale_hours(day, &saved.entry).is_some() {
+                    let fresh = timesheet::refreshed(day, &saved.entry);
+                    remote.push((saved, sheet, target, fresh));
+                }
+                continue;
+            }
+            if !store.refresh_timesheet_entry(id, day).map_err(err)? {
+                removed += 1;
+            }
+        }
+        (removed, remote)
+    };
+    if remote.is_empty() {
+        return Ok(removed);
+    }
+    let _guard = begin_write()?;
+    for (saved, sheet, target, fresh) in remote {
+        let expect = FileRow::of(&saved.entry, 0);
+        match fresh {
+            Some(fresh) => {
+                target.update(&sheet.consultant, &expect, &fresh).await?;
+                lock(&app.state::<Shared>().store)
+                    .save_exported_entry(&saved.id, &fresh, true)
+                    .map_err(err)?;
+            }
+            None => {
+                target.remove(&expect, Some(&saved.id)).await?;
+                lock(&app.state::<Shared>().store)
+                    .withdraw_exported_entry(&saved.id, false)
+                    .map_err(err)?;
+                removed += 1;
+            }
         }
     }
     Ok(removed)
@@ -962,18 +1366,7 @@ pub async fn export_timesheet(
         let ids: Vec<String> = pending.iter().map(|(id, _)| id.clone()).collect();
         (sheet, ctx.config.sheet_token.clone(), ids, pending)
     };
-    let rows: Vec<tracky_xlsx::Row> = pending
-        .iter()
-        .map(|(_, e)| tracky_xlsx::Row {
-            date: e.date,
-            start: e.start,
-            hours: e.hours,
-            kind: e.kind.label().to_string(),
-            details: e.details.clone(),
-            party: e.party.clone(),
-            division: e.division.clone(),
-        })
-        .collect();
+    let rows: Vec<tracky_xlsx::Row> = pending.iter().map(|(_, e)| xlsx_row(e)).collect();
     let consultant = sheet.consultant.clone();
     let (exported, target) = match (sheet.sheet_url.clone(), sheet.file_path.clone()) {
         (Some(url), _) => {

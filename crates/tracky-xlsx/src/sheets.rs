@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{Error, Result, Row, Template};
+use crate::{Error, Result, Row, SheetRow, Template};
 
 /// Tabloya eklenecek betik; `{{TOKEN}}` yerine [`script`] anahtarı koyar.
 pub const APPS_SCRIPT: &str = include_str!("apps_script.gs");
@@ -142,19 +142,7 @@ pub fn append(
     consultant: &str,
     rows: &[(String, Row)],
 ) -> Result<SheetAppended> {
-    let wire: Vec<WireRow> = rows
-        .iter()
-        .map(|(id, r)| WireRow {
-            id,
-            date: r.date.format("%Y-%m-%d").to_string(),
-            start: r.start.format("%H:%M").to_string(),
-            hours: r.hours,
-            kind: &r.kind,
-            details: &r.details,
-            party: &r.party,
-            division: &r.division,
-        })
-        .collect();
+    let wire: Vec<Value> = rows.iter().map(|(id, r)| wire(id, r)).collect();
     let v = call(
         url,
         json!({ "token": token, "action": "append", "consultant": consultant, "rows": wire }),
@@ -166,6 +154,96 @@ pub fn append(
         skipped: count("skipped"),
         sheet: string(&v, "sheet").unwrap_or_default(),
     })
+}
+
+/// Betik eski sürümse (yeni işlemi tanımıyorsa) güncelleme yolunu söyleyen hata.
+fn outdated(e: Error) -> Error {
+    match e {
+        Error::Sheets(m) if m.starts_with("Bilinmeyen işlem") => Error::Sheets(
+            "tablodaki betik eski; Kum'dan betiği yeniden kopyalayıp yapıştır, sonra Dağıt → \
+             Dağıtımları yönet → düzenle → Yeni sürüm ile güncelle (adres değişmez)"
+                .into(),
+        ),
+        Error::Sheets(m) if m.starts_with(CHANGED) => Error::Changed,
+        e => e,
+    }
+}
+
+/// Betiğin "satır değişmiş" hatasının başı.
+const CHANGED: &str = "Satır değişmiş";
+
+/// `from`–`to` (dahil) tarihli kayıt satırları, tablodaki sırayla.
+pub fn list(
+    url: &str,
+    token: &str,
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> Result<Vec<SheetRow>> {
+    let v = call(
+        url,
+        json!({ "token": token, "action": "list", "from": from.to_string(), "to": to.to_string() }),
+    )
+    .map_err(outdated)?;
+    serde_json::from_value(v.get("rows").cloned().unwrap_or_default())
+        .map_err(|e| Error::Sheets(format!("satırlar okunamadı: {e}")))
+}
+
+fn wire(id: &str, r: &Row) -> Value {
+    json!(WireRow {
+        id,
+        date: r.date.format("%Y-%m-%d").to_string(),
+        start: r.start.format("%H:%M").to_string(),
+        hours: r.hours,
+        kind: &r.kind,
+        details: &r.details,
+        party: &r.party,
+        division: &r.division,
+    })
+}
+
+/// `expect` satırını `row` değerleriyle değiştirir (tarih değiştiyse satır yeni gününe taşınır);
+/// yazılan satırın numarası.
+pub fn update(
+    url: &str,
+    token: &str,
+    consultant: &str,
+    expect: &SheetRow,
+    row: &Row,
+) -> Result<u32> {
+    let v = call(
+        url,
+        json!({
+            "token": token,
+            "action": "update",
+            "consultant": consultant,
+            "expect": expect,
+            "row": wire("", row),
+        }),
+    )
+    .map_err(outdated)?;
+    Ok(v.get("row").and_then(Value::as_u64).unwrap_or(0) as u32)
+}
+
+/// Tek kaydı gününe ekler (silmenin geri alınması); son aktarımın geri alma işaretlerine
+/// dokunmaz. Yazılan satırın numarası.
+pub fn insert(url: &str, token: &str, consultant: &str, row: &Row) -> Result<u32> {
+    let v = call(
+        url,
+        json!({ "token": token, "action": "insert", "consultant": consultant, "row": wire("", row) }),
+    )
+    .map_err(outdated)?;
+    Ok(v.get("row").and_then(Value::as_u64).unwrap_or(0) as u32)
+}
+
+/// `expect` satırını kaldırır (günün tek satırıysa boşaltır). `id`: satırı Kum yazdıysa kaydın
+/// kimliği; betik onu unutur, kayıt yeniden gönderilebilir.
+pub fn remove(url: &str, token: &str, expect: &SheetRow, id: Option<&str>) -> Result<()> {
+    call(
+        url,
+        json!({ "token": token, "action": "remove", "expect": expect, "id": id }),
+    )
+    .map_err(outdated)?;
+    Ok(())
 }
 
 /// Geri almanın özeti.
@@ -181,14 +259,7 @@ pub struct SheetUndone {
 
 /// Son aktarımda yazılan `ids` kayıtlarının satırlarını tablodan geri alır.
 pub fn undo(url: &str, token: &str, ids: &[String]) -> Result<SheetUndone> {
-    let v = call(url, json!({ "token": token, "action": "undo", "ids": ids })).map_err(
-        |e| match e {
-            Error::Sheets(m) if m.starts_with("Bilinmeyen işlem") => Error::Sheets(
-                "tablodaki betik eski; Kum'dan betiği yeniden kopyalayıp dağıtımı güncelle".into(),
-            ),
-            e => e,
-        },
-    )?;
+    let v = call(url, json!({ "token": token, "action": "undo", "ids": ids })).map_err(outdated)?;
     let count = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
     Ok(SheetUndone {
         removed: count("removed"),

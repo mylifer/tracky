@@ -9,6 +9,8 @@
  * önceden doldurulmuş boş satırı kullanılır, yoksa o günün son satırının altına satır eklenir
  * ve biçimi üstteki satırdan alınır. Aynı kayıt iki kez gönderilse de bir kez yazılır.
  * Son aktarımın satırları işaretlenir; Kum'dan "Geri al" denince silinir ya da boşaltılır.
+ * Kum tablodaki satırları okur (list) ve tek tek değiştirir, kaldırır ya da geri ekler (update,
+ * remove, insert): satır, beklenen eski içeriğiyle bulunur; tabloda değişmişse dokunulmaz.
  *
  * @OnlyCurrentDoc
  */
@@ -27,14 +29,22 @@ function doPost(e) {
     const req = JSON.parse(e.postData.contents);
     if (req.token !== TOKEN) throw new Error("Anahtar uyuşmuyor: betiği Kum'dan yeniden kopyala.");
     const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
+    const writes = {
+      append: () => append_(sheet, req.consultant || "", req.rows || []),
+      undo: () => undo_(sheet, req.ids || []),
+      update: () => update_(sheet, req.consultant || "", req.expect, req.row),
+      remove: () => remove_(sheet, req.expect, req.id),
+      insert: () => insert_(sheet, req.consultant || "", req.row),
+    };
     if (req.action === "inspect") {
       out = inspect_(sheet);
-    } else if (req.action === "append" || req.action === "undo") {
+    } else if (req.action === "list") {
+      out = list_(sheet, req.from, req.to);
+    } else if (writes[req.action]) {
       const lock = LockService.getDocumentLock();
       lock.waitLock(30000);
       try {
-        out =
-          req.action === "append" ? append_(sheet, req.consultant || "", req.rows || []) : undo_(sheet, req.ids || []);
+        out = writes[req.action]();
       } finally {
         lock.releaseLock();
       }
@@ -148,33 +158,9 @@ function append_(sheet, consultant, rows) {
   let filled = 0;
   let inserted = 0;
   for (const row of todo) {
-    const n = Math.max(sheet.getLastRow() - HEADER_ROW, 0);
-    const values = n ? sheet.getRange(HEADER_ROW + 1, 1, n, cols.last).getValues() : [];
-    const dates = values.map((r) => iso_(r[cols.date - 1], tz));
-    let target = -1;
-    let fresh = false;
-    for (let i = 0; i < values.length; i++) {
-      if (dates[i] === row.date && blank_(values[i][cols.details - 1]) && blank_(values[i][cols.kind - 1])) {
-        target = HEADER_ROW + 1 + i;
-        break;
-      }
-    }
-    if (target > 0) {
-      filled++;
-    } else {
-      // O günün son satırının, yoksa daha önceki son tarihin altına.
-      let after = HEADER_ROW;
-      for (let i = 0; i < dates.length; i++) if (dates[i] && dates[i] <= row.date) after = HEADER_ROW + 1 + i;
-      sheet.insertRowAfter(after);
-      target = after + 1;
-      if (after > HEADER_ROW) {
-        sheet
-          .getRange(after, 1, 1, cols.last)
-          .copyTo(sheet.getRange(target, 1, 1, cols.last), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
-      }
-      inserted++;
-      fresh = true;
-    }
+    const { target, fresh } = place_(sheet, cols, row.date, tz);
+    if (fresh) inserted++;
+    else filled++;
     put_(sheet, target, cols, consultant, row);
     if (cols.day) day_(sheet, target, cols, row.date);
     sheet
@@ -221,6 +207,167 @@ function undo_(sheet, ids) {
   const done = JSON.parse(props.getProperty(DONE_KEY) || "[]").filter((id) => !gone.has(id));
   props.setProperty(DONE_KEY, JSON.stringify(done));
   return { removed: removed, cleared: cleared, missing: want.size - gone.size };
+}
+
+/** Tablonun kayıt satırları: değerler, başlangıç için görünen metin ("09:30") ve satır numarası. */
+function rows_(sheet, cols) {
+  const tz = sheet.getParent().getSpreadsheetTimeZone();
+  const n = Math.max(sheet.getLastRow() - HEADER_ROW, 0);
+  if (!n) return [];
+  const range = sheet.getRange(HEADER_ROW + 1, 1, n, cols.last);
+  const values = range.getValues();
+  const display = range.getDisplayValues();
+  return values.map((v, i) => read_(v, display[i], HEADER_ROW + 1 + i, cols, tz));
+}
+
+/** Satır → Kum'un okuduğu kayıt; tarihsiz ya da boş (önceden doldurulmuş gün satırı) ise null. */
+function read_(v, d, r, cols, tz) {
+  const date = iso_(v[cols.date - 1], tz);
+  if (!date) return null;
+  const text = (c) => (c ? String(v[c - 1]).trim() : "");
+  // Görünen metin ("09:30"); biçimsiz hücrede gün kesri ya da tarih-saat değeri.
+  const raw = v[cols.start - 1];
+  let hm = /(\d{1,2}):(\d{2})/.exec(String(d[cols.start - 1]));
+  if (!hm && typeof raw === "number" && raw >= 0) {
+    const min = Math.round((raw % 1) * 1440) % 1440;
+    hm = [null, String(Math.floor(min / 60)), ("0" + (min % 60)).slice(-2)];
+  } else if (!hm && Object.prototype.toString.call(raw) === "[object Date]" && !isNaN(raw)) {
+    hm = /(\d{2}):(\d{2})/.exec(Utilities.formatDate(raw, tz, "HH:mm"));
+  }
+  const start = hm ? ("0" + hm[1]).slice(-2) + ":" + hm[2] + ":00" : null;
+  let hours = v[cols.hours - 1];
+  if (typeof hours !== "number") {
+    const h = parseFloat(String(hours).replace(",", "."));
+    hours = isNaN(h) ? null : h;
+  }
+  const out = {
+    row: r,
+    date: date,
+    start: start,
+    hours: hours,
+    kind: text(cols.kind),
+    details: text(cols.details),
+    party: text(cols.party),
+    division: text(cols.division),
+    consultant: text(cols.consultant),
+  };
+  return out.kind || out.details || out.hours !== null ? out : null;
+}
+
+/** İki kaydın içeriği aynı mı (satır numarası ve danışman hariç). */
+function same_(a, b) {
+  const t = (s) => String(s == null ? "" : s).trim();
+  const minute = (s) => (s ? String(s).slice(0, 5) : null);
+  const hours = a.hours == null || b.hours == null ? a.hours == b.hours : Math.abs(a.hours - b.hours) < 1e-6;
+  return (
+    a.date === b.date &&
+    minute(a.start) === minute(b.start) &&
+    hours &&
+    t(a.kind) === t(b.kind) &&
+    t(a.details) === t(b.details) &&
+    t(a.party) === t(b.party) &&
+    t(a.division).toLowerCase() === t(b.division).toLowerCase()
+  );
+}
+
+/** Beklenen kaydın bugünkü satırı: ipucundaki satır hâlâ aynıysa o, değilse içeriği aynı tek satır. */
+function locate_(rows, expect) {
+  const at = (i) => rows[i] && same_(rows[i], expect);
+  const hint = expect.row - HEADER_ROW - 1;
+  if (hint >= 0 && hint < rows.length && at(hint)) return expect.row;
+  const found = [];
+  for (let i = 0; i < rows.length; i++) if (at(i)) found.push(HEADER_ROW + 1 + i);
+  if (found.length !== 1) throw new Error("Satır değişmiş ya da silinmiş; sayfayı yenileyip tekrar dene.");
+  return found[0];
+}
+
+function list_(sheet, from, to) {
+  const rows = rows_(sheet, columns_(sheet)).filter((r) => r && r.date >= from && r.date <= to);
+  return { rows: rows };
+}
+
+/**
+ * `date` gününe yazılacak satır: o günün önceden doldurulmuş boş satırı, yoksa o günün son satırının
+ * (gün yoksa daha önceki son tarihin) altına eklenen, biçimi üstteki satırdan alınan satır.
+ */
+function place_(sheet, cols, date, tz) {
+  const n = Math.max(sheet.getLastRow() - HEADER_ROW, 0);
+  const values = n ? sheet.getRange(HEADER_ROW + 1, 1, n, cols.last).getValues() : [];
+  const dates = values.map((r) => iso_(r[cols.date - 1], tz));
+  for (let i = 0; i < values.length; i++) {
+    if (dates[i] === date && blank_(values[i][cols.details - 1]) && blank_(values[i][cols.kind - 1])) {
+      return { target: HEADER_ROW + 1 + i, fresh: false };
+    }
+  }
+  let after = HEADER_ROW;
+  for (let i = 0; i < dates.length; i++) if (dates[i] && dates[i] <= date) after = HEADER_ROW + 1 + i;
+  sheet.insertRowAfter(after);
+  const target = after + 1;
+  if (after > HEADER_ROW) {
+    sheet
+      .getRange(after, 1, 1, cols.last)
+      .copyTo(sheet.getRange(target, 1, 1, cols.last), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  }
+  return { target: target, fresh: true };
+}
+
+/**
+ * `r` satırındaki `date` günlü kaydı kaldırır: günün başka satırı varsa satır silinir, yoksa gün
+ * satırı kalır, kayıt hücreleri boşaltılır. Satır silindiyse true.
+ */
+function vacate_(sheet, cols, r, date, tz) {
+  const n = Math.max(sheet.getLastRow() - HEADER_ROW, 0);
+  const dates = sheet.getRange(HEADER_ROW + 1, cols.date, n, 1).getValues().map((v) => iso_(v[0], tz));
+  const others = dates.some((d, i) => d === date && HEADER_ROW + 1 + i !== r);
+  if (others) {
+    sheet.deleteRow(r);
+  } else {
+    for (const c of [cols.start, cols.hours, cols.kind, cols.details, cols.party, cols.division]) {
+      sheet.getRange(r, c).clearContent();
+    }
+    for (const m of sheet.createDeveloperMetadataFinder().withKey(ROW_KEY).find()) {
+      if (m.getLocation().getRow().getRow() === r) m.remove();
+    }
+  }
+  return others;
+}
+
+/** Kaydı yeni değerleriyle yazar; tarih değiştiyse eski gününden kaldırılıp yeni gününe yerleşir. */
+function update_(sheet, consultant, expect, row) {
+  const cols = columns_(sheet);
+  const tz = sheet.getParent().getSpreadsheetTimeZone();
+  let r = locate_(rows_(sheet, cols), expect);
+  if (row.date !== expect.date) {
+    vacate_(sheet, cols, r, expect.date, tz);
+    r = place_(sheet, cols, row.date, tz).target;
+  }
+  put_(sheet, r, cols, consultant, row);
+  if (cols.day) day_(sheet, r, cols, row.date);
+  return { row: r };
+}
+
+/** Tek kaydı gününe ekler (Kum'dan silmenin geri alınması); son aktarımın işaretlerine dokunmaz. */
+function insert_(sheet, consultant, row) {
+  const cols = columns_(sheet);
+  const r = place_(sheet, cols, row.date, sheet.getParent().getSpreadsheetTimeZone()).target;
+  put_(sheet, r, cols, consultant, row);
+  if (cols.day) day_(sheet, r, cols, row.date);
+  return { row: r };
+}
+
+/** Kaydı kaldırır: günün başka satırı varsa satır silinir, yoksa gün satırı kalır, kayıt hücreleri boşaltılır. */
+function remove_(sheet, expect, id) {
+  const cols = columns_(sheet);
+  const tz = sheet.getParent().getSpreadsheetTimeZone();
+  const r = locate_(rows_(sheet, cols), expect);
+  const removed = vacate_(sheet, cols, r, expect.date, tz);
+  if (id) {
+    const props = PropertiesService.getDocumentProperties();
+    const key = String(id).slice(0, 13);
+    const done = JSON.parse(props.getProperty(DONE_KEY) || "[]").filter((x) => x !== key);
+    props.setProperty(DONE_KEY, JSON.stringify(done));
+  }
+  return { removed: removed };
 }
 
 /**

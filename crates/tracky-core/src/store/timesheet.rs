@@ -436,11 +436,8 @@ impl Store {
                 hidden += 1;
                 continue;
             }
-            let stale = if s.exported_at.is_none() {
-                timesheet::stale_hours(pieces, &s.entry)
-            } else {
-                None
-            };
+            // Aktarılmış satır da takipte değişebilir: güncellenince dosyadaki satırı da değişir.
+            let stale = timesheet::stale_hours(pieces, &s.entry);
             rows.push(DayRow {
                 key: row_key(Some(&s.id), &s.entry),
                 id: Some(s.id),
@@ -828,6 +825,51 @@ impl Store {
         }
         tx.commit()?;
         Ok(n)
+    }
+
+    /// Aktarılmış satırı dosyadaki satırıyla birlikte değiştirir (dosyaya yazıldıktan sonra):
+    /// düzenlenebilir alanlar, `coverage` ise aralıkları da (takipte değişen satır güncellenince).
+    /// Satır aktarılmamışsa ya da gizlenmişse hata.
+    pub fn save_exported_entry(
+        &self,
+        id: &str,
+        entry: &TimesheetEntry,
+        coverage: bool,
+    ) -> Result<()> {
+        if !(entry.hours > 0.0 && entry.hours <= 24.0) {
+            return Err(StoreError::Invalid("saat 0 ile 24 arasında olmalı".into()));
+        }
+        let saved = self
+            .timesheet_entry(id)?
+            .filter(|s| s.exported_at.is_some() && !s.dismissed)
+            .ok_or_else(|| StoreError::Invalid("Aktarılmış satır bulunamadı.".into()))?;
+        let tx = self.savepoint()?;
+        self.update_entry(&saved.id, entry)?;
+        if coverage {
+            self.conn.execute(
+                "UPDATE timesheet_entries SET coverage = ?2 WHERE id = ?1",
+                params![id, coverage_json(entry)?],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// Aktarılmış satır dosyadan kaldırıldı: satır aktarılmamış olur ve gizlenir (`dismiss`;
+    /// aralıkları yeniden önerilmez, "geri getir" ile yeniden gönderilebilir) ya da silinir
+    /// (işi projede kalmamış satır).
+    pub fn withdraw_exported_entry(&self, id: &str, dismiss: bool) -> Result<()> {
+        let tx = self.savepoint()?;
+        if dismiss {
+            self.conn.execute(
+                "UPDATE timesheet_entries SET exported_at = NULL, timesheet_id = NULL,
+                    dismissed_at = ?2 WHERE id = ?1",
+                params![id, ms(Utc::now())],
+            )?;
+        } else {
+            self.conn
+                .execute("DELETE FROM timesheet_entries WHERE id = ?1", [id])?;
+        }
+        tx.commit()
     }
 
     /// Aktarılan kayıtları `sheet_id` çizelgesine aktarılmış işaretler.
@@ -1228,6 +1270,72 @@ mod tests {
             .unmark_timesheet_exported(std::slice::from_ref(&id))
             .unwrap();
         assert!(store.save_timesheet_entry(Some(&id), &r[0].entry).is_ok());
+    }
+
+    #[test]
+    fn exported_rows_follow_their_file_row() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        work(&store, "Loyalty", 0, 60, Some("togg"));
+        let togg = sheet("togg", &["togg"]);
+        let (r, _) = rows(&store, &togg);
+        let id = store.save_timesheet_entry(None, &r[0].entry).unwrap();
+        // Aktarılmamış satır bu yoldan değişmez.
+        assert!(store.save_exported_entry(&id, &r[0].entry, false).is_err());
+        store
+            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &togg.id)
+            .unwrap();
+        let edited = TimesheetEntry {
+            details: "Loyalty ekranları".into(),
+            hours: 1.25,
+            coverage: Some(Vec::new()),
+            ..r[0].entry.clone()
+        };
+        store.save_exported_entry(&id, &edited, false).unwrap();
+        let saved = store.timesheet_entry(&id).unwrap().unwrap();
+        assert!(saved.exported_at.is_some());
+        assert_eq!(
+            (saved.entry.details.as_str(), saved.entry.hours),
+            ("Loyalty ekranları", 1.25)
+        );
+        assert_eq!(
+            saved.entry.coverage, r[0].entry.coverage,
+            "aralıklar istenmedikçe değişmez"
+        );
+        assert!(
+            store
+                .save_exported_entry(
+                    &id,
+                    &TimesheetEntry {
+                        hours: 0.0,
+                        ..edited.clone()
+                    },
+                    false
+                )
+                .is_err()
+        );
+
+        // Aktarılmış satır da takipte değişir.
+        store.set_project_between(t(0), t(30), None).unwrap();
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(r[0].stale, Some(0.5));
+
+        // Dosyadan kaldırılınca gizlenir; geri getirilince yeniden gönderilebilir.
+        store.withdraw_exported_entry(&id, true).unwrap();
+        let (r, hidden) = rows(&store, &togg);
+        assert_eq!(hidden, 1);
+        assert!(r.is_empty(), "aralıkları yeniden önerilmez: {r:?}");
+        store.restore_hidden(&togg, day()).unwrap();
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(
+            (r[0].id.as_deref(), r[0].exported),
+            (Some(id.as_str()), false)
+        );
+        store
+            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &togg.id)
+            .unwrap();
+        store.withdraw_exported_entry(&id, false).unwrap();
+        assert!(store.timesheet_entry(&id).unwrap().is_none());
     }
 
     #[test]
