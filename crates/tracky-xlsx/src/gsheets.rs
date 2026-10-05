@@ -100,40 +100,64 @@ fn call(token: &str, method: &str, url: &str, body: Option<Value>) -> Result<Val
     }))
 }
 
-/// Tablo kimliği → (okunma anı, ilk sayfanın kimliği, adı).
-type SheetCache = HashMap<String, (Instant, i64, String)>;
+/// Tablonun ilk sayfası ve formül ayracı.
+#[derive(Debug, Clone)]
+struct FirstSheet {
+    sheet_id: i64,
+    title: String,
+    /// Tablonun dil ayarında ondalık ayracı virgül: formül bağımsız değişkenleri noktalı
+    /// virgülle ayrılır (tr_TR, de_DE…). API'ye yazılan formül bu ayara göre okunur.
+    semicolons: bool,
+}
 
-/// Tablonun ilk sayfası (betikteki `getSheets()[0]`): (sayfa kimliği, adı).
-fn first_sheet(token: &str, id: &str) -> Result<(i64, String)> {
+/// Tablo kimliği → (okunma anı, ilk sayfa).
+type SheetCache = HashMap<String, (Instant, FirstSheet)>;
+
+/// Ondalık ayracı virgül olan diller (formülde `;`).
+const SEMICOLON_LANGS: &[&str] = &[
+    "tr", "de", "fr", "es", "it", "pt", "nl", "ru", "pl", "sv", "da", "fi", "nb", "no", "cs", "sk",
+    "hu", "ro", "el", "uk", "bg", "hr", "sl", "sr", "lt", "lv", "et", "id", "vi", "ca", "is",
+];
+
+fn semicolon_locale(locale: &str) -> bool {
+    let lang = locale.split(['_', '-']).next().unwrap_or("").to_lowercase();
+    SEMICOLON_LANGS.contains(&lang.as_str())
+}
+
+/// Tablonun ilk sayfası (betikteki `getSheets()[0]`) ve dil ayarı.
+fn first_sheet(token: &str, id: &str) -> Result<FirstSheet> {
     static CACHE: Mutex<Option<SheetCache>> = Mutex::new(None);
-    if let Some((at, sid, title)) = CACHE
+    if let Some((at, first)) = CACHE
         .lock()
         .ok()
         .and_then(|c| c.as_ref().and_then(|m| m.get(id).cloned()))
         && at.elapsed() < SHEET_TTL
     {
-        return Ok((sid, title));
+        return Ok(first);
     }
     let v = call(
         token,
         "GET",
-        &format!("{API}/{id}?fields=sheets.properties(sheetId,title,index)"),
+        &format!("{API}/{id}?fields=properties.locale,sheets.properties(sheetId,title,index)"),
         None,
     )?;
-    let first = v["sheets"]
+    let sheet = v["sheets"]
         .as_array()
         .and_then(|s| s.iter().min_by_key(|s| s["properties"]["index"].as_i64()))
         .ok_or(Error::NoSheet)?;
-    let sid = first["properties"]["sheetId"].as_i64().unwrap_or(0);
-    let title = first["properties"]["title"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let first = FirstSheet {
+        sheet_id: sheet["properties"]["sheetId"].as_i64().unwrap_or(0),
+        title: sheet["properties"]["title"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        semicolons: semicolon_locale(v["properties"]["locale"].as_str().unwrap_or("")),
+    };
     if let Ok(mut c) = CACHE.lock() {
         c.get_or_insert_with(HashMap::new)
-            .insert(id.to_string(), (Instant::now(), sid, title.clone()));
+            .insert(id.to_string(), (Instant::now(), first.clone()));
     }
-    Ok((sid, title))
+    Ok(first)
 }
 
 /// Sayfa adı A1 gösteriminde ('Mart 2026').
@@ -185,6 +209,8 @@ pub(crate) struct Sheet {
     /// Satırlar (0: başlık), hücreler biçimsiz değerleriyle; sondaki boşlar yok.
     grid: Vec<Vec<Value>>,
     cols: Columns,
+    /// Formülde bağımsız değişken ayracı `;` (tablonun dil ayarı).
+    semicolons: bool,
     /// Day sütununun formülleri (satır sırasıyla); gerektiğinde okunur.
     day_formulas: Option<Vec<String>>,
     requests: Vec<Value>,
@@ -198,6 +224,7 @@ impl Sheet {
             .unwrap_or_default();
         Ok(Self {
             cols: columns_of(&headers)?,
+            semicolons: false,
             sheet_id,
             title,
             grid,
@@ -207,7 +234,11 @@ impl Sheet {
     }
 
     fn open(token: &str, id: &str) -> Result<Self> {
-        let (sid, title) = first_sheet(token, id)?;
+        let FirstSheet {
+            sheet_id: sid,
+            title,
+            semicolons,
+        } = first_sheet(token, id)?;
         let v = call(
             token,
             "GET",
@@ -225,7 +256,9 @@ impl Sheet {
                     .collect()
             })
             .unwrap_or_default();
-        Self::new(sid, title, grid)
+        let mut sheet = Self::new(sid, title, grid)?;
+        sheet.semicolons = semicolons;
+        Ok(sheet)
     }
 
     /// Day sütununun formüllerini okur (yeni satırın Day hücresi tablonun yöntemiyle dolsun).
@@ -516,10 +549,13 @@ impl Sheet {
                 _ => {}
             }
         }
-        let formula = format!(
+        let mut formula = format!(
             "={}",
             DAY_FORMULA.replace("B{r}", &format!("{}{r}", letter(self.cols.date)))
         );
+        if self.semicolons {
+            formula = formula.replace(',', ";");
+        }
         self.write(
             r,
             col,
@@ -873,6 +909,29 @@ mod tests {
             .iter()
             .map(|r| r.as_object().unwrap().keys().next().unwrap().clone())
             .collect()
+    }
+
+    #[test]
+    fn the_weekday_formula_follows_the_sheets_locale() {
+        assert!(semicolon_locale("tr_TR") && semicolon_locale("de") && !semicolon_locale("en_US"));
+        // Day sütununda formül yok: haftanın günü formülü yazılır.
+        let mut sh = sheet();
+        sh.day_formulas = Some(Vec::new());
+        sh.grid.iter_mut().skip(1).for_each(|r| r[2] = Value::Null);
+        sh.semicolons = true;
+        sh.plan_insert("Kaan", &row(5, 9, 1.0, "Yeni"));
+        let formula = sh
+            .requests
+            .iter()
+            .find_map(|r| {
+                r["updateCells"]["rows"][0]["values"][0]["userEnteredValue"]["formulaValue"]
+                    .as_str()
+            })
+            .unwrap();
+        assert!(
+            formula.starts_with("=SWITCH(WEEKDAY(B5);1;\"Sunday\""),
+            "{formula}"
+        );
     }
 
     #[test]
