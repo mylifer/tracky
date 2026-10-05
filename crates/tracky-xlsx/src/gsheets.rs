@@ -91,13 +91,35 @@ fn call(token: &str, method: &str, url: &str, body: Option<Value>) -> Result<Val
     Err(Error::Sheets(match status {
         401 => "Google oturumu geçersiz; Ayarlar → Zaman çizelgeleri'nden Google'a yeniden bağlan"
             .into(),
-        403 => format!(
-            "bu Google hesabının tabloda düzenleme yetkisi yok ya da Sheets API kapalı ({msg})"
-        ),
+        403 => forbidden(&value, &msg),
         404 => "tablo bulunamadı; tablonun bağlantısını kontrol et".into(),
         429 => "Google istek sınırına ulaşıldı; biraz sonra tekrar dene".into(),
         _ => format!("HTTP {status}: {msg}"),
     }))
+}
+
+/// 403'ün nedeni: Google aynı kodla üç ayrı durumu bildirir; ayrıntılardaki `reason` ayırır.
+fn forbidden(value: &Value, msg: &str) -> String {
+    let reasons: Vec<&str> = value["error"]["details"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| d["reason"].as_str())
+        .collect();
+    if reasons.contains(&"SERVICE_DISABLED") {
+        "Google Cloud projende Sheets API kapalı; Cloud Console → API'ler ve Hizmetler'den \
+         Google Sheets API'yi etkinleştir"
+            .into()
+    } else if reasons.contains(&"ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+        "Google'a bağlanırken tablolara erişim izni verilmedi; Ayarlar → Zaman çizelgeleri'nden \
+         yeniden bağlan ve onay ekranında Google E-Tablolar iznini işaretle"
+            .into()
+    } else {
+        format!(
+            "bağlı Google hesabının bu tabloda düzenleme yetkisi yok; tabloyu bu hesapla açıp \
+             Düzenleyen olduğunu kontrol et ya da doğru hesapla yeniden bağlan ({msg})"
+        )
+    }
 }
 
 /// Tablonun ilk sayfası ve formül ayracı.
@@ -839,6 +861,26 @@ pub fn inspect(token: &str, id: &str) -> Result<Template> {
 mod tests {
     use super::*;
     use chrono::NaiveTime;
+
+    #[test]
+    fn forbidden_reasons() {
+        let err = |reason: Option<&str>| {
+            let details = reason.map_or(
+                json!([]),
+                |r| json!([{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": r}]),
+            );
+            json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "details": details}})
+        };
+        let msg = "The caller does not have permission";
+        assert!(forbidden(&err(Some("SERVICE_DISABLED")), msg).contains("Sheets API kapalı"));
+        assert!(
+            forbidden(&err(Some("ACCESS_TOKEN_SCOPE_INSUFFICIENT")), msg)
+                .contains("izni verilmedi")
+        );
+        let plain = forbidden(&err(None), msg);
+        assert!(plain.contains("düzenleme yetkisi yok") && plain.contains(msg));
+        assert!(forbidden(&Value::Null, msg).contains("düzenleme yetkisi yok"));
+    }
 
     fn d(day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, day).unwrap()
