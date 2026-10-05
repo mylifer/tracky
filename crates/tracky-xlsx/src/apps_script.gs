@@ -107,10 +107,14 @@ function serial_(iso) {
   return (Date.UTC(p[0], p[1] - 1, p[2]) - Date.UTC(1899, 11, 30)) / 86400000;
 }
 
-/** "=" ya da "+" ile başlayan metin formül sayılmasın. */
-function text_(v) {
+/**
+ * Metin hücresi: baştaki "'" Sheets'e değerin metin olduğunu söyler (hücrede görünmez, okurken
+ * gelmez). "=", "+", "-", "@" ile başlayan metin formül, "1/2", "10:00", "12%" tarih, saat ya da
+ * sayı olmaz. Hücre biçimine dokunulmaz: düz metin biçimli hücrede "'" görünür kalırdı.
+ */
+function setText_(range, v) {
   const s = String(v);
-  return /^[=+]/.test(s) ? "'" + s : s;
+  range.setValue(s === "" ? "" : "'" + s);
 }
 
 function blank_(v) {
@@ -206,7 +210,7 @@ function undo_(sheet, ids) {
   const gone = new Set(hits.map((h) => h.id));
   const done = JSON.parse(props.getProperty(DONE_KEY) || "[]").filter((id) => !gone.has(id));
   props.setProperty(DONE_KEY, JSON.stringify(done));
-  return { removed: removed, cleared: cleared, missing: want.size - gone.size };
+  return { removed: removed, cleared: cleared, missing: want.size - gone.size, undone: Array.from(gone) };
 }
 
 /** Tablonun kayıt satırları: değerler, başlangıç için görünen metin ("09:30") ve satır numarası. */
@@ -254,9 +258,13 @@ function read_(v, d, r, cols, tz) {
   return out.kind || out.details || out.hours !== null ? out : null;
 }
 
-/** İki kaydın içeriği aynı mı (satır numarası ve danışman hariç). */
+/**
+ * İki kaydın içeriği aynı mı (satır numarası hariç). Danışman ikisinde de yazılıysa aynı olmalı:
+ * ortak tabloda iş arkadaşının aynı içerikli satırı değiştirilmesin.
+ */
 function same_(a, b) {
   const t = (s) => String(s == null ? "" : s).trim();
+  const who = (s) => t(s).toLowerCase();
   const minute = (s) => (s ? String(s).slice(0, 5) : null);
   const hours = a.hours == null || b.hours == null ? a.hours == b.hours : Math.abs(a.hours - b.hours) < 1e-6;
   return (
@@ -266,7 +274,8 @@ function same_(a, b) {
     t(a.kind) === t(b.kind) &&
     t(a.details) === t(b.details) &&
     t(a.party) === t(b.party) &&
-    t(a.division).toLowerCase() === t(b.division).toLowerCase()
+    t(a.division).toLowerCase() === t(b.division).toLowerCase() &&
+    (!who(a.consultant) || !who(b.consultant) || who(a.consultant) === who(b.consultant))
   );
 }
 
@@ -448,7 +457,7 @@ function day_(sheet, r, cols, iso) {
 
 function put_(sheet, r, cols, consultant, row) {
   sheet.getRange(r, cols.date).setValue(serial_(row.date)).setNumberFormat("d/m/yy");
-  if (cols.consultant && consultant.trim()) sheet.getRange(r, cols.consultant).setValue(text_(consultant.trim()));
+  if (cols.consultant && consultant.trim()) setText_(sheet.getRange(r, cols.consultant), consultant.trim());
   const [hh, mm] = row.start.split(":").map(Number);
   sheet
     .getRange(r, cols.start)
@@ -456,8 +465,8 @@ function put_(sheet, r, cols, consultant, row) {
     .setNumberFormat("hh:mm");
   // Genel biçim: 1, 0,5, 0,25 (gereksiz sıfırlar olmadan).
   sheet.getRange(r, cols.hours).setValue(row.hours).setNumberFormat("General");
-  sheet.getRange(r, cols.kind).setValue(text_(row.kind));
-  sheet.getRange(r, cols.details).setValue(text_(row.details));
-  sheet.getRange(r, cols.party).setValue(text_(row.party));
-  sheet.getRange(r, cols.division).setValue(text_(row.division));
+  setText_(sheet.getRange(r, cols.kind), row.kind);
+  setText_(sheet.getRange(r, cols.details), row.details);
+  setText_(sheet.getRange(r, cols.party), row.party);
+  setText_(sheet.getRange(r, cols.division), row.division);
 }

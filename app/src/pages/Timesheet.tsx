@@ -74,8 +74,10 @@ import {
   UNASSIGNED_MIN,
   hoursDiff,
   isStale,
+  keepRowIds,
   mergeProblem,
   needsDetails,
+  sameFileRow,
   started,
   summarizeDay,
   type CloseReport,
@@ -384,6 +386,7 @@ export default function Timesheet({
   };
   // Gönderim sürerken düğmeler kilitli: çift tıklama aynı satırları dosyaya iki kez yazmasın.
   const [exporting, setExporting] = useState(false);
+  const [merging, guardMerge] = useBusy();
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   // Dönemi kapatma denetimi açık.
   const [closing, setClosing] = useState(false);
@@ -454,17 +457,29 @@ export default function Timesheet({
    */
   const loadFile = useCallback(
     async (force = false) => {
+      // Yeni çağrı uçuştaki okumayı geçersiz kılar; okuma başlatmadan dönerse yükleniyor
+      // durumunu da kapatmalı, yoksa geçersiz kalan okuma onu hiç kapatmaz.
       const seq = ++fileSeq.current;
-      if (!fileOf || !fileBase || !fileSheet) return;
+      if (!fileOf || !fileBase || !fileSheet) {
+        setFileLoading(false);
+        return;
+      }
       const ms = fileOf.split("|").pop()!.split(",");
       const show = () => {
         const parts = ms.map((m) => readFileCache(`${fileBase}|${m}`));
-        if (parts.every(Boolean)) setFile({ of: fileOf, data: mergeFileParts(parts.map((p) => p!.data)) });
+        if (parts.every(Boolean)) {
+          const data = mergeFileParts(parts.map((p) => p!.data));
+          // Yeniden okunan satırlar ekrandaki kimliklerini korur (düzenlenen satır kurulmasın).
+          setFile((cur) => ({ of: fileOf, data: { ...data, rows: keepRowIds(cur?.data.rows ?? [], data.rows) } }));
+        }
         return parts;
       };
       const parts = show();
       const need = ms.filter((_, i) => force || !parts[i] || Date.now() - parts[i]!.at >= FILE_FRESH_MS);
-      if (need.length === 0) return;
+      if (need.length === 0) {
+        setFileLoading(false);
+        return;
+      }
       setFileLoading(true);
       try {
         const from = parseIsoDate(`${need[0]}-01`);
@@ -500,7 +515,7 @@ export default function Timesheet({
   const patchFile = (f: (rows: SheetRowView[]) => SheetRowView[]) =>
     setFile((cur) => {
       if (!cur) return cur;
-      const data = { ...cur.data, rows: f(cur.data.rows) };
+      const data = { ...cur.data, rows: keepRowIds(cur.data.rows, f(cur.data.rows)) };
       const [id, target, list] = cur.of.split("|");
       for (const m of list.split(",")) {
         const key = `${id}|${target}|${m}`;
@@ -1111,9 +1126,11 @@ export default function Timesheet({
             <SelectionBar
               rows={selectedRows}
               sendLabel={sendLabel}
-              busy={exporting}
+              // Günler eskiyse (dönem değişiyor, yükleniyor) gönderilmez; üstteki düğme gibi.
+              busy={exporting || !fresh}
+              merging={merging}
               onClear={() => setSelected(new Set())}
-              onMerge={run(() => mergeRows(selectedRows).then(() => setSelected(new Set())))}
+              onMerge={guardMerge(run(() => mergeRows(selectedRows).then(() => setSelected(new Set()))))}
               onSend={() => send(selectedRows)}
               onDismiss={run(() => dismissRows(selectedRows).then(() => setSelected(new Set())))}
             />
@@ -1157,6 +1174,27 @@ function Stat({ value, label, tone, title }: { value: number | null; label: stri
 type Run = (f: () => Promise<unknown>) => () => Promise<void>;
 
 /**
+ * Süren işlem: `guard(f)` işlem bitene kadar yeniden çalışmaz (çift tıklama satırı iki kez
+ * eklemesin); `busy` bu sırada düğmeyi kilitler.
+ */
+function useBusy() {
+  const [busy, setBusy] = useState(false);
+  const pending = useRef(false);
+  const guard = (f: () => Promise<unknown>) => async () => {
+    if (pending.current) return;
+    pending.current = true;
+    setBusy(true);
+    try {
+      await f();
+    } finally {
+      pending.current = false;
+      setBusy(false);
+    }
+  };
+  return [busy, guard] as const;
+}
+
+/**
  * Dosyanın satırlarının durumu: okunduysa Kum'un aktardığı kayıtların dosyadaki satır numarası
  * ve dosyada bulunamayan kayıtlar. Aktarılmış satır yalnızca dosyadaki satırı bilinince düzenlenir.
  */
@@ -1194,7 +1232,9 @@ function mergeFileParts(parts: SheetRows[]): SheetRows {
 /** Önbelleğe yazar; en yeni 12 ay tutulur. `at` verilirse okunma anı korunur (yerel düzeltme). */
 function writeFileCache(of: string, data: SheetRows, at = Date.now()) {
   readFileCache(of);
-  const all = { ...fileCache, [of]: { at, data } };
+  // Ekrandaki kimlikler saklanmaz: uygulama yeniden açılınca yenileri verilir.
+  const rows = data.rows.map(({ uid: _, ...r }) => r);
+  const all = { ...fileCache, [of]: { at, data: { ...data, rows } } };
   const keep = Object.entries(all)
     .sort((a, b) => b[1].at - a[1].at)
     .slice(0, 12);
@@ -1288,6 +1328,7 @@ function SelectionBar({
   rows,
   sendLabel,
   busy,
+  merging,
   onClear,
   onMerge,
   onSend,
@@ -1296,6 +1337,8 @@ function SelectionBar({
   rows: EntryView[];
   sendLabel: string;
   busy: boolean;
+  /** Birleştirme sürüyor. */
+  merging: boolean;
   onClear: () => void;
   onMerge: () => void;
   onSend: () => void;
@@ -1317,7 +1360,7 @@ function SelectionBar({
         <Button
           size="sm"
           variant="outline"
-          disabled={!!mergeWhy}
+          disabled={!!mergeWhy || merging}
           title={mergeWhy ?? "En erken başlangıçta tek satır olur; süreler toplanır, açıklamalar birleşir"}
           onClick={onMerge}
         >
@@ -1461,6 +1504,7 @@ function ClosePanel({
   );
   const sendLabel = sheet.sheetUrl ? "Sheets'e gönder" : "Excel'e aktar";
   const isBlocked = report.blocking > 0;
+  const [copying, guardCopy] = useBusy();
   // Yapay zekâyla yazılacak günler: bugüne kadar, aktarılmamış satırı olanlar. Yazarken ilerleme.
   const todayIso = isoDate(today());
   const aiDays = days.filter((d) => d.date <= todayIso && d.entries.some((e) => !e.exported)).map((d) => d.date);
@@ -1539,7 +1583,11 @@ function ClosePanel({
                   {label(d.date)}
                   <span>{d.rows} satır</span>
                   <span className="ml-auto flex gap-2">
-                    <button className={FIX_LINK} onClick={run(() => copyPreviousDetails(sheet.id, d.date))}>
+                    <button
+                      className={FIX_LINK}
+                      disabled={copying}
+                      onClick={guardCopy(run(() => copyPreviousDetails(sheet.id, d.date)))}
+                    >
                       önceki günden kopyala
                     </button>
                     {ai && (
@@ -1740,6 +1788,9 @@ function DayCard({
   const [confirmReset, setConfirmReset] = useState(false);
   // Yapay zekâ yazıyor (düğme kilitli, dönen simge).
   const [writing, setWriting] = useState(false);
+  // Satır ekleme ve önceki günden kopyalama sürüyor.
+  const [adding, guardAdd] = useBusy();
+  const [copying, guardCopy] = useBusy();
   const aiWrite = async (rewrite: boolean) => {
     setWriting(true);
     try {
@@ -1793,19 +1844,21 @@ function DayCard({
     .filter((p): p is Tag => !!p);
 
   const addRow = (projectId: string) =>
-    run(() =>
-      api.saveTimesheetEntry(null, {
-        date: day.date,
-        start: "09:00:00",
-        hours: 1,
-        actualHours: null,
-        kind: "Working",
-        details: "",
-        party: sheet.projects.find((m) => m.projectId === projectId)?.party || sheet.defaultParty,
-        projectId,
-        division: defaultDivision(sheet, projects, projectId),
-        coverage: [],
-      }),
+    guardAdd(
+      run(() =>
+        api.saveTimesheetEntry(null, {
+          date: day.date,
+          start: "09:00:00",
+          hours: 1,
+          actualHours: null,
+          kind: "Working",
+          details: "",
+          party: sheet.projects.find((m) => m.projectId === projectId)?.party || sheet.defaultParty,
+          projectId,
+          division: defaultDivision(sheet, projects, projectId),
+          coverage: [],
+        }),
+      ),
     )();
 
   return (
@@ -1866,8 +1919,9 @@ function DayCard({
             <Button
               size="sm"
               variant="ghost"
+              disabled={copying}
               title="Önceki günlerin aynı projedeki açıklamalarını boş satırlara yaz"
-              onClick={run(() => copyPreviousDetails(sheet.id, day.date))}
+              onClick={guardCopy(run(() => copyPreviousDetails(sheet.id, day.date)))}
             >
               <Copy /> Önceki günden kopyala
             </Button>
@@ -1919,7 +1973,7 @@ function DayCard({
               </Button>
             ))}
           {sheetProjects.length === 1 && (
-            <Button size="sm" variant="outline" onClick={() => addRow(sheetProjects[0].id)}>
+            <Button size="sm" variant="outline" disabled={adding} onClick={() => addRow(sheetProjects[0].id)}>
               + Satır
             </Button>
           )}
@@ -1977,7 +2031,7 @@ function DayCard({
                 />
               ) : (
                 <FileRowItem
-                  key={`dosya-${row.row}-${row.start}-${row.details}`}
+                  key={`dosya-${row.uid}`}
                   row={row}
                   sheet={sheet}
                   divisions={divisions}
@@ -2159,6 +2213,8 @@ function EntryRow({
     const next = { ...draft, details: draft.details.trim(), party: draft.party.trim() };
     // Dosyadaki satırın açıklaması boşaltılmaz.
     if (entry.exported && !next.details) return setDraft({ ...draft, details: entry.details });
+    // Boş ya da sıfır/eksi süre kaydedilmez (dosyaya da 0 yazılırdı): eski süre geri gelir.
+    if (!(next.hours > 0)) return setDraft({ ...next, hours: entry.hours });
     if (EDITABLE.some((k) => next[k] !== entry[k])) save(next);
   };
   // Aktarılmış satır dosyadan da silinir; geri alınınca satır geri gelir ve yeniden gönderilir.
@@ -2340,19 +2396,6 @@ function EntryRow({
         </div>
       )}
     </li>
-  );
-}
-
-/** İki dosya satırının içeriği aynı (satır numarası hariç). */
-function sameFileRow(a: FileRow, b: FileRow) {
-  return (
-    a.date === b.date &&
-    a.start === b.start &&
-    a.hours === b.hours &&
-    a.kind === b.kind &&
-    a.details === b.details &&
-    a.party === b.party &&
-    a.division === b.division
   );
 }
 

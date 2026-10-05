@@ -474,6 +474,11 @@ pub fn app_icon(app_id: &str, px: u32) -> Option<Vec<u8>> {
     use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
     let workspace = NSWorkspace::sharedWorkspace();
+    // Kimlik eşitlemeyle başka cihazdan da gelebilir: otomatik bağlanan ağ yollarına
+    // (`/net/sunucu/...`) dokunmak bile ağa bağlanır.
+    if ["/net/", "/Network/"].iter().any(|p| app_id.starts_with(p)) {
+        return None;
+    }
     let path = if app_id.starts_with('/') {
         // Paketsiz kimlik yürütülebilir dosyanın yoludur: simge içinde bulunduğu paketin.
         match app_id.find(".app/") {

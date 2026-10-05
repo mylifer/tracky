@@ -25,6 +25,9 @@ use crate::timesheet::Meeting;
 const MAX_PERIODS: usize = 20_000;
 /// Bundan uzun etkinlik (çok günlük blok) toplantı sayılmaz.
 const MAX_LENGTH: Duration = Duration::hours(12);
+/// DURATION bundan uzunsa bozuk sayılır (toplantı zaten [`MAX_LENGTH`]'ten kısadır); akıl
+/// dışı değerler (P200000000D) toplamada taşmasın.
+const MAX_DURATION: Duration = Duration::days(31);
 
 /// Konusu bunlarla başlayan etkinlik iptal edilmiştir (Outlook iptali böyle de yazar).
 const CANCELLED_PREFIXES: &[&str] = &["canceled:", "cancelled:", "iptal edildi:", "iptal:"];
@@ -102,6 +105,21 @@ struct Observance {
     offset_to: i32,
     /// Yıllık tekrar: (ay, haftanın günü, kaçıncı; -1 son) ya da (ay, ayın günü).
     yearly: Option<Yearly>,
+    /// Yıllık tekrarın bittiği an (yerel, geçişten önceki saatle; RRULE UNTIL). Kalkmış yaz
+    /// saati kuralları (örn. Türkiye 2016) böyle yazılır.
+    until: Option<NaiveDateTime>,
+}
+
+impl Default for Observance {
+    fn default() -> Self {
+        Self {
+            start: NaiveDateTime::MIN,
+            offset_from: 0,
+            offset_to: 0,
+            yearly: None,
+            until: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -238,7 +256,7 @@ fn parse_offset(v: &str) -> Option<i32> {
     Some(sign * (h * 3600 + m * 60 + s))
 }
 
-/// "PT1H30M", "P1D", "-PT15M" → süre.
+/// "PT1H30M", "P1D", "-PT15M" → süre. [`MAX_DURATION`]'dan uzunsa (ya da sayı taşarsa) `None`.
 fn parse_duration(v: &str) -> Option<Duration> {
     let v = v.trim();
     let (neg, v) = match v.strip_prefix('-') {
@@ -255,14 +273,16 @@ fn parse_duration(v: &str) -> Option<Duration> {
             unit => {
                 let n: i64 = num.parse().ok()?;
                 num.clear();
-                total += match unit {
-                    'W' => Duration::weeks(n),
-                    'D' => Duration::days(n),
-                    'H' => Duration::hours(n),
-                    'M' => Duration::minutes(n),
-                    'S' => Duration::seconds(n),
+                // Dosyadan gelen sayı taşabilir: `Duration::days` vb. taşmada panikler.
+                let part = match unit {
+                    'W' => Duration::try_weeks(n),
+                    'D' => Duration::try_days(n),
+                    'H' => Duration::try_hours(n),
+                    'M' => Duration::try_minutes(n),
+                    'S' => Duration::try_seconds(n),
                     _ => return None,
-                };
+                }?;
+                total = total.checked_add(&part).filter(|t| *t <= MAX_DURATION)?;
             }
         }
     }
@@ -302,18 +322,38 @@ impl Calendar {
         let mut event: Option<Event> = None;
         // (TZID, bölge) ve süren geçiş tanımı.
         let mut zone: Option<(String, Zone)> = None;
-        let mut obs: Option<(NaiveDateTime, i32, i32, Option<Yearly>)> = None;
+        // Süren geçiş tanımı ve RRULE UNTIL'i (UTC mi?); UNTIL, TZOFFSETFROM'u gerektirir.
+        let mut obs: Option<(Observance, Option<(NaiveDateTime, bool)>)> = None;
+        // Etkinliğin içindeki bileşen derinliği (VALARM...): içlerindeki satırlar (alarmın
+        // SUMMARY, ATTENDEE, DURATION'ı) etkinliğe uygulanmaz.
+        let mut nested = 0usize;
         for raw in unfold(text) {
             let Some(line) = parse_line(&raw) else {
                 continue;
             };
             let value = line.value;
-            match (
-                line.name.as_str(),
-                value.trim().to_ascii_uppercase().as_str(),
-            ) {
-                ("BEGIN", "VEVENT") => event = Some(Event::default()),
+            let upper = value.trim().to_ascii_uppercase();
+            if event.is_some() && upper != "VEVENT" {
+                match line.name.as_str() {
+                    "BEGIN" => {
+                        nested += 1;
+                        continue;
+                    }
+                    "END" => {
+                        nested = nested.saturating_sub(1);
+                        continue;
+                    }
+                    _ if nested > 0 => continue,
+                    _ => {}
+                }
+            }
+            match (line.name.as_str(), upper.as_str()) {
+                ("BEGIN", "VEVENT") => {
+                    event = Some(Event::default());
+                    nested = 0;
+                }
                 ("END", "VEVENT") => {
+                    nested = 0;
                     if let Some(e) = event.take()
                         && e.start.is_some()
                     {
@@ -329,26 +369,37 @@ impl Calendar {
                     }
                 }
                 ("BEGIN", "STANDARD" | "DAYLIGHT") if zone.is_some() => {
-                    obs = Some((NaiveDateTime::MIN, 0, 0, None));
+                    obs = Some((Observance::default(), None));
                 }
                 ("END", "STANDARD" | "DAYLIGHT") => {
-                    if let (Some((start, from, to, yearly)), Some((_, z))) = (obs.take(), &mut zone)
-                    {
-                        z.observances.push(Observance {
-                            start,
-                            offset_from: from,
-                            offset_to: to,
-                            yearly,
+                    if let (Some((mut o, until)), Some((_, z))) = (obs.take(), &mut zone) {
+                        // UNTIL (kural gereği UTC) geçişten önceki yerel saate çevrilir.
+                        o.until = until.and_then(|(u, utc)| {
+                            if utc {
+                                u.checked_add_signed(Duration::seconds(o.offset_from.into()))
+                            } else {
+                                Some(u)
+                            }
                         });
+                        z.observances.push(o);
                     }
                 }
                 _ => {
-                    if let Some(o) = &mut obs {
+                    if let Some((o, until)) = &mut obs {
                         match line.name.as_str() {
-                            "DTSTART" => o.0 = parse_naive(value).unwrap_or(o.0),
-                            "TZOFFSETFROM" => o.1 = parse_offset(value).unwrap_or(o.1),
-                            "TZOFFSETTO" => o.2 = parse_offset(value).unwrap_or(o.2),
-                            "RRULE" => o.3 = parse_yearly(value),
+                            "DTSTART" => o.start = parse_naive(value).unwrap_or(o.start),
+                            "TZOFFSETFROM" => {
+                                o.offset_from = parse_offset(value).unwrap_or(o.offset_from)
+                            }
+                            "TZOFFSETTO" => {
+                                o.offset_to = parse_offset(value).unwrap_or(o.offset_to)
+                            }
+                            "RRULE" => {
+                                o.yearly = parse_yearly(value);
+                                *until = rule_parts(value)
+                                    .get("UNTIL")
+                                    .and_then(|u| Some((parse_naive(u)?, u.ends_with('Z'))));
+                            }
                             _ => {}
                         }
                     } else if let Some((id, _)) = &mut zone {
@@ -386,13 +437,16 @@ impl Calendar {
             let Some((start, length)) = self.span(e) else {
                 continue;
             };
-            let Some(s) = self.to_utc(&start) else {
+            let Some((s, end)) = self
+                .to_utc(&start)
+                .and_then(|s| Some((s, s.checked_add_signed(length)?)))
+            else {
                 continue;
             };
             let meeting = Meeting {
                 uid: e.uid.clone(),
                 start: s,
-                end: s + length,
+                end,
                 subject: e.summary.trim().to_string(),
                 location: e.location.trim().to_string(),
                 online: e.online,
@@ -441,16 +495,15 @@ impl Calendar {
             let Some((start, length)) = self.span(e) else {
                 continue;
             };
-            if e.recurrence_id.is_some() {
-                if let Some(s) = self.to_utc(&start) {
-                    push(e, s, s + length);
+            if e.recurrence_id.is_some() || e.rrule.is_none() {
+                if let Some(s) = self.to_utc(&start)
+                    && let Some(end) = s.checked_add_signed(length)
+                {
+                    push(e, s, end);
                 }
                 continue;
             }
             let Some(rule) = e.rrule.as_deref() else {
-                if let Some(s) = self.to_utc(&start) {
-                    push(e, s, s + length);
-                }
                 continue;
             };
             let excluded: Vec<DateTime<Utc>> =
@@ -458,7 +511,10 @@ impl Calendar {
             // Açma, etkinliğin kendi dilimindeki yerel saatlerle yapılır (yaz saatinde de
             // toplantı aynı saatte kalır). Pencere bir gün genişletilir (dilim farkı).
             let until_local = |u: DateTime<Utc>| self.to_local_of(&start, u);
-            let window_end = self.to_local_of(&start, to) + Duration::days(1);
+            let window_end = self
+                .to_local_of(&start, to)
+                .checked_add_signed(Duration::days(1))
+                .unwrap_or(NaiveDateTime::MAX);
             for occ in expand(rule, start.naive(), window_end, until_local) {
                 let Some(s) = self.to_utc(&start.with_naive(occ)) else {
                     continue;
@@ -466,9 +522,12 @@ impl Calendar {
                 if excluded.contains(&s) {
                     continue;
                 }
-                match overrides.get(&(e.uid.as_str(), s)) {
-                    Some(_) => {} // değişen hâli ayrıca eklenir
-                    None => push(e, s, s + length),
+                match (
+                    overrides.get(&(e.uid.as_str(), s)),
+                    s.checked_add_signed(length),
+                ) {
+                    (Some(_), _) | (_, None) => {} // değişen hâli ayrıca eklenir
+                    (None, Some(end)) => push(e, s, end),
                 }
             }
         }
@@ -492,7 +551,9 @@ impl Calendar {
             Stamp::Utc(n) => Some(n.and_utc()),
             Stamp::Floating(n) => local_to_utc(*n),
             Stamp::Zoned(n, tz) => match self.zones.get(tz) {
-                Some(zone) => Some((*n - Duration::seconds(zone.offset_at(*n).into())).and_utc()),
+                Some(zone) => n
+                    .checked_sub_signed(Duration::seconds(zone.offset_at(*n).into()))
+                    .map(|n| n.and_utc()),
                 None => local_to_utc(*n),
             },
         }
@@ -545,20 +606,10 @@ impl Zone {
     fn offset_at(&self, local: NaiveDateTime) -> i32 {
         let mut best: Option<(NaiveDateTime, i32)> = None;
         for o in &self.observances {
-            for year in [local.year() - 1, local.year()] {
-                let onset = match o.yearly {
-                    Some(y) => match y.date_in(year) {
-                        Some(d) if d.and_time(o.start.time()) >= o.start => {
-                            d.and_time(o.start.time())
-                        }
-                        _ => continue,
-                    },
-                    None if year == local.year() => o.start,
-                    None => continue,
-                };
-                if onset <= local && best.is_none_or(|(b, _)| onset > b) {
-                    best = Some((onset, o.offset_to));
-                }
+            if let Some(onset) = o.last_onset(local)
+                && best.is_none_or(|(b, _)| onset > b)
+            {
+                best = Some((onset, o.offset_to));
             }
         }
         if let Some((_, off)) = best {
@@ -569,6 +620,30 @@ impl Zone {
             .iter()
             .min_by_key(|o| o.start)
             .map_or(0, |o| o.offset_from)
+    }
+}
+
+impl Observance {
+    /// `local` anına kadarki (dahil) son geçiş. Tekrarsız geçiş yalnızca bir kez olur; yıllık
+    /// kural UNTIL'den sonra işlemez (bittiyse son geçişi UNTIL yılındadır).
+    fn last_onset(&self, local: NaiveDateTime) -> Option<NaiveDateTime> {
+        let Some(yearly) = self.yearly else {
+            return (self.start <= local).then_some(self.start);
+        };
+        let mut years = vec![local.year() - 1, local.year()];
+        if let Some(u) = self.until
+            && u.year() < local.year() - 1
+        {
+            years.push(u.year());
+        }
+        years
+            .into_iter()
+            .filter_map(|year| yearly.date_in(year))
+            .map(|d| d.and_time(self.start.time()))
+            .filter(|&onset| {
+                onset >= self.start && onset <= local && self.until.is_none_or(|u| onset <= u)
+            })
+            .max()
     }
 }
 
@@ -584,7 +659,7 @@ impl Yearly {
 /// Ayın `n`. `wd` günü (`n` < 0: sondan).
 fn nth_weekday(year: i32, month: u32, wd: Weekday, n: i32) -> Option<NaiveDate> {
     if n > 0 {
-        NaiveDate::from_weekday_of_month_opt(year, month, wd, n as u8)
+        NaiveDate::from_weekday_of_month_opt(year, month, wd, u8::try_from(n).ok()?)
     } else {
         let days = month_days(year, month)?;
         let mut d = NaiveDate::from_ymd_opt(year, month, days)?;
@@ -798,7 +873,10 @@ fn expand(
     let mut out = Vec::new();
     let mut emitted = 0usize;
     for k in 0..MAX_PERIODS {
-        let step = k as u32 * interval;
+        // INTERVAL dosyadan gelir: çarpım taşarsa kural bitmiş sayılır.
+        let Some(step) = (k as u32).checked_mul(interval) else {
+            break;
+        };
         let dates: Vec<NaiveDate> = match freq {
             "DAILY" => {
                 let Some(d) = first.checked_add_days(Days::new(step.into())) else {
@@ -842,7 +920,12 @@ fn expand(
                 setpos(month_candidates(m.year(), m.month(), first.day()))
             }
             "YEARLY" => {
-                let year = first.year() + step as i32;
+                let Some(year) = i32::try_from(step)
+                    .ok()
+                    .and_then(|s| first.year().checked_add(s))
+                else {
+                    break;
+                };
                 let months = if bymonth.is_empty() {
                     vec![first.month()]
                 } else {
@@ -1169,6 +1252,125 @@ END:VCALENDAR\r
         let series = cal.series();
         assert_eq!(series.len(), 2);
         assert_eq!(series[0].attendees.len(), 3);
+    }
+
+    #[test]
+    fn absurd_durations_and_intervals_do_not_panic() {
+        assert_eq!(parse_duration("P200000000D"), None);
+        assert_eq!(parse_duration("P99999999999999999W"), None);
+        assert_eq!(parse_duration("PT9223372036854775807S"), None);
+        assert_eq!(parse_duration("P40D"), None);
+        assert_eq!(parse_duration("-P1W"), Some(-Duration::weeks(1)));
+        let text = "BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+UID:dur\r
+SUMMARY:Bozuk süre\r
+DTSTART:20261005T090000Z\r
+DURATION:P200000000D\r
+END:VEVENT\r
+BEGIN:VEVENT\r
+UID:far\r
+SUMMARY:Uzak bitiş\r
+DTSTART:00010101T090000Z\r
+DTEND:99991231T090000Z\r
+RRULE:FREQ=YEARLY;INTERVAL=4294967295\r
+END:VEVENT\r
+BEGIN:VEVENT\r
+UID:interval\r
+SUMMARY:Dev aralık\r
+DTSTART:20261005T090000Z\r
+DTEND:20261005T100000Z\r
+RRULE:FREQ=DAILY;INTERVAL=4294967295;BYDAY=99999MO\r
+END:VEVENT\r
+BEGIN:VEVENT\r
+UID:monthly\r
+SUMMARY:Aylık\r
+DTSTART:20261005T090000Z\r
+DTEND:20261005T100000Z\r
+RRULE:FREQ=MONTHLY;INTERVAL=4294967295;BYDAY=300MO\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+        let cal = Calendar::parse(text);
+        let got = cal.meetings(utc("2026-01-01 00:00"), utc("2027-01-01 00:00"));
+        // Süresi okunamayan etkinlik sıfır uzunluktadır, toplantı sayılmaz; olmayan
+        // "300. Pazartesi" hiç açılmaz.
+        assert_eq!(
+            got.iter().map(|m| m.uid.as_str()).collect::<Vec<_>>(),
+            ["interval"]
+        );
+        cal.series();
+    }
+
+    #[test]
+    fn alarm_lines_do_not_leak_into_the_event() {
+        let text = "BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+UID:alarm\r
+SUMMARY:Sprint planlama\r
+DTSTART:20261005T090000Z\r
+BEGIN:VALARM\r
+ACTION:EMAIL\r
+SUMMARY:Alarm notification\r
+ATTENDEE:mailto:alarm@acme.com\r
+DURATION:PT5M\r
+TRIGGER:-PT15M\r
+END:VALARM\r
+DURATION:PT30M\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+        let cal = Calendar::parse(text);
+        let got = cal.meetings(utc("2026-10-05 00:00"), utc("2026-10-06 00:00"));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].subject, "Sprint planlama");
+        assert!(got[0].attendees.is_empty());
+        assert_eq!(got[0].end - got[0].start, Duration::minutes(30));
+    }
+
+    #[test]
+    fn ended_daylight_rules_do_not_apply_after_until() {
+        // tzurl / Google biçimi: Türkiye 2016'da yaz saatinden çıktı, kalıcı +03 oldu.
+        let text = "BEGIN:VCALENDAR\r
+BEGIN:VTIMEZONE\r
+TZID:Europe/Istanbul\r
+BEGIN:DAYLIGHT\r
+TZOFFSETFROM:+0200\r
+TZOFFSETTO:+0300\r
+DTSTART:20110328T030000\r
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU;UNTIL=20160327T010000Z\r
+END:DAYLIGHT\r
+BEGIN:STANDARD\r
+TZOFFSETFROM:+0300\r
+TZOFFSETTO:+0200\r
+DTSTART:20111030T040000\r
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU;UNTIL=20151108T010000Z\r
+END:STANDARD\r
+BEGIN:STANDARD\r
+TZOFFSETFROM:+0300\r
+TZOFFSETTO:+0300\r
+DTSTART:20160907T000000\r
+END:STANDARD\r
+END:VTIMEZONE\r
+BEGIN:VEVENT\r
+UID:winter\r
+SUMMARY:Kış toplantısı\r
+DTSTART;TZID=Europe/Istanbul:20261210T100000\r
+DTEND;TZID=Europe/Istanbul:20261210T110000\r
+END:VEVENT\r
+BEGIN:VEVENT\r
+UID:old\r
+SUMMARY:Eski kış\r
+DTSTART;TZID=Europe/Istanbul:20141210T100000\r
+DTEND;TZID=Europe/Istanbul:20141210T110000\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+        let cal = Calendar::parse(text);
+        let got = cal.meetings(utc("2014-01-01 00:00"), utc("2027-01-01 00:00"));
+        let starts: Vec<_> = got.iter().map(|m| m.start).collect();
+        // 2014 kışı +02, 2026 kışı +03.
+        assert_eq!(starts, [utc("2014-12-10 08:00"), utc("2026-12-10 07:00")]);
     }
 
     #[test]

@@ -321,6 +321,12 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(once(0)).collect()
 }
 
+/// `C:\...` biçiminde yerel sürücü yolu mu? Kimlik eşitlemeyle başka cihazdan da gelebilir;
+/// `\\sunucu\pay` (UNC) yoluna dokunmak bile ağa bağlanır (ve NTLM kimliğini sızdırır).
+fn is_local_drive_path(path: &str) -> bool {
+    matches!(path.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
+}
+
 /// exe'nin gömülü simgesi `px` piksellik PNG olarak.
 pub fn app_icon(app_id: &str, px: u32) -> Option<Vec<u8>> {
     use windows_sys::Win32::Graphics::Gdi::{
@@ -331,7 +337,7 @@ pub fn app_icon(app_id: &str, px: u32) -> Option<Vec<u8>> {
         DestroyIcon, GetIconInfo, HICON, ICONINFO, PrivateExtractIconsW,
     };
 
-    if !Path::new(app_id).exists() {
+    if !is_local_drive_path(app_id) || !Path::new(app_id).exists() {
         return None;
     }
     let wide = to_wide(app_id);
@@ -409,4 +415,20 @@ fn encode_png(rgba: &[u8], px: u32) -> Option<Vec<u8>> {
     encoder.set_depth(png::BitDepth::Eight);
     encoder.write_header().ok()?.write_image_data(rgba).ok()?;
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_icon_paths_must_be_local() {
+        assert!(is_local_drive_path(r"C:\Program Files\App\app.exe"));
+        assert!(is_local_drive_path("d:/tools/x.exe"));
+        assert!(!is_local_drive_path(r"\\sunucu\pay\app.exe"));
+        assert!(!is_local_drive_path("//sunucu/pay/app.exe"));
+        assert!(!is_local_drive_path(r"\\?\UNC\sunucu\pay\app.exe"));
+        assert!(!is_local_drive_path("app.exe"));
+        assert!(!is_local_drive_path("C:app.exe"));
+    }
 }

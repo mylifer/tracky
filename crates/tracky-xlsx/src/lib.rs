@@ -72,7 +72,8 @@ pub struct SheetRow {
 
 impl SheetRow {
     /// İki satırın içeriği aynı mı (satır numarası hariç; metinler kırpılır, birim büyük/küçük
-    /// harfe bakmaz, başlangıç dakikaya kadar).
+    /// harfe bakmaz, başlangıç dakikaya kadar). Danışman ikisinde de yazılıysa aynı olmalı: ortak
+    /// tabloda bir iş arkadaşının aynı içerikli satırı bizimki sayılmasın.
     pub fn same(&self, other: &SheetRow) -> bool {
         let minute = |t: Option<NaiveTime>| t.map(|t| (t.hour(), t.minute()));
         let hours = match (self.hours, other.hours) {
@@ -89,7 +90,14 @@ impl SheetRow {
                 .division
                 .trim()
                 .eq_ignore_ascii_case(other.division.trim())
+            && same_consultant(&self.consultant, &other.consultant)
     }
+}
+
+/// Danışmanlar çelişmiyor: biri boşsa (sütun yok ya da yazılmamış) ya da aynıysa.
+fn same_consultant(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim().to_lowercase(), b.trim().to_lowercase());
+    a.is_empty() || b.is_empty() || a == b
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -554,7 +562,7 @@ fn put_row(ws: &mut Worksheet, r: u32, cols: Columns, consultant: &str, row: &Ro
     if let Some(c) = cols.consultant
         && !consultant.trim().is_empty()
     {
-        ws.get_cell_mut((c, r)).set_value(consultant.trim());
+        put_text(ws, c, r, consultant.trim());
     }
     ws.get_cell_mut((cols.start, r))
         .set_value_number(time_to_fraction(row.start));
@@ -566,13 +574,21 @@ fn put_row(ws: &mut Worksheet, r: u32, cols: Columns, consultant: &str, row: &Ro
     ws.get_style_mut((cols.hours, r))
         .get_number_format_mut()
         .set_format_code("General");
-    ws.get_cell_mut((cols.kind, r)).set_value(row.kind.as_str());
-    ws.get_cell_mut((cols.details, r))
-        .set_value(row.details.as_str());
-    ws.get_cell_mut((cols.party, r))
-        .set_value(row.party.as_str());
-    ws.get_cell_mut((cols.division, r))
-        .set_value(row.division.as_str());
+    put_text(ws, cols.kind, r, &row.kind);
+    put_text(ws, cols.details, r, &row.details);
+    put_text(ws, cols.party, r, &row.party);
+    put_text(ws, cols.division, r, &row.division);
+}
+
+/// Metin hücresi metin olarak yazılır: `set_value` "123", "TRUE", "#N/A" gibi açıklamaları sayı,
+/// mantıksal değer ya da hata yapardı. Boş metin hücreyi boşaltır.
+fn put_text(ws: &mut Worksheet, c: u32, r: u32, s: &str) {
+    let cell = ws.get_cell_mut((c, r));
+    if s.is_empty() {
+        cell.set_value("");
+    } else {
+        cell.set_value_string(s);
+    }
 }
 
 #[cfg(test)]
@@ -898,6 +914,60 @@ mod tests {
         insert(&path, "Kaan Baytur", &row(3, 9, 1.0, "Bir")).unwrap();
         assert_eq!(day(3), ["Bir"]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn text_cells_are_written_as_text() {
+        let dir = std::env::temp_dir().join(format!("kum-xlsx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sablon.xlsx");
+        template(&path);
+        let mut r = row(2, 9, 1.0, "123");
+        r.party = "TRUE".into();
+        r.division = "#N/A".into();
+        append(&path, "Kaan Baytur", &[r]).unwrap();
+        let book = umya_spreadsheet::reader::xlsx::read(&path).unwrap();
+        let ws = book.get_sheet(&0).unwrap();
+        for (c, want) in [(8, "123"), (9, "TRUE"), (10, "#N/A"), (4, "Kaan Baytur")] {
+            let cell = ws.get_cell((c, 3)).unwrap();
+            assert_eq!(
+                (cell.get_value().as_ref(), cell.get_data_type()),
+                (want, "s")
+            );
+        }
+        // Sayı ve tarih hücreleri sayı kalır.
+        assert_eq!(ws.get_cell((6, 3)).unwrap().get_data_type(), "n");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn another_consultants_identical_row_is_not_ours() {
+        let mine = SheetRow {
+            row: 5,
+            date: d(2),
+            start: NaiveTime::from_hms_opt(9, 0, 0),
+            hours: Some(1.0),
+            kind: "Working".into(),
+            details: "Toplantı".into(),
+            party: "ADBA".into(),
+            division: "Trumore".into(),
+            consultant: "Kaan Baytur".into(),
+        };
+        let colleague = SheetRow {
+            row: 6,
+            consultant: "Ayşe".into(),
+            ..mine.clone()
+        };
+        assert!(!mine.same(&colleague));
+        assert!(mine.same(&SheetRow {
+            consultant: " kaan baytur ".into(),
+            ..colleague.clone()
+        }));
+        // Danışman sütunu yoksa ya da hücre boşsa içerik yeter.
+        assert!(mine.same(&SheetRow {
+            consultant: String::new(),
+            ..colleague
+        }));
     }
 
     #[test]

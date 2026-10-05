@@ -83,10 +83,17 @@ pub const SYNCED_SETTINGS: &[&str] = &[
     "ignored_unassigned",
 ];
 
-/// Gizlilik ayarında yalnızca bu cihazın kalan alanı: bir Mac'te duraklatmak diğerini
-/// duraklatmaz.
-const PRIVACY_KEY: &str = "privacy";
-const LOCAL_PRIVACY_FIELDS: &[&str] = &["paused"];
+/// Eşitlenen ayarlarda yalnızca bu cihazda kalan alanlar: sunucuya gönderilmez, gelen
+/// sürümde yerel değer korunur. Bir Mac'te duraklatmak diğerini duraklatmaz; API anahtarı
+/// gizlidir ve sunucuda (sürüm derlemelerinde ortak projede) açık metin durmamalı.
+const LOCAL_FIELDS: &[(&str, &[&str])] = &[("privacy", &["paused"]), ("ai_details", &["apiKey"])];
+
+fn local_fields(key: &str) -> &'static [&'static str] {
+    LOCAL_FIELDS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map_or(&[], |(_, fields)| fields)
+}
 
 /// Sıra önemli: kurallar etiketlere başvurur, önce etiketler uygulanır. Etiketlerin müşterisi
 /// (`client_id`) yabancı anahtar değildir; müşteri sonra gelse de etiket uygulanır.
@@ -195,12 +202,17 @@ impl Table {
 }
 
 const PUSH_BATCH: usize = 500;
-const PULL_BATCH: usize = 1000;
+/// Kısa sayfa "hepsi çekildi" sayılır; sunucunun satır sınırının (PostgREST `max_rows`,
+/// Supabase'de varsayılan 1000) altında kalmalı, yoksa her sayfa kısa görünür ve imleç
+/// çekilmemiş satırların ötesine atlar.
+const PULL_BATCH: usize = 500;
 /// Bir çalıştırmada en fazla bu kadar parti (sonsuz döngüye karşı).
 const MAX_BATCHES: usize = 200;
 /// Eşzamanlı işlemlerde sunucu saatinin geride kalan satırlarını kaçırmamak için
-/// her çalıştırmada imleç bu kadar geriden başlar (yeniden uygulamak zararsız).
-const CURSOR_OVERLAP_SECS: i64 = 5;
+/// her çalıştırmada imleç bu kadar geriden başlar (yeniden uygulamak zararsız). Sunucu
+/// zamanı satır yazılırken damgalanır, işlem bitince değil: sunucudaki deyim zaman aşımından
+/// (8 sn) rahatça uzun olmalı.
+const CURSOR_OVERLAP_SECS: i64 = 60;
 /// Satırı sunucuda son yazan cihazın sütunu (supabase/migrations/0003).
 const WRITER: &str = "writer";
 
@@ -564,6 +576,9 @@ fn unsynced(store: &Store, table: &Table, limit: usize) -> Result<Vec<Pending>, 
             }
             obj.insert(name.to_string(), value);
         }
+        if table.name == "settings" {
+            strip_local_fields(&mut obj);
+        }
         Ok((obj, id, updated))
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -608,8 +623,9 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
     if !table.allows(id) {
         return Err(SyncError::Invalid(format!("{}.{id}", table.name)));
     }
-    if table.name == "settings" && id == PRIVACY_KEY {
-        keep_local_privacy(store, &mut obj)?;
+    if table.name == "settings" {
+        let id = id.to_string();
+        keep_local_fields(store, &id, &mut obj)?;
     }
     // Eski sunucunun hiç göndermediği isteğe bağlı sütunlar yazılmaz: yerel değer korunur.
     let cols: Vec<&(&str, Col)> = table
@@ -664,15 +680,23 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
 }
 
 /// Uzaktan gelen gizlilik ayarına bu cihazın kendi alanlarını (duraklatma) yazar.
-fn keep_local_privacy(store: &Store, obj: &mut Map<String, Value>) -> Result<(), SyncError> {
+fn keep_local_fields(
+    store: &Store,
+    key: &str,
+    obj: &mut Map<String, Value>,
+) -> Result<(), SyncError> {
+    let fields = local_fields(key);
+    if fields.is_empty() {
+        return Ok(());
+    }
     let Some(Value::String(raw)) = obj.get("value") else {
         return Ok(());
     };
     let Ok(Value::Object(mut remote)) = serde_json::from_str::<Value>(raw) else {
         return Ok(());
     };
-    let local: Option<Value> = store.setting(PRIVACY_KEY)?;
-    for field in LOCAL_PRIVACY_FIELDS {
+    let local: Option<Value> = store.setting(key)?;
+    for field in fields {
         match local.as_ref().and_then(|l| l.get(*field)) {
             Some(v) => remote.insert((*field).into(), v.clone()),
             None => remote.remove(*field),
@@ -683,6 +707,27 @@ fn keep_local_privacy(store: &Store, obj: &mut Map<String, Value>) -> Result<(),
         Value::String(Value::Object(remote).to_string()),
     );
     Ok(())
+}
+
+/// Gönderilecek ayardan yalnızca bu cihazda kalan alanları çıkarır ([`LOCAL_FIELDS`]).
+fn strip_local_fields(obj: &mut Map<String, Value>) {
+    let fields = local_fields(obj.get("id").and_then(Value::as_str).unwrap_or_default());
+    if fields.is_empty() {
+        return;
+    }
+    let Some(Value::String(raw)) = obj.get("value") else {
+        return;
+    };
+    let Ok(Value::Object(mut value)) = serde_json::from_str::<Value>(raw) else {
+        return;
+    };
+    for field in fields {
+        value.remove(*field);
+    }
+    obj.insert(
+        "value".into(),
+        Value::String(Value::Object(value).to_string()),
+    );
 }
 
 fn iso(ms: i64) -> String {
@@ -1429,6 +1474,34 @@ mod tests {
         let got = lock(&b).privacy_settings().unwrap();
         assert_eq!(got.excluded_apps, vec!["com.secret".to_string()]);
         assert!(!got.paused);
+    }
+
+    #[test]
+    fn the_ai_key_never_leaves_its_device() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        lock(&a)
+            .save_setting(
+                "ai_details",
+                &serde_json::json!({ "enabled": true, "apiKey": "sk-ant-gizli" }),
+            )
+            .unwrap();
+        lock(&b)
+            .save_setting(
+                "ai_details",
+                &serde_json::json!({ "enabled": false, "apiKey": "sk-ant-b" }),
+            )
+            .unwrap();
+        lock(&b).reset_sync_state().unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        let sent = remote.rows["settings"]["ai_details"].to_string();
+        assert!(!sent.contains("sk-ant"), "{sent}");
+
+        run(&b, &mut remote, "u1").unwrap();
+        let got = lock(&b).setting::<Value>("ai_details").unwrap().unwrap();
+        assert_eq!(got["enabled"], true);
+        assert_eq!(got["apiKey"], "sk-ant-b");
     }
 
     #[test]

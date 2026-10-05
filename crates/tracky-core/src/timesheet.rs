@@ -931,11 +931,15 @@ impl FileRow {
             && self.division.trim().eq_ignore_ascii_case(e.division.trim())
     }
 
-    /// Kum'un satırı dosyada değiştirilmiş hali olabilir: aynı gün ve başlangıç, tür ya da
-    /// açıklama aynı.
+    /// Kum'un satırı dosyada değiştirilmiş hali olabilir: aynı gün ve başlangıç; açıklama aynı
+    /// (birimi dosyada değiştirilmiş olabilir) ya da tür ve birim aynı. Yalnızca türü tutan,
+    /// birimi başka bir satır aynı saatte elle girilmiş başka bir iştir; eşlenseydi değerleri
+    /// Kum'daki kaydın üzerine yazılırdı ([`FileRow::apply`]).
     fn near(&self, e: &TimesheetEntry) -> bool {
         self.same_start(e)
-            && (self.kind.trim() == e.kind.label() || self.details.trim() == e.details.trim())
+            && (self.details.trim() == e.details.trim()
+                || (self.kind.trim() == e.kind.label()
+                    && self.division.trim().eq_ignore_ascii_case(e.division.trim())))
     }
 
     /// Kum'un satırı dosyadaki değerleriyle (tür tanınmıyorsa ya da başlangıç ya da saat boşsa
@@ -1495,6 +1499,20 @@ mod tests {
         // Aynı satır iki kez eşlenmez.
         let twice = vec![written[0].clone(), written[0].clone()];
         assert_eq!(link_file_rows(&twice, &entries), [Some(0), None]);
+        // Aynı saatte elle girilmiş başka birimin satırı (türü aynı olsa da) Kum'un satırı değil.
+        let other = FileRow {
+            division: "Başka birim".into(),
+            details: "Başka iş".into(),
+            ..written[0].clone()
+        };
+        assert_eq!(link_file_rows(&[other], &entries), [None]);
+        // Birimi dosyada değiştirilmiş (açıklaması aynı) satır hâlâ Kum'un satırıdır: iki kez
+        // sayılmaz.
+        let moved = FileRow {
+            division: "Başka birim".into(),
+            ..written[0].clone()
+        };
+        assert_eq!(link_file_rows(&[moved], &entries), [Some(0)]);
     }
 
     #[test]

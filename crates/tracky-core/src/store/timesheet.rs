@@ -880,11 +880,13 @@ impl Store {
         }
         match timesheet::refreshed(pieces, &saved.entry) {
             Some(fresh) => {
+                let tx = self.savepoint()?;
                 self.update_entry(id, &fresh)?;
                 self.conn.execute(
                     "UPDATE timesheet_entries SET coverage = ?2 WHERE id = ?1",
                     params![id, coverage_json(&fresh)?],
                 )?;
+                tx.commit()?;
                 Ok(true)
             }
             None => {

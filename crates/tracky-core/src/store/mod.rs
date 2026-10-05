@@ -353,6 +353,13 @@ impl Store {
                 "yedek Kum'un daha yeni bir sürümüyle alınmış; önce Kum'u güncelle".into(),
             ));
         }
+        // Başlığı sağlam ama sayfaları bozuk (yarım kopyalanmış) bir dosya yerine konmasın.
+        let check: String = conn
+            .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
+            .map_err(|_| not_kum())?;
+        if check != "ok" {
+            return Err(StoreError::Invalid("yedek dosyası bozuk".into()));
+        }
         let (sessions, last): (i64, Option<i64>) = conn
             .query_row(
                 "SELECT COUNT(*), MAX(ended_at) FROM sessions WHERE deleted_at IS NULL",
@@ -459,7 +466,8 @@ impl Store {
     pub fn save_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
         self.conn.execute(
             "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value,
+               updated_at = MAX(excluded.updated_at, settings.updated_at + 1)
              WHERE settings.value IS NOT excluded.value",
             params![key, serde_json::to_string(value)?, ms(Utc::now())],
         )?;
@@ -684,6 +692,12 @@ impl Store {
     /// kesişen her oturum tamamen aralığın içindedir. Asıl kimlik en son parçada
     /// kalır: süren oturumu takip eden motor doğru satırı uzatmaya devam eder.
     fn split_at(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<()> {
+        // Boş aralık sıfır uzunlukta parça, ters aralık ham bir CHECK hatası üretirdi.
+        if to <= from {
+            return Err(StoreError::Invalid(
+                "aralığın sonu başlangıcından sonra olmalı".into(),
+            ));
+        }
         let (from, to, now) = (ms(from), ms(to), ms(Utc::now()));
         let partial: Vec<(String, i64, i64)> = self
             .conn
@@ -791,6 +805,14 @@ impl Store {
         Ok(session)
     }
 
+    /// Eşitleme imleçlerini siler: sonraki eşitleme sunucudaki satırları baştan çeker
+    /// (yeniden uygulamak zararsız, yerelde daha yeni olanlar korunur).
+    pub fn forget_sync_cursors(&self) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key LIKE 'sync_cursor:%'", [])?;
+        Ok(())
+    }
+
     /// Senkronizasyon başka hesaba/projeye bağlandığında: imleçleri sil, her şeyi
     /// yeniden gönderilecek işaretle. Eşitlenen ayarlar en eski sayılır: hesapta kayıtlı
     /// ayarlar (örn. diğer Mac'te kurulan zaman çizelgeleri) bu cihazın varsayılanlarını
@@ -800,6 +822,7 @@ impl Store {
             .iter()
             .map(|k| format!("'{k}'"))
             .collect();
+        let tx = self.savepoint()?;
         self.conn.execute_batch(&format!(
             "DELETE FROM settings WHERE key LIKE 'sync_cursor:%';
              UPDATE sessions SET synced_at = NULL;
@@ -809,7 +832,7 @@ impl Store {
              UPDATE settings SET synced_at = NULL, updated_at = 0 WHERE key IN ({});",
             keys.join(", ")
         ))?;
-        Ok(())
+        tx.commit()
     }
 
     /// `[from, to)` aralığında başlığında ya da uygulama adında `query` geçen süre.
@@ -1787,6 +1810,45 @@ mod tests {
         other.dismiss_suggestion(&s.projects[0].key).unwrap();
         other.dismiss_suggestion(&s.projects[0].key).unwrap();
         assert!(other.suggestions(now).unwrap().projects.is_empty());
+    }
+
+    #[test]
+    fn setting_updated_at_never_goes_backwards() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_setting("theme", &"dark").unwrap();
+        // Saati ileride olan bir cihazdan gelmiş sürüm.
+        let future = ms(Utc::now()) + 3_600_000;
+        store
+            .conn
+            .execute(
+                "UPDATE settings SET updated_at = ?1, synced_at = ?1 WHERE key = 'theme'",
+                [future],
+            )
+            .unwrap();
+        store.save_setting("theme", &"light").unwrap();
+        let after: i64 = store
+            .conn
+            .query_row(
+                "SELECT updated_at FROM settings WHERE key = 'theme'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(after > future);
+    }
+
+    #[test]
+    fn empty_or_reversed_ranges_are_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_session(&session("A", None, 0, 600)).unwrap();
+        assert!(matches!(
+            store.delete_between(t(300), t(300)),
+            Err(StoreError::Invalid(_))
+        ));
+        assert!(matches!(
+            store.delete_between(t(300), t(240)),
+            Err(StoreError::Invalid(_))
+        ));
     }
 
     #[test]

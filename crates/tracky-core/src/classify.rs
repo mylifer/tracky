@@ -202,22 +202,22 @@ impl Classifier {
         // Kararlı sıralama: adres kuralları (yolu olan önce: daha özel), başlık kuralları,
         // sonra tam uygulama kuralları, sonra önek (`*`) kuralları; aynı türdekilerin kendi
         // sırası korunur. Böylece tek bir uygulamaya verilen kategori, onu da kapsayan önek
-        // kuralını (örn. `com.jetbrains.*`) ezer.
-        for list in [&mut category_rules, &mut project_rules] {
-            list.sort_by_key(|r| match r.field {
-                RuleField::Domain => (0, !r.pattern.contains('/')),
-                RuleField::Title => (1, false),
-                RuleField::App => (2, r.pattern.ends_with('*')),
-            });
-        }
+        // kuralını (örn. `com.jetbrains.*`) ezer. Yol, hazırlanmış desene bakılarak anlaşılır:
+        // eski biçimdeki `https://github.com` deseninin yolu yoktur.
         let lowered = |rules: Vec<Rule>| -> Vec<(Rule, String)> {
-            rules
+            let mut list: Vec<(Rule, String)> = rules
                 .into_iter()
                 .map(|r| {
                     let pattern = r.prepared_pattern();
                     (r, pattern)
                 })
-                .collect()
+                .collect();
+            list.sort_by_key(|(r, p)| match r.field {
+                RuleField::Domain => (0, !p.contains('/')),
+                RuleField::Title => (1, false),
+                RuleField::App => (2, p.ends_with('*')),
+            });
+            list
         };
         Self {
             category_rules: lowered(category_rules),
@@ -557,6 +557,14 @@ mod tests {
                 project: Some("kum".into())
             }
         );
+        // Eski biçimde yazılmış (şemalı) desen yolu olan kuralı ezmez.
+        let legacy = [
+            rule("dev", RuleField::Domain, "https://github.com"),
+            rule("kum", RuleField::Domain, "github.com/mylifer/tracky"),
+        ];
+        let tags_legacy = [tag("dev", TagKind::Project), tag("kum", TagKind::Project)];
+        let legacy_c = Classifier::new(&tags_legacy, &legacy);
+        assert_eq!(legacy_c.classify(&s).project.as_deref(), Some("kum"));
         s.url = Some("https://jira.togg.com/browse/X-1".into());
         assert_eq!(c.classify(&s).project.as_deref(), Some("togg"));
         assert_eq!(c.classify(&s).category.as_deref(), Some("browse"));

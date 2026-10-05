@@ -1,4 +1,4 @@
-import type { EntryView, TimesheetDay, TimesheetEntry } from "../api";
+import type { EntryView, FileRow, TimesheetDay, TimesheetEntry } from "../api";
 import { isoDate, parseIsoDate } from "./dates";
 
 /**
@@ -218,4 +218,45 @@ export function summarizeDay(day: TimesheetDay, outside: OutsideRow[], dayHours:
 export function divisionColor(divisions: string[], division: string): string {
   const i = divisions.findIndex((d) => d.toLocaleLowerCase("tr") === division.toLocaleLowerCase("tr"));
   return i < 0 ? "var(--c0)" : `var(--c${(i % 8) + 1})`;
+}
+
+/** İki dosya satırının içeriği aynı (satır numarası hariç). */
+export function sameFileRow(a: FileRow, b: FileRow) {
+  return (
+    a.date === b.date &&
+    a.start === b.start &&
+    a.hours === b.hours &&
+    a.kind === b.kind &&
+    a.details === b.details &&
+    a.party === b.party &&
+    a.division === b.division
+  );
+}
+
+let rowUid = 0;
+
+/**
+ * Dosya satırlarına ekranda kalıcı kimlik (`uid`) verir: satır düzenlenince ya da dosya yeniden
+ * okununca kimlik değişmez, düzenlenen satır yazarken yeniden kurulmaz. Kimliği olan satır onu
+ * korur (bir kez); olmayan, önceki listede içeriği aynı ve kimliği boşta olan satırınkini alır,
+ * yoksa yeni kimlik alır.
+ */
+export function keepRowIds<T extends FileRow & { uid?: number }>(
+  prev: readonly (FileRow & { uid?: number })[],
+  next: readonly T[],
+): (T & { uid: number })[] {
+  const used = new Set<number>();
+  const kept = next.map((r) => {
+    if (r.uid === undefined || used.has(r.uid)) return undefined;
+    used.add(r.uid);
+    return r.uid;
+  });
+  return next.map((r, i) => {
+    let uid = kept[i];
+    if (uid === undefined) {
+      uid = prev.find((p) => p.uid !== undefined && !used.has(p.uid) && sameFileRow(p, r))?.uid ?? ++rowUid;
+      used.add(uid);
+    }
+    return r.uid === uid ? (r as T & { uid: number }) : { ...r, uid };
+  });
 }

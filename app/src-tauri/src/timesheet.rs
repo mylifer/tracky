@@ -117,8 +117,10 @@ fn with_google<T>(
 
 impl FileTarget {
     fn of(sheet: &Timesheet, token: &str, google: &GoogleAuth) -> CmdResult<Self> {
-        let api = google
-            .connected()
+        // Tablo bağlantısı yalnızca çizelge Sheets'e bağlıyken (`sheet_url`) geçerlidir: Excel'e
+        // geçilmiş çizelgede kalmış eski bağlantı kayıtları eski (belki başka firmanın)
+        // tablosuna göndermesin.
+        let api = (google.connected() && sheet.sheet_url.is_some())
             .then(|| {
                 sheet
                     .sheet_link
@@ -201,6 +203,22 @@ impl FileTarget {
         .map_err(err)
     }
 
+    /// Kum'un aktardığı `entry` dosyada yok mu (elle silinmiş): gününün satırlarından hiçbiri
+    /// onunla eşlenmiyor ([`timesheet::link_file_rows`]). Apps Script yolunda hep `false`: betik
+    /// aktarılan kaydın kimliğini hatırlar; dosyaya dokunmadan çekilen kayıt yeniden
+    /// gönderildiğinde "zaten yazıldı" diye atlanırdı.
+    async fn lost(&self, entry: &TimesheetEntry) -> CmdResult<bool> {
+        if matches!(self, Self::Sheets { .. }) {
+            return Ok(false);
+        }
+        // Danışman süzülmez: danışman adı aktarımdan sonra değiştiyse satır hâlâ dosyadadır;
+        // "kayıp" sayılsaydı dosyada kalırken Kum'dan çekilirdi.
+        let rows = self.list(entry.date, entry.date).await?;
+        Ok(timesheet::link_file_rows(&rows, &[entry])
+            .iter()
+            .all(Option::is_none))
+    }
+
     /// `id`: satırı Kum aktardıysa kaydın kimliği (Sheets betiği onu unutur; yeniden gönderilebilir).
     async fn remove(&self, expect: &FileRow, id: Option<&str>) -> CmdResult<()> {
         let (target, expect, id) = (self.clone(), sheet_row(expect), id.map(str::to_string));
@@ -217,6 +235,16 @@ impl FileTarget {
         .map_err(err)?
         .map_err(err)
     }
+}
+
+/// Dosya satırı çizelgenin danışmanının olabilir: danışmanı yazılı değil ya da aynı (ortak
+/// tabloda başka danışmanların satırları ayrılır).
+fn mine(consultant: &str, r: &FileRow) -> bool {
+    let (me, who) = (
+        consultant.trim().to_lowercase(),
+        r.consultant.trim().to_lowercase(),
+    );
+    me.is_empty() || who.is_empty() || who == me
 }
 
 fn file_row(s: tracky_xlsx::SheetRow) -> FileRow {
@@ -244,6 +272,15 @@ fn sheet_row(f: &FileRow) -> tracky_xlsx::SheetRow {
         party: f.party.clone(),
         division: f.division.clone(),
         consultant: f.consultant.clone(),
+    }
+}
+
+/// Kum'un aktardığı kaydın dosyada beklenen satırı: danışmanı çizelgeninki (aktarımda öyle
+/// yazıldı); ortak tabloda iş arkadaşının aynı içerikli satırı bulunmasın.
+fn kum_row(e: &TimesheetEntry, row: u32, sheet: &Timesheet) -> FileRow {
+    FileRow {
+        consultant: sheet.consultant.trim().to_string(),
+        ..FileRow::of(e, row)
     }
 }
 
@@ -619,7 +656,7 @@ pub async fn save_timesheet_entry(
     if entry.details.trim().is_empty() {
         return Err("Açıklama boş olamaz: satır firmanın dosyasında.".into());
     }
-    let expect = FileRow::of(&saved.entry, sheet_row.unwrap_or(0));
+    let expect = kum_row(&saved.entry, sheet_row.unwrap_or(0), &sheet);
     target.update(&sheet.consultant, &expect, &entry).await?;
     lock(&app.state::<Shared>().store)
         .save_exported_entry(&saved.id, &entry, false)
@@ -647,10 +684,17 @@ pub async fn dismiss_timesheet_entry(
         }
     };
     let _write = FILE_WRITES.lock().await;
-    let (saved, _, target) = exported_entry(&lock(&app.state::<Shared>().store), id.as_deref())?
-        .ok_or("Satır değişti; sayfa yenilendi, tekrar dene.")?;
-    let expect = FileRow::of(&saved.entry, sheet_row.unwrap_or(0));
-    target.remove(&expect, Some(&saved.id)).await?;
+    let (saved, sheet, target) =
+        exported_entry(&lock(&app.state::<Shared>().store), id.as_deref())?
+            .ok_or("Satır değişti; sayfa yenilendi, tekrar dene.")?;
+    let expect = kum_row(&saved.entry, sheet_row.unwrap_or(0), &sheet);
+    if let Err(e) = target.remove(&expect, Some(&saved.id)).await {
+        // Satır dosyadan elle silinmişse kaldırılacak bir şey yok: Kum'da da çekilir (yoksa
+        // silme hep "satır değişmiş" hatası verirdi).
+        if e != tracky_xlsx::Error::Changed.to_string() || !target.lost(&saved.entry).await? {
+            return Err(e);
+        }
+    }
     lock(&app.state::<Shared>().store)
         .withdraw_exported_entry(&saved.id, true)
         .map_err(err)?;
@@ -694,11 +738,7 @@ pub async fn sheet_rows(
     let (sheet, target) = FileTarget::load(&lock(&app.state::<Shared>().store), &timesheet_id)?;
     let mut rows = target.list(first, last).await?;
     // Ortak tabloda başka danışmanların satırları gösterilmez.
-    let me = sheet.consultant.trim().to_lowercase();
-    rows.retain(|r| {
-        let who = r.consultant.trim().to_lowercase();
-        me.is_empty() || who.is_empty() || who == me
-    });
+    rows.retain(|r| mine(&sheet.consultant, r));
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
     let exported: Vec<tracky_core::store::SavedEntry> = store
@@ -948,7 +988,7 @@ pub async fn refresh_timesheet_entries(app: AppHandle, ids: Vec<String>) -> CmdR
         return Ok(removed);
     }
     for (saved, sheet, target, fresh) in remote {
-        let expect = FileRow::of(&saved.entry, 0);
+        let expect = kum_row(&saved.entry, 0, &sheet);
         match fresh {
             Some(fresh) => {
                 target.update(&sheet.consultant, &expect, &fresh).await?;
@@ -1086,6 +1126,7 @@ pub async fn import_timesheet_template(
     config.timesheets[i].file_path = Some(path);
     // Excel seçildi: kayıtlar bundan sonra bu dosyaya gider.
     config.timesheets[i].sheet_url = None;
+    config.timesheets[i].sheet_link = None;
     apply_template(&store, config, i, template, new)
 }
 
@@ -1262,6 +1303,7 @@ pub async fn disconnect_sheet(app: AppHandle, timesheet_id: String) -> CmdResult
         .find(|t| t.id == timesheet_id)
         .ok_or(NO_SHEET)?;
     sheet.sheet_url = None;
+    sheet.sheet_link = None;
     store.save_timesheet_config(&config).map_err(err)?;
     Ok(config)
 }
@@ -1509,7 +1551,9 @@ pub async fn undo_last_export(app: AppHandle) -> CmdResult<String> {
     let Some(last) = lock(&LAST_EXPORT).take() else {
         return Err("Geri alınacak aktarım yok.".into());
     };
-    let message = match &last.target {
+    // Yeniden aktarılmamış sayılacak kayıtlar: tabloda bulunamayan satır (elle silinmiş ya da
+    // aynısı zaten vardı diye atlanmış) geri alınmadı; o kayıt aktarılmış kalır.
+    let (message, undone) = match &last.target {
         ExportTarget::Sheets { .. } | ExportTarget::Api { .. } => {
             let ids = last.ids.clone();
             let done = match &last.target {
@@ -1538,14 +1582,18 @@ pub async fn undo_last_export(app: AppHandle) -> CmdResult<String> {
                 }
             };
             let missing = if done.missing > 0 {
-                format!(" {} satır tabloda bulunamadı.", done.missing)
+                format!(
+                    " {} satır tabloda bulunamadı; onlar aktarılmış sayılmaya devam ediyor.",
+                    done.missing
+                )
             } else {
                 String::new()
             };
-            format!(
+            let message = format!(
                 "Aktarım geri alındı: {} satır silindi, {} satır boşaltıldı.{missing}",
                 done.removed, done.cleared
-            )
+            );
+            (message, done.undone)
         }
         ExportTarget::Excel {
             path,
@@ -1566,11 +1614,69 @@ pub async fn undo_last_export(app: AppHandle) -> CmdResult<String> {
                 *lock(&LAST_EXPORT) = Some(last);
                 return Err(msg);
             }
-            "Aktarım geri alındı: Excel dosyası aktarım öncesi haline döndü.".to_string()
+            let message = "Aktarım geri alındı: Excel dosyası aktarım öncesi haline döndü.";
+            (message.to_string(), last.ids.clone())
         }
     };
     lock(&app.state::<Shared>().store)
-        .unmark_timesheet_exported(&last.ids)
+        .unmark_timesheet_exported(&undone)
         .map_err(err)?;
     Ok(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LINK: &str =
+        "https://docs.google.com/spreadsheets/d/1KoL_-q6Cxq1yqfqCG61rSZHsxHpnsgyQtz_QGIZrR9U/edit";
+
+    #[test]
+    fn a_stale_sheet_link_does_not_send_to_google() {
+        let google = GoogleAuth {
+            client_id: "x.apps.googleusercontent.com".into(),
+            refresh_token: Some("r".into()),
+            ..Default::default()
+        };
+        // Excel'e geçilmiş çizelgede kalmış eski tablo bağlantısı: Excel dosyasına yazılır.
+        let excel = Timesheet {
+            file_path: Some("/tmp/togg.xlsx".into()),
+            sheet_link: Some(LINK.into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            FileTarget::of(&excel, "t", &google),
+            Ok(FileTarget::Excel { .. })
+        ));
+        let none = Timesheet {
+            sheet_link: Some(LINK.into()),
+            ..Default::default()
+        };
+        assert!(FileTarget::of(&none, "t", &google).is_err());
+        // Sheets'e bağlıyken Google bağlıysa API, değilse betik.
+        let sheets = Timesheet {
+            sheet_url: Some("https://script.google.com/macros/s/x/exec".into()),
+            ..excel
+        };
+        assert!(matches!(
+            FileTarget::of(&sheets, "t", &google),
+            Ok(FileTarget::Api { .. })
+        ));
+        assert!(matches!(
+            FileTarget::of(&sheets, "t", &GoogleAuth::default()),
+            Ok(FileTarget::Sheets { .. })
+        ));
+    }
+
+    #[test]
+    fn rows_of_other_consultants_are_not_mine() {
+        let row = |who: &str| FileRow {
+            consultant: who.into(),
+            ..Default::default()
+        };
+        assert!(mine("Kaan Baytur", &row(" kaan baytur ")));
+        assert!(mine("Kaan Baytur", &row("")));
+        assert!(mine("", &row("Ayşe")));
+        assert!(!mine("Kaan Baytur", &row("Ayşe")));
+    }
 }

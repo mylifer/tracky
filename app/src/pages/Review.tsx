@@ -181,7 +181,11 @@ export default function Review({
       load();
       if (value)
         toast(`${group.label} listede gösterilmeyecek`, {
-          action: { label: "Geri al", run: () => api.ignoreUnassigned(group.key, false).then(load) },
+          action: {
+            label: "Geri al",
+            run: () =>
+              api.ignoreUnassigned(group.key, false).then(load, (e) => toast(friendlyError(e), { tone: "error" })),
+          },
         });
     } catch (e) {
       toast(friendlyError(e), { tone: "error" });

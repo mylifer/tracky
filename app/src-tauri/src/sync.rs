@@ -22,6 +22,8 @@ const CONFIG_KEY: &str = "sync_config";
 pub(crate) const AUTH_KEY: &str = "sync_auth";
 /// Yerel eşitleme durumunun ait olduğu "proje|kullanıcı".
 const OWNER_KEY: &str = "sync_owner";
+/// İmleçlerin ilerletildiği uygulama sürümü ([`sync_once`]).
+const CURSOR_VERSION_KEY: &str = "sync_cursor_version";
 /// Arka planda bu aralıkla eşitlenir.
 const INTERVAL: Duration = Duration::from_secs(5 * 60);
 
@@ -121,6 +123,24 @@ fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
         auth = refresh(app, &client, &auth)?;
     }
     let store = &app.state::<Shared>().store;
+    // Eski sürümün tanımayıp atladığı satırlar (yeni alan, yeni ayar) imleç geçtiği için bir
+    // daha çekilmezdi: sürüm değişince baştan çek.
+    {
+        let store = lock(store);
+        let version = env!("CARGO_PKG_VERSION");
+        if store
+            .setting::<String>(CURSOR_VERSION_KEY)
+            .ok()
+            .flatten()
+            .as_deref()
+            != Some(version)
+        {
+            store.forget_sync_cursors().map_err(|e| e.to_string())?;
+            store
+                .save_setting(CURSOR_VERSION_KEY, &version)
+                .map_err(|e| e.to_string())?;
+        }
+    }
     let attempt = |auth: &AuthSession| {
         tracky_core::sync::run(store, &mut client.remote(auth), &auth.user_id)
             .map_err(|e| e.to_string())
@@ -137,11 +157,16 @@ fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
 /// hesapla girdiyse yazmaz (yoksa çıkış yapan kullanıcı sessizce geri girerdi).
 fn refresh(app: &AppHandle, client: &Client, auth: &AuthSession) -> Result<AuthSession, String> {
     let fresh = client.refresh(auth).map_err(|e| e.to_string())?;
-    let stored: Option<AuthSession> = load(app, AUTH_KEY);
+    // Karşılaştırma ve kayıt tek kilitte: arada gelen bir çıkış ezilmesin.
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let stored: Option<AuthSession> = store.setting(AUTH_KEY).ok().flatten();
     if stored.map(|s| s.refresh_token) != Some(auth.refresh_token.clone()) {
         return Err("Oturum değişti; eşitleme atlandı".into());
     }
-    save(app, AUTH_KEY, &fresh)?;
+    store
+        .save_setting(AUTH_KEY, &fresh)
+        .map_err(|e| e.to_string())?;
     Ok(fresh)
 }
 
@@ -314,12 +339,14 @@ pub async fn sync_sign_out(app: AppHandle) -> CmdResult<SyncStatus> {
     Ok(status(&app))
 }
 
-/// Yedekten geri yüklemeden sonra (açılışta, eşitleme başlamadan): oturumdan çıkılır ve
-/// hesap bağı unutulur; kullanıcı yeniden giriş yapınca eşitleme baştan başlar. Bağlantı
-/// ayarları (adres, anahtar) kalır.
+/// Yedekten geri yüklemeden sonra (açılışta, eşitleme başlamadan): oturumdan çıkılır;
+/// kullanıcı yeniden giriş yapınca eşitleme baştan başlar. Hesap bağı kalır: aynı hesapla
+/// girince [`Store::reset_sync_state`] geri yüklenen ayarları "en eski" sayıp sunucudakilerle
+/// ezdirmesin (bkz. `Store::mark_restored_for_sync`). Bağlantı ayarları (adres, anahtar) kalır.
+///
+/// [`Store::reset_sync_state`]: tracky_core::Store::reset_sync_state
 pub(crate) fn forget_session(store: &tracky_core::Store) -> Result<(), tracky_core::StoreError> {
-    store.save_setting(AUTH_KEY, &serde_json::Value::Null)?;
-    store.save_setting(OWNER_KEY, &serde_json::Value::Null)
+    store.save_setting(AUTH_KEY, &serde_json::Value::Null)
 }
 
 /// Bağlantıyı tamamen kaldırır (yerel veriler kalır).

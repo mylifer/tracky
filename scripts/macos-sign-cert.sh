@@ -12,6 +12,8 @@
 #   MACOS_CERTIFICATE_PASSWORD  = kum-codesign.password dosyasının içeriği
 # Klasörü yedekleyin: sertifika değişirse kullanıcılar izni bir kez daha verir.
 set -euo pipefail
+# Özel anahtar yazılırken bile yalnızca sahibi okuyabilsin.
+umask 077
 
 out="${1:-$HOME/.kum-signing}"
 name="Kum Self-Signed"

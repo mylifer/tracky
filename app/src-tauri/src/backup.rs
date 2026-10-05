@@ -84,6 +84,16 @@ pub fn apply_pending_restore(data_dir: &Path) -> std::io::Result<()> {
     }
     let dir = backup_dir(data_dir);
     std::fs::create_dir_all(&dir)?;
+    let stamp = Local::now().format("%Y-%m-%d-%H%M%S");
+    // Açılamayan bir dosya yerine konursa uygulama her açılışta çökerdi: şimdiki veritabanı
+    // yerinde kalır, dosya incelenmek üzere kenara alınır.
+    if let Err(e) = Store::inspect_backup(&pending) {
+        std::fs::rename(
+            &pending,
+            dir.join(format!("gecersiz-geri-yukleme-{stamp}.db")),
+        )?;
+        return Err(std::io::Error::other(e.to_string()));
+    }
     let db = data_dir.join(DB_FILE);
     // Kenara alınan kopya `-wal` olmadan da eksiksiz olsun (çökmeden kalan WAL). Olmazsa
     // WAL dosyaları yine birlikte taşınır.
@@ -93,8 +103,8 @@ pub fn apply_pending_restore(data_dir: &Path) -> std::io::Result<()> {
         eprintln!("veritabanı WAL'ı işlenemedi: {e}");
     }
     let mark = data_dir.join(RESTORED_MARK);
-    std::fs::write(&mark, b"")?;
-    let stamp = Local::now().format("%Y-%m-%d-%H%M%S");
+    // Damga, geri yüklenen veritabanı açılamazsa eskisine dönmek için ([`undo_restore`]).
+    std::fs::write(&mark, stamp.to_string())?;
     // Önce WAL dosyaları: ana dosya taşınıp WAL kalırsa, açılışta yeni veritabanı eskinin
     // WAL'ıyla açılırdı. En son yedek yerine konur.
     let mut moves: Vec<(PathBuf, PathBuf)> = ["-wal", "-shm", ""]
@@ -113,6 +123,39 @@ pub fn apply_pending_restore(data_dir: &Path) -> std::io::Result<()> {
         return Err(e);
     }
     Ok(())
+}
+
+/// Geri yüklenen veritabanı açılamadıysa (örn. geçiş hatası): onu kenara alır ve geri
+/// yüklemeden önceki veritabanını yerine koyar. Geri döndüyse `true`.
+pub fn undo_restore(data_dir: &Path) -> std::io::Result<bool> {
+    let mark = data_dir.join(RESTORED_MARK);
+    let Ok(stamp) = std::fs::read_to_string(&mark) else {
+        return Ok(false);
+    };
+    let stamp = stamp.trim();
+    let dir = backup_dir(data_dir);
+    let before = dir.join(format!("geri-yukleme-oncesi-{stamp}.db"));
+    if stamp.is_empty() || !before.exists() {
+        return Ok(false);
+    }
+    let mut moves: Vec<(PathBuf, PathBuf)> = ["-wal", "-shm", ""]
+        .into_iter()
+        .map(|suffix| {
+            (
+                data_dir.join(format!("{DB_FILE}{suffix}")),
+                dir.join(format!("acilamayan-geri-yukleme-{stamp}.db{suffix}")),
+            )
+        })
+        .filter(|(current, _)| current.exists())
+        .collect();
+    moves.extend(["-wal", "-shm", ""].into_iter().filter_map(|suffix| {
+        let from = dir.join(format!("geri-yukleme-oncesi-{stamp}.db{suffix}"));
+        from.exists()
+            .then(|| (from, data_dir.join(format!("{DB_FILE}{suffix}"))))
+    }));
+    move_all(&moves)?;
+    std::fs::remove_file(&mark)?;
+    Ok(true)
 }
 
 /// Dosyaları sırayla taşır; biri başarısız olursa öncekileri geri taşır.
@@ -149,7 +192,8 @@ pub fn finish_restore(data_dir: &Path, store: &Store) -> Result<(), Box<dyn std:
 
 /// Yedeği alır, eskileri temizler ve zamanı kaydeder.
 fn backup_now_inner(app: &AppHandle) -> CmdResult<BackupFile> {
-    let dir = backup_dir(&data_dir(app)?);
+    let data = data_dir(app)?;
+    let dir = backup_dir(&data);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let now = Utc::now();
     let mut path = dir.join(format!(
@@ -163,14 +207,12 @@ fn backup_now_inner(app: &AppHandle) -> CmdResult<BackupFile> {
             now.with_timezone(&Local).format("%Y-%m-%d-%H%M%S")
         ));
     }
-    {
-        let shared = app.state::<Shared>();
-        let store = lock(&shared.store);
-        store.backup_to(&path).map_err(|e| e.to_string())?;
-        store
-            .save_setting(LAST_KEY, &now)
-            .map_err(|e| e.to_string())?;
-    }
+    // Ayrı bir salt okunur bağlantıyla: büyük veritabanında kopya sürerken ortak bağlantı
+    // kilitli kalıp takibi ve menü çubuğunu dondurmasın.
+    Store::copy_database(&data.join(DB_FILE), &path).map_err(|e| e.to_string())?;
+    lock(&app.state::<Shared>().store)
+        .save_setting(LAST_KEY, &now)
+        .map_err(|e| e.to_string())?;
     prune(&dir);
     file_info(&path).ok_or_else(|| "yedek dosyası okunamadı".to_string())
 }
@@ -299,13 +341,20 @@ pub async fn pick_backup(app: AppHandle) -> CmdResult<Option<PickedBackup>> {
 pub async fn restore_backup(app: AppHandle, path: String) -> CmdResult<()> {
     let source = PathBuf::from(&path);
     Store::inspect_backup(&source).map_err(|e| e.to_string())?;
-    let target = data_dir(&app)?.join(RESTORE_FILE);
+    let dir = data_dir(&app)?;
+    let target = dir.join(RESTORE_FILE);
+    // Önce geçici dosyaya: kopyalama yarıda kalırsa (kapanma, çökme) açılışta yarım bir
+    // dosya yerine konmaz.
+    let partial = dir.join(format!("{RESTORE_FILE}.tmp"));
+    for file in [&partial, &target] {
+        if file.exists() {
+            std::fs::remove_file(file).map_err(|e| e.to_string())?;
+        }
+    }
     // Dosya kopyası yanındaki `-wal`'ı (örn. "geri-yukleme-oncesi" kopyalarında) kaybederdi;
     // SQLite ile kopyalanınca WAL'daki değişiklikler de gelir.
-    if target.exists() {
-        std::fs::remove_file(&target).map_err(|e| e.to_string())?;
-    }
-    Store::copy_database(&source, &target).map_err(|e| e.to_string())?;
+    Store::copy_database(&source, &partial).map_err(|e| e.to_string())?;
+    std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
     // `request_restart` olağan kapanıştan geçer: takip süren oturumu yazar (bkz. updater).
     app.request_restart();
     Ok(())
@@ -332,6 +381,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "db");
         assert_eq!(std::fs::read_to_string(dir.join("a-wal")).unwrap(), "wal");
         assert!(!dir.join("b").exists() && !dir.join("b-wal").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_invalid_pending_restore_keeps_the_current_database() {
+        let dir = std::env::temp_dir().join(format!("kum-invalid-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(DB_FILE), b"current").unwrap();
+        std::fs::write(dir.join(RESTORE_FILE), b"yarim kopya").unwrap();
+        assert!(apply_pending_restore(&dir).is_err());
+        assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), b"current");
+        assert!(!dir.join(RESTORE_FILE).exists());
+        assert!(!dir.join(RESTORED_MARK).exists());
+        let kept = std::fs::read_dir(backup_dir(&dir)).unwrap().count();
+        assert_eq!(kept, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_restore_that_cannot_open_is_undone() {
+        let dir = std::env::temp_dir().join(format!("kum-undo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        drop(Store::open(dir.join(DB_FILE)).unwrap());
+        let before = std::fs::read(dir.join(DB_FILE)).unwrap();
+        let source = dir.join("yedek.db");
+        drop(Store::open(&source).unwrap());
+        Store::copy_database(&source, &dir.join(RESTORE_FILE)).unwrap();
+        apply_pending_restore(&dir).unwrap();
+        assert!(dir.join(RESTORED_MARK).exists());
+        assert!(undo_restore(&dir).unwrap());
+        assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), before);
+        assert!(!dir.join(RESTORED_MARK).exists());
+        // İşaret yokken bir şey yapmaz.
+        assert!(!undo_restore(&dir).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

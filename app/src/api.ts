@@ -195,7 +195,11 @@ export type FileRow = {
   consultant: string;
 };
 /** Dosyadaki satır: Kum aktardıysa kaydının kimliğiyle. */
-export type SheetRowView = FileRow & { entryId: string | null };
+export type SheetRowView = FileRow & {
+  entryId: string | null;
+  /** Yalnızca arayüzde: satırın ekrandaki kalıcı kimliği (React anahtarı; arka uca gitmez). */
+  uid?: number;
+};
 export type SheetRows = {
   rows: SheetRowView[];
   /** Bu çizelgeye aktarılmış olup dosyada bulunamayan kayıtlar. */

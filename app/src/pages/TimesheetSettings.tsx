@@ -23,6 +23,17 @@ import {
   type TimesheetConfig,
 } from "../api";
 import { ProjectSelect } from "../components/ProjectSelect";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "../components/ui/alert-dialog";
 import { ErrorText, SettingBlock, SettingRow, SettingsGroup, ToggleRow } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -112,11 +123,14 @@ function Timesheets({
     latest.current = config;
   }, [config]);
   const save = async (next: TimesheetConfig) => {
+    const prev = latest.current;
     latest.current = next;
     try {
       await api.saveTimesheetConfig(next);
       onChange();
     } catch (e) {
+      // Kaydedilemeyen değişiklik sonrakinin temeli olmasın (arada yenisi gelmediyse).
+      if (latest.current === next) latest.current = prev;
       onError(friendlyError(e));
     }
   };
@@ -573,7 +587,15 @@ export function CalendarConnect() {
         </Button>
         {status?.url && (
           <>
-            <Button size="sm" variant="ghost" aria-label="Takvimi yenile" onClick={() => api.refreshCalendar()}>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Takvimi yenile"
+              onClick={() => {
+                setError(null);
+                api.refreshCalendar().catch((e) => setError(friendlyError(e)));
+              }}
+            >
               <RefreshCw />
             </Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => save(null)}>
@@ -596,7 +618,14 @@ export function CalendarConnect() {
               {status.ignored} toplantı yoksayıldı ·{" "}
               <button
                 className="underline underline-offset-2"
-                onClick={async () => setStatus(await api.restoreIgnoredMeetings())}
+                onClick={async () => {
+                  setError(null);
+                  try {
+                    setStatus(await api.restoreIgnoredMeetings());
+                  } catch (e) {
+                    setError(friendlyError(e));
+                  }
+                }}
               >
                 geri getir
               </button>
@@ -858,7 +887,7 @@ export function SheetConnect({
 
 /**
  * Yapay zekâyla açıklama yazma: isteğe bağlı, varsayılan kapalı. Kullanıcının kendi Anthropic API
- * anahtarı ayarlarda saklanır (senkronizasyon açıksa kendi Supabase projene eşitlenir); istek
+ * anahtarı yalnızca bu cihazın ayarlarında saklanır (eşitlenmez); istek
  * yalnızca zaman çizelgesindeki düğmeyle gider.
  */
 function AiSettings() {
@@ -909,7 +938,7 @@ function AiSettings() {
         hint={
           status.hasKey
             ? `Kayıtlı (${status.keyHint ?? "…"}). Değiştirmek için yenisini yaz.`
-            : "console.anthropic.com → API Keys'ten oluştur. Ayarlarda saklanır; senkronizasyon açıksa kendi Supabase projene eşitlenir."
+            : "console.anthropic.com → API Keys'ten oluştur. Yalnızca bu cihazda saklanır, eşitlenmez."
         }
       >
         <form
@@ -942,9 +971,30 @@ function AiSettings() {
             {busy ? <Loader2 className="animate-spin" /> : <Sparkles />} Bağlantıyı dene
           </Button>
           {status.hasKey && (
-            <Button type="button" size="sm" variant="ghost" onClick={() => save(false, "")}>
-              Anahtarı sil
-            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button type="button" size="sm" variant="ghost">
+                  Anahtarı sil
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>API anahtarı silinsin mi?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Yapay zekâyla yazma da kapanır. Yeniden açmak için anahtarı yeniden yazman gerekir.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Vazgeç</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-white hover:bg-destructive/90"
+                    onClick={() => save(false, "")}
+                  >
+                    Anahtarı sil
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           )}
         </form>
         {result && (

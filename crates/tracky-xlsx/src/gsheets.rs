@@ -29,8 +29,9 @@ const API: &str = "https://sheets.googleapis.com/v4/spreadsheets";
 const TIMEOUT: Duration = Duration::from_secs(60);
 /// Son aktarımın satır işareti (betikle aynı): değeri "<kimlik>|<1: eklendi, 0: dolduruldu>".
 const ROW_KEY: &str = "kum_row";
-/// İlk sayfanın kimliği ve adı bu süre saklanır (her istekte sorulmasın).
-const SHEET_TTL: Duration = Duration::from_secs(600);
+/// İlk sayfanın kimliği ve adı bu süre saklanır (her istekte sorulmasın); kısa: sayfalar
+/// yeniden sıralanınca ya da yeniden adlandırılınca eski sayfaya yazılmasın.
+const SHEET_TTL: Duration = Duration::from_secs(45);
 
 /// Tablo bağlantısından (`https://docs.google.com/spreadsheets/d/<kimlik>/edit…`) kimlik.
 pub fn spreadsheet_id(link: &str) -> Option<String> {
@@ -685,7 +686,8 @@ impl Sheet {
                 details: row.details.clone(),
                 party: row.party.clone(),
                 division: row.division.clone(),
-                consultant: String::new(),
+                // Başka danışmanın aynı içerikli satırı bizimkinin yerine geçmesin.
+                consultant: consultant.trim().to_string(),
             };
             if self.rows().any(|s| s.same(&want)) {
                 skipped += 1;
@@ -731,10 +733,16 @@ impl Sheet {
             }
         }
         let found: std::collections::HashSet<&str> = hits.iter().map(|m| m.key.as_str()).collect();
+        let undone = ids
+            .iter()
+            .filter(|i| found.contains(i.chars().take(13).collect::<String>().as_str()))
+            .cloned()
+            .collect();
         SheetUndone {
             removed,
             cleared,
             missing: want.len() - found.len(),
+            undone,
         }
     }
 }
@@ -1040,6 +1048,17 @@ mod tests {
         // Aynı kayıt ikinci kez yazılmaz.
         let again = sh.plan_append("Kaan", &[("id-2".into(), row(2, 9, 1.0, "Bir"))], &[]);
         assert_eq!(again.skipped, 1);
+        // Ortak tabloda iş arkadaşının aynı içerikli satırı bizimki sayılmaz: kayıt yazılır.
+        let other = sh.plan_append("Ayşe", &[("id-9".into(), row(2, 9, 1.0, "Bir"))], &[]);
+        assert_eq!((other.skipped, other.inserted), (0, 1));
+        // Bizimkiyle aynı içerikli iki satır var; danışmanıyla yalnızca bizimki bulunur.
+        let mut ours = sh
+            .rows()
+            .find(|r| r.details == "Bir" && r.consultant == "Kaan")
+            .unwrap();
+        ours.row = 0;
+        let theirs = sh.rows().find(|r| r.consultant == "Ayşe").unwrap();
+        assert_ne!(sh.locate(&ours).unwrap(), theirs.row);
     }
 
     #[test]
@@ -1163,6 +1182,8 @@ mod tests {
             ],
         );
         assert_eq!((undone.removed, undone.cleared, undone.missing), (1, 1, 1));
+        // Bulunamayan kayıt geri alınmış sayılmaz (yeniden aktarılmamış işaretlenmez).
+        assert_eq!(undone.undone, ["a-uzun-kimlik", "b"]);
         assert_eq!(
             details(&sh),
             [(2, 1, "Eski".into())],

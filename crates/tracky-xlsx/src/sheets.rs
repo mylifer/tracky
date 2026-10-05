@@ -259,6 +259,9 @@ pub struct SheetUndone {
     pub cleared: usize,
     /// Tabloda bulunamayan kayıt sayısı (elle silinmiş ya da daha sonra yeni aktarım yapılmış).
     pub missing: usize,
+    /// Satırı silinen ya da boşaltılan kayıtların kimlikleri (istekteki tam halleriyle): yalnızca
+    /// bunlar yeniden aktarılmamış sayılır.
+    pub undone: Vec<String>,
 }
 
 /// Son aktarımda yazılan `ids` kayıtlarının satırlarını tablodan geri alır.
@@ -269,7 +272,23 @@ pub fn undo(url: &str, token: &str, ids: &[String]) -> Result<SheetUndone> {
         removed: count("removed"),
         cleared: count("cleared"),
         missing: count("missing"),
+        undone: undone_ids(&v, ids),
     })
+}
+
+/// Geri alınan kayıtlar (betiğin `undone` anahtarlarıyla eşleşen istek kimlikleri). Eski betik
+/// söylemez: hangi kaydın bulunamadığı bilinemez, eskisi gibi hepsi.
+fn undone_ids(v: &Value, ids: &[String]) -> Vec<String> {
+    if !v.get("undone").is_some_and(Value::is_array) {
+        return ids.to_vec();
+    }
+    let key = |id: &str| id.chars().take(13).collect::<String>();
+    let keys: std::collections::HashSet<String> =
+        strings(v, "undone").iter().map(|k| key(k)).collect();
+    ids.iter()
+        .filter(|id| keys.contains(&key(id)))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -286,5 +305,14 @@ mod tests {
         // Tablonun kendi linki ya da test (/dev) adresi değil.
         assert!(check_url("https://docs.google.com/spreadsheets/d/1abc/edit").is_err());
         assert!(check_url("https://script.google.com/macros/s/AKfy/dev").is_err());
+    }
+
+    #[test]
+    fn only_the_rows_the_script_undid_are_returned() {
+        let ids: Vec<String> = ["aaaaaaaaaaaaa-1".into(), "bbbbbbbbbbbbb-2".into()].into();
+        let v = json!({ "removed": 1, "missing": 1, "undone": ["aaaaaaaaaaaaa"] });
+        assert_eq!(undone_ids(&v, &ids), ["aaaaaaaaaaaaa-1"]);
+        // Eski betik `undone` göndermez: eskisi gibi hepsi.
+        assert_eq!(undone_ids(&json!({ "missing": 1 }), &ids), ids);
     }
 }

@@ -252,7 +252,7 @@ iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
 Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birleşik rapor için:
 
 1. [supabase.com](https://supabase.com) üzerinde ücretsiz bir proje oluştur.
-2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0008_…`) çalıştır.
+2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0009_…`) çalıştır.
    Önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli. `0003_writer.sql`
    cihazların kendi gönderdiklerini geri indirmesini önler; çalıştırılmazsa eşitleme eskisi gibi sürer.
    `0004_session_project.sql` elle verilen projeleri eşitler; Kum 0.4'ten itibaren gereklidir.
@@ -263,8 +263,11 @@ Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birl
    (Kum bu sütunları göndermeden yeniden dener ve Ayarlar'da uyarır), yalnızca arşiv ve bütçeler diğer
    cihazlara geçmez; dosya sonradan çalıştırılınca bekleyenler kendiliğinden gönderilir.
    `0008_settings.sql` ayarları (zaman çizelgeleri ve Google Sheets bağlantıları, takvim, gizlilik,
-   hedefler, görünüm, yapay zekâ) eşitler; yeni bilgisayarda giriş yapınca hepsi gelir. Çalıştırılmazsa
-   eşitleme sürer, yalnızca ayarlar taşınmaz.
+   hedefler, görünüm, yapay zekâ açık/kapalı) eşitler; yeni bilgisayarda giriş yapınca hepsi gelir.
+   Çalıştırılmazsa eşitleme sürer, yalnızca ayarlar taşınmaz. Yapay zekâ API anahtarı eşitlenmez; her
+   bilgisayarda ayrıca girilir.
+   `0009_harden_grants.sql` tablo yetkilerini daraltır (anon rolünün hiçbir yetkisi kalmaz); Kum'un
+   çalışması için gerekmez ama önerilir.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.

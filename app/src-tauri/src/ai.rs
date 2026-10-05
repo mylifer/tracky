@@ -1,7 +1,7 @@
 //! Yapay zekâyla zaman çizelgesi açıklaması: kullanıcının kendi Anthropic API anahtarıyla
 //! Claude'a gün başına bir istek. İsteğe bağlı, varsayılan kapalı; yalnızca düğmeye basınca
-//! çalışır. Anahtar ayarlarda durur (senkronizasyon açıksa kendi Supabase projene eşitlenir), günlüğe yazılmaz
-//! ve yalnızca api.anthropic.com'a gönderilir.
+//! çalışır. Anahtar yalnızca bu cihazın ayarlarında durur (eşitlemede yalnızca açık/kapalı
+//! taşınır), günlüğe yazılmaz ve yalnızca api.anthropic.com'a gönderilir.
 //!
 //! İstek gövdesi ve yanıt ayrıştırma saf işlevlerdir ([`request_body`], [`parse_response`]);
 //! satır bağlamı ve istem çekirdekte ([`tracky_core::ai`]).
@@ -33,7 +33,7 @@ const API_VERSION: &str = "2023-06-01";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 const MAX_TOKENS: u32 = 4000;
 const TIMEOUT: Duration = Duration::from_secs(60);
-/// Ayar anahtarı: `{ enabled, apiKey }`. Yalnızca bu cihazda.
+/// Ayar anahtarı: `{ enabled, apiKey }`. `apiKey` eşitlenmez (bkz. `tracky_core::sync`).
 const SETTINGS_KEY: &str = "ai_details";
 /// Üslup örnekleri için geriye bakılan gün.
 const EXAMPLES_LOOKBACK: u64 = 180;

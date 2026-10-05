@@ -39,6 +39,8 @@ pub struct Tracker<P: ActivityProvider> {
     ticks: u32,
     /// Diske yazılmış, hâlâ devam eden oturum.
     flushed: Option<Uuid>,
+    /// Monotonik saatin başlangıcı (bkz. [`Tracker::uptime`]).
+    started: std::time::Instant,
 }
 
 impl<P: ActivityProvider> Tracker<P> {
@@ -54,6 +56,18 @@ impl<P: ActivityProvider> Tracker<P> {
             privacy,
             ticks: 0,
             flushed: None,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    /// Makine uyurken ilerlemeyen saat: gözlem arasındaki uzun boşluğun uyku mu, gecikme mi
+    /// olduğunu ayırır ([`Engine::tick_with_uptime`]). macOS'ta (ve Linux'ta) `Instant` uykuda
+    /// durur; Windows'ta (QPC) uykuda da ilerlediği için ayırt edemez, kullanılmaz.
+    fn uptime(&self) -> Option<std::time::Duration> {
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            Some(self.started.elapsed())
+        } else {
+            None
         }
     }
 
@@ -110,7 +124,10 @@ impl<P: ActivityProvider> Tracker<P> {
             self.engine.forget_away(now);
         }
 
-        let closed = self.engine.tick(now, obs.window, obs.idle);
+        let uptime = self.uptime();
+        let closed = self
+            .engine
+            .tick_with_uptime(now, uptime, obs.window, obs.idle);
         self.settle(store, before, closed, &mut outcome);
         outcome.changed = self.engine.current().map(|s| s.id) != before;
         if let Some(away) = self.engine.take_away() {
@@ -136,7 +153,8 @@ impl<P: ActivityProvider> Tracker<P> {
     pub fn shutdown(&mut self, store: &Store, now: DateTime<Utc>) -> Option<String> {
         let mut outcome = TickOutcome::default();
         let before = self.engine.current().map(|s| s.id);
-        let closed = self.engine.flush(now);
+        let uptime = self.uptime();
+        let closed = self.engine.flush_with_uptime(now, uptime);
         self.settle(store, before, closed, &mut outcome);
         outcome.error
     }
@@ -266,6 +284,37 @@ mod tests {
         assert!(tracker.current().is_none());
         let apps = store.app_totals(t0, t0 + Duration::hours(1)).unwrap();
         assert!(apps.is_empty(), "boşta geçen süre sayıldı: {apps:?}");
+    }
+
+    #[test]
+    fn clock_set_backwards_does_not_delete_the_saved_session() {
+        let store = Store::open_in_memory().unwrap();
+        let mut tracker = Tracker::new(
+            Script::windows((0..12).map(|_| win("A"))),
+            EngineConfig::default(),
+            PrivacySettings::default(),
+        );
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        for i in 0..10 {
+            tracker.tick(&store, t0 + Duration::seconds(i));
+        }
+        // Saat bir saat geri alındı; hemen ardından uygulama kapandı.
+        let back = t0 - Duration::hours(1);
+        tracker.tick(&store, back);
+        assert!(
+            tracker
+                .shutdown(&store, back + Duration::seconds(1))
+                .is_none()
+        );
+        let sessions = store
+            .sessions_between(t0 - Duration::hours(2), t0 + Duration::hours(1))
+            .unwrap();
+        assert!(
+            sessions
+                .iter()
+                .any(|s| s.started_at == t0 && s.duration() == Duration::seconds(9)),
+            "{sessions:?}"
+        );
     }
 
     #[test]

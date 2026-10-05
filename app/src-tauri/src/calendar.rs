@@ -34,6 +34,10 @@ pub struct CalendarState {
     tx: Mutex<Sender<CalendarCommand>>,
     calendar: Mutex<Option<Arc<Calendar>>>,
     last: Mutex<Option<LastFetch>>,
+    /// Takvimi değiştirenleri (yenileme, bağlantı değişikliği) sıraya koyar: yenileme
+    /// bağlantıyı bunu tutarken yeniden denetler, kaldırılan takvim geri yazılmaz. Yalnızca
+    /// bu dosyada ve her zaman önce alınır (depo ve takvim kilitlerinden önce).
+    update: Mutex<()>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,20 +127,21 @@ fn refresh(app: &AppHandle) {
         return;
     };
     let state = app.state::<CalendarState>();
-    let result = fetch(&url);
+    let result = fetch(&url).map(|text| {
+        let cal = Calendar::parse(&text);
+        (text, cal)
+    });
     // İndirme sürerken takvim kaldırıldıysa ya da bağlantı değiştiyse eski takvim geri
-    // yazılmasın.
+    // yazılmasın. Denetim ile yazım arasında bağlantı değişemesin diye sıra kilidi tutulur.
+    let _update = lock(&state.update);
     if saved_url(app).as_deref() != Some(url.as_str()) {
         return;
     }
-    let result = result.map(|text| {
-        if let Some(path) = cache_path(app) {
-            let _ = std::fs::write(path, &text);
-        }
-        Calendar::parse(&text)
-    });
     let last = match result {
-        Ok(cal) => {
+        Ok((text, cal)) => {
+            if let Some(path) = cache_path(app) {
+                let _ = std::fs::write(path, &text);
+            }
             let n = cal.len();
             *lock(&state.calendar) = Some(Arc::new(cal));
             LastFetch {
@@ -152,6 +157,7 @@ fn refresh(app: &AppHandle) {
         },
     };
     *lock(&state.last) = Some(last);
+    drop(_update);
     let _ = app.emit("calendar", status(app));
 }
 
@@ -188,7 +194,13 @@ fn run(app: AppHandle, rx: Receiver<CalendarCommand>) {
     if saved_url(&app).is_some()
         && let Some(text) = cache_path(&app).and_then(|p| std::fs::read_to_string(p).ok())
     {
-        *lock(&app.state::<CalendarState>().calendar) = Some(Arc::new(Calendar::parse(&text)));
+        let cal = Calendar::parse(&text);
+        let state = app.state::<CalendarState>();
+        let _update = lock(&state.update);
+        // Ayrıştırma sürerken takvim kaldırıldıysa geri yazılmasın.
+        if saved_url(&app).is_some() {
+            *lock(&state.calendar) = Some(Arc::new(cal));
+        }
     }
     loop {
         refresh(&app);
@@ -205,6 +217,7 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
         tx: Mutex::new(tx),
         calendar: Mutex::new(None),
         last: Mutex::new(None),
+        update: Mutex::new(()),
     });
     let handle = app.handle().clone();
     std::thread::Builder::new()
@@ -234,6 +247,7 @@ pub async fn set_calendar_url(app: AppHandle, url: Option<String>) -> CmdResult<
                 .await
                 .map_err(|e| e.to_string())??;
             let cal = Calendar::parse(&text);
+            let _update = lock(&state.update);
             if let Some(path) = cache_path(&app) {
                 let _ = std::fs::write(path, &text);
             }
@@ -248,6 +262,7 @@ pub async fn set_calendar_url(app: AppHandle, url: Option<String>) -> CmdResult<
             *lock(&state.calendar) = Some(Arc::new(cal));
         }
         None => {
+            let _update = lock(&state.update);
             lock(&app.state::<Shared>().store)
                 .save_setting(URL_KEY, &None::<String>)
                 .map_err(|e| e.to_string())?;

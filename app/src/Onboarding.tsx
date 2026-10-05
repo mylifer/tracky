@@ -5,7 +5,7 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Switch } from "./components/ui/switch";
-import { friendlyError } from "./lib/feedback";
+import { friendlyError, toast } from "./lib/feedback";
 import { applyPlatform } from "./lib/theme";
 import { nextColor } from "./lib/tags";
 import { cn } from "./lib/utils";
@@ -29,15 +29,23 @@ export default function Onboarding({ status, onChange }: Props) {
   useEffect(() => {
     if (accessibility) return;
     const id = setInterval(async () => {
-      const s = await api.status();
-      if (s.accessibility) setAccessibility(true);
+      try {
+        const s = await api.status();
+        if (s.accessibility) setAccessibility(true);
+      } catch {
+        // Bir yoklama okunamadıysa sonraki dener.
+      }
     }, 1500);
     return () => clearInterval(id);
   }, [accessibility]);
 
   async function toggleAutostart(next: boolean) {
-    await api.setAutostart(next);
-    setAutostart(next);
+    try {
+      await api.setAutostart(next);
+      setAutostart(next);
+    } catch (e) {
+      toast(friendlyError(e), { tone: "error" });
+    }
   }
 
   async function finish() {
@@ -126,7 +134,11 @@ export default function Onboarding({ status, onChange }: Props) {
               size="lg"
               className="w-full"
               disabled={!accessibility}
-              onClick={() => (status.onboarded ? finish() : setStep("projects"))}
+              onClick={() =>
+                status.onboarded
+                  ? finish().catch((e) => toast(friendlyError(e), { tone: "error" }))
+                  : setStep("projects")
+              }
             >
               {!accessibility ? "İzin bekleniyor…" : status.onboarded ? "Başla" : "Devam"}
             </Button>

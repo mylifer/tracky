@@ -118,12 +118,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         "toggle_pause" => {
-            let paused = app
-                .state::<crate::tracking::Shared>()
-                .status
-                .lock()
-                .map(|s| s.paused)
-                .unwrap_or(false);
+            let paused = crate::lock(&app.state::<crate::tracking::Shared>().status).paused;
             if let Err(e) = crate::set_paused_inner(app, !paused) {
                 eprintln!("duraklatma değiştirilemedi: {e}");
             }

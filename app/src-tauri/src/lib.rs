@@ -310,7 +310,15 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = backup::apply_pending_restore(&dir) {
         eprintln!("yedek geri yüklenemedi: {e}");
     }
-    let store = Store::open(dir.join(backup::DB_FILE))?;
+    let store = match Store::open(dir.join(backup::DB_FILE)) {
+        Ok(store) => store,
+        // Geri yüklenen veritabanı açılamıyorsa öncekine dön; yoksa her açılışta çökerdi.
+        Err(e) if backup::undo_restore(&dir).unwrap_or(false) => {
+            eprintln!("geri yüklenen veritabanı açılamadı, önceki veritabanına dönüldü: {e}");
+            Store::open(dir.join(backup::DB_FILE))?
+        }
+        Err(e) => return Err(e.into()),
+    };
     // Eşitleme başlamadan: geri yüklenen veritabanının eşitleme durumunu sıfırla.
     if let Err(e) = backup::finish_restore(&dir, &store) {
         eprintln!("geri yükleme sonrası eşitleme durumu sıfırlanamadı: {e}");

@@ -6,6 +6,7 @@
 //! her takvim çiziminde yeniden aranmasın. Simgeler eşitlenmez; her cihaz kendisi bulur.
 
 use std::io::Read;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
@@ -30,6 +31,8 @@ const PAGE_BYTES: u64 = 256 * 1024;
 const ICON_BYTES: u64 = 256 * 1024;
 /// Sayfanın önerdiği simgelerden en çok bu kadarı denenir.
 const MAX_CANDIDATES: usize = 3;
+/// Yönlendirmeler elle izlenir (her adım [`allowed`] ile denetlenir); en çok bu kadar.
+const MAX_REDIRECTS: usize = 4;
 
 type CmdResult<T> = Result<T, String>;
 
@@ -138,6 +141,8 @@ fn agent() -> &'static ureq::Agent {
             .timeout_global(Some(Duration::from_secs(6)))
             // Bazı siteler tanımadığı istemciye simge yerine hata sayfası döner.
             .user_agent("Mozilla/5.0 (Kum)")
+            // Yönlendirmeler `get` içinde, hedefi denetlenerek izlenir.
+            .max_redirects(0)
             .build()
             .into()
     })
@@ -167,7 +172,8 @@ fn host_icon(host: &str) -> Option<String> {
                     if link.len() as u64 <= ICON_BYTES {
                         return Some(link.clone());
                     }
-                } else if let Some(icon) = fetch_icon(link) {
+                } else if let Some(icon) = Url::parse(link).ok().and_then(|u| fetch_icon(&u, &page))
+                {
                     return Some(icon);
                 }
             }
@@ -175,7 +181,7 @@ fn host_icon(host: &str) -> Option<String> {
         if let Some(icon) = page
             .join("/favicon.ico")
             .ok()
-            .and_then(|u| fetch_icon(u.as_str()))
+            .and_then(|u| fetch_icon(&u, &page))
         {
             return Some(icon);
         }
@@ -183,8 +189,104 @@ fn host_icon(host: &str) -> Option<String> {
     None
 }
 
+/// `page` sitesinden istenebilecek adres mi? Ziyaret edilmiş ana makinenin kendisine
+/// (şirket içi olsa da) gidilir. Başka bir ana makine (sayfadaki simge bağlantısı ya da
+/// yönlendirme) yalnızca aynı siteden (alt ya da üst alan adı) olabilir; IP adresi,
+/// `localhost` ve yerel ağa çözülen adlar reddedilir. Yoksa bir sayfa uygulamayı
+/// `http://192.168.1.1/...` gibi iç ağ adreslerine istek atmaya yöneltebilirdi.
+fn allowed(url: &Url, page: &Url) -> bool {
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let (Some(host), Some(page_host)) = (url.host_str(), page.host_str()) else {
+        return false;
+    };
+    if host == page_host {
+        return true;
+    }
+    if !allowed_name(url, page_host) {
+        return false;
+    }
+    // Ad yerel ağa çözülüyorsa da gidilmez.
+    let port = url.port_or_known_default().unwrap_or(443);
+    match (host, port).to_socket_addrs() {
+        Ok(addrs) => {
+            let addrs: Vec<_> = addrs.collect();
+            !addrs.is_empty() && addrs.iter().all(|a| is_public(a.ip()))
+        }
+        Err(_) => false,
+    }
+}
+
+/// [`allowed`]'ın ağa sormayan kısmı: ad IP ya da `localhost` değil ve `page_host` ile aynı
+/// sitede (biri ötekinin alt alan adı; kısa olan en az iki parçalı).
+fn allowed_name(url: &Url, page_host: &str) -> bool {
+    let Some(url::Host::Domain(host)) = url.host() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.');
+    if host == "localhost" || host.ends_with(".localhost") {
+        return false;
+    }
+    let page_host = page_host.trim_end_matches('.');
+    let (short, long) = if host.len() <= page_host.len() {
+        (host, page_host)
+    } else {
+        (page_host, host)
+    };
+    short.contains('.') && (long == short || long.ends_with(&format!(".{short}")))
+}
+
+/// İnternetteki bir adres mi (yerel ağ, geri döngü, bağlantı-yerel vb. değil)?
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                // 100.64.0.0/10: operatör NAT'ı.
+                || (a == 100 && (64..128).contains(&b)))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // fc00::/7 benzersiz yerel, fe80::/10 bağlantı-yerel.
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
+/// `url`'ye GET; yönlendirmeler her adımda [`allowed`] ile denetlenerek izlenir.
+fn get(url: &Url, page: &Url) -> Option<ureq::http::Response<ureq::Body>> {
+    let mut url = url.clone();
+    for _ in 0..=MAX_REDIRECTS {
+        if !allowed(&url, page) {
+            return None;
+        }
+        let resp = agent().get(url.as_str()).call().ok()?;
+        if !resp.status().is_redirection() {
+            return Some(resp);
+        }
+        let location = resp.headers().get("location")?.to_str().ok()?;
+        url = url.join(location).ok()?;
+    }
+    None
+}
+
 fn fetch_page(url: &Url) -> Option<String> {
-    let mut resp = agent().get(url.as_str()).call().ok()?;
+    let mut resp = get(url, url)?;
     let mut bytes = Vec::new();
     resp.body_mut()
         .as_reader()
@@ -194,8 +296,8 @@ fn fetch_page(url: &Url) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn fetch_icon(url: &str) -> Option<String> {
-    let mut resp = agent().get(url).call().ok()?;
+fn fetch_icon(url: &Url, page: &Url) -> Option<String> {
+    let mut resp = get(url, page)?;
     let declared = resp
         .headers()
         .get("content-type")
@@ -265,6 +367,55 @@ mod tests {
             Some("image/svg+xml")
         );
         assert_eq!(sniff(b"<!DOCTYPE html><html>"), None);
+    }
+
+    #[test]
+    fn icons_are_fetched_only_from_the_same_site() {
+        let page = Url::parse("https://app.asana.com/").unwrap();
+        let ok = |u: &str| allowed_name(&Url::parse(u).unwrap(), page.host_str().unwrap());
+        assert!(ok("https://asana.com/favicon.ico"));
+        assert!(ok("https://static.app.asana.com/i.png"));
+        assert!(!ok("https://cdn.com/i.png"));
+        assert!(!ok("https://evilasana.com/i.png"));
+        assert!(!ok("http://192.168.1.1/i.png"));
+        assert!(!ok("http://[::1]/i.png"));
+        assert!(!ok("http://localhost:8080/i.png"));
+        assert!(!ok("https://com/i.png"));
+        // Ziyaret edilen ana makinenin kendisi (şirket içi de olsa) istenebilir.
+        let intranet = Url::parse("http://10.0.0.5:8080/").unwrap();
+        assert!(allowed(
+            &Url::parse("http://10.0.0.5:8080/favicon.ico").unwrap(),
+            &intranet
+        ));
+        assert!(!allowed(
+            &Url::parse("http://10.0.0.6/favicon.ico").unwrap(),
+            &intranet
+        ));
+        assert!(!allowed(
+            &Url::parse("file:///etc/passwd").unwrap(),
+            &intranet
+        ));
+    }
+
+    #[test]
+    fn private_addresses_are_not_public() {
+        for ip in [
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:192.168.1.1",
+        ] {
+            assert!(!is_public(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(is_public("140.82.112.3".parse().unwrap()));
+        assert!(is_public("2606:4700::1111".parse().unwrap()));
     }
 
     #[test]

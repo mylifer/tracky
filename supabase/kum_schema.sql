@@ -1,5 +1,5 @@
 -- Kum'u başka bir uygulamanın Supabase projesinde, ayrı "kum" şemasında kurar (ücretsiz plandaki
--- proje sınırına takılmamak için). 0001–0007 göçlerinin "kum" şemasına uyarlanmış hâlidir;
+-- proje sınırına takılmamak için). 0001–0009 göçlerinin "kum" şemasına uyarlanmış hâlidir;
 -- SQL Editor'da bir kez çalıştırın, tekrar çalıştırmak zararsızdır. Ardından Project Settings →
 -- Data API → Exposed schemas listesine "kum" ekleyin ve Kum'da Ayarlar → Senkronizasyon →
 -- Şema alanına "kum" yazın. Diğer uygulamanın tablolarına ve ayarlarına dokunmaz.
@@ -188,5 +188,11 @@ create policy "kendi satırları" on kum.settings for all to authenticated
     with check (user_id = (select auth.uid()));
 
 -- Erişim: oturum açmış kullanıcılar (satır güvenliğiyle yalnız kendi satırları) ve sunucu rolü.
-grant all on all tables in schema kum to authenticated, service_role;
-alter default privileges in schema kum grant all on tables to authenticated, service_role;
+-- (0009) authenticated'a yalnızca okuma ve yazma: TRUNCATE satır güvenliğini atlar.
+revoke all on all tables in schema kum from anon;
+revoke truncate, references, trigger on all tables in schema kum from authenticated;
+grant select, insert, update, delete on all tables in schema kum to authenticated;
+grant all on all tables in schema kum to service_role;
+alter default privileges in schema kum grant select, insert, update, delete on tables to authenticated;
+alter default privileges in schema kum grant all on tables to service_role;
+alter function kum.kum_lww() set search_path = '';

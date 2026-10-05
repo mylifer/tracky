@@ -95,13 +95,17 @@ pub fn merge_devices(sessions: Vec<Session>) -> Vec<Session> {
     let (idle, active): (Vec<Session>, Vec<Session>) =
         sessions.into_iter().partition(Session::is_idle);
     let mut out = latest_wins(&active, &[]);
-    out.extend(latest_wins(&idle, &out));
+    // `latest_wins` çıktısı çakışmasız; başlangıca göre sıralanınca bitişler de sıralı olur.
+    out.sort_by_key(|s| s.started_at);
+    let idle = latest_wins(&idle, &out);
+    out.extend(idle);
     out.sort_by_key(|s| s.started_at);
     out
 }
 
 /// Çakışan oturumlarda en son başlayan kazanır; `above` içindekiler her zaman kazanır.
-/// Girdi başlangıca göre sıralı olmalı.
+/// Girdi başlangıca göre sıralı olmalı; `above` ayrıca çakışmasız olmalı (bitişleri de
+/// sıralı): her oturum için yalnızca kesişen dilimi taranır, tüm geçmiş değil.
 fn latest_wins(sessions: &[Session], above: &[Session]) -> Vec<Session> {
     let mut out = Vec::with_capacity(sessions.len());
     for (i, s) in sessions.iter().enumerate() {
@@ -109,9 +113,10 @@ fn latest_wins(sessions: &[Session], above: &[Session]) -> Vec<Session> {
         let later = sessions[i + 1..]
             .iter()
             .take_while(|t| t.started_at < s.ended_at);
-        let over = above
+        let first = above.partition_point(|t| t.ended_at <= s.started_at);
+        let over = above[first..]
             .iter()
-            .filter(|t| t.started_at < s.ended_at && t.ended_at > s.started_at);
+            .take_while(|t| t.started_at < s.ended_at);
         for cut in later.chain(over).map(|t| (t.started_at, t.ended_at)) {
             pieces = pieces
                 .into_iter()

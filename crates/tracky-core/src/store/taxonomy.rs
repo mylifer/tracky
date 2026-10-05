@@ -28,6 +28,7 @@ impl Store {
         if self.setting::<bool>(DEFAULTS_SEEDED_KEY)?.is_some() {
             return Ok(());
         }
+        let tx = self.savepoint()?;
         for (position, (name, color, apps, titles)) in DEFAULT_CATEGORIES.iter().enumerate() {
             // Kimlikler adlardan türetilir: her cihaz aynı varsayılanları aynı
             // kimlikle üretir, senkronizasyonda kopya oluşmaz.
@@ -55,7 +56,8 @@ impl Store {
         // düzenleme, sonradan kurulan cihazın tohumuna her zaman üstün gelir.
         self.conn
             .execute_batch("UPDATE tags SET updated_at = 0; UPDATE rules SET updated_at = 0;")?;
-        self.save_setting(DEFAULTS_SEEDED_KEY, &true)
+        self.save_setting(DEFAULTS_SEEDED_KEY, &true)?;
+        tx.commit()
     }
 
     pub(super) fn require_tag(&self, id: &str, kind: TagKind) -> Result<()> {
@@ -209,6 +211,7 @@ impl Store {
     pub fn delete_tag(&self, id: &str) -> Result<DateTime<Utc>> {
         let at = Utc::now();
         let now = ms(at);
+        let tx = self.savepoint()?;
         self.conn.execute(
             "UPDATE tags SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
             params![id, now],
@@ -218,6 +221,7 @@ impl Store {
              WHERE tag_id = ?1 AND deleted_at IS NULL",
             params![id, now],
         )?;
+        tx.commit()?;
         Ok(super::from_ms(now))
     }
 

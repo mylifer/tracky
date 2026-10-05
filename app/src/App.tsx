@@ -133,7 +133,14 @@ export default function App() {
       </main>
     );
   if (!status) return <Splash />;
-  if (!status.onboarded || !status.accessibility) return <Onboarding status={status} onChange={refresh} />;
+  if (!status.onboarded || !status.accessibility)
+    return (
+      <>
+        <Onboarding status={status} onChange={refresh} />
+        {/* Karşılamadaki hatalar da bildirimle görünsün. */}
+        <Toaster />
+      </>
+    );
   return <Shell status={status} refresh={refresh} />;
 }
 

@@ -44,6 +44,8 @@ pub struct Engine {
     /// Son gözlemin anı: uyku, açık oturum olmasa da (hariç tutulan uygulama, pencere yok)
     /// iki gözlem arasındaki boşluktan anlaşılır.
     last_tick: Option<DateTime<Utc>>,
+    /// Son gözlemdeki monotonik saat (bkz. [`Engine::tick_with_uptime`]).
+    last_uptime: Option<std::time::Duration>,
 }
 
 impl Engine {
@@ -55,6 +57,7 @@ impl Engine {
             away: None,
             away_floor: None,
             last_tick: None,
+            last_uptime: None,
         }
     }
 
@@ -76,6 +79,7 @@ impl Engine {
         self.away = None;
         self.away_floor = Some(now);
         self.last_tick = None;
+        self.last_uptime = None;
     }
 
     /// Kullanıcının `at` anından beri uzakta olduğunu not eder (daha önceki bir an varsa o kalır).
@@ -96,27 +100,92 @@ impl Engine {
         window: Option<ActiveWindow>,
         idle_seconds: u64,
     ) -> Option<Session> {
-        // Makine uyuduysa son görülen andan sonrası sayılmaz; kullanıcı o andan beri uzakta.
-        // Açık oturum olmasa da (hariç tutulan uygulama, pencere yok) son gözleme bakılır.
-        let slept_at = self
-            .last_tick
-            .replace(now)
-            .filter(|last| now - *last > self.config.max_gap);
-        let closed = if let Some(last) = slept_at {
-            self.mark_away(last);
-            self.close_at(None)
-        } else {
-            None
+        self.tick_with_uptime(now, None, window, idle_seconds)
+    }
+
+    /// [`Engine::tick`], monotonik saatle: `uptime` makine uyurken ilerlemeyen bir saattir
+    /// (macOS'ta `Instant`; Windows'ta `Instant` uykuda da ilerlediği için `None` verilmeli).
+    /// Duvar saati uzun bir ara gösterirken monotonik saat de aynı kadar ilerlediyse makine
+    /// uyumamış, süreç gecikmiştir (App Nap, yavaş Erişilebilirlik çağrısı): oturum sürer.
+    pub fn tick_with_uptime(
+        &mut self,
+        now: DateTime<Utc>,
+        uptime: Option<std::time::Duration>,
+        window: Option<ActiveWindow>,
+        idle_seconds: u64,
+    ) -> Option<Session> {
+        let gap = self.gap(now, uptime);
+        self.last_tick = Some(now);
+        self.last_uptime = uptime;
+        let closed = match gap {
+            // Makine uyuduysa son görülen andan sonrası sayılmaz; kullanıcı o andan beri
+            // uzakta. Açık oturum olmasa da (hariç tutulan uygulama, pencere yok) son
+            // gözleme bakılır.
+            Gap::Slept(last) => {
+                self.mark_away(last);
+                self.close_at(None)
+            }
+            // Saat geri alındı: oturum son görülen anda kapanır (kaydedilmiş süresi korunur),
+            // yenisi `now`'dan başlar. Süren boşluk ileriki bir andan başlamış olabilir: unutulur.
+            Gap::Backwards => {
+                self.away_since = None;
+                self.away_floor = Some(now);
+                self.close_at(None)
+            }
+            Gap::None => None,
         };
         // Oturum yukarıda kapandıysa `observe` ikinci bir oturum kapatamaz.
         let switched = self.observe(now, window, idle_seconds);
         closed.or(switched)
     }
 
+    /// Son gözlemden `now`'a kadarki aranın türü.
+    fn gap(&self, now: DateTime<Utc>, uptime: Option<std::time::Duration>) -> Gap {
+        let Some(last) = self.last_tick else {
+            return Gap::None;
+        };
+        if now < last {
+            return Gap::Backwards;
+        }
+        let wall = now - last;
+        if wall <= self.config.max_gap {
+            return Gap::None;
+        }
+        // Monotonik saat aradaki sürenin neredeyse tamamında ilerlediyse uyku değil gecikme.
+        // Temkinli: gecikme boşta eşiğinden uzunsa yine uyku sayılır.
+        let awake = uptime
+            .zip(self.last_uptime)
+            .and_then(|(up, last_up)| up.checked_sub(last_up))
+            .and_then(|d| Duration::from_std(d).ok());
+        match awake {
+            Some(awake)
+                if wall - awake <= self.config.max_gap && awake <= self.config.idle_threshold =>
+            {
+                Gap::None
+            }
+            _ => Gap::Slept(last),
+        }
+    }
+
     /// Uygulama kapanırken devam eden oturumu kapatır.
     pub fn flush(&mut self, now: DateTime<Utc>) -> Option<Session> {
+        self.flush_with_uptime(now, None)
+    }
+
+    /// [`Engine::flush`], monotonik saatle (bkz. [`Engine::tick_with_uptime`]). Kapanış
+    /// uykudan hemen sonra (ya da saat geri alınınca) gelirse oturum son görülen anda kapanır;
+    /// yoksa uyku çalışma sayılırdı.
+    pub fn flush_with_uptime(
+        &mut self,
+        now: DateTime<Utc>,
+        uptime: Option<std::time::Duration>,
+    ) -> Option<Session> {
+        let gap = self.gap(now, uptime);
         self.forget_away(now);
-        self.close_at(Some(now))
+        match gap {
+            Gap::None => self.close_at(Some(now)),
+            Gap::Slept(_) | Gap::Backwards => self.close_at(None),
+        }
     }
 
     fn observe(
@@ -176,6 +245,16 @@ impl Engine {
         }
         (s.duration() >= self.config.min_session).then_some(s)
     }
+}
+
+/// İki gözlem arası.
+enum Gap {
+    /// Olağan ya da gecikmiş gözlem: oturum sürer.
+    None,
+    /// Makine uyudu; son görülen an.
+    Slept(DateTime<Utc>),
+    /// Sistem saati geri alındı.
+    Backwards,
 }
 
 #[cfg(test)]
@@ -268,6 +347,88 @@ mod tests {
         assert_eq!(closed.len(), 1);
         assert_eq!(closed[0].ended_at, t(5));
         assert_eq!(e.current().unwrap().started_at, t(3600));
+    }
+
+    fn up(secs: u64) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(secs))
+    }
+
+    #[test]
+    fn stalled_ticks_extend_the_session_but_sleep_does_not() {
+        // 40 sn gecikme (App Nap, yavaş çağrı): monotonik saat de 40 sn ilerledi.
+        let mut e = Engine::new(EngineConfig::default());
+        assert!(
+            e.tick_with_uptime(t(0), up(100), win("Code", "x"), 0)
+                .is_none()
+        );
+        assert!(
+            e.tick_with_uptime(t(40), up(140), win("Code", "x"), 0)
+                .is_none()
+        );
+        let cur = e.current().unwrap();
+        assert_eq!((cur.started_at, cur.ended_at), (t(0), t(40)));
+
+        // Uyku: duvar saati 1 saat, monotonik saat 1 sn ilerledi.
+        let closed = e
+            .tick_with_uptime(t(3640), up(141), win("Code", "x"), 0)
+            .unwrap();
+        assert_eq!((closed.started_at, closed.ended_at), (t(0), t(40)));
+        assert_eq!(e.current().unwrap().started_at, t(3640));
+
+        // Gecikme boşta eşiğinden uzunsa temkinle uyku sayılır.
+        e.tick_with_uptime(t(3650), up(151), win("Code", "x"), 0);
+        let closed = e
+            .tick_with_uptime(t(3650 + 600), up(151 + 600), win("Code", "x"), 0)
+            .unwrap();
+        assert_eq!(closed.ended_at, t(3650));
+
+        // Monotonik saat yoksa (Windows) eski davranış: uzun ara uykudur.
+        let mut w = Engine::new(EngineConfig::default());
+        w.tick_with_uptime(t(0), None, win("Code", "x"), 0);
+        w.tick_with_uptime(t(5), None, win("Code", "x"), 0);
+        assert!(
+            w.tick_with_uptime(t(40), None, win("Code", "x"), 0)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn shutdown_right_after_wake_does_not_count_the_sleep() {
+        let mut e = Engine::new(EngineConfig::default());
+        run(
+            &mut e,
+            &[(0, win("Code", "x"), 0), (10, win("Code", "x"), 0)],
+        );
+        let flushed = e.flush(t(10 + 3600)).unwrap();
+        assert_eq!((flushed.started_at, flushed.ended_at), (t(0), t(10)));
+
+        // Gecikmiş kapanış (monotonik saat de ilerledi) `now`'a kadar sayılır.
+        let mut e = Engine::new(EngineConfig::default());
+        e.tick_with_uptime(t(0), up(0), win("Code", "x"), 0);
+        let flushed = e.flush_with_uptime(t(30), up(30)).unwrap();
+        assert_eq!(flushed.ended_at, t(30));
+    }
+
+    #[test]
+    fn clock_set_backwards_keeps_the_recorded_session() {
+        let mut e = Engine::new(EngineConfig::default());
+        run(
+            &mut e,
+            &[(100, win("Code", "x"), 0), (110, win("Code", "x"), 0)],
+        );
+        // Saat bir saat geri alındı: oturum atılmaz, son görülen anda kapanır.
+        let closed = e.tick(t(110 - 3600), win("Code", "x"), 0).unwrap();
+        assert_eq!((closed.started_at, closed.ended_at), (t(100), t(110)));
+        let cur = e.current().unwrap();
+        assert_eq!(cur.started_at, t(110 - 3600));
+        // Geri alındıktan hemen sonra kapanış da önceki oturumu sıfırlamaz.
+        let mut e2 = Engine::new(EngineConfig::default());
+        run(
+            &mut e2,
+            &[(100, win("Code", "x"), 0), (110, win("Code", "x"), 0)],
+        );
+        let flushed = e2.flush(t(50)).unwrap();
+        assert_eq!((flushed.started_at, flushed.ended_at), (t(100), t(110)));
     }
 
     #[test]

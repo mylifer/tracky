@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { EntryKind, EntryView, TimesheetDay } from "../api";
-import { closeReport, copyDetails, divisionColor, hoursDiff, mergeProblem, started, summarizeDay } from "./timesheet";
+import type { EntryKind, EntryView, SheetRowView, TimesheetDay } from "../api";
+import {
+  closeReport,
+  copyDetails,
+  divisionColor,
+  hoursDiff,
+  keepRowIds,
+  mergeProblem,
+  started,
+  summarizeDay,
+} from "./timesheet";
 
 let seq = 0;
 function row(projectId: string, hours: number, details = "", kind: EntryKind = "Working", exported = false): EntryView {
@@ -174,5 +183,49 @@ describe("gün özeti", () => {
   it("birim rengi listedeki sırasından", () => {
     expect(divisionColor(["Trumore", "Sync"], "sync")).toBe("var(--c2)");
     expect(divisionColor(["Trumore"], "Yok")).toBe("var(--c0)");
+  });
+});
+
+describe("dosya satırlarının ekrandaki kimliği", () => {
+  const fileRow = (row: number, details: string, extra: Partial<SheetRowView> = {}): SheetRowView => ({
+    row,
+    date: "2026-09-28",
+    start: "09:00:00",
+    hours: 1,
+    kind: "Working",
+    details,
+    party: "ADBA",
+    division: "A",
+    consultant: "",
+    entryId: null,
+    ...extra,
+  });
+
+  it("her satıra ayrı kimlik verir", () => {
+    const rows = keepRowIds([], [fileRow(2, "a"), fileRow(3, "a"), fileRow(4, "b")]);
+    expect(new Set(rows.map((r) => r.uid)).size).toBe(3);
+  });
+
+  it("düzenlenen satır kimliğini korur", () => {
+    const [a, b] = keepRowIds([], [fileRow(2, "a"), fileRow(3, "b")]);
+    const next = keepRowIds([a, b], [{ ...a, details: "a yeni", row: 5 }, b]);
+    expect(next.map((r) => r.uid)).toEqual([a.uid, b.uid]);
+  });
+
+  it("yeniden okunan satır içeriği aynıysa eski kimliğini alır", () => {
+    const prev = keepRowIds([], [fileRow(2, "a"), fileRow(3, "b")]);
+    // Dosyadan yeni gelen satırlar kimliksiz; numaraları kaymış, sırası değişmiş.
+    const next = keepRowIds(prev, [fileRow(7, "b"), fileRow(6, "a"), fileRow(8, "c")]);
+    expect(next[0].uid).toBe(prev[1].uid);
+    expect(next[1].uid).toBe(prev[0].uid);
+    expect(prev.map((r) => r.uid)).not.toContain(next[2].uid);
+  });
+
+  it("aynı içerikli iki satır aynı kimliği paylaşmaz", () => {
+    const prev = keepRowIds([], [fileRow(2, "a")]);
+    const next = keepRowIds(prev, [fileRow(2, "a"), fileRow(3, "a"), { ...prev[0] }]);
+    expect(new Set(next.map((r) => r.uid)).size).toBe(3);
+    // Kimliğini taşıyan satır önce gelir: içerik eşleşmesi onu çalamaz.
+    expect(next[2].uid).toBe(prev[0].uid);
   });
 });
