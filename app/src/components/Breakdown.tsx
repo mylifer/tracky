@@ -126,7 +126,7 @@ export function Legend({ order, tags }: { order: (string | null)[]; tags: Map<st
       {order.map((id) => {
         const tag = id ? tags.get(id) : undefined;
         return (
-          <li key={id ?? "none"} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <li key={id ?? "none"} className="flex items-center gap-1.5 text-[11px] whitespace-nowrap text-muted-foreground">
             <Dot color={tagColor(tag)} />
             {tag?.name ?? UNCATEGORIZED}
           </li>

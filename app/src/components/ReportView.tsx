@@ -331,9 +331,10 @@ export default function ReportView(p: Props) {
                   // Yakınlaşınca uzun takvimde başlık ve düğmeler görünür kalsın.
                   <CardContent
                     ref={setHead}
-                    className="sticky top-0 z-30 -mt-3 flex items-start gap-3 rounded-t-xl bg-card pt-3 pb-1"
+                    className="sticky top-0 z-30 -mt-3 flex flex-wrap items-start gap-x-3 gap-y-2 rounded-t-xl bg-card pt-3 pb-1"
                   >
-                    <div className="min-w-0 flex-1">
+                    {/* Dar pencerede lejant ezilmesin; düğmeler alt satıra geçsin. */}
+                    <div className="min-w-48 flex-1">
                       {projectLens ? (
                         <ProjectLegend buckets={report.projects} tags={tags} />
                       ) : (
@@ -588,7 +589,7 @@ function ProjectLegend({ buckets, tags }: { buckets: Bucket[]; tags: Map<string,
       {rows.map((b) => {
         const tag = b.id ? tags.get(b.id) : undefined;
         return (
-          <li key={b.id ?? "none"} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <li key={b.id ?? "none"} className="flex items-center gap-1.5 text-[11px] whitespace-nowrap text-muted-foreground">
             {b.id ? (
               <Dot color={tagColor(tag)} />
             ) : (
