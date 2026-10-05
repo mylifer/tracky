@@ -11,8 +11,9 @@ thiserror = "2"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGImage"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDictionary", "NSGeometry", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "objc2-core-graphics", "NSBitmapImageRep", "NSGraphicsContext", "NSImage", "NSImageRep", "NSRunningApplication", "NSWorkspace"] }
 
 [target.'cfg(windows)'.dependencies]
 # Tarayıcı adresi için UI Automation (COM); sürüm Tauri'nin kullandığıyla aynı.
@@ -23,8 +24,11 @@ windows = { version = "0.62", features = [
     "Win32_System_Variant",
     "Win32_UI_Accessibility",
 ] }
+# Uygulama simgesini PNG'ye çevirmek için.
+png = "0.18"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",

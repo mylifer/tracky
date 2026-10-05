@@ -55,6 +55,13 @@ pub fn request_permissions() -> Permissions {
     imp::request_permissions()
 }
 
+/// Uygulamanın simgesi PNG olarak (kenarı en az `px` piksel). `app_id` gözlemdeki
+/// kimliktir (macOS'ta bundle id ya da yol, Windows'ta exe yolu); uygulama bu
+/// bilgisayarda yoksa (örn. başka cihazdan eşitlenen kayıt) `None`.
+pub fn app_icon(app_id: &str, px: u32) -> Option<Vec<u8>> {
+    imp::app_icon(app_id, px)
+}
+
 /// Her gözlem adımının ham sonucunu tek satırda verir (sorun giderme için).
 pub fn diagnose() -> String {
     imp::diagnose()

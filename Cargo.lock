@@ -2279,6 +2279,7 @@ dependencies = [
  "tracky-sync",
  "tracky-xlsx",
  "ureq",
+ "url",
  "uuid",
  "window-vibrancy",
 ]
@@ -2641,6 +2642,7 @@ dependencies = [
  "libc",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
  "objc2-quartz-core",
 ]
@@ -4984,7 +4986,9 @@ dependencies = [
  "core-foundation-sys",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-graphics",
  "objc2-foundation",
+ "png 0.18.1",
  "thiserror 2.0.21",
  "tracky-core",
  "windows",

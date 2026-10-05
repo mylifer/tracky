@@ -13,6 +13,7 @@ pub mod client_report;
 pub mod coach;
 pub mod engine;
 pub mod export;
+pub mod favicon;
 pub mod inbox;
 pub mod learn;
 pub mod meeting_suggest;

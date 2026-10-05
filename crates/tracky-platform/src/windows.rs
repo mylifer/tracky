@@ -320,3 +320,93 @@ fn file_description(path: &str) -> Option<String> {
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(once(0)).collect()
 }
+
+/// exe'nin gömülü simgesi `px` piksellik PNG olarak.
+pub fn app_icon(app_id: &str, px: u32) -> Option<Vec<u8>> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits,
+        ReleaseDC,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DestroyIcon, GetIconInfo, HICON, ICONINFO, PrivateExtractIconsW,
+    };
+
+    if !Path::new(app_id).exists() {
+        return None;
+    }
+    let wide = to_wide(app_id);
+    let side = px as i32;
+    let mut icon: HICON = ptr::null_mut();
+    let mut id = 0u32;
+    // SAFETY: Tek simge istenir; `icon` ve `id` yazılabilir. Alınan simge ve bitmap'ler
+    // her yolda bırakılır.
+    unsafe {
+        let n = PrivateExtractIconsW(wide.as_ptr(), 0, side, side, &mut icon, &mut id, 1, 0);
+        if n == 0 || n == u32::MAX || icon.is_null() {
+            return None;
+        }
+        let mut info: ICONINFO = std::mem::zeroed();
+        let ok = GetIconInfo(icon, &mut info) != 0;
+        DestroyIcon(icon);
+        if !ok {
+            return None;
+        }
+        let read = |bitmap| {
+            let mut header: BITMAPINFO = std::mem::zeroed();
+            header.bmiHeader = BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: side,
+                biHeight: -side, // yukarıdan aşağı satırlar
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                ..std::mem::zeroed()
+            };
+            let mut pixels = vec![0u8; (px * px * 4) as usize];
+            let dc = GetDC(ptr::null_mut());
+            let lines = GetDIBits(
+                dc,
+                bitmap,
+                0,
+                px,
+                pixels.as_mut_ptr().cast(),
+                &mut header,
+                DIB_RGB_COLORS,
+            );
+            ReleaseDC(ptr::null_mut(), dc);
+            (lines == side).then_some(pixels)
+        };
+        let color = (!info.hbmColor.is_null())
+            .then(|| read(info.hbmColor))
+            .flatten();
+        let mask = (!info.hbmMask.is_null())
+            .then(|| read(info.hbmMask))
+            .flatten();
+        if !info.hbmColor.is_null() {
+            DeleteObject(info.hbmColor);
+        }
+        if !info.hbmMask.is_null() {
+            DeleteObject(info.hbmMask);
+        }
+        let mut rgba = color?;
+        // Eski simgelerde alfa kanalı boştur; saydamlık maskeden gelir (beyaz = saydam).
+        let has_alpha = rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 0);
+        for (i, p) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            p.swap(0, 2); // BGRA -> RGBA
+            if !has_alpha {
+                let opaque = mask.as_ref().is_none_or(|m| m[i * 4] == 0);
+                p[3] = if opaque { 255 } else { 0 };
+            }
+        }
+        encode_png(&rgba, px)
+    }
+}
+
+fn encode_png(rgba: &[u8], px: u32) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, px, px);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header().ok()?.write_image_data(rgba).ok()?;
+    Some(out)
+}

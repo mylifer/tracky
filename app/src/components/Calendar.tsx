@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { Briefcase, CalendarDays, ChevronDown, Coffee, FolderInput, Globe, Shapes, Video } from "lucide-react";
+import { Briefcase, CalendarDays, ChevronDown, Coffee, FolderInput, Shapes, Video } from "lucide-react";
 import type { CalendarMeeting, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../api";
 import { api, formatDuration, NO_PROJECT } from "../api";
 import { blockWindows, type BlockApp, type BlockWindow } from "../lib/blockWindows";
@@ -9,6 +9,7 @@ import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/
 import { UNASSIGNED, UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
+import { AppIcon, AppIconStack, SiteIcon } from "./AppIcon";
 import { BlockActions, useEdit } from "./SessionEdit";
 import { ProjectSelect } from "./ProjectSelect";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
@@ -257,8 +258,11 @@ function BlockDetails({
         )}
       </div>
       <div>
-        <div className="flex items-baseline justify-between gap-3">
-          <strong className="truncate text-sm">{block.topApps[0]?.appName ?? tag?.name ?? "Çalışma"}</strong>
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex min-w-0 items-center gap-2">
+            {block.topApps[0] && <AppIcon appId={block.topApps[0].appId} name={block.topApps[0].appName} size={20} />}
+            <strong className="truncate text-sm">{block.topApps[0]?.appName ?? tag?.name ?? "Çalışma"}</strong>
+          </span>
           <span className="text-sm font-semibold tabular">{formatDuration(block.activeSeconds)}</span>
         </div>
         <p className="mt-0.5 text-xs text-muted-foreground tabular">
@@ -276,7 +280,10 @@ function BlockDetails({
               <li key={a.appName} className="grid grid-cols-[34px_1fr_auto] items-center gap-2 text-xs">
                 <span className="text-muted-foreground tabular">%{pct}</span>
                 <span className="min-w-0">
-                  <span className="block truncate">{a.appName}</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <AppIcon appId={a.appId} name={a.appName} size={14} />
+                    <span className="truncate">{a.appName}</span>
+                  </span>
                   <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
                     <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
                   </span>
@@ -332,7 +339,10 @@ function BlockApps({
             <div className="grid grid-cols-[34px_1fr_auto] items-center gap-2 text-xs">
               <span className="text-muted-foreground tabular">%{pct}</span>
               <span className="min-w-0">
-                <span className="block truncate font-medium">{a.appName}</span>
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <AppIcon appId={a.appId} name={a.appName} size={16} />
+                  <span className="truncate font-medium">{a.appName}</span>
+                </span>
                 <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
                   <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
                 </span>
@@ -419,7 +429,7 @@ function WindowRow({
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
             {w.domain && (
               <span className="flex min-w-0 items-center gap-1 truncate">
-                <Globe className="size-3 shrink-0" aria-hidden />
+                <SiteIcon domain={w.domain} />
                 <span className="truncate">{w.domain}</span>
               </span>
             )}
@@ -527,7 +537,8 @@ function Block({
         >
           {label && (
             <span className={cn("flex h-full flex-col", full ? "py-1" : "justify-center")}>
-              <span className="flex items-baseline gap-1.5">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <AppIconStack apps={b.topApps} size={full ? 14 : 12} max={narrow ? 1 : 3} />
                 <span className="truncate text-[11px] leading-tight font-semibold">{title}</span>
                 {!full && !narrow && (
                   <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular">

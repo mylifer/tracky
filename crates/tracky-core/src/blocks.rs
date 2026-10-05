@@ -33,6 +33,8 @@ pub struct Activity<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockApp {
+    /// Simgesi için: aynı adlı uygulamalardan ilk görüleninki.
+    pub app_id: String,
     pub app_name: String,
     pub seconds: i64,
 }
@@ -164,7 +166,8 @@ struct Builder {
     last_app: String,
     categories: HashMap<Option<String>, i64>,
     projects: HashMap<String, i64>,
-    apps: HashMap<String, i64>,
+    /// Uygulama adı -> (süre, ilk görülen uygulama kimliği).
+    apps: HashMap<String, (i64, String)>,
 }
 
 impl Builder {
@@ -199,7 +202,10 @@ impl Builder {
         if let Some(p) = item.project {
             *self.projects.entry(p.to_string()).or_default() += secs;
         }
-        *self.apps.entry(item.app_name.to_string()).or_default() += secs;
+        self.apps
+            .entry(item.app_name.to_string())
+            .or_insert_with(|| (0, item.app_id.to_string()))
+            .0 += secs;
     }
 
     fn dominant(&self) -> Option<String> {
@@ -224,7 +230,11 @@ impl Builder {
         let mut apps: Vec<BlockApp> = self
             .apps
             .into_iter()
-            .map(|(app_name, seconds)| BlockApp { app_name, seconds })
+            .map(|(app_name, (seconds, app_id))| BlockApp {
+                app_id,
+                app_name,
+                seconds,
+            })
             .collect();
         apps.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.app_name.cmp(&b.app_name)));
         apps.truncate(3);

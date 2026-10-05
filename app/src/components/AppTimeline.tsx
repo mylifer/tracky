@@ -5,6 +5,7 @@ import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { clampZoom, useZoomGestures } from "../lib/zoom";
+import { AppIcon } from "./AppIcon";
 
 const HOUR_MS = 3600_000;
 /** Bir uygulama açıldığında en çok bu kadar pencere ayrı satırda; kalanı "diğer". */
@@ -409,7 +410,12 @@ export default function AppTimeline({
                   {manual ? (
                     <PenLine className="size-3 shrink-0 text-muted-foreground" />
                   ) : (
-                    <i className="size-2 shrink-0 rounded-full" style={{ background: color }} />
+                    <AppIcon
+                      appId={app.appId}
+                      name={app.label}
+                      size={14}
+                      fallback={<i className="size-2 shrink-0 rounded-full" style={{ background: color }} />}
+                    />
                   )}
                   <span className="min-w-0 flex-1 truncate font-medium">{app.label}</span>
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular">{formatDuration(app.secs)}</span>

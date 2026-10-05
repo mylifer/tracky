@@ -10,6 +10,7 @@ mod dock;
 mod edits;
 mod effects;
 mod google;
+mod icons;
 mod sync;
 mod timesheet;
 mod tracking;
@@ -392,6 +393,8 @@ pub fn run() {
             diagnose,
             set_theme,
             commands::get_report,
+            icons::app_icon,
+            icons::site_icon,
             commands::app_titles_between,
             commands::get_taxonomy,
             commands::save_tag,

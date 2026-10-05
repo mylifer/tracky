@@ -31,3 +31,7 @@ pub fn permissions() -> Permissions {
 pub fn request_permissions() -> Permissions {
     permissions()
 }
+
+pub fn app_icon(_app_id: &str, _px: u32) -> Option<Vec<u8>> {
+    None
+}

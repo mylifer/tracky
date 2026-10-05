@@ -465,3 +465,40 @@ pub fn request_permissions() -> Permissions {
         unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) != 0 };
     Permissions { accessibility }
 }
+
+/// Uygulama simgesi: bundle id'den (ya da yürütülebilir dosya yolundan) `.app` paketini
+/// bulur, Finder'ın gösterdiği simgeyi `px` noktalık PNG'ye çevirir.
+pub fn app_icon(app_id: &str, px: u32) -> Option<Vec<u8>> {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
+
+    let workspace = NSWorkspace::sharedWorkspace();
+    let path = if app_id.starts_with('/') {
+        // Paketsiz kimlik yürütülebilir dosyanın yoludur: simge içinde bulunduğu paketin.
+        match app_id.find(".app/") {
+            Some(i) => app_id[..i + 4].to_string(),
+            None => app_id.to_string(),
+        }
+    } else {
+        workspace
+            .URLForApplicationWithBundleIdentifier(&NSString::from_str(app_id))?
+            .path()?
+            .to_string()
+    };
+    // Olmayan yol için AppKit genel bir belge simgesi döndürür; o simge yanıltıcı olur.
+    if !std::path::Path::new(&path).exists() {
+        return None;
+    }
+    let image = workspace.iconForFile(&NSString::from_str(&path));
+    let side = f64::from(px);
+    let mut rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(side, side));
+    // SAFETY: `rect` çağrı boyunca yaşar; bağlam ve ipucu verilmez.
+    let cg = unsafe { image.CGImageForProposedRect_context_hints(&mut rect, None, None) }?;
+    let rep = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), &cg);
+    // SAFETY: Boş özellik sözlüğü PNG için geçerlidir.
+    let data = unsafe {
+        rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+    }?;
+    Some(data.to_vec())
+}

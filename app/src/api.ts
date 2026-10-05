@@ -76,7 +76,7 @@ export type WorkBlock = {
   /** Bloğun en az yarısını kaplayan proje. */
   projectId: string | null;
   switches: number;
-  topApps: { appName: string; seconds: number }[];
+  topApps: { appId: string; appName: string; seconds: number }[];
 };
 /** Çalışma blokları ve molalar. */
 export type WorkStats = {
@@ -456,6 +456,10 @@ export const api = {
   /** `until` verilirse rapor o anda kesilir (süren dönemin kıyası için). */
   report: (start: string, days: number, timeline: boolean, until?: string) =>
     invoke<Report>("get_report", { start, days, timeline, until: until ?? null }),
+  /** Uygulamanın simgesi (`data:` adresi); bu bilgisayarda yoksa `null`. */
+  appIcon: (appId: string) => invoke<string | null>("app_icon", { appId }),
+  /** Sitenin simgesi (favicon, `data:` adresi); bulunamazsa `null`. */
+  siteIcon: (domain: string) => invoke<string | null>("site_icon", { domain }),
   appTitlesBetween: (appId: string, start: string, days: number) =>
     invoke<UsageTotal[]>("app_titles_between", { appId, start, days }),
   taxonomy: () => invoke<Taxonomy>("get_taxonomy"),

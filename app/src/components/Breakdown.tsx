@@ -3,6 +3,7 @@ import { ChevronRight, PenLine } from "lucide-react";
 import { api, formatDuration, type AppBucket, type Tag, type UsageTotal } from "../api";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
+import { AppIcon } from "./AppIcon";
 import { CategorySelect } from "./CategorySelect";
 
 const MAX_TITLES = 15;
@@ -70,12 +71,19 @@ export function AppList({
                 <ChevronRight
                   className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-90")}
                 />
-                <span
-                  className="grid size-7 shrink-0 place-items-center rounded-[7px] text-xs font-semibold"
-                  style={{ background: `color-mix(in srgb, ${color} 18%, transparent)`, color }}
-                >
-                  {a.appId.startsWith("kum.manual/") ? <PenLine className="size-3.5" /> : initial(a.appName)}
-                </span>
+                <AppIcon
+                  appId={a.appId}
+                  name={a.appName}
+                  size={28}
+                  fallback={
+                    <span
+                      className="grid size-7 shrink-0 place-items-center rounded-[7px] text-xs font-semibold"
+                      style={{ background: `color-mix(in srgb, ${color} 18%, transparent)`, color }}
+                    >
+                      {a.appId.startsWith("kum.manual/") ? <PenLine className="size-3.5" /> : initial(a.appName)}
+                    </span>
+                  }
+                />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] font-medium">{a.appName}</span>
                   <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
