@@ -1,9 +1,9 @@
 //! Aylık müşteri raporu: projelerin gün gün saatleri (satırlar projeler, sütunlar ayın
 //! günleri), müşteri onayı ve faturalama için.
 //!
-//! Saatler iki kaynaktan gelebilir: onaylanmış zaman çizelgesi kayıtları (firmaya yazılan,
-//! yuvarlanmış saat) ya da takip edilen ve projeye düşen süre (bilgisayarlar arası
-//! çakışmalar bir kez sayılarak, toplamlardaki gibi).
+//! Saatler iki kaynaktan gelebilir: zaman çizelgelerinin satırları (firmaya yazılan ya da
+//! yazılacak, yuvarlanmış saat; sayfada görünenler) ya da takip edilen ve projeye düşen süre
+//! (bilgisayarlar arası çakışmalar bir kez sayılarak, toplamlardaki gibi).
 
 use std::collections::HashMap;
 
@@ -251,25 +251,26 @@ pub fn from_sessions(
 
 #[cfg(feature = "store")]
 impl crate::store::Store {
-    /// `days` günlerinin raporu (`day_starts`: yerel gün sınırları, `days.len() + 1` öğe).
-    /// `source` verilmezse dönemde zaman çizelgesi kaydı varsa o, yoksa takip edilen süre.
+    /// `days` günlerinin raporu (`day_starts`: yerel gün sınırları, `days.len() + 1` öğe;
+    /// `meetings` dönemin takvim toplantıları). `source` verilmezse dönemde zaman çizelgesi
+    /// satırı varsa o, yoksa takip edilen süre.
     pub fn client_report(
         &self,
         days: Vec<NaiveDate>,
         day_starts: &[DateTime<Utc>],
         client: Option<&str>,
         source: Option<ReportSource>,
+        meetings: &[crate::timesheet::Meeting],
     ) -> crate::store::Result<ClientReport> {
-        let (Some(first), Some(last)) = (days.first().copied(), days.last().copied()) else {
+        if days.is_empty() {
             return Err(crate::StoreError::Invalid("rapor dönemi boş".into()));
-        };
+        }
         if day_starts.len() != days.len() + 1 {
             return Err(crate::StoreError::Invalid("gün sınırları eksik".into()));
         }
         let tags = self.tags()?;
         let projects = Projects::new(&tags, &self.clients()?, &self.project_clients()?);
-        let saved = self.timesheet_entries(first, last)?;
-        let entries: Vec<TimesheetEntry> = saved.into_iter().map(|s| s.entry).collect();
+        let entries = self.timesheet_rows(&days, day_starts, meetings)?;
         let entries = timesheet_entries_for(&entries, &projects, &days, client);
         let available = !entries.is_empty();
         match source.unwrap_or(if available {
@@ -360,6 +361,7 @@ mod tests {
             party: String::new(),
             project_id: project.into(),
             division: division.into(),
+            coverage: Some(Vec::new()),
         }
     }
 
@@ -488,23 +490,55 @@ mod tests {
         store.set_project_for(&[s.id], Some("kum")).unwrap();
 
         let r = store
-            .client_report(days(), &starts(), Some("togg"), None)
+            .client_report(days(), &starts(), Some("togg"), None, &[])
             .unwrap();
         assert_eq!(
             (r.source, r.timesheet_available, r.total),
             (ReportSource::Tracked, false, 1.0)
         );
 
+        // Proje bir zaman çizelgesine bağlanınca satırları (kaydedilmemiş olsalar da) rapora girer.
+        let sheet = crate::timesheet::Timesheet {
+            id: "togg".into(),
+            projects: vec![crate::timesheet::ProjectMapping {
+                project_id: "kum".into(),
+                division: String::new(),
+                party: None,
+                default_details: None,
+            }],
+            ..Default::default()
+        };
         store
-            .replace_timesheet_day(d(2), &[entry(2, "kum", 1.25, "")])
+            .save_timesheet_config(&crate::timesheet::TimesheetConfig {
+                timesheets: vec![sheet],
+                ..Default::default()
+            })
             .unwrap();
         let r = store
-            .client_report(days(), &starts(), Some("togg"), None)
+            .client_report(days(), &starts(), Some("togg"), None, &[])
+            .unwrap();
+        assert_eq!((r.source, r.total), (ReportSource::Timesheet, 1.0));
+        // Elle değiştirilen saat.
+        let row = store
+            .timesheet_rows(&days(), &starts(), &[])
+            .unwrap()
+            .remove(0);
+        store
+            .save_timesheet_entry(None, &TimesheetEntry { hours: 1.25, ..row })
+            .unwrap();
+        let r = store
+            .client_report(days(), &starts(), Some("togg"), None, &[])
             .unwrap();
         assert_eq!((r.source, r.total), (ReportSource::Timesheet, 1.25));
         // Kullanıcı takip edilen süreye geçebilir.
         let r = store
-            .client_report(days(), &starts(), Some("togg"), Some(ReportSource::Tracked))
+            .client_report(
+                days(),
+                &starts(),
+                Some("togg"),
+                Some(ReportSource::Tracked),
+                &[],
+            )
             .unwrap();
         assert_eq!(
             (r.source, r.timesheet_available, r.total),
@@ -513,7 +547,7 @@ mod tests {
 
         assert!(
             store
-                .client_report(days(), &starts()[..3], None, None)
+                .client_report(days(), &starts()[..3], None, None, &[])
                 .is_err()
         );
     }

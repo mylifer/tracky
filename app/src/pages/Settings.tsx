@@ -18,7 +18,7 @@ import { friendlyError } from "../lib/feedback";
 const SECTIONS = [
   { id: "genel", label: "Genel" },
   { id: CONNECTIONS_SECTION, label: "Bağlantılar" },
-  { id: TIMESHEET_SECTION, label: "Zaman çizelgesi" },
+  { id: TIMESHEET_SECTION, label: "Zaman çizelgeleri" },
   { id: AI_SECTION, label: "Yapay zekâ" },
   { id: "hedefler", label: "Hedefler" },
   { id: "gizlilik", label: "Gizlilik" },

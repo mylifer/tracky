@@ -3,9 +3,11 @@
 //!
 //! Her satır için satırın süresinde o projeye düşen pencere başlıkları (süreleriyle), başlıklardaki
 //! iş anahtarları ve siteler toplanır; toplantı satırında toplantının konusu. Satırın süresi,
-//! önerilerdeki birleştirmenin aynısıyla bulunur: satırın başlangıcından itibaren aynı proje ve
-//! türdeki oturumlar, aradaki boşluk [`MERGE_GAP`]'i geçmedikçe ve aynı projenin sonraki satırına
-//! gelinmedikçe. Kaydedilmiş satırın başlangıcı ya da saati elle değişmiş olsa da çalışır.
+//! takipten gelen satırda kapsadığı aralıklardır ([`TimesheetEntry::coverage`]; birleştirilmiş
+//! satırda hepsi). Aralıkları bilinmeyen satırda önerilerdeki birleştirmenin aynısıyla bulunur:
+//! satırın başlangıcından itibaren aynı proje ve türdeki oturumlar, aradaki boşluk
+//! [`MERGE_GAP`]'i geçmedikçe ve aynı projenin sonraki satırına gelinmedikçe. Kaydedilmiş satırın
+//! başlangıcı ya da saati elle değişmiş olsa da çalışır.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,7 +16,8 @@ use chrono::{DateTime, Duration, Local, NaiveTime, Utc};
 use crate::classify::Classifier;
 use crate::model::Session;
 use crate::timesheet::{
-    self, EntryKind, GENERIC_TITLES, Interval, MERGE_GAP, Meeting, TimesheetConfig, TimesheetEntry,
+    self, EntryKind, GENERIC_TITLES, Interval, MERGE_GAP, Meeting, Timesheet, TimesheetConfig,
+    TimesheetEntry,
 };
 
 /// Satır başına istemdeki en çok pencere başlığı (süreye göre en uzunlar).
@@ -81,8 +84,9 @@ fn minutes(d: Duration) -> i64 {
     ((d.num_seconds() + 30) / 60).max(1)
 }
 
-/// Satırın süresindeki etkinlik. `day` günün bütün satırlarıdır (aynı projenin sonraki satırında
-/// durmak için); `meetings` projesi belli toplantılar ([`timesheet::meeting_project`]).
+/// Satırın süresindeki etkinlik. `day` günün bütün satırlarıdır (aralıkları bilinmeyen satırda
+/// aynı projenin sonraki satırında durmak için); `meetings` projesi belli toplantılar
+/// ([`timesheet::meeting_project`]).
 pub fn row_activity(
     row: &TimesheetEntry,
     day: &[TimesheetEntry],
@@ -91,6 +95,35 @@ pub fn row_activity(
     classifier: &Classifier,
     config: &TimesheetConfig,
 ) -> Activity {
+    let mine =
+        |s: &&Session| classifier.classify(s).project.as_deref() == Some(row.project_id.as_str());
+    let meeting = |m: &Meeting| Activity {
+        meeting: Some(m.subject.trim().to_string()).filter(|s| !s.is_empty()),
+        ..Activity::default()
+    };
+    // Takipten gelen satır: tam kapsadığı aralıklar.
+    let own = row.spans();
+    if !own.is_empty() {
+        if row.kind != EntryKind::Working
+            && let Some((m, _)) = meetings.iter().find(|(m, p)| {
+                *p == row.project_id && own.iter().any(|&(a, b)| m.start < b && a < m.end)
+            })
+        {
+            return meeting(m);
+        }
+        let mut spans: Vec<(DateTime<Utc>, DateTime<Utc>, &Session)> = sessions
+            .iter()
+            .filter(mine)
+            .flat_map(|s| {
+                own.iter()
+                    .map(move |&(a, b)| (s.started_at.max(a), s.ended_at.min(b), s))
+            })
+            .filter(|(a, b, _)| b > a)
+            .collect();
+        spans.sort_by_key(|s| s.0);
+        return summarize(spans);
+    }
+
     let Some(start) = local_to_utc(row.date, row.start) else {
         return Activity::default();
     };
@@ -101,10 +134,7 @@ pub fn row_activity(
             .iter()
             .find(|(m, p)| *p == row.project_id && m.start <= start + slack && start < m.end)
         {
-            return Activity {
-                meeting: Some(m.subject.trim().to_string()).filter(|s| !s.is_empty()),
-                ..Activity::default()
-            };
+            return meeting(m);
         }
     }
     // Aynı proje ve türün sonraki satırı: bu satırın işi orada biter.
@@ -119,7 +149,7 @@ pub fn row_activity(
         .iter()
         .filter(|s| s.ended_at > start && s.started_at < limit)
         .filter(|s| timesheet::kind_of(s, config) == row.kind)
-        .filter(|s| classifier.classify(s).project.as_deref() == Some(row.project_id.as_str()))
+        .filter(mine)
         .flat_map(|s| {
             covered
                 .iter()
@@ -132,15 +162,24 @@ pub fn row_activity(
         .filter(|(a, b, _)| b > a)
         .collect();
     spans.sort_by_key(|s| s.0);
+    // Satırın başlangıcından itibaren, ilk uzun boşluğa kadar.
+    let mut end = start;
+    let mut stopped = false;
+    spans.retain(|(a, b, _)| {
+        stopped |= *a - end > MERGE_GAP;
+        if !stopped {
+            end = end.max(*b);
+        }
+        !stopped
+    });
+    summarize(spans)
+}
 
+/// Satırın süresindeki parçalardan başlıklar, iş anahtarları ve siteler.
+fn summarize(spans: Vec<(DateTime<Utc>, DateTime<Utc>, &Session)>) -> Activity {
     let mut titles: HashMap<String, Duration> = HashMap::new();
     let mut sites: HashMap<String, Duration> = HashMap::new();
-    let mut end = start;
     for (a, b, s) in spans {
-        if a - end > MERGE_GAP {
-            break;
-        }
-        end = end.max(b);
         if s.is_idle() {
             continue;
         }
@@ -190,12 +229,13 @@ pub fn row_activity(
     }
 }
 
-/// Açıklama elle yazılmamış mı: boş, projenin hazır açıklaması ya da günün önerilerinden
-/// birinin (başlıklardan çıkan) açıklaması. Elle yazılan metin yalnızca istenirse değişir.
-pub fn is_generated(details: &str, proposals: &[TimesheetEntry], config: &TimesheetConfig) -> bool {
+/// Açıklama elle yazılmamış mı: boş, çizelgedeki projelerin hazır açıklaması ya da günün
+/// önerilerinden birinin (başlıklardan çıkan) açıklaması. Elle yazılan metin yalnızca istenirse
+/// değişir.
+pub fn is_generated(details: &str, proposals: &[TimesheetEntry], sheet: &Timesheet) -> bool {
     let d = details.trim();
     d.is_empty()
-        || config
+        || sheet
             .projects
             .iter()
             .filter_map(|m| m.default_details.as_deref())
@@ -420,6 +460,7 @@ mod tests {
             party: "ADBA".into(),
             project_id: "tru".into(),
             division: "Trumore".into(),
+            coverage: None,
         }
     }
 
@@ -481,6 +522,34 @@ mod tests {
     }
 
     #[test]
+    fn rows_with_spans_use_exactly_their_spans() {
+        let sessions = vec![
+            s("LOY-1 Giriş", None, 0, 30),
+            s("LOY-2 Sepet", None, 30, 60),
+            s("LOY-3 Rapor", None, 120, 150),
+        ];
+        // Birleştirilmiş satır: 09:00–09:30 ve 11:00–11:30; aradaki iş başka satırda.
+        let mut merged = row(9, 0, EntryKind::Working, "");
+        merged.coverage = Some(timesheet::to_coverage(&[(t(0), t(30)), (t(120), t(150))]));
+        let a = row_activity(
+            &merged,
+            std::slice::from_ref(&merged),
+            &sessions,
+            &[],
+            &classifier(),
+            &TimesheetConfig::default(),
+        );
+        assert_eq!(
+            a.titles,
+            vec![
+                ("LOY-1 Giriş".to_string(), 30),
+                ("LOY-3 Rapor".to_string(), 30)
+            ]
+        );
+        assert_eq!(a.issue_keys, vec!["LOY-1", "LOY-3"]);
+    }
+
+    #[test]
     fn titles_are_capped_and_truncated() {
         let sessions: Vec<Session> = (0..30)
             .map(|i| s(&format!("LOY-{i} {}", "x".repeat(200)), None, i, i + 1))
@@ -530,7 +599,7 @@ mod tests {
 
     #[test]
     fn generated_details_are_told_apart_from_typed_ones() {
-        let config = TimesheetConfig {
+        let sheet = Timesheet {
             projects: vec![ProjectMapping {
                 project_id: "tru".into(),
                 division: "Trumore".into(),
@@ -540,10 +609,10 @@ mod tests {
             ..Default::default()
         };
         let proposals = vec![row(9, 0, EntryKind::Working, "LOY-214: Checkout")];
-        assert!(is_generated("  ", &proposals, &config));
-        assert!(is_generated("Geliştirme", &proposals, &config));
-        assert!(is_generated("LOY-214: Checkout", &proposals, &config));
-        assert!(!is_generated("Ödeme akışı düzeltildi", &proposals, &config));
+        assert!(is_generated("  ", &proposals, &sheet));
+        assert!(is_generated("Geliştirme", &proposals, &sheet));
+        assert!(is_generated("LOY-214: Checkout", &proposals, &sheet));
+        assert!(!is_generated("Ödeme akışı düzeltildi", &proposals, &sheet));
     }
 
     #[test]

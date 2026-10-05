@@ -13,7 +13,6 @@ use chrono::Days;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
-use tracky_core::TagKind;
 use tracky_core::ai::{self, RowContext};
 use tracky_core::timesheet::TimesheetEntry;
 
@@ -127,20 +126,23 @@ pub async fn test_ai_connection(app: AppHandle, api_key: Option<String>) -> CmdR
 
 const NO_KEY: &str = "Önce Anthropic API anahtarını gir (Ayarlar → Yapay zekâ).";
 
-/// Yapay zekânın yazdığı açıklama; arayüz kaydeder (bildirimden geri alınır).
+/// Yapay zekânın yazdığı açıklama; arayüz kaydeder (bildirimden geri alınır). Satır sayfadaki
+/// anahtarıyla bulunur (canlı önerinin kimliği yoktur).
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AiChange {
-    id: String,
+    key: String,
     details: String,
 }
 
-/// Günün aktarılmamış satırlarına açıklama yazdırır; kaydetmez, değişiklikleri döndürür.
-/// `rewrite` değilse yalnızca boş ya da otomatik (başlıklardan, hazır açıklamadan) gelen
-/// açıklamalar yazılır; elle yazılan metne dokunulmaz. Yazılacak satır yoksa istek gönderilmez.
+/// Günün `timesheet_id` çizelgesindeki aktarılmamış satırlarına açıklama yazdırır; kaydetmez,
+/// değişiklikleri döndürür. `rewrite` değilse yalnızca boş ya da otomatik (başlıklardan, hazır
+/// açıklamadan) gelen açıklamalar yazılır; canlı önerilerin açıklaması hep otomatiktir, elle
+/// yazılan metne dokunulmaz. Yazılacak satır yoksa istek gönderilmez.
 #[tauri::command]
 pub async fn ai_write_details(
     app: AppHandle,
+    timesheet_id: String,
     date: String,
     rewrite: bool,
 ) -> CmdResult<Vec<AiChange>> {
@@ -157,27 +159,32 @@ pub async fn ai_write_details(
     let meetings = crate::calendar::meetings(&app, from, to);
 
     // Bağlam depo kilidi altında toplanır; istek kilit bırakıldıktan sonra gider.
-    let (ids, rows, examples) = {
+    let (keys, rows, examples) = {
         let shared = app.state::<Shared>();
         let store = lock(&shared.store);
-        let saved = store.timesheet_entries(date, date).map_err(err)?;
-        let config = store.timesheet_config().map_err(err)?;
-        let proposals = store.propose_timesheet(from, to, &meetings).map_err(err)?;
-        let targets: Vec<_> = saved
+        let ctx = store.timesheet_context().map_err(err)?;
+        let sheet = ctx
+            .config
+            .timesheet(&timesheet_id)
+            .ok_or("Zaman çizelgesi bulunamadı.")?;
+        let pieces = store
+            .timesheet_pieces(&ctx, from, to, &meetings)
+            .map_err(err)?;
+        let day = store
+            .timesheet_day(&ctx, sheet, date, &pieces)
+            .map_err(err)?;
+        let proposals = ctx.proposals(sheet, &pieces);
+        let targets: Vec<_> = day
+            .rows
             .iter()
-            .filter(|s| s.exported_at.is_none())
-            .filter(|s| rewrite || ai::is_generated(&s.entry.details, &proposals, &config))
+            .filter(|r| !r.exported)
+            .filter(|r| {
+                rewrite || r.id.is_none() || ai::is_generated(&r.entry.details, &proposals, sheet)
+            })
             .collect();
         if targets.is_empty() {
             return Ok(Vec::new());
         }
-        let tags = store.tags().map_err(err)?;
-        let classifier = tracky_core::Classifier::new(&tags, &store.rules().map_err(err)?);
-        let names: HashMap<&str, &str> = tags
-            .iter()
-            .filter(|t| t.kind == TagKind::Project)
-            .map(|t| (t.id.as_str(), t.name.as_str()))
-            .collect();
         let clients: HashMap<String, String> = store
             .clients()
             .map_err(err)?
@@ -187,15 +194,15 @@ pub async fn ai_write_details(
         let project_clients = store.project_clients().map_err(err)?;
         let sessions = store.merged_sessions_between(from, to).map_err(err)?;
         let (known, _) = store.classify_meetings(&meetings).map_err(err)?;
-        let day: Vec<TimesheetEntry> = saved.iter().map(|s| s.entry.clone()).collect();
+        let all: Vec<TimesheetEntry> = day.rows.iter().map(|r| r.entry.clone()).collect();
         let rows: Vec<RowContext> = targets
             .iter()
-            .map(|s| {
-                let e = &s.entry;
+            .map(|r| {
+                let e = &r.entry;
                 RowContext {
-                    project: names
-                        .get(e.project_id.as_str())
-                        .map_or_else(|| e.division.clone(), |n| n.to_string()),
+                    project: ctx
+                        .project_name(&e.project_id)
+                        .map_or_else(|| e.division.clone(), str::to_string),
                     client: project_clients
                         .get(&e.project_id)
                         .and_then(|c| clients.get(c))
@@ -203,7 +210,14 @@ pub async fn ai_write_details(
                     kind: e.kind,
                     hours: e.hours,
                     start: e.start,
-                    activity: ai::row_activity(e, &day, &sessions, &known, &classifier, &config),
+                    activity: ai::row_activity(
+                        e,
+                        &all,
+                        &sessions,
+                        &known,
+                        ctx.classifier(),
+                        &ctx.config,
+                    ),
                 }
             })
             .collect();
@@ -217,17 +231,17 @@ pub async fn ai_write_details(
         past.reverse();
         let projects: Vec<&str> = targets
             .iter()
-            .map(|s| s.entry.project_id.as_str())
+            .map(|r| r.entry.project_id.as_str())
             .collect();
         let examples: Vec<(Option<String>, Vec<String>)> = ai::examples(&past, &projects)
             .into_iter()
             .map(|(p, texts)| {
-                let name = p.map(|id| names.get(id.as_str()).map_or(id.clone(), |n| n.to_string()));
+                let name = p.map(|id| ctx.project_name(&id).map_or(id.clone(), str::to_string));
                 (name, texts)
             })
             .collect();
-        let ids: Vec<String> = targets.iter().map(|s| s.id.clone()).collect();
-        (ids, rows, examples)
+        let keys: Vec<String> = targets.iter().map(|r| r.key.clone()).collect();
+        (keys, rows, examples)
     };
 
     let body = request_body(ai::SYSTEM_PROMPT, &ai::user_prompt(&rows, &examples));
@@ -239,7 +253,7 @@ pub async fn ai_write_details(
     Ok(written
         .into_iter()
         .map(|(i, details)| AiChange {
-            id: ids[i].clone(),
+            key: keys[i].clone(),
             details,
         })
         .collect())

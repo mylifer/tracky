@@ -165,8 +165,21 @@ export type TimesheetEntry = {
   party: string;
   projectId: string;
   division: string;
+  /**
+   * Satırın kapsadığı takip aralıkları (`[başlangıç, bitiş]`, unix ms); kaydedilmiş satırların
+   * aralıkları yeniden önerilmez. Boş: elle eklenen satır, `null`: önceki sürümün kaydı.
+   */
+  coverage?: [number, number][] | null;
 };
-export type EntryView = TimesheetEntry & { id: string | null; exported: boolean };
+export type EntryView = TimesheetEntry & {
+  /** Kaydedilmiş satırın kimliği; takipten gelen (henüz kaydedilmemiş, canlı) satırda `null`. */
+  id: string | null;
+  /** Sayfadaki kararlı anahtar: canlı satır kaydedilince de aynı kalır. */
+  key: string;
+  exported: boolean;
+  /** Takipte değişti: işin bir kısmı raporda başka projeye alınmış; projede kalan süre (saat). */
+  stale: number | null;
+};
 /** Takvimden (Outlook) bir toplantı. */
 export type Meeting = {
   /** Serinin kimliği: tekrarlayan toplantının hepsinde aynı. */
@@ -191,8 +204,10 @@ export type CalendarMeeting = Meeting & {
 };
 export type TimesheetDay = {
   date: string;
-  approved: boolean;
+  /** Kaydedilmiş satırlar ve canlı öneriler, başlangıca göre. */
   entries: EntryView[];
+  /** Gizlenen (silinen) satır sayısı. */
+  hidden: number;
   /** Projeye atanmamış takip edilen süre (saniye). */
   unassignedSeconds: number;
   /** Hiçbir projeye düşmeyen takvim toplantıları. */
@@ -205,7 +220,17 @@ export type CalendarStatus = {
   /** Yoksayılan toplantı serisi sayısı. */
   ignored: number;
 };
-export type Imported = { config: TimesheetConfig; created: string[]; details: number };
+export type Imported = {
+  config: TimesheetConfig;
+  /** İçe aktarılan (yeni ya da güncellenen) zaman çizelgesi. */
+  timesheetId: string;
+  created: string[];
+  details: number;
+};
+/** Birleştirilen satır ve geri almak için silinen kaydedilmiş satırlar. */
+export type Merged = { id: string; removed: { id: string; entry: TimesheetEntry }[] };
+/** Gönderilecek, birleştirilecek satır: kaydedilmişse kimliğiyle. */
+export type RowRef = { id: string | null; entry: TimesheetEntry };
 export type Exported = {
   rows: number;
   filled: number;
@@ -218,12 +243,15 @@ export type Exported = {
 };
 export type ProjectMapping = {
   projectId: string;
+  /** Projenin satırlarına yazılan birim; boşsa proje adı. */
   division: string;
   party: string | null;
   /** Hazır açıklama: önerinin başlıklardan açıklaması çıkmazsa yazılır. */
   defaultDetails?: string | null;
 };
-export type TimesheetConfig = {
+/** Bir firmanın zaman çizelgesi: kayıtların yazıldığı dosya ve yalnızca oraya giden projeler. */
+export type Timesheet = {
+  id: string;
   company: string;
   consultant: string;
   filePath: string | null;
@@ -231,9 +259,15 @@ export type TimesheetConfig = {
   sheetUrl: string | null;
   /** Tablonun docs.google.com bağlantısı. */
   sheetLink: string | null;
-  sheetToken: string;
   defaultParty: string;
+  /** Bu çizelgeye giden projeler; bir proje yalnızca bir çizelgede olur. */
   projects: ProjectMapping[];
+  /** Dosyadaki birimler (şablondan): satırın birimi bunlardan seçilebilir. */
+  divisions: string[];
+};
+export type TimesheetConfig = {
+  timesheets: Timesheet[];
+  sheetToken: string;
   meetingApps: string[];
   /** Bir adam-günün saati. */
   dayHours: number;
@@ -241,8 +275,8 @@ export type TimesheetConfig = {
 
 /** Yapay zekâyla açıklama yazma ayarı; anahtarın yalnızca son dört karakteri gelir. */
 export type AiStatus = { enabled: boolean; hasKey: boolean; keyHint: string | null; model: string };
-/** Yapay zekânın bir satıra yazdığı açıklama (henüz kaydedilmedi). */
-export type AiChange = { id: string; details: string };
+/** Yapay zekânın bir satıra (sayfadaki anahtarıyla) yazdığı açıklama (henüz kaydedilmedi). */
+export type AiChange = { key: string; details: string };
 
 export type BackupFile = { name: string; path: string; at: string; bytes: number };
 export type BackupStatus = { dir: string; last: string | null; files: BackupFile[] };
@@ -450,29 +484,52 @@ export const api = {
   trends: (weeks: number) => invoke<Trends>("get_trends", { weeks }),
   timesheetConfig: () => invoke<TimesheetConfig>("get_timesheet_config"),
   saveTimesheetConfig: (config: TimesheetConfig) => invoke<void>("save_timesheet_config", { config }),
-  timesheetDays: (start: string, days: number) => invoke<TimesheetDay[]>("timesheet_days", { start, days }),
-  approveTimesheetDay: (date: string) => invoke<void>("approve_timesheet_day", { date }),
+  timesheetDays: (timesheetId: string, start: string, days: number) =>
+    invoke<TimesheetDay[]>("timesheet_days", { timesheetId, start, days }),
+  /** Satırı kaydeder: kaydedilmişi günceller, canlı satırı (`id` yok) ya da elle eklenen satırı ekler; kimliği döner. */
   saveTimesheetEntry: (id: string | null, entry: TimesheetEntry) =>
-    invoke<string>("save_timesheet_entry", { id, entry }),
+    invoke<string>("save_timesheet_entry", { id, entry: plainEntry(entry) }),
+  /** Satırı gizler (siler); canlı satır gizlenmiş olarak kaydedilir. Kimliği döner. */
+  dismissTimesheetEntry: (id: string | null, entry: TimesheetEntry) =>
+    invoke<string>("dismiss_timesheet_entry", { id, entry: plainEntry(entry) }),
+  undismissTimesheetEntries: (ids: string[]) => invoke<void>("undismiss_timesheet_entries", { ids }),
+  /** Günün gizlenen satırlarını geri getirir. */
+  restoreHiddenEntries: (timesheetId: string, date: string) =>
+    invoke<string[]>("restore_hidden_entries", { timesheetId, date }),
+  /** Satırı tamamen siler (gizlenen canlı satır yeniden öneri olur). */
   deleteTimesheetEntry: (id: string) => invoke<void>("delete_timesheet_entry", { id }),
+  mergeTimesheetEntries: (rows: RowRef[]) => invoke<Merged>("merge_timesheet_entries", { rows: rows.map(plainRow) }),
+  unmergeTimesheetEntries: (id: string, removed: Merged["removed"]) =>
+    invoke<void>("unmerge_timesheet_entries", { id, removed }),
+  /** Takipte değişen satırları günceller; silinen (işi kalmayan) satır sayısını döndürür. */
+  refreshTimesheetEntries: (ids: string[]) => invoke<number>("refresh_timesheet_entries", { ids }),
+  /** Günün düzenlemelerini, elle eklenen ve gizlenen satırlarını siler; iş yeniden önerilir. */
+  resetTimesheetDay: (timesheetId: string, date: string) =>
+    invoke<number>("reset_timesheet_day", { timesheetId, date }),
   timesheetDetails: () => invoke<string[]>("timesheet_details"),
   pickTimesheetFile: () => invoke<string | null>("pick_timesheet_file"),
-  importTimesheetTemplate: (path: string) => invoke<Imported>("import_timesheet_template", { path }),
-  exportTimesheet: (start: string, days: number) => invoke<Exported>("export_timesheet", { start, days }),
+  /** `timesheetId` `null` ise yeni zaman çizelgesi. */
+  importTimesheetTemplate: (timesheetId: string | null, path: string) =>
+    invoke<Imported>("import_timesheet_template", { timesheetId, path }),
+  exportTimesheet: (timesheetId: string, rows: RowRef[]) =>
+    invoke<Exported>("export_timesheet", { timesheetId, rows: rows.map(plainRow) }),
   /** Son aktarımı geri alır (Sheets satırları silinir, Excel yedekten döner); sonuç iletisini verir. */
   undoLastExport: () => invoke<string>("undo_last_export"),
   sheetScript: () => invoke<string>("sheet_script"),
-  connectSheet: (url: string, link: string | null) => invoke<Imported>("connect_sheet", { url, link }),
-  disconnectSheet: () => invoke<TimesheetConfig>("disconnect_sheet"),
+  /** `timesheetId` `null` ise yeni zaman çizelgesi. */
+  connectSheet: (timesheetId: string | null, url: string, link: string | null) =>
+    invoke<Imported>("connect_sheet", { timesheetId, url, link }),
+  disconnectSheet: (timesheetId: string) => invoke<TimesheetConfig>("disconnect_sheet", { timesheetId }),
+  removeTimesheet: (timesheetId: string) => invoke<TimesheetConfig>("remove_timesheet", { timesheetId }),
   aiSettings: () => invoke<AiStatus>("get_ai_settings"),
   /** `apiKey` verilmezse kayıtlı anahtar korunur; boş dize siler. */
   saveAiSettings: (enabled: boolean, apiKey?: string) =>
     invoke<AiStatus>("save_ai_settings", { enabled, apiKey: apiKey ?? null }),
   testAi: (apiKey?: string) => invoke<string>("test_ai_connection", { apiKey: apiKey ?? null }),
-  aiWriteDetails: (date: string, rewrite: boolean) => invoke<AiChange[]>("ai_write_details", { date, rewrite }),
+  aiWriteDetails: (timesheetId: string, date: string, rewrite: boolean) =>
+    invoke<AiChange[]>("ai_write_details", { timesheetId, date, rewrite }),
   /** Toplantı serisini projeye ata; `null` yoksayar. */
-  assignMeeting: (uid: string, projectId: string | null, date: string) =>
-    invoke<void>("assign_meeting", { uid, projectId, date }),
+  assignMeeting: (uid: string, projectId: string | null) => invoke<void>("assign_meeting", { uid, projectId }),
   /** `start` gününden itibaren `days` günün takvim toplantıları; takvim bağlı değilse boş. */
   meetings: (start: string, days: number) => invoke<CalendarMeeting[]>("calendar_meetings", { start, days }),
   calendarStatus: () => invoke<CalendarStatus>("calendar_status"),
@@ -528,6 +585,26 @@ export const api = {
   onStatus: (cb: (s: TrackingStatus) => void): Promise<UnlistenFn> =>
     listen<TrackingStatus>("status", (e) => cb(e.payload)),
 };
+
+/** Arka uca giden satır: görünümün alanları (kimlik, anahtar, durum) atılır. */
+function plainEntry(e: TimesheetEntry): TimesheetEntry {
+  return {
+    date: e.date,
+    start: e.start,
+    hours: e.hours,
+    actualHours: e.actualHours ?? null,
+    kind: e.kind,
+    details: e.details,
+    party: e.party,
+    projectId: e.projectId,
+    division: e.division,
+    coverage: e.coverage ?? null,
+  };
+}
+
+function plainRow(r: RowRef): RowRef {
+  return { id: r.id, entry: plainEntry(r.entry) };
+}
 
 /** "23dk", "1sa 5dk", "<1dk" — menü çubuğuyla aynı biçim. */
 export function formatDuration(secs: number): string {

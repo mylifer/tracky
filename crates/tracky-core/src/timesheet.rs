@@ -1,6 +1,10 @@
 //! Zaman çizelgesi: günün projeye atanmış süresini firmaya gönderilecek iş kayıtlarına
 //! (tarih, başlangıç, saat, tür, açıklama, taraf, birim) dönüştürür.
 //!
+//! Her zaman çizelgesi ([`Timesheet`]) bir firmanın dosyasıdır (Excel ya da Google Sheets) ve
+//! yalnızca kendisine bağlanan projelerin işini alır: Togg'un tablosuna yalnızca Togg'a bağlı
+//! projelerin süresi yazılır. Bir proje en çok bir zaman çizelgesine bağlanır.
+//!
 //! Yalnızca bir projeye düşen süre iş sayılır. Aynı projede ve aynı türdeki ardışık
 //! oturumlar, aradaki boşluk `MERGE_GAP`'i geçmedikçe tek kayıt olur; kaydın gerçek süresi
 //! boşluklar değil, oturumların toplam süresidir. Firmaya giden saat bu sürenin çeyrek saate
@@ -9,10 +13,16 @@
 //! Takvimden gelen ve bir projeye düşen toplantılar kendi kaydı olur (konusu açıklama,
 //! çevrim içiyse Online, değilse F2F). Toplantı süresince takip edilen iş sayılmaz: aynı
 //! saat iki kez yazılmasın.
+//!
+//! Öneriler canlıdır: raporda projeye atanan süre hemen satır olur. Düzenlenen, birleştirilen,
+//! gizlenen ya da aktarılan satır kaydedilir ve kapsadığı takip aralıklarını
+//! ([`TimesheetEntry::coverage`]) saklar; bu aralıklar yeni önerilerden düşülür ([`propose`]).
+//! Sonradan atanan iş kaydedilmiş satırlara dokunmadan yeni satır olarak gelir, aynı iş iki kez
+//! yazılmaz.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, Timelike, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::classify::Classifier;
@@ -22,9 +32,13 @@ use crate::model::Session;
 pub const MERGE_GAP: Duration = Duration::minutes(15);
 /// Bundan kısa kayıt önerilmez (bir mesaja bakmak gibi kısa geçişler).
 pub const MIN_ENTRY: Duration = Duration::minutes(5);
-/// Aktarılmış bir kaydın ardından kalan süre bundan kısaysa önerilmez: aktarırken saati
-/// yuvarlamaktan (0,83 → 0,75) kalan birkaç dakika yeni iş değildir.
+/// Kaydedilmiş bir satırın hemen ardından (ya da önünden) kalan süre bundan kısaysa önerilmez:
+/// satır kaydedilirken süren işin ya da aktarırken saati yuvarlamaktan (0,83 → 0,75) kalan birkaç
+/// dakika yeni iş değildir.
 pub const MIN_REMAINDER: Duration = Duration::minutes(15);
+/// Kaydedilmiş satırın aralıklarında projenin süresi bundan fazla azaldıysa satır "takipte
+/// değişti" sayılır (iş raporda başka projeye ya da projesize alınmış).
+pub const STALE_SLACK: Duration = Duration::minutes(1);
 
 /// Çalışma türü; şablondaki "Type" sütunu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -51,6 +65,22 @@ impl EntryKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TimesheetConfig {
+    /// Firmaların zaman çizelgeleri; her biri yalnızca kendi projelerinin işini alır.
+    pub timesheets: Vec<Timesheet>,
+    /// Apps Script'in yalnızca Kum'dan gelen istekleri kabul etmesi için anahtar (bütün
+    /// tablolarda aynı).
+    pub sheet_token: String,
+    /// Çevrim içi toplantı sayılan uygulamalar (kimlik ya da exe adı, `*` öneki olabilir).
+    pub meeting_apps: Vec<String>,
+    /// Bir adam-günün saati (adam-gün = saat / bu değer).
+    pub day_hours: f64,
+}
+
+/// Bir firmanın zaman çizelgesi: kayıtların yazıldığı dosya ve oraya giden projeler.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Timesheet {
+    pub id: String,
     /// Raporun gittiği firma (örn. "Togg").
     pub company: String,
     /// "Consultant" sütunu.
@@ -62,23 +92,19 @@ pub struct TimesheetConfig {
     pub sheet_url: Option<String>,
     /// Tablonun kendisi (docs.google.com bağlantısı; açmak için).
     pub sheet_link: Option<String>,
-    /// Apps Script'in yalnızca Kum'dan gelen istekleri kabul etmesi için anahtar.
-    pub sheet_token: String,
     /// "Parties" varsayılanı (örn. kendi firman).
     pub default_party: String,
-    /// Proje → firmadaki birim ("Togg Division") ve taraf.
+    /// Bu çizelgeye giden projeler; birim ("Togg Division"), taraf ve hazır açıklamalarıyla.
     pub projects: Vec<ProjectMapping>,
-    /// Çevrim içi toplantı sayılan uygulamalar (kimlik ya da exe adı, `*` öneki olabilir).
-    pub meeting_apps: Vec<String>,
-    /// Bir adam-günün saati (adam-gün = saat / bu değer).
-    pub day_hours: f64,
+    /// Dosyadaki birimler (şablondan): satırın birimi bunlardan seçilebilir.
+    pub divisions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectMapping {
     pub project_id: String,
-    /// Firmadaki birim adı; boşsa proje adı kullanılır.
+    /// Projenin satırlarına yazılan birim; boşsa proje adı kullanılır.
     pub division: String,
     /// Bu projenin "Parties" varsayılanı; boşsa genel varsayılan.
     pub party: Option<String>,
@@ -90,14 +116,8 @@ pub struct ProjectMapping {
 impl Default for TimesheetConfig {
     fn default() -> Self {
         Self {
-            company: String::new(),
-            consultant: String::new(),
-            file_path: None,
-            sheet_url: None,
-            sheet_link: None,
+            timesheets: Vec::new(),
             sheet_token: String::new(),
-            default_party: String::new(),
-            projects: Vec::new(),
             day_hours: 8.0,
             meeting_apps: [
                 "us.zoom.xos",
@@ -113,6 +133,57 @@ impl Default for TimesheetConfig {
             .map(String::from)
             .to_vec(),
         }
+    }
+}
+
+impl TimesheetConfig {
+    pub fn timesheet(&self, id: &str) -> Option<&Timesheet> {
+        self.timesheets.iter().find(|t| t.id == id)
+    }
+
+    /// Projenin bağlı olduğu zaman çizelgesi.
+    pub fn timesheet_of(&self, project: &str) -> Option<&Timesheet> {
+        self.timesheets.iter().find(|t| t.includes(project))
+    }
+
+    /// Kaydetmeden önce: her çizelgenin (tekil) kimliği olur, bir proje yalnızca ilk
+    /// çizelgesinde kalır, birimler kırpılır ve tekrarlanmaz.
+    pub fn normalize(&mut self) {
+        let mut ids = HashSet::new();
+        let mut projects = HashSet::new();
+        for sheet in &mut self.timesheets {
+            if sheet.id.trim().is_empty() || !ids.insert(sheet.id.clone()) {
+                sheet.id = uuid::Uuid::new_v4().to_string();
+                ids.insert(sheet.id.clone());
+            }
+            sheet
+                .projects
+                .retain(|m| projects.insert(m.project_id.clone()));
+            let mut divisions: Vec<String> = Vec::new();
+            for d in sheet.divisions.drain(..) {
+                let d = d.trim();
+                if !d.is_empty() && !divisions.iter().any(|x| x.eq_ignore_ascii_case(d)) {
+                    divisions.push(d.to_string());
+                }
+            }
+            sheet.divisions = divisions;
+        }
+    }
+}
+
+impl Timesheet {
+    /// Kayıtların yazılacağı dosya ya da tablo seçili.
+    pub fn has_target(&self) -> bool {
+        self.file_path.is_some() || self.sheet_url.is_some()
+    }
+
+    /// Proje bu çizelgeye gidiyor mu?
+    pub fn includes(&self, project: &str) -> bool {
+        self.projects.iter().any(|m| m.project_id == project)
+    }
+
+    pub fn mapping(&self, project: &str) -> Option<&ProjectMapping> {
+        self.projects.iter().find(|m| m.project_id == project)
     }
 }
 
@@ -133,12 +204,25 @@ pub struct TimesheetEntry {
     pub party: String,
     pub project_id: String,
     pub division: String,
+    /// Satırın kapsadığı takip aralıkları (unix ms, `[başlangıç, bitiş)`, sıralı ve ayrık); bu
+    /// süre yeniden önerilmez. Boş: elle eklenen satır. `None`: önceki sürümde kaydedilmiş,
+    /// aralıkları bilinmeyen satır; işi saatiyle düşülür ([`without_legacy`]).
+    #[serde(default)]
+    pub coverage: Option<Vec<[i64; 2]>>,
 }
 
 impl TimesheetEntry {
     /// Gerçek süre; bilinmiyorsa yazılan saat.
     pub fn worked(&self) -> f64 {
         self.actual_hours.unwrap_or(self.hours)
+    }
+
+    /// Takip edilen aralıklar; elle eklenen ve eski satırda boş.
+    pub fn spans(&self) -> Vec<Interval> {
+        self.coverage
+            .as_deref()
+            .map(from_coverage)
+            .unwrap_or_default()
     }
 }
 
@@ -198,7 +282,7 @@ pub fn meeting_project(
     }
 }
 
-pub(crate) type Interval = (DateTime<Utc>, DateTime<Utc>);
+pub type Interval = (DateTime<Utc>, DateTime<Utc>);
 
 /// `pieces`'ten `cut` aralığını çıkarır.
 pub(crate) fn subtract(pieces: Vec<Interval>, cut: Interval) -> Vec<Interval> {
@@ -216,6 +300,50 @@ pub(crate) fn subtract(pieces: Vec<Interval>, cut: Interval) -> Vec<Interval> {
         }
     }
     out
+}
+
+/// Aralıkları sıralar; üst üste binen ya da bitişik olanları birleştirir, boşları atar.
+pub fn coalesce(mut spans: Vec<Interval>) -> Vec<Interval> {
+    spans.retain(|(a, b)| b > a);
+    spans.sort();
+    let mut out: Vec<Interval> = Vec::with_capacity(spans.len());
+    for (a, b) in spans {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// Aralıklar → satırda saklanan biçim (unix ms).
+pub fn to_coverage(spans: &[Interval]) -> Vec<[i64; 2]> {
+    spans
+        .iter()
+        .map(|(a, b)| [a.timestamp_millis(), b.timestamp_millis()])
+        .collect()
+}
+
+/// Satırda saklanan biçim → aralıklar.
+pub fn from_coverage(coverage: &[[i64; 2]]) -> Vec<Interval> {
+    let at = |ms: i64| Utc.timestamp_millis_opt(ms).single().unwrap_or_default();
+    coverage.iter().map(|[a, b]| (at(*a), at(*b))).collect()
+}
+
+/// Aralıkların toplam süresi.
+pub fn total(spans: &[Interval]) -> Duration {
+    spans.iter().fold(Duration::zero(), |t, (a, b)| {
+        t + (*b - *a).max(Duration::zero())
+    })
+}
+
+/// `(a, b)` ile `spans`'in kesişimi (`spans` ayrık olmalı).
+fn intersect(a: DateTime<Utc>, b: DateTime<Utc>, spans: &[Interval]) -> Vec<Interval> {
+    spans
+        .iter()
+        .map(|&(c, d)| (a.max(c), b.min(d)))
+        .filter(|(x, y)| y > x)
+        .collect()
 }
 
 /// Tarayıcıda Google Meet / Teams sekmesi de toplantıdır.
@@ -366,114 +494,193 @@ pub(crate) fn issue_keys(title: &str) -> Vec<String> {
         .collect()
 }
 
-/// Kırpılmış oturum: (başlangıç, bitiş, oturum, proje, tür).
-type Span<'a> = (DateTime<Utc>, DateTime<Utc>, &'a Session, String, EntryKind);
+/// Zaman çizelgesine giren süre parçası: projesi belli bir oturumdan ya da toplantıdan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Piece {
+    pub project: String,
+    pub kind: EntryKind,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    /// Açıklamaya giden başlık: temizlenmiş pencere başlığı ya da toplantı konusu.
+    pub title: String,
+    /// Takvim toplantısının sırası (her toplantı kendi kaydıdır); oturumda `None`.
+    pub meeting: Option<usize>,
+}
 
-/// Günün oturumlarından ve toplantılarından iş kaydı önerileri; başlangıca göre sıralı.
-/// `meetings` projesi belli toplantılardır ([`meeting_project`]). `day_start`/`day_end`
-/// yerel günün sınırlarıdır; oturumlar ve toplantılar bunlara kırpılır.
-pub fn propose(
+/// Günün zaman çizelgesine giren süresi: projesi belli toplantılar ([`meeting_project`]) ve
+/// oturumlar, `day_start`–`day_end` (yerel gün) sınırına kırpılmış. Üst üste binen
+/// toplantılarda ortak süre ilkine yazılır; toplantı süresince takip edilen iş toplantının
+/// kaydında sayılır (aynı saat iki kez yazılmasın).
+pub fn pieces(
     sessions: &[Session],
     meetings: &[(Meeting, String)],
     classifier: &Classifier,
-    project_names: &HashMap<String, String>,
     config: &TimesheetConfig,
     day_start: DateTime<Utc>,
     day_end: DateTime<Utc>,
-) -> Vec<TimesheetEntry> {
-    struct Run {
-        project: String,
-        kind: EntryKind,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-        worked: Duration,
-        titles: HashMap<String, Duration>,
-    }
-    // Toplantılar: üst üste binenlerde ortak süre ilkine yazılır.
+) -> Vec<Piece> {
     let mut sorted: Vec<&(Meeting, String)> = meetings.iter().collect();
     sorted.sort_by_key(|(m, _)| (m.start, m.end));
     let mut covered: Vec<Interval> = Vec::new();
-    let mut meeting_runs: Vec<Run> = Vec::new();
-    for (m, project) in sorted {
+    let mut out = Vec::new();
+    for (i, (m, project)) in sorted.into_iter().enumerate() {
         let span = (m.start.max(day_start), m.end.min(day_end));
         if span.1 <= span.0 {
             continue;
         }
-        let pieces = covered.iter().fold(vec![span], |p, &c| subtract(p, c));
+        let parts = covered.iter().fold(vec![span], |p, &c| subtract(p, c));
         covered.push(span);
-        let Some(&(start, _)) = pieces.first() else {
+        let kind = if m.online {
+            EntryKind::Online
+        } else {
+            EntryKind::F2F
+        };
+        out.extend(parts.into_iter().map(|(start, end)| Piece {
+            project: project.clone(),
+            kind,
+            start,
+            end,
+            title: m.subject.clone(),
+            meeting: Some(i),
+        }));
+    }
+    for s in sessions {
+        let Some(project) = classifier.classify(s).project else {
             continue;
         };
-        let worked = pieces
-            .iter()
-            .fold(Duration::zero(), |t, (a, b)| t + (*b - *a));
-        meeting_runs.push(Run {
+        let (a, b) = (s.started_at.max(day_start), s.ended_at.min(day_end));
+        if b <= a {
+            continue;
+        }
+        let kind = kind_of(s, config);
+        let title = clean_title(&s.title, &s.app_name);
+        let parts = covered.iter().fold(vec![(a, b)], |p, &c| subtract(p, c));
+        out.extend(parts.into_iter().map(|(start, end)| Piece {
             project: project.clone(),
-            kind: if m.online {
-                EntryKind::Online
-            } else {
-                EntryKind::F2F
-            },
+            kind,
             start,
-            end: start,
-            worked,
-            titles: HashMap::from([(m.subject.clone(), worked)]),
-        });
+            end,
+            title: title.clone(),
+            meeting: None,
+        }));
+    }
+    out
+}
+
+/// Parçalardan `sheet`'e bağlı projelerin iş kaydı önerileri; başlangıca göre sıralı.
+/// `saved` proje başına kaydedilmiş satırların aralıklarıdır ([`coalesce`] edilmiş): bu süre
+/// yeniden önerilmez. Kaydedilmiş satırın artığı `MIN_REMAINDER`'dan kısaysa önerilmez: satır
+/// kaydedilirken süren işin birkaç dakikası (satıra `MERGE_GAP`'ten yakın oturumlar) ya da bir
+/// kısmı kaydedilmiş toplantının uzayan ucu yeni iş sayılmaz. Kaydedilmiş toplantının ardından
+/// gelen ayrı bir toplantı ise kısa da olsa önerilir.
+pub fn propose(
+    pieces: &[Piece],
+    project_names: &HashMap<String, String>,
+    sheet: &Timesheet,
+    saved: &HashMap<String, Vec<Interval>>,
+) -> Vec<TimesheetEntry> {
+    struct Run {
+        project: String,
+        kind: EntryKind,
+        meeting: bool,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        worked: Duration,
+        titles: HashMap<String, Duration>,
+        spans: Vec<Interval>,
+        /// Parçalarından biri kaydedilmiş bir satırca kısaltıldı.
+        trimmed: bool,
+    }
+    impl Run {
+        fn new(p: &Piece, at: DateTime<Utc>) -> Self {
+            Self {
+                project: p.project.clone(),
+                kind: p.kind,
+                meeting: p.meeting.is_some(),
+                start: at,
+                end: at,
+                worked: Duration::zero(),
+                titles: HashMap::new(),
+                spans: Vec::new(),
+                trimmed: false,
+            }
+        }
+
+        fn add(&mut self, a: DateTime<Utc>, b: DateTime<Utc>, title: &str, trimmed: bool) {
+            self.trimmed |= trimmed;
+            self.end = self.end.max(b);
+            self.worked += b - a;
+            *self
+                .titles
+                .entry(title.to_string())
+                .or_insert(Duration::zero()) += b - a;
+            self.spans.push((a, b));
+        }
     }
 
-    let mut spans: Vec<Span> = sessions
+    let none: Vec<Interval> = Vec::new();
+    let mut parts: Vec<(DateTime<Utc>, DateTime<Utc>, &Piece, bool)> = pieces
         .iter()
-        .filter_map(|s| {
-            let project = classifier.classify(s).project?;
-            let (a, b) = (s.started_at.max(day_start), s.ended_at.min(day_end));
-            (b > a).then(|| (a, b, s, project, kind_of(s, config)))
-        })
-        // Toplantı süresince takip edilen iş, toplantının kaydında sayılır.
-        .flat_map(|(a, b, s, project, kind)| {
-            covered
+        .filter(|p| sheet.includes(&p.project))
+        .flat_map(|p| {
+            let left = saved
+                .get(&p.project)
+                .unwrap_or(&none)
                 .iter()
-                .fold(vec![(a, b)], |p, &c| subtract(p, c))
-                .into_iter()
-                .map(move |(a, b)| (a, b, s, project.clone(), kind))
+                .fold(vec![(p.start, p.end)], |v, &c| subtract(v, c));
+            let trimmed = total(&left) < p.end - p.start;
+            left.into_iter().map(move |(a, b)| (a, b, p, trimmed))
         })
         .collect();
-    spans.sort_by_key(|s| s.0);
+    parts.sort_by_key(|(a, _, _, _)| *a);
 
-    // Her (proje, tür) için açık kayıt; araya başka iş girse de boşluk kısaysa sürer.
+    // Her toplantı kendi kaydı; oturumlarda her (proje, tür) için açık kayıt, araya başka iş
+    // girse de boşluk kısaysa sürer.
+    let mut meetings: Vec<(usize, Run)> = Vec::new();
     let mut open: HashMap<(String, EntryKind), Run> = HashMap::new();
     let mut runs: Vec<Run> = Vec::new();
-    for (a, b, s, project, kind) in spans {
-        let key = (project.clone(), kind);
+    for (a, b, p, trimmed) in parts {
+        if let Some(i) = p.meeting {
+            match meetings.iter_mut().find(|(j, _)| *j == i) {
+                Some((_, run)) => run.add(a, b, &p.title, trimmed),
+                None => {
+                    let mut run = Run::new(p, a);
+                    run.add(a, b, &p.title, trimmed);
+                    meetings.push((i, run));
+                }
+            }
+            continue;
+        }
+        let key = (p.project.clone(), p.kind);
         if let Some(run) = open.get(&key)
             && a - run.end > MERGE_GAP
         {
             runs.push(open.remove(&key).expect("az önce bulundu"));
         }
-        let run = open.entry(key).or_insert_with(|| Run {
-            project,
-            kind,
-            start: a,
-            end: a,
-            worked: Duration::zero(),
-            titles: HashMap::new(),
-        });
-        run.end = run.end.max(b);
-        run.worked += b - a;
-        *run.titles
-            .entry(clean_title(&s.title, &s.app_name))
-            .or_insert(Duration::zero()) += b - a;
+        open.entry(key)
+            .or_insert_with(|| Run::new(p, a))
+            .add(a, b, &p.title, trimmed);
     }
     runs.extend(open.into_values());
-    let meetings_from = runs.len();
-    runs.extend(meeting_runs);
+    runs.extend(meetings.into_iter().map(|(_, run)| run));
 
+    // Kaydedilmiş satırın artığı mı: oturumlarda satıra yakın iş, toplantıda aynı toplantının ucu.
+    let remainder = |r: &Run| {
+        if r.meeting {
+            return r.trimmed;
+        }
+        saved.get(&r.project).is_some_and(|cut| {
+            r.spans.iter().any(|&(a, b)| {
+                cut.iter()
+                    .any(|&(c, d)| a <= d + MERGE_GAP && c <= b + MERGE_GAP)
+            })
+        })
+    };
     let mut out: Vec<TimesheetEntry> = runs
         .into_iter()
-        .enumerate()
-        .filter(|(_, r)| r.worked >= MIN_ENTRY)
-        .map(|(i, r)| (i >= meetings_from, r))
-        .map(|(is_meeting, r)| {
-            let mapping = config.projects.iter().find(|m| m.project_id == r.project);
+        .filter(|r| r.worked >= MIN_ENTRY && (r.worked >= MIN_REMAINDER || !remainder(r)))
+        .map(|r| {
+            let mapping = sheet.mapping(&r.project);
             let name = project_names.get(&r.project).cloned().unwrap_or_default();
             let division = mapping
                 .map(|m| m.division.trim())
@@ -482,8 +689,8 @@ pub fn propose(
             let party = mapping
                 .and_then(|m| m.party.clone())
                 .filter(|p| !p.trim().is_empty())
-                .unwrap_or_else(|| config.default_party.clone());
-            let details = if r.kind == EntryKind::Online && !is_meeting {
+                .unwrap_or_else(|| sheet.default_party.clone());
+            let details = if r.kind == EntryKind::Online && !r.meeting {
                 // Toplantı uygulamasının başlığı ("Zoom Meeting") açıklama değildir;
                 // takvimden gelen toplantının konusu ise açıklamadır.
                 String::new()
@@ -498,16 +705,18 @@ pub fn propose(
                 _ => details,
             };
             let local = r.start.with_timezone(&Local);
+            let worked = r.worked.num_seconds() as f64 / 3600.0;
             TimesheetEntry {
                 date: local.date_naive(),
                 start: local.time().with_nanosecond(0).unwrap_or(local.time()),
-                hours: round_quarter(r.worked.num_seconds() as f64 / 3600.0),
-                actual_hours: Some(r.worked.num_seconds() as f64 / 3600.0),
+                hours: round_quarter(worked),
+                actual_hours: Some(worked),
                 kind: r.kind,
                 details,
                 party,
                 project_id: r.project,
                 division,
+                coverage: Some(to_coverage(&coalesce(r.spans))),
             }
         })
         .collect();
@@ -515,19 +724,19 @@ pub fn propose(
     out
 }
 
-/// Yeniden öneride Excel'e aktarılmış işi düşer: her (proje, tür) için aktarılan gerçek süre
-/// (yoksa yazılan saat) o türün en erken önerilerinden düşülür, yalnızca artan süre kalır
-/// (aktarılan + önerilen = takip edilen); kalanın saati yeniden yuvarlanır. Aktarılan satırın saati ya
-/// da süresi elle değiştirilmiş olsa da iş ikinci kez önerilmez; aktarımdan sonra süren iş
-/// (uzayan kayıt ya da yeni kayıt) önerilir. Kısmen düşülen önerinin kalanı `MIN_REMAINDER`'dan
-/// kısaysa atılır, değilse başlangıcı düşülen süre kadar ileri alınır.
-pub fn without_exported(
+/// Aralıkları bilinmeyen eski satırların (önceki sürümde onaylanan ya da aktarılan) işini
+/// önerilerden düşer: her (proje, tür) için eski satırların gerçek süresi (yoksa yazılan saat)
+/// o türün en erken önerilerinden düşülür, yalnızca artan süre kalır (eski + önerilen = takip
+/// edilen); kalanın saati yeniden yuvarlanır. Satırın saati ya da süresi elle değiştirilmiş olsa
+/// da iş ikinci kez önerilmez. Kısmen düşülen önerinin kalanı `MIN_REMAINDER`'dan kısaysa atılır,
+/// değilse başlangıcı ve aralıkları düşülen süre kadar ileri alınır.
+pub fn without_legacy(
     proposed: &[TimesheetEntry],
-    exported: &[TimesheetEntry],
+    legacy: &[TimesheetEntry],
 ) -> Vec<TimesheetEntry> {
     let min_rest = MIN_REMAINDER.num_seconds() as f64 / 3600.0;
     let mut budget: HashMap<(&str, EntryKind), f64> = HashMap::new();
-    for x in exported {
+    for x in legacy {
         *budget.entry((x.project_id.as_str(), x.kind)).or_default() += x.worked();
     }
     let mut sorted: Vec<&TimesheetEntry> = proposed.iter().collect();
@@ -546,6 +755,10 @@ pub fn without_exported(
                 start: e.start.overflowing_add_signed(shift).0,
                 hours: round_quarter(rest),
                 actual_hours: Some(rest),
+                coverage: e
+                    .coverage
+                    .as_deref()
+                    .map(|c| to_coverage(&skip_front(&from_coverage(c), shift))),
                 ..e.clone()
             });
         }
@@ -554,11 +767,164 @@ pub fn without_exported(
     out
 }
 
+/// Aralıkların ilk `skip` kadarını atar.
+fn skip_front(spans: &[Interval], mut skip: Duration) -> Vec<Interval> {
+    let mut out = Vec::new();
+    for &(a, b) in spans {
+        let len = b - a;
+        if skip >= len {
+            skip -= len;
+        } else {
+            out.push((a + skip, b));
+            skip = Duration::zero();
+        }
+    }
+    out
+}
+
+/// `spans` aralıklarında projenin bugün hâlâ zaman çizelgesine giren süresi ve aralıkları.
+/// Kaydedilmiş satırın aralıklarındaki süre azaldıysa iş raporda başka projeye ya da projesize
+/// alınmış (ya da toplantı değişmiş) demektir.
+pub fn still_covered(pieces: &[Piece], project: &str, spans: &[Interval]) -> Vec<Interval> {
+    let spans = coalesce(spans.to_vec());
+    coalesce(
+        pieces
+            .iter()
+            .filter(|p| p.project == project)
+            .flat_map(|p| intersect(p.start, p.end, &spans))
+            .collect(),
+    )
+}
+
+/// Kaydedilmiş satır takipte değiştiyse projede kalan süre (saat): satırın aralıklarındaki
+/// süre `STALE_SLACK`'ten fazla azalmış. Elle eklenen ve eski satırlar değişmez.
+pub fn stale_hours(pieces: &[Piece], entry: &TimesheetEntry) -> Option<f64> {
+    let spans = entry.spans();
+    if spans.is_empty() {
+        return None;
+    }
+    let left = total(&still_covered(pieces, &entry.project_id, &spans));
+    let hours = left.num_seconds() as f64 / 3600.0;
+    (total(&spans) - left > STALE_SLACK).then_some(hours)
+}
+
+/// Takipte değişen satırın yeni hali: aralıkları projede kalan süreye iner, gerçek süre ve
+/// (yuvarlanmış) saat ondan hesaplanır; başlangıç elle değiştirilmediyse ilk kalan ana kayar.
+/// Projede hiç süre kalmadıysa `None`.
+pub fn refreshed(pieces: &[Piece], entry: &TimesheetEntry) -> Option<TimesheetEntry> {
+    let spans = entry.spans();
+    let left = still_covered(pieces, &entry.project_id, &spans);
+    let first = *left.first()?;
+    let worked = total(&left).num_seconds() as f64 / 3600.0;
+    let start = match spans.first() {
+        Some((was, _)) if minute(was.with_timezone(&Local).time()) == minute(entry.start) => {
+            first.0.with_timezone(&Local).time().with_nanosecond(0)?
+        }
+        _ => entry.start,
+    };
+    Some(TimesheetEntry {
+        start,
+        hours: round_quarter(worked),
+        actual_hours: Some(worked),
+        coverage: Some(to_coverage(&left)),
+        ..entry.clone()
+    })
+}
+
+fn minute(t: NaiveTime) -> (u32, u32) {
+    (t.hour(), t.minute())
+}
+
+/// Birleştirme reddedilir: satırlar aynı güne ve projeye ait değil ya da ikiden az.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MergeError {
+    #[error("birleştirmek için en az iki satır seç")]
+    TooFew,
+    #[error("yalnızca aynı günün satırları birleştirilir")]
+    Days,
+    #[error("yalnızca aynı projenin satırları birleştirilir")]
+    Projects,
+}
+
+/// Satırları tek satırda birleştirir (aynı gün ve proje): en erken başlangıç, toplam süre ve
+/// aralıklar; tür, taraf ve birim en çok saati olanınki (eşitlikte erkenin), açıklamalar
+/// sırayla ve tekrarsız. Saat, satırların saati süreden yuvarlandıysa toplam sürenin
+/// yuvarlanmışıdır (küçük parçaların ayrı ayrı yukarı yuvarlanması birikmesin); biri elle
+/// değiştirildiyse saatlerin toplamı. Aralıkları bilinmeyen eski satır varsa sonuç da öyledir
+/// (işi saatiyle düşülmeye devam eder).
+pub fn merge(rows: &[TimesheetEntry]) -> Result<TimesheetEntry, MergeError> {
+    let mut rows: Vec<&TimesheetEntry> = rows.iter().collect();
+    rows.sort_by_key(|e| e.start);
+    let (Some(first), true) = (rows.first().copied(), rows.len() >= 2) else {
+        return Err(MergeError::TooFew);
+    };
+    if rows.iter().any(|e| e.date != first.date) {
+        return Err(MergeError::Days);
+    }
+    if rows.iter().any(|e| e.project_id != first.project_id) {
+        return Err(MergeError::Projects);
+    }
+    let rounded = rows
+        .iter()
+        .all(|e| (e.hours - round_quarter(e.worked())).abs() < 1e-9);
+    let worked: f64 = rows.iter().map(|e| e.worked()).sum();
+    let hours = if rounded {
+        round_quarter(worked)
+    } else {
+        rows.iter().map(|e| e.hours).sum()
+    };
+    let mut details: Vec<&str> = Vec::new();
+    for e in &rows {
+        let d = e.details.trim();
+        if !d.is_empty() && !details.iter().any(|x| x.to_lowercase() == d.to_lowercase()) {
+            details.push(d);
+        }
+    }
+    let coverage = rows
+        .iter()
+        .map(|e| e.coverage.as_deref().map(from_coverage))
+        .collect::<Option<Vec<_>>>()
+        .map(|all| to_coverage(&coalesce(all.concat())));
+    Ok(TimesheetEntry {
+        date: first.date,
+        start: first.start,
+        hours,
+        actual_hours: rows
+            .iter()
+            .any(|e| e.actual_hours.is_some())
+            .then_some(worked),
+        kind: dominant(&rows, |e| e.kind),
+        details: details.join("; "),
+        party: dominant(&rows, |e| e.party.clone()),
+        project_id: first.project_id.clone(),
+        division: dominant(&rows, |e| e.division.clone()),
+        coverage,
+    })
+}
+
+/// Satırların saatine göre en ağır değer; eşitlikte ilk görülen (satırlar başlangıca göre sıralı).
+fn dominant<K: PartialEq>(rows: &[&TimesheetEntry], key: impl Fn(&TimesheetEntry) -> K) -> K {
+    let mut totals: Vec<(K, f64)> = Vec::new();
+    for e in rows {
+        let k = key(e);
+        match totals.iter_mut().find(|(x, _)| *x == k) {
+            Some((_, h)) => *h += e.hours,
+            None => totals.push((k, e.hours)),
+        }
+    }
+    let mut best = 0;
+    for (i, (_, h)) in totals.iter().enumerate().skip(1) {
+        if *h > totals[best].1 + 1e-9 {
+            best = i;
+        }
+    }
+    totals.swap_remove(best).0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::classify::{Rule, RuleField, Tag, TagKind};
-    use chrono::TimeZone;
     use uuid::Uuid;
 
     fn t(min: i64) -> DateTime<Utc> {
@@ -584,7 +950,21 @@ mod tests {
         }
     }
 
-    fn setup() -> (Classifier, HashMap<String, String>, TimesheetConfig) {
+    fn mapping(project: &str, division: &str) -> ProjectMapping {
+        ProjectMapping {
+            project_id: project.into(),
+            division: division.into(),
+            party: None,
+            default_details: None,
+        }
+    }
+
+    fn setup() -> (
+        Classifier,
+        HashMap<String, String>,
+        TimesheetConfig,
+        Timesheet,
+    ) {
         let tag = |id: &str, name: &str| Tag {
             id: id.into(),
             kind: TagKind::Project,
@@ -592,34 +972,58 @@ mod tests {
             color: 1,
         };
         let classifier = Classifier::new(
-            &[tag("tru", "Trumore"), tag("sync", "Int.Work.Sync.")],
-            &[Rule {
-                id: "r".into(),
-                tag_id: "tru".into(),
-                field: RuleField::Title,
-                pattern: "trumore".into(),
-            }],
+            &[
+                tag("tru", "Trumore"),
+                tag("sync", "Int.Work.Sync."),
+                tag("kum", "Kum"),
+            ],
+            &[
+                Rule {
+                    id: "r".into(),
+                    tag_id: "tru".into(),
+                    field: RuleField::Title,
+                    pattern: "trumore".into(),
+                },
+                Rule {
+                    id: "k".into(),
+                    tag_id: "kum".into(),
+                    field: RuleField::Title,
+                    pattern: "kum".into(),
+                },
+            ],
         );
         let names = HashMap::from([
             ("tru".to_string(), "Trumore".to_string()),
             ("sync".to_string(), "Int.Work.Sync.".to_string()),
+            ("kum".to_string(), "Kum".to_string()),
         ]);
-        let config = TimesheetConfig {
+        let sheet = Timesheet {
+            id: "togg".into(),
+            company: "Togg".into(),
             default_party: "ADBA".into(),
-            projects: vec![ProjectMapping {
-                project_id: "sync".into(),
-                division: "Int.Work.Sync.".into(),
-                party: None,
-                default_details: None,
-            }],
+            // Kum projesi bu çizelgeye bağlı değil: önerilmez.
+            projects: vec![mapping("tru", ""), mapping("sync", "Int.Work.Sync.")],
             ..Default::default()
         };
-        (classifier, names, config)
+        (classifier, names, TimesheetConfig::default(), sheet)
+    }
+
+    /// Tek günün (kaydedilmiş satırı olmayan) önerileri.
+    fn day(
+        sessions: &[Session],
+        meetings: &[(Meeting, String)],
+        classifier: &Classifier,
+        names: &HashMap<String, String>,
+        config: &TimesheetConfig,
+        sheet: &Timesheet,
+    ) -> Vec<TimesheetEntry> {
+        let p = pieces(sessions, meetings, classifier, config, t(-540), t(900));
+        propose(&p, names, sheet, &HashMap::new())
     }
 
     #[test]
     fn groups_by_project_and_kind_with_short_gaps() {
-        let (classifier, names, config) = setup();
+        let (classifier, names, config, sheet) = setup();
         let sessions = [
             s("Figma", "Trumore Loyalty UI/UX — Figma", 0, 50, None),
             s("Slack", "#genel", 50, 55, None), // projesiz: kayda girmez
@@ -627,16 +1031,9 @@ mod tests {
             s("us.zoom.xos", "Zoom Meeting", 90, 120, Some("tru")), // toplantı: ayrı kayıt
             s("Figma", "Trumore Pitchdeck — Figma", 150, 170, None), // 60 dk boşluk: yeni kayıt
             s("Slack", "sync", 170, 173, Some("sync")), // 3 dk: çok kısa
+            s("Code", "kum — main.rs", 180, 240, None), // başka çizelgenin projesi
         ];
-        let got = propose(
-            &sessions,
-            &[],
-            &classifier,
-            &names,
-            &config,
-            t(-540),
-            t(900),
-        );
+        let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
         let rows: Vec<_> = got
             .iter()
             .map(|e| {
@@ -679,6 +1076,197 @@ mod tests {
                 ),
             ]
         );
+        // Kaydın aralıkları boşluklar olmadan saklanır.
+        assert_eq!(
+            got[0].spans(),
+            vec![(t(0), t(50)), (t(55), t(90))],
+            "aradaki projesiz 5 dk kayda girmez"
+        );
+    }
+
+    #[test]
+    fn only_the_sheets_projects_are_proposed() {
+        let (classifier, names, config, mut sheet) = setup();
+        let sessions = [
+            s("Figma", "Trumore — Figma", 0, 60, None),
+            s("Code", "kum — main.rs", 60, 120, None),
+        ];
+        let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].project_id, "tru");
+        // Kişisel projenin çizelgesi: yalnızca Kum.
+        sheet.projects = vec![mapping("kum", "")];
+        let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (got[0].project_id.as_str(), got[0].division.as_str()),
+            ("kum", "Kum")
+        );
+        // Projesi olmayan çizelge hiçbir şey almaz.
+        sheet.projects.clear();
+        assert!(day(&sessions, &[], &classifier, &names, &config, &sheet).is_empty());
+    }
+
+    #[test]
+    fn saved_spans_are_not_proposed_again() {
+        let (classifier, names, config, sheet) = setup();
+        let sessions = [
+            s("Figma", "Trumore Loyalty — Figma", 0, 60, None),
+            s("Figma", "Trumore Rapor — Figma", 120, 180, None),
+        ];
+        let p = pieces(&sessions, &[], &classifier, &config, t(-540), t(900));
+        let all = propose(&p, &names, &sheet, &HashMap::new());
+        assert_eq!(all.len(), 2);
+        // İkinci satır kaydedildi (düzenlendi): ilki önerilmeye devam eder, ikincisi gelmez.
+        let saved = HashMap::from([("tru".to_string(), all[1].spans())]);
+        let left = propose(&p, &names, &sheet, &saved);
+        assert_eq!(left, vec![all[0].clone()]);
+
+        // Sabah unutulan iş sonradan projeye atanınca kendi saatinde gelir.
+        let mut later = sessions.to_vec();
+        later.push(s("Mail", "Rapor taslağı", -120, -60, Some("tru")));
+        let p = pieces(&later, &[], &classifier, &config, t(-540), t(900));
+        let saved = HashMap::from([(
+            "tru".to_string(),
+            coalesce([all[0].spans(), all[1].spans()].concat()),
+        )]);
+        let got = propose(&p, &names, &sheet, &saved);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].start.format("%H:%M").to_string(), "07:00");
+        assert_eq!(got[0].details, "Rapor taslağı");
+
+        // Satır kaydedilirken süren işin kısa kuyruğu önerilmez; uzayınca önerilir.
+        let mut tail = sessions.to_vec();
+        tail.push(s("Figma", "Trumore Rapor — Figma", 180, 190, None));
+        let p = pieces(&tail, &[], &classifier, &config, t(-540), t(900));
+        let saved = HashMap::from([(
+            "tru".to_string(),
+            coalesce([all[0].spans(), all[1].spans()].concat()),
+        )]);
+        assert!(propose(&p, &names, &sheet, &saved).is_empty());
+        tail.push(s("Figma", "Trumore Rapor — Figma", 190, 200, None));
+        let p = pieces(&tail, &[], &classifier, &config, t(-540), t(900));
+        let got = propose(&p, &names, &sheet, &saved);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].start.format("%H:%M").to_string(), "12:00");
+        assert_eq!(got[0].spans(), vec![(t(180), t(200))]);
+    }
+
+    #[test]
+    fn a_short_meeting_after_a_saved_one_is_still_proposed() {
+        let (classifier, names, config, sheet) = setup();
+        let first = (
+            meeting("a", "Trumore haftalık", 0, 60, true),
+            "tru".to_string(),
+        );
+        let second = (
+            meeting("b", "Trumore kısa", 60, 70, true),
+            "tru".to_string(),
+        );
+        let p = pieces(&[], &[first, second], &classifier, &config, t(-540), t(900));
+        let all = propose(&p, &names, &sheet, &HashMap::new());
+        assert_eq!(all.len(), 2);
+        let saved = HashMap::from([("tru".to_string(), all[0].spans())]);
+        assert_eq!(propose(&p, &names, &sheet, &saved), vec![all[1].clone()]);
+        // Kaydedilmiş toplantı takvimde 10 dakika uzadı: uç yeni iş sayılmaz.
+        let longer = (
+            meeting("a", "Trumore haftalık", 0, 70, true),
+            "tru".to_string(),
+        );
+        let p = pieces(&[], &[longer], &classifier, &config, t(-540), t(900));
+        assert!(propose(&p, &names, &sheet, &saved).is_empty());
+    }
+
+    #[test]
+    fn stale_rows_are_found_and_refreshed() {
+        let (classifier, names, config, sheet) = setup();
+        let sessions = vec![
+            s("Mail", "Rapor", 0, 30, Some("tru")),
+            s("Mail", "Rapor", 30, 60, Some("tru")),
+        ];
+        let p = pieces(&sessions, &[], &classifier, &config, t(-540), t(900));
+        let mut row = propose(&p, &names, &sheet, &HashMap::new()).remove(0);
+        row.details = "Elle yazıldı".into();
+        assert_eq!(stale_hours(&p, &row), None);
+        // İlk yarım saat raporda başka projeye alındı.
+        let mut moved = sessions.clone();
+        moved[0].project_id = Some("kum".into());
+        let p = pieces(&moved, &[], &classifier, &config, t(-540), t(900));
+        assert_eq!(stale_hours(&p, &row), Some(0.5));
+        let fresh = refreshed(&p, &row).unwrap();
+        assert_eq!(fresh.start.format("%H:%M").to_string(), "09:30");
+        assert_eq!((fresh.hours, fresh.actual_hours), (0.5, Some(0.5)));
+        assert_eq!(fresh.details, "Elle yazıldı");
+        assert_eq!(fresh.spans(), vec![(t(30), t(60))]);
+        // Elle değiştirilen başlangıç korunur.
+        let typed = TimesheetEntry {
+            start: NaiveTime::from_hms_opt(8, 45, 0).unwrap(),
+            ..row.clone()
+        };
+        assert_eq!(refreshed(&p, &typed).unwrap().start, typed.start);
+        // Hepsi gitti: satır kalmaz.
+        moved[1].project_id = Some("kum".into());
+        let p = pieces(&moved, &[], &classifier, &config, t(-540), t(900));
+        assert_eq!(stale_hours(&p, &row), Some(0.0));
+        assert_eq!(refreshed(&p, &row), None);
+        // Elle eklenen satır takipten bağımsızdır.
+        let manual = TimesheetEntry {
+            coverage: Some(Vec::new()),
+            ..row
+        };
+        assert_eq!(stale_hours(&p, &manual), None);
+    }
+
+    #[test]
+    fn rows_merge_into_one() {
+        let (classifier, names, config, sheet) = setup();
+        let sessions = [
+            s("Figma", "Trumore Loyalty — Figma", 0, 10, None),
+            s("Figma", "Trumore Rapor — Figma", 60, 70, None),
+            s("Figma", "Trumore Loyalty — Figma", 120, 160, None),
+            s("us.zoom.xos", "Zoom", 200, 205, Some("tru")),
+        ];
+        let rows = day(&sessions, &[], &classifier, &names, &config, &sheet);
+        assert_eq!(rows.len(), 4);
+        // 10 + 10 + 40 + 5 dk: ayrı ayrı yuvarlanınca 0,25 × 3 + 0,75 = 1,50; birleşince 1,00.
+        let merged = merge(&rows).unwrap();
+        assert_eq!(merged.start.format("%H:%M").to_string(), "09:00");
+        assert_eq!(merged.hours, 1.0);
+        assert!((merged.worked() - 65.0 / 60.0).abs() < 1e-9);
+        assert_eq!(merged.kind, EntryKind::Working);
+        assert_eq!(
+            merged.details, "Trumore Loyalty; Trumore Rapor",
+            "tekrar eden açıklama bir kez"
+        );
+        assert_eq!(
+            merged.spans(),
+            vec![
+                (t(0), t(10)),
+                (t(60), t(70)),
+                (t(120), t(160)),
+                (t(200), t(205))
+            ]
+        );
+        // Elle değiştirilen saat korunur: toplam saat.
+        let mut edited = rows[..2].to_vec();
+        edited[1].hours = 1.0;
+        assert_eq!(merge(&edited).unwrap().hours, 1.25);
+        // Tür, en çok saati olan.
+        let mut kinds = rows[..2].to_vec();
+        kinds[1].kind = EntryKind::F2F;
+        kinds[1].hours = 2.0;
+        assert_eq!(merge(&kinds).unwrap().kind, EntryKind::F2F);
+        // Eski (aralığı bilinmeyen) satır varsa sonuç da öyle.
+        let mut legacy = rows[..2].to_vec();
+        legacy[0].coverage = None;
+        assert_eq!(merge(&legacy).unwrap().coverage, None);
+
+        assert_eq!(merge(&rows[..1]), Err(MergeError::TooFew));
+        let mut other = rows[..2].to_vec();
+        other[1].project_id = "sync".into();
+        assert_eq!(merge(&other), Err(MergeError::Projects));
+        other[1].date = other[1].date.succ_opt().unwrap();
+        assert_eq!(merge(&other), Err(MergeError::Days));
     }
 
     #[test]
@@ -713,19 +1301,11 @@ mod tests {
 
     #[test]
     fn manual_entries_are_face_to_face_and_mapping_applies() {
-        let (classifier, names, mut config) = setup();
-        config.projects[0].party = Some("Togg".into());
+        let (classifier, names, config, mut sheet) = setup();
+        sheet.projects[1].party = Some("Togg".into());
         let mut meeting = s("kum.manual/Workshop", "Workshop", 0, 60, Some("sync"));
         meeting.app_name = "Workshop".into();
-        let got = propose(
-            &[meeting],
-            &[],
-            &classifier,
-            &names,
-            &config,
-            t(-540),
-            t(900),
-        );
+        let got = day(&[meeting], &[], &classifier, &names, &config, &sheet);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, EntryKind::F2F);
         assert_eq!(got[0].details, "Workshop");
@@ -739,13 +1319,8 @@ mod tests {
 
     #[test]
     fn default_details_fill_only_empty_descriptions() {
-        let (classifier, names, mut config) = setup();
-        config.projects.push(ProjectMapping {
-            project_id: "tru".into(),
-            division: "Trumore".into(),
-            party: None,
-            default_details: Some("  Trumore danışmanlık ".into()),
-        });
+        let (classifier, names, config, mut sheet) = setup();
+        sheet.projects[0].default_details = Some("  Trumore danışmanlık ".into());
         let sessions = [
             // Başlıktan açıklama çıkar: hazır metin kullanılmaz.
             s("Figma", "Trumore Pitchdeck — Figma", 0, 30, None),
@@ -754,15 +1329,7 @@ mod tests {
             // Hazır metni olmayan projenin boş açıklaması boş kalır.
             s("us.zoom.xos", "Zoom Meeting", 60, 90, Some("sync")),
         ];
-        let got = propose(
-            &sessions,
-            &[],
-            &classifier,
-            &names,
-            &config,
-            t(-540),
-            t(900),
-        );
+        let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
         let details: Vec<(&str, &str)> = got
             .iter()
             .map(|e| (e.project_id.as_str(), e.details.as_str()))
@@ -782,14 +1349,53 @@ mod tests {
         let m: ProjectMapping =
             serde_json::from_str(r#"{"projectId":"a","division":"A","party":null}"#).unwrap();
         assert_eq!(m.default_details, None);
+        // Aralıkları olmayan (önceki sürümün) kayıt da okunur.
+        let e: TimesheetEntry = serde_json::from_str(
+            r#"{"date":"2026-10-01","start":"09:00:00","hours":1,"kind":"Working",
+                "details":"","party":"","projectId":"a","division":"A"}"#,
+        )
+        .unwrap();
+        assert_eq!(e.coverage, None);
+    }
+
+    #[test]
+    fn config_keeps_each_project_in_one_sheet() {
+        let mut config = TimesheetConfig {
+            timesheets: vec![
+                Timesheet {
+                    id: "a".into(),
+                    projects: vec![mapping("p1", ""), mapping("p2", "")],
+                    divisions: vec![" Trumore ".into(), "trumore".into(), "".into()],
+                    ..Default::default()
+                },
+                Timesheet {
+                    id: "a".into(),
+                    projects: vec![mapping("p2", ""), mapping("p3", "")],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        config.normalize();
+        let [a, b] = &config.timesheets[..] else {
+            panic!("iki çizelge");
+        };
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.divisions, ["Trumore"]);
+        assert!(a.includes("p2") && !b.includes("p2") && b.includes("p3"));
+        assert_eq!(
+            config.timesheet_of("p3").map(|t| t.id.as_str()),
+            Some(b.id.as_str())
+        );
+        assert!(config.timesheet_of("p4").is_none());
     }
 
     #[test]
     fn assigned_idle_time_is_face_to_face() {
-        let (c, names, config) = setup();
+        let (c, names, config, sheet) = setup();
         let mut away = Session::idle(t(0), t(60));
         away.project_id = Some("tru".into());
-        let out = propose(&[away], &[], &c, &names, &config, t(-600), t(600));
+        let out = day(&[away], &[], &c, &names, &config, &sheet);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, EntryKind::F2F);
         assert_eq!(out[0].hours, 1.0);
@@ -797,15 +1403,14 @@ mod tests {
 
     #[test]
     fn browser_meetings_are_online() {
-        let (classifier, names, config) = setup();
-        let got = propose(
+        let (classifier, names, config, sheet) = setup();
+        let got = day(
             &[s("com.google.Chrome", "Meet - Trumore weekly", 0, 30, None)],
             &[],
             &classifier,
             &names,
             &config,
-            t(-540),
-            t(900),
+            &sheet,
         );
         assert_eq!(got[0].kind, EntryKind::Online);
     }
@@ -824,7 +1429,7 @@ mod tests {
 
     #[test]
     fn calendar_meetings_become_entries_and_replace_tracked_time() {
-        let (classifier, names, config) = setup();
+        let (classifier, names, config, sheet) = setup();
         let sessions = [
             // 09:00–10:30 Figma; 09:30–10:00 arası toplantıdaydı (ekran paylaşımı).
             s("Figma", "Trumore Loyalty UI/UX — Figma", 0, 90, None),
@@ -840,15 +1445,7 @@ mod tests {
                 "sync".to_string(),
             ),
         ];
-        let got = propose(
-            &sessions,
-            &meetings,
-            &classifier,
-            &names,
-            &config,
-            t(-540),
-            t(900),
-        );
+        let got = day(&sessions, &meetings, &classifier, &names, &config, &sheet);
         let rows: Vec<_> = got
             .iter()
             .map(|e| {
@@ -888,11 +1485,21 @@ mod tests {
                 ),
             ]
         );
+        // Toplantı başka projeye atanınca kaydedilmiş satırı takipte değişmiş olur.
+        let p = pieces(&sessions, &meetings, &classifier, &config, t(-540), t(900));
+        let saved_meeting = &got[1];
+        assert_eq!(stale_hours(&p, saved_meeting), None);
+        let moved = [
+            (meetings[0].0.clone(), "kum".to_string()),
+            meetings[1].clone(),
+        ];
+        let p = pieces(&sessions, &moved, &classifier, &config, t(-540), t(900));
+        assert_eq!(stale_hours(&p, saved_meeting), Some(0.0));
     }
 
     #[test]
     fn meeting_project_prefers_assignment_then_rules() {
-        let (classifier, _, _) = setup();
+        let (classifier, _, _, _) = setup();
         let m = meeting("seri", "Trumore weekly", 0, 30, true);
         let mut assigned = HashMap::new();
         assert_eq!(
@@ -927,26 +1534,19 @@ mod tests {
             party: String::new(),
             project_id: project.into(),
             division: project.into(),
+            coverage: None,
         }
     }
 
     #[test]
     fn hours_are_rounded_to_quarters_and_actual_is_kept() {
-        let (classifier, names, config) = setup();
+        let (classifier, names, config, sheet) = setup();
         let sessions = [
             s("Figma", "Trumore — Figma", 0, 67, None), // 1 sa 7 dk → 1,00
             s("Figma", "Trumore — Figma", 120, 128, None), // 8 dk → 0,25 (en az)
             s("Figma", "Trumore — Figma", 200, 253, None), // 53 dk → 1,00 (0,88 → 1)
         ];
-        let got = propose(
-            &sessions,
-            &[],
-            &classifier,
-            &names,
-            &config,
-            t(-540),
-            t(900),
-        );
+        let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
         let hours: Vec<(f64, i64)> = got
             .iter()
             .map(|e| (e.hours, (e.worked() * 60.0).round() as i64))
@@ -958,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    fn exported_work_is_not_proposed_again() {
+    fn legacy_rows_are_not_proposed_again() {
         use EntryKind::{Online, Working};
         let short = |v: Vec<TimesheetEntry>| -> Vec<(String, String, f64)> {
             v.into_iter()
@@ -974,8 +1574,8 @@ mod tests {
             entry("a", Online, 11, 0, 0.5),
             entry("b", Working, 10, 0, 1.0),
         ];
-        // Hiç aktarım yoksa öneriler aynen.
-        assert_eq!(without_exported(&proposed, &[]).len(), 4);
+        // Hiç eski satır yoksa öneriler aynen.
+        assert_eq!(without_legacy(&proposed, &[]).len(), 4);
         // Aktarırken 09:10 kaydının saati 09:00'a çekilmiş ve 0,75'e yuvarlanmış; 13:00 kaydı
         // aktarıldığında 1 saatti, sonra 2 saate uzadı. Düzenlenmiş kayıt tekrar önerilmez;
         // toplam korunur (aktarılan 1,75 + önerilen 1,08 = takip edilen 2,83). Toplantı ve
@@ -985,7 +1585,7 @@ mod tests {
             entry("a", Working, 13, 0, 1.0),
         ];
         assert_eq!(
-            short(without_exported(&proposed, &exported)),
+            short(without_legacy(&proposed, &exported)),
             [
                 ("b", "10:00", 1.0),
                 ("a", "11:00", 0.5),
@@ -996,11 +1596,36 @@ mod tests {
         // Kalan 15 dakikadan kısaysa (yuvarlama artığı) önerilmez.
         let exported = [entry("a", Working, 9, 0, 2.75)];
         assert!(
-            without_exported(&proposed, &exported)
+            without_legacy(&proposed, &exported)
                 .iter()
                 .all(|e| e.project_id != "a" || e.kind != Working)
         );
         // Tamamı aktarılmış gün: yeni bir şey yok.
-        assert!(without_exported(&proposed, &proposed).is_empty());
+        assert!(without_legacy(&proposed, &proposed).is_empty());
+
+        // Kısmen düşülen önerinin aralıkları da düşülen süre kadar kısalır.
+        let mut long = entry("a", Working, 9, 0, 2.0);
+        long.actual_hours = Some(2.0);
+        long.coverage = Some(to_coverage(&[(t(0), t(60)), (t(90), t(150))]));
+        let rest = without_legacy(&[long], &[entry("a", Working, 9, 0, 1.25)]);
+        assert_eq!(rest[0].spans(), vec![(t(105), t(150))]);
+        assert_eq!(rest[0].start.format("%H:%M").to_string(), "10:15");
+    }
+
+    #[test]
+    fn spans_coalesce() {
+        assert_eq!(
+            coalesce(vec![
+                (t(30), t(40)),
+                (t(0), t(10)),
+                (t(10), t(20)),
+                (t(35), t(50)),
+                (t(60), t(60)),
+            ]),
+            vec![(t(0), t(20)), (t(30), t(50))]
+        );
+        let spans = vec![(t(0), t(20)), (t(30), t(50))];
+        assert_eq!(from_coverage(&to_coverage(&spans)), spans);
+        assert_eq!(total(&spans), Duration::minutes(40));
     }
 }

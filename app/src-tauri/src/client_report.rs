@@ -1,10 +1,11 @@
 //! Aylık müşteri raporu komutları: ayın proje × gün saat tablosu ve Excel'e aktarımı.
 
-use chrono::{Datelike, Days, Local, NaiveDate};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tracky_core::Store;
 use tracky_core::client_report::{ClientReport, ReportSource};
+use tracky_core::timesheet::Meeting;
 use tracky_xlsx::report::{Matrix, MatrixRow};
 
 use crate::lock;
@@ -31,23 +32,40 @@ fn month_days(month: &str) -> CmdResult<Vec<NaiveDate>> {
         .collect())
 }
 
-fn build(
-    store: &Store,
-    month: &str,
-    client: Option<&str>,
-    source: Option<ReportSource>,
-) -> CmdResult<ClientReport> {
+/// Ayın günleri, yerel gün sınırları (`days.len() + 1` öğe) ve takvim toplantıları (zaman
+/// çizelgesi satırları için). Depo kilitlenmeden önce okunur.
+struct Month {
+    days: Vec<NaiveDate>,
+    starts: Vec<DateTime<Utc>>,
+    meetings: Vec<Meeting>,
+}
+
+fn month(app: &AppHandle, month: &str) -> CmdResult<Month> {
     let days = month_days(month)?;
     let mut starts: Vec<_> = days.iter().map(|d| local_midnight(*d)).collect();
     let last = *days.last().ok_or("geçersiz ay")?;
     starts.push(local_midnight(last + Days::new(1)));
+    let meetings = crate::calendar::meetings(app, starts[0], starts[days.len()]);
+    Ok(Month {
+        days,
+        starts,
+        meetings,
+    })
+}
+
+fn build(
+    store: &Store,
+    month: Month,
+    client: Option<&str>,
+    source: Option<ReportSource>,
+) -> CmdResult<ClientReport> {
     store
-        .client_report(days, &starts, client, source)
+        .client_report(month.days, &month.starts, client, source, &month.meetings)
         .map_err(err)
 }
 
 /// Ayın raporu. `client` verilmezse tüm müşteriler; `source` verilmezse ayda zaman çizelgesi
-/// kaydı varsa o, yoksa takip edilen süre.
+/// satırı varsa o, yoksa takip edilen süre.
 #[tauri::command]
 pub async fn client_report(
     app: AppHandle,
@@ -55,9 +73,10 @@ pub async fn client_report(
     client: Option<String>,
     source: Option<ReportSource>,
 ) -> CmdResult<ClientReport> {
+    let month = self::month(&app, &month)?;
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    build(&store, &month, client.as_deref(), source)
+    build(&store, month, client.as_deref(), source)
 }
 
 /// Raporu kaydetme penceresinde seçilen Excel dosyasına yazar; vazgeçilirse `None`.
@@ -68,10 +87,11 @@ pub async fn export_client_report(
     client: Option<String>,
     source: Option<ReportSource>,
 ) -> CmdResult<Option<String>> {
+    let month = self::month(&app, &month)?;
     let (report, client_name, consultant) = {
         let shared = app.state::<Shared>();
         let store = lock(&shared.store);
-        let report = build(&store, &month, client.as_deref(), source)?;
+        let report = build(&store, month, client.as_deref(), source)?;
         let name = match &client {
             Some(id) => store
                 .clients()
@@ -81,7 +101,21 @@ pub async fn export_client_report(
                 .map(|c| c.name),
             None => None,
         };
-        let consultant = store.timesheet_config().map_err(err)?.consultant;
+        // Danışman: müşterinin projelerinin gittiği zaman çizelgesinden, yoksa ilk çizelgeden.
+        let config = store.timesheet_config().map_err(err)?;
+        let project_clients = store.project_clients().map_err(err)?;
+        let consultant = client
+            .as_ref()
+            .and_then(|c| {
+                config.timesheets.iter().find(|t| {
+                    t.projects
+                        .iter()
+                        .any(|m| project_clients.get(&m.project_id) == Some(c))
+                })
+            })
+            .or(config.timesheets.first())
+            .map(|t| t.consultant.clone())
+            .unwrap_or_default();
         (report, name, consultant)
     };
     let first = *report.days.first().ok_or("geçersiz ay")?;

@@ -158,7 +158,7 @@ function ProjectsStep({ onDone, onBack }: { onDone: () => Promise<void>; onBack:
     try {
       const path = await api.pickTimesheetFile();
       if (!path) return;
-      const r = await api.importTimesheetTemplate(path);
+      const r = await api.importTimesheetTemplate(null, path);
       setImported(
         r.created.length
           ? `Şablondan ${r.created.length} proje eklendi: ${r.created.join(", ")}.`

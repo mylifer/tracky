@@ -1,16 +1,24 @@
-//! Zaman çizelgesi: ayarlar, toplantı atamaları, günlük kayıt önerileri ve onaylanmış kayıtlar.
+//! Zaman çizelgesi: ayarlar (firmaların çizelgeleri), toplantı atamaları, günün satırları
+//! (kaydedilmiş satırlar ve takipten gelen canlı öneriler) ve satırların düzenlenmesi.
+//!
+//! Canlı öneri ilk kez düzenlenince, birleştirilince, gizlenince ya da aktarılınca kaydedilir;
+//! kaydedilen satır kapsadığı takip aralıklarını saklar ve bu aralıklar yeniden önerilmez
+//! ([`crate::timesheet::propose`]).
 
 use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
+use serde::Deserialize;
 use uuid::Uuid;
 
 use super::{Result, Store, StoreError, from_ms, ms};
 use crate::classify::{Classifier, TagKind};
 use crate::meeting_suggest::{MeetingSuggester, ProjectInfo, SuggestInput};
-use crate::model::Session;
-use crate::timesheet::{self, EntryKind, Meeting, MeetingProject, TimesheetConfig, TimesheetEntry};
+use crate::timesheet::{
+    self, EntryKind, Interval, Meeting, MeetingProject, Piece, ProjectMapping, Timesheet,
+    TimesheetConfig, TimesheetEntry,
+};
 
 /// Toplantı önerilerinde projelerin kullanımına bakılan dönem (gün; zaman çizelgesi kayıtları).
 const SUGGEST_USAGE_DAYS: u64 = 90;
@@ -23,15 +31,72 @@ const MEETING_ASSIGNMENTS_KEY: &str = "meeting_assignments";
 /// (Projesi belli toplantılar ve projeleri, hiçbir projeye düşmeyen toplantılar).
 pub type SplitMeetings = (Vec<(Meeting, String)>, Vec<Meeting>);
 
-/// Onaylanmış zaman çizelgesi kaydı.
+/// Önceki sürümün tek zaman çizelgesinin taşındığı çizelgenin kimliği (her cihazda aynı).
+pub fn first_timesheet_id() -> String {
+    crate::classify::default_id("timesheet:first")
+}
+
+/// Kaydedilmiş zaman çizelgesi satırı.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedEntry {
     pub id: String,
     #[serde(flatten)]
     pub entry: TimesheetEntry,
-    /// Excel'e aktarıldığı an; doluysa kayıt değiştirilemez.
+    /// Excel'e ya da Sheets'e aktarıldığı an; doluysa kayıt değiştirilemez.
     pub exported_at: Option<DateTime<Utc>>,
+    /// Aktarıldığı zaman çizelgesi.
+    pub timesheet_id: Option<String>,
+    /// Gizlendi (silindi): gösterilmez, aktarılmaz; aralıkları yeniden önerilmez.
+    pub dismissed: bool,
+}
+
+/// Günün bir zaman çizelgesindeki satırı: kaydedilmiş ya da takipten gelen (canlı) öneri.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayRow {
+    /// Kaydedilmiş satırın kimliği; canlı öneride `None`.
+    pub id: Option<String>,
+    /// Sayfadaki kararlı anahtar: canlı öneri kaydedilince de aynı kalır.
+    pub key: String,
+    pub exported: bool,
+    /// Kaydedildikten sonra işin bir kısmı raporda başka projeye (ya da projesize) alındıysa
+    /// projede kalan gerçek süre (saat); satır güncellenmeden aktarılmaz.
+    pub stale: Option<f64>,
+    #[serde(flatten)]
+    pub entry: TimesheetEntry,
+}
+
+/// Günün bir zaman çizelgesindeki satırları, başlangıca göre.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DayRows {
+    pub rows: Vec<DayRow>,
+    /// Gizlenen satır sayısı.
+    pub hidden: usize,
+}
+
+/// Zaman çizelgesi hesabının ortak girdileri: birkaç gün boyunca bir kez okunur.
+pub struct TimesheetContext {
+    pub config: TimesheetConfig,
+    classifier: Classifier,
+    names: HashMap<String, String>,
+    assigned: HashMap<String, Option<String>>,
+}
+
+impl TimesheetContext {
+    /// Kaydedilmiş satırlar düşülmeden önerilenler (açıklamanın otomatik gelip gelmediğini
+    /// anlamak için).
+    pub fn proposals(&self, sheet: &Timesheet, pieces: &[Piece]) -> Vec<TimesheetEntry> {
+        timesheet::propose(pieces, &self.names, sheet, &HashMap::new())
+    }
+
+    pub fn classifier(&self) -> &Classifier {
+        &self.classifier
+    }
+
+    pub fn project_name(&self, id: &str) -> Option<&str> {
+        self.names.get(id).map(String::as_str)
+    }
 }
 
 fn parse_kind(s: &str) -> Option<EntryKind> {
@@ -43,13 +108,156 @@ fn parse_kind(s: &str) -> Option<EntryKind> {
     }
 }
 
+/// Satırın sayfadaki anahtarı: takipten gelen satırda proje ve ilk aralığın başı (kaydedilince
+/// değişmez), diğerlerinde kimliği.
+fn row_key(id: Option<&str>, e: &TimesheetEntry) -> String {
+    match e.coverage.as_deref().and_then(<[_]>::first) {
+        Some([start, _]) => format!("{}@{start}", e.project_id),
+        None => id.unwrap_or_default().to_string(),
+    }
+}
+
+fn overlaps(a: &[Interval], b: &[Interval]) -> bool {
+    a.iter()
+        .any(|&(x, y)| b.iter().any(|&(c, d)| x < d && c < y))
+}
+
+/// Önceki sürümün ayarı: tek dosya, bütün projeler.
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct LegacyConfig {
+    company: String,
+    consultant: String,
+    file_path: Option<String>,
+    sheet_url: Option<String>,
+    sheet_link: Option<String>,
+    sheet_token: String,
+    default_party: String,
+    projects: Vec<ProjectMapping>,
+    meeting_apps: Option<Vec<String>>,
+    day_hours: Option<f64>,
+}
+
+const COLUMNS: &str = "id, date, start, hours, kind, details, party, project_id, division,
+    exported_at, actual_hours, coverage, timesheet_id, dismissed_at";
+
 impl Store {
     pub fn timesheet_config(&self) -> Result<TimesheetConfig> {
         Ok(self.setting(TIMESHEET_KEY)?.unwrap_or_default())
     }
 
+    /// Ayarları kaydeder; bir proje yalnızca bir çizelgede kalır ([`TimesheetConfig::normalize`]).
     pub fn save_timesheet_config(&self, config: &TimesheetConfig) -> Result<()> {
-        self.save_setting(TIMESHEET_KEY, config)
+        let mut config = config.clone();
+        config.normalize();
+        self.save_setting(TIMESHEET_KEY, &config)
+    }
+
+    /// Önceki sürümün tek zaman çizelgesini firmaya özel çizelgeye taşır (bir kez, açılışta).
+    /// Çizelgeye eşlemesi olan (silinmemiş) projeler ve adı ya da müşterisinin adı firmayla
+    /// aynı olan projeler girer; eşlemelerin birimleri çizelgenin birimleri olur. Aktarılmış
+    /// satırlar bu çizelgeye aktarılmış sayılır. Birim seçilirken satırın projesi silinmiş bir
+    /// birim projesine dönmüşse ve çizelgenin tek projesi varsa satır o projeye bağlanır;
+    /// yoksa aynı iş yeni önerilerde ikinci kez gelirdi.
+    pub(super) fn migrate_timesheets(&self) -> Result<()> {
+        let Some(raw) = self.setting::<serde_json::Value>(TIMESHEET_KEY)? else {
+            return Ok(());
+        };
+        if raw.get("timesheets").is_some() {
+            return Ok(());
+        }
+        let old: LegacyConfig = serde_json::from_value(raw)?;
+        let defaults = TimesheetConfig::default();
+        let mut config = TimesheetConfig {
+            timesheets: Vec::new(),
+            sheet_token: old.sheet_token,
+            meeting_apps: old.meeting_apps.unwrap_or(defaults.meeting_apps),
+            day_hours: old.day_hours.unwrap_or(defaults.day_hours),
+        };
+        let company = old.company.trim().to_string();
+        let used = old.file_path.is_some()
+            || old.sheet_url.is_some()
+            || !company.is_empty()
+            || !old.projects.is_empty();
+        let tx = self.savepoint()?;
+        if used {
+            let projects: Vec<crate::classify::Tag> = self
+                .tags()?
+                .into_iter()
+                .filter(|t| t.kind == TagKind::Project)
+                .collect();
+            let exists = |id: &str| projects.iter().any(|t| t.id == id);
+            let clients: HashMap<String, String> = self
+                .clients()?
+                .into_iter()
+                .map(|c| (c.id, c.name))
+                .collect();
+            let project_clients = self.project_clients()?;
+            let mut sheet = Timesheet {
+                id: first_timesheet_id(),
+                company: old.company,
+                consultant: old.consultant,
+                file_path: old.file_path,
+                sheet_url: old.sheet_url,
+                sheet_link: old.sheet_link,
+                default_party: old.default_party,
+                projects: Vec::new(),
+                divisions: Vec::new(),
+            };
+            for m in old.projects {
+                sheet.divisions.push(m.division.trim().to_string());
+                if exists(&m.project_id) {
+                    sheet.projects.push(m);
+                }
+            }
+            // Birimi satırda seçilen tek projeyle çalışılıyordu (örn. "Togg" projesi).
+            if !company.is_empty() {
+                for t in &projects {
+                    let client = project_clients
+                        .get(&t.id)
+                        .and_then(|c| clients.get(c))
+                        .map(|c| c.trim());
+                    let named = t.name.trim().eq_ignore_ascii_case(&company)
+                        || client.is_some_and(|c| c.eq_ignore_ascii_case(&company));
+                    if named && !sheet.includes(&t.id) {
+                        sheet.projects.push(ProjectMapping {
+                            project_id: t.id.clone(),
+                            division: String::new(),
+                            party: None,
+                            default_details: None,
+                        });
+                    }
+                }
+            }
+            self.conn.execute(
+                "UPDATE timesheet_entries SET timesheet_id = ?1
+                 WHERE exported_at IS NOT NULL AND timesheet_id IS NULL",
+                [&sheet.id],
+            )?;
+            if let [only] = &sheet.projects[..] {
+                let orphans: Vec<(String, String)> = self
+                    .query_entries("1 = 1", [])?
+                    .into_iter()
+                    .filter(|s| !exists(&s.entry.project_id))
+                    .map(|s| (s.id, s.entry.division))
+                    .collect();
+                for (id, division) in orphans {
+                    let known = sheet
+                        .divisions
+                        .iter()
+                        .any(|d| d.eq_ignore_ascii_case(division.trim()));
+                    if known {
+                        self.conn.execute(
+                            "UPDATE timesheet_entries SET project_id = ?2 WHERE id = ?1",
+                            params![id, only.project_id],
+                        )?;
+                    }
+                }
+            }
+            config.timesheets.push(sheet);
+        }
+        self.save_timesheet_config(&config)?;
+        tx.commit()
     }
 
     /// Toplantı serilerinin elle verilen projeleri (UID → proje; `None`: yoksayıldı).
@@ -140,93 +348,218 @@ impl Store {
         }))
     }
 
-    /// Günün (`day_start`–`day_end`, yerel gün) oturumlarından ve takvim toplantılarından
-    /// iş kaydı önerileri.
-    pub fn propose_timesheet(
-        &self,
-        day_start: DateTime<Utc>,
-        day_end: DateTime<Utc>,
-        meetings: &[Meeting],
-    ) -> Result<Vec<TimesheetEntry>> {
-        self.propose_from(
-            &self.merged_sessions_between(day_start, day_end)?,
-            day_start,
-            day_end,
-            meetings,
-        )
-    }
-
-    /// Yalnızca toplantılardan iş kaydı önerileri (takip edilen süre olmadan).
-    pub fn propose_meetings(
-        &self,
-        day_start: DateTime<Utc>,
-        day_end: DateTime<Utc>,
-        meetings: &[Meeting],
-    ) -> Result<Vec<TimesheetEntry>> {
-        self.propose_from(&[], day_start, day_end, meetings)
-    }
-
-    fn propose_from(
-        &self,
-        sessions: &[Session],
-        day_start: DateTime<Utc>,
-        day_end: DateTime<Utc>,
-        meetings: &[Meeting],
-    ) -> Result<Vec<TimesheetEntry>> {
+    /// Zaman çizelgesi hesabının ortak girdileri (ayarlar, sınıflandırma, toplantı atamaları).
+    pub fn timesheet_context(&self) -> Result<TimesheetContext> {
         let tags = self.tags()?;
-        let classifier = Classifier::new(&tags, &self.rules()?);
-        let names = tags
+        Ok(TimesheetContext {
+            classifier: Classifier::new(&tags, &self.rules()?),
+            names: tags
+                .into_iter()
+                .filter(|t| t.kind == TagKind::Project)
+                .map(|t| (t.id, t.name))
+                .collect(),
+            config: self.timesheet_config()?,
+            assigned: self.meeting_assignments()?,
+        })
+    }
+
+    /// `from`–`to` (yerel gün) arasında zaman çizelgesine giren süre: projesi belli takvim
+    /// toplantıları ve oturumlar ([`timesheet::pieces`]).
+    pub fn timesheet_pieces(
+        &self,
+        ctx: &TimesheetContext,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        meetings: &[Meeting],
+    ) -> Result<Vec<Piece>> {
+        let known: Vec<(Meeting, String)> = meetings
             .iter()
-            .filter(|t| t.kind == TagKind::Project)
-            .map(|t| (t.id.clone(), t.name.clone()))
+            .filter_map(
+                |m| match timesheet::meeting_project(m, &ctx.classifier, &ctx.assigned) {
+                    MeetingProject::Project(p) => Some((m.clone(), p)),
+                    _ => None,
+                },
+            )
             .collect();
-        let (meetings, _) = self.classify_meetings(meetings)?;
-        Ok(timesheet::propose(
-            sessions,
-            &meetings,
-            &classifier,
-            &names,
-            &self.timesheet_config()?,
-            day_start,
-            day_end,
+        let sessions = self.merged_sessions_between(from, to)?;
+        Ok(timesheet::pieces(
+            &sessions,
+            &known,
+            &ctx.classifier,
+            &ctx.config,
+            from,
+            to,
         ))
     }
 
-    /// `[from, to]` tarihleri (dahil) arasındaki onaylanmış kayıtlar, tarih ve saate göre.
+    /// Günün `sheet` çizelgesindeki satırları: kaydedilmiş satırlar (aktarılmışsa bu çizelgeye
+    /// aktarılanlar, değilse çizelgenin projelerininkiler) ve kaydedilmiş satırların aralıkları
+    /// düşülmüş canlı öneriler. `pieces` günün parçalarıdır ([`Self::timesheet_pieces`]).
+    pub fn timesheet_day(
+        &self,
+        ctx: &TimesheetContext,
+        sheet: &Timesheet,
+        date: NaiveDate,
+        pieces: &[Piece],
+    ) -> Result<DayRows> {
+        let saved = self.saved_rows(date, date)?;
+        let mut covered: HashMap<String, Vec<Interval>> = HashMap::new();
+        let mut legacy = Vec::new();
+        for s in &saved {
+            match &s.entry.coverage {
+                Some(_) => covered
+                    .entry(s.entry.project_id.clone())
+                    .or_default()
+                    .extend(s.entry.spans()),
+                None if sheet.includes(&s.entry.project_id) => legacy.push(s.entry.clone()),
+                None => {}
+            }
+        }
+        for spans in covered.values_mut() {
+            *spans = timesheet::coalesce(std::mem::take(spans));
+        }
+        let live = timesheet::without_legacy(
+            &timesheet::propose(pieces, &ctx.names, sheet, &covered),
+            &legacy,
+        );
+        let mut rows = Vec::new();
+        let mut hidden = 0;
+        for s in saved {
+            let routed = match (&s.exported_at, &s.timesheet_id) {
+                (Some(_), Some(t)) => *t == sheet.id,
+                _ => sheet.includes(&s.entry.project_id),
+            };
+            if !routed {
+                continue;
+            }
+            if s.dismissed {
+                hidden += 1;
+                continue;
+            }
+            let stale = if s.exported_at.is_none() {
+                timesheet::stale_hours(pieces, &s.entry)
+            } else {
+                None
+            };
+            rows.push(DayRow {
+                key: row_key(Some(&s.id), &s.entry),
+                id: Some(s.id),
+                exported: s.exported_at.is_some(),
+                stale,
+                entry: s.entry,
+            });
+        }
+        rows.extend(live.into_iter().map(|entry| DayRow {
+            key: row_key(None, &entry),
+            id: None,
+            exported: false,
+            stale: None,
+            entry,
+        }));
+        rows.sort_by(|a, b| {
+            a.entry
+                .start
+                .cmp(&b.entry.start)
+                .then(a.entry.division.cmp(&b.entry.division))
+        });
+        Ok(DayRows { rows, hidden })
+    }
+
+    /// `days` günlerinde (`day_starts`: yerel gün sınırları, `days.len() + 1` öğe) bütün zaman
+    /// çizelgelerinin satırları: kaydedilmiş ve canlı, gizlenenler hariç. Artık olmayan bir
+    /// çizelgeye aktarılmış satırlar da girer (gönderilmiş iş).
+    pub fn timesheet_rows(
+        &self,
+        days: &[NaiveDate],
+        day_starts: &[DateTime<Utc>],
+        meetings: &[Meeting],
+    ) -> Result<Vec<TimesheetEntry>> {
+        let ctx = self.timesheet_context()?;
+        let mut out = Vec::new();
+        for (date, bounds) in days.iter().zip(day_starts.windows(2)) {
+            let (from, to) = (bounds[0], bounds[1]);
+            if !ctx.config.timesheets.is_empty() {
+                let todays: Vec<Meeting> = meetings
+                    .iter()
+                    .filter(|m| m.start < to && m.end > from)
+                    .cloned()
+                    .collect();
+                let pieces = self.timesheet_pieces(&ctx, from, to, &todays)?;
+                for sheet in &ctx.config.timesheets {
+                    let day = self.timesheet_day(&ctx, sheet, *date, &pieces)?;
+                    out.extend(day.rows.into_iter().map(|r| r.entry));
+                }
+            }
+            out.extend(
+                self.saved_rows(*date, *date)?
+                    .into_iter()
+                    .filter(|s| {
+                        !s.dismissed
+                            && s.exported_at.is_some()
+                            && s.timesheet_id
+                                .as_deref()
+                                .is_some_and(|t| ctx.config.timesheet(t).is_none())
+                    })
+                    .map(|s| s.entry),
+            );
+        }
+        Ok(out)
+    }
+
+    /// `[from, to]` tarihleri (dahil) arasındaki kaydedilmiş, gizlenmemiş satırlar (bütün
+    /// çizelgeler), tarih ve saate göre.
     pub fn timesheet_entries(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<SavedEntry>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, date, start, hours, kind, details, party, project_id, division, exported_at,
-                    actual_hours
-             FROM timesheet_entries WHERE date >= ?1 AND date <= ?2 ORDER BY date, start",
-        )?;
-        let rows = stmt.query_map(params![from.to_string(), to.to_string()], |r| {
+        let mut rows = self.saved_rows(from, to)?;
+        rows.retain(|s| !s.dismissed);
+        Ok(rows)
+    }
+
+    /// Kaydedilmiş satır (gizlenmiş de olabilir).
+    pub fn timesheet_entry(&self, id: &str) -> Result<Option<SavedEntry>> {
+        Ok(self.query_entries("id = ?1", params![id])?.pop())
+    }
+
+    /// Gizlenenler dahil bütün satırlar.
+    fn saved_rows(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<SavedEntry>> {
+        self.query_entries(
+            "date >= ?1 AND date <= ?2",
+            params![from.to_string(), to.to_string()],
+        )
+    }
+
+    fn query_entries(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<SavedEntry>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM timesheet_entries WHERE {filter} ORDER BY date, start"
+        ))?;
+        let rows = stmt.query_map(args, |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, f64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, String>(7)?,
-                r.get::<_, String>(8)?,
-                r.get::<_, Option<i64>>(9)?,
-                r.get::<_, Option<f64>>(10)?,
+                (
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, f64>(3)?,
+                    r.get::<_, String>(4)?,
+                ),
+                (
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
+                    r.get::<_, String>(8)?,
+                ),
+                (
+                    r.get::<_, Option<i64>>(9)?,
+                    r.get::<_, Option<f64>>(10)?,
+                    r.get::<_, Option<String>>(11)?,
+                    r.get::<_, Option<String>>(12)?,
+                    r.get::<_, Option<i64>>(13)?,
+                ),
             ))
         })?;
         rows.map(|row| {
             let (
-                id,
-                date,
-                start,
-                hours,
-                kind,
-                details,
-                party,
-                project_id,
-                division,
-                exported,
-                actual,
+                (id, date, start, hours, kind),
+                (details, party, project_id, division),
+                (exported, actual, coverage, timesheet_id, dismissed),
             ) = row?;
             let bad = |what: &str| StoreError::Invalid(format!("zaman çizelgesi {what}: {id}"));
             Ok(SavedEntry {
@@ -241,101 +574,143 @@ impl Store {
                     party,
                     project_id,
                     division,
+                    coverage: coverage
+                        .map(|c| serde_json::from_str(&c))
+                        .transpose()
+                        .map_err(|_| bad("aralıkları"))?,
                 },
                 exported_at: exported.map(from_ms),
+                timesheet_id,
+                dismissed: dismissed.is_some(),
                 id,
             })
         })
         .collect()
     }
 
-    /// Günün aktarılmamış kayıtlarını verilenlerle değiştirir (onaylama, yeniden öneri).
-    /// Excel'e aktarılmış kayıtlara dokunulmaz ve aktarılan iş yeniden eklenmez
-    /// ([`timesheet::without_exported`]); yoksa bir sonraki aktarımda dosyaya iki kez yazılırdı.
-    pub fn replace_timesheet_day(&self, date: NaiveDate, entries: &[TimesheetEntry]) -> Result<()> {
-        let tx = self.savepoint()?;
-        self.conn.execute(
-            "DELETE FROM timesheet_entries WHERE date = ?1 AND exported_at IS NULL",
-            [date.to_string()],
-        )?;
-        let exported: Vec<TimesheetEntry> = self
-            .timesheet_entries(date, date)?
-            .into_iter()
-            .map(|e| e.entry)
-            .collect();
-        for e in timesheet::without_exported(entries, &exported) {
-            self.insert_entry(&Uuid::new_v4().to_string(), &e)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Kaydı ekler ya da (aynı kimlikle) günceller; aktarılmış kayıt değiştirilemez.
+    /// Satırı kaydeder. Kaydedilmiş satır güncellenir (aktarılmışsa değiştirilemez; aralıkları
+    /// değişmez). Yeni satır eklenir: canlı öneri aralıklarıyla, elle eklenen satır aralıksız.
+    /// Öneri ikinci kez kaydedilirse (arayüz eski listeyle) aynı satır güncellenir; aralıkları
+    /// başka bir satırla kesişiyorsa reddedilir (aynı iş iki kez yazılmasın).
     pub fn save_timesheet_entry(&self, id: Option<&str>, entry: &TimesheetEntry) -> Result<String> {
         if !(entry.hours > 0.0 && entry.hours <= 24.0) {
             return Err(StoreError::Invalid("saat 0 ile 24 arasında olmalı".into()));
         }
-        let id = id.map_or_else(|| Uuid::new_v4().to_string(), str::to_string);
-        let exported: Option<Option<i64>> = self
-            .conn
-            .query_row(
-                "SELECT exported_at FROM timesheet_entries WHERE id = ?1",
-                [&id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if matches!(exported, Some(Some(_))) {
-            return Err(StoreError::Invalid(
-                "Excel'e aktarılmış kayıt değiştirilemez".into(),
-            ));
-        }
-        self.conn
-            .execute("DELETE FROM timesheet_entries WHERE id = ?1", [&id])?;
-        self.insert_entry(&id, entry)?;
+        let tx = self.savepoint()?;
+        let existing = match id {
+            Some(id) => self.timesheet_entry(id)?,
+            None => None,
+        };
+        let id = match existing {
+            Some(saved) => {
+                if saved.exported_at.is_some() {
+                    return Err(StoreError::Invalid(
+                        "Aktarılmış kayıt değiştirilemez".into(),
+                    ));
+                }
+                self.update_entry(&saved.id, entry)?;
+                saved.id
+            }
+            None => {
+                let coverage = entry.coverage.clone().unwrap_or_default();
+                match self.claim_spans(entry, &coverage)? {
+                    Some(same) => {
+                        self.update_entry(&same, entry)?;
+                        same
+                    }
+                    None => {
+                        let id = id.map_or_else(|| Uuid::new_v4().to_string(), str::to_string);
+                        self.insert_entry(
+                            &id,
+                            &TimesheetEntry {
+                                coverage: Some(coverage),
+                                ..entry.clone()
+                            },
+                        )?;
+                        id
+                    }
+                }
+            }
+        };
+        tx.commit()?;
         Ok(id)
     }
 
-    /// Onaylı güne eklenen toplantı satırlarını değiştirir: `old` (toplantının önceki
-    /// atamasıyla eklenen satırlar) ile birebir aynı, aktarılmamış kayıtları siler ve `new`'u
-    /// ekler. Elle değiştirilen ya da aktarılmış satırlara dokunulmaz.
-    pub fn replace_meeting_entries(
-        &self,
-        date: NaiveDate,
-        old: &[TimesheetEntry],
-        new: &[TimesheetEntry],
-    ) -> Result<()> {
-        let tx = self.savepoint()?;
-        let mut saved: Vec<SavedEntry> = self
-            .timesheet_entries(date, date)?
-            .into_iter()
-            .filter(|s| s.exported_at.is_none())
-            .collect();
-        for entry in old {
-            let same = |s: &SavedEntry| {
-                let e = &s.entry;
-                e.date == entry.date
-                    && e.start.format("%H:%M").to_string()
-                        == entry.start.format("%H:%M").to_string()
-                    && e.hours == entry.hours
-                    && e.kind == entry.kind
-                    && e.project_id == entry.project_id
-                    && e.details == entry.details.trim()
-                    && e.division == entry.division.trim()
-                    && e.party == entry.party.trim()
-            };
-            if let Some(i) = saved.iter().position(same) {
-                let s = saved.remove(i);
-                self.conn
-                    .execute("DELETE FROM timesheet_entries WHERE id = ?1", [&s.id])?;
+    /// Takipten gelen satır kaydedilirken: aynı aralıklar zaten kaydedildiyse o satırın kimliği;
+    /// aralıklar başka bir satırınkilerle kesişiyorsa hata.
+    fn claim_spans(&self, entry: &TimesheetEntry, coverage: &[[i64; 2]]) -> Result<Option<String>> {
+        if coverage.is_empty() {
+            return Ok(None);
+        }
+        let spans = timesheet::from_coverage(coverage);
+        for s in self.saved_rows(entry.date, entry.date)? {
+            if s.entry.project_id != entry.project_id {
+                continue;
             }
+            let theirs = s.entry.spans();
+            if !overlaps(&spans, &theirs) {
+                continue;
+            }
+            if theirs == spans && s.exported_at.is_none() && !s.dismissed {
+                return Ok(Some(s.id));
+            }
+            return Err(StoreError::Invalid(
+                "Bu satırın işi zaten kaydedilmiş; sayfa yenilendi, tekrar dene.".into(),
+            ));
         }
-        for entry in new {
-            self.insert_entry(&Uuid::new_v4().to_string(), entry)?;
-        }
-        tx.commit()?;
-        Ok(())
+        Ok(None)
     }
 
+    /// Satırı gizler (siler): gösterilmez, aktarılmaz; aralıkları yeniden önerilmez. Canlı
+    /// öneri (`id` yok) gizlenmiş olarak kaydedilir. Satırın kimliğini döndürür.
+    pub fn dismiss_timesheet_entry(
+        &self,
+        id: Option<&str>,
+        entry: &TimesheetEntry,
+    ) -> Result<String> {
+        let tx = self.savepoint()?;
+        let id = match id {
+            Some(id) => id.to_string(),
+            None => self.save_timesheet_entry(None, entry)?,
+        };
+        let n = self.conn.execute(
+            "UPDATE timesheet_entries SET dismissed_at = ?2 WHERE id = ?1 AND exported_at IS NULL",
+            params![id, ms(Utc::now())],
+        )?;
+        if n == 0 {
+            return Err(StoreError::Invalid(
+                "Satır bulunamadı ya da aktarılmış; silinemez.".into(),
+            ));
+        }
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Gizlenen satırları geri getirir.
+    pub fn undismiss_timesheet_entries(&self, ids: &[String]) -> Result<()> {
+        let tx = self.savepoint()?;
+        for id in ids {
+            self.conn.execute(
+                "UPDATE timesheet_entries SET dismissed_at = NULL WHERE id = ?1",
+                [id],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// Günün `sheet` çizelgesinde gizlenen satırlarını geri getirir; kimliklerini döndürür.
+    pub fn restore_hidden(&self, sheet: &Timesheet, date: NaiveDate) -> Result<Vec<String>> {
+        let ids: Vec<String> = self
+            .saved_rows(date, date)?
+            .into_iter()
+            .filter(|s| s.dismissed && sheet.includes(&s.entry.project_id))
+            .map(|s| s.id)
+            .collect();
+        self.undismiss_timesheet_entries(&ids)?;
+        Ok(ids)
+    }
+
+    /// Satırı tamamen siler (aktarılmamışsa). Canlı öneriyi gizlemek bunu geri alır: öneri yeniden gelir.
     pub fn delete_timesheet_entry(&self, id: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM timesheet_entries WHERE id = ?1 AND exported_at IS NULL",
@@ -344,13 +719,129 @@ impl Store {
         Ok(())
     }
 
-    /// Excel'e aktarılan kayıtları işaretler.
-    pub fn mark_timesheet_exported(&self, ids: &[String], at: DateTime<Utc>) -> Result<()> {
+    /// Satırları birleştirir ([`timesheet::merge`]): kaydedilmiş satırlar (`Some(kimlik)`)
+    /// silinir, canlı öneriler (`None`) aralıklarıyla katılır, sonuç yeni satır olur. Yeni
+    /// satırın kimliği ve geri almak için silinen satırlar döner.
+    #[allow(clippy::type_complexity)]
+    pub fn merge_timesheet_entries(
+        &self,
+        rows: &[(Option<String>, TimesheetEntry)],
+    ) -> Result<(String, Vec<(String, TimesheetEntry)>)> {
+        let tx = self.savepoint()?;
+        let mut entries = Vec::with_capacity(rows.len());
+        let mut removed = Vec::new();
+        for (id, entry) in rows {
+            let Some(id) = id else {
+                entries.push(entry.clone());
+                continue;
+            };
+            let saved = self
+                .timesheet_entry(id)?
+                .filter(|s| !s.dismissed)
+                .ok_or_else(|| {
+                    StoreError::Invalid("Satır bulunamadı; sayfa yenilendi, tekrar dene.".into())
+                })?;
+            if saved.exported_at.is_some() {
+                return Err(StoreError::Invalid(
+                    "Aktarılmış satır birleştirilemez".into(),
+                ));
+            }
+            entries.push(saved.entry.clone());
+            removed.push((saved.id, saved.entry));
+        }
+        let merged = timesheet::merge(&entries).map_err(|e| StoreError::Invalid(e.to_string()))?;
+        for (id, _) in &removed {
+            self.conn
+                .execute("DELETE FROM timesheet_entries WHERE id = ?1", [id])?;
+        }
+        let coverage = merged.coverage.clone().unwrap_or_default();
+        if self.claim_spans(&merged, &coverage)?.is_some() {
+            return Err(StoreError::Invalid(
+                "Bu satırın işi zaten kaydedilmiş; sayfa yenilendi, tekrar dene.".into(),
+            ));
+        }
+        let id = Uuid::new_v4().to_string();
+        self.insert_entry(&id, &merged)?;
+        tx.commit()?;
+        Ok((id, removed))
+    }
+
+    /// Birleştirmeyi geri alır: birleşen satır silinir, önceki satırlar aynen geri gelir.
+    pub fn unmerge_timesheet_entries(
+        &self,
+        merged: &str,
+        removed: &[(String, TimesheetEntry)],
+    ) -> Result<()> {
+        let tx = self.savepoint()?;
+        let n = self.conn.execute(
+            "DELETE FROM timesheet_entries WHERE id = ?1 AND exported_at IS NULL",
+            [merged],
+        )?;
+        if n == 0 {
+            return Err(StoreError::Invalid(
+                "Birleşen satır aktarılmış ya da silinmiş; geri alınamaz.".into(),
+            ));
+        }
+        for (id, entry) in removed {
+            self.insert_entry(id, entry)?;
+        }
+        tx.commit()
+    }
+
+    /// Takipte değişen satırı günceller ([`timesheet::refreshed`]): aralıkları projede kalan
+    /// süreye iner; hiç süre kalmadıysa satır silinir (`false`). Aktarılmış, gizlenmiş, elle
+    /// eklenen ve eski satırlara dokunulmaz.
+    pub fn refresh_timesheet_entry(&self, id: &str, pieces: &[Piece]) -> Result<bool> {
+        let Some(saved) = self.timesheet_entry(id)? else {
+            return Ok(false);
+        };
+        if saved.exported_at.is_some() || saved.dismissed || saved.entry.spans().is_empty() {
+            return Ok(true);
+        }
+        match timesheet::refreshed(pieces, &saved.entry) {
+            Some(fresh) => {
+                self.update_entry(id, &fresh)?;
+                self.conn.execute(
+                    "UPDATE timesheet_entries SET coverage = ?2 WHERE id = ?1",
+                    params![id, coverage_json(&fresh)?],
+                )?;
+                Ok(true)
+            }
+            None => {
+                self.delete_timesheet_entry(id)?;
+                Ok(false)
+            }
+        }
+    }
+
+    /// "Yeniden öner": günün `sheet` çizelgesindeki aktarılmamış satırları (gizlenenler dahil)
+    /// siler; iş yeniden canlı öneri olur. Silinen satır sayısı.
+    pub fn reset_timesheet_day(&self, sheet: &Timesheet, date: NaiveDate) -> Result<usize> {
+        let tx = self.savepoint()?;
+        let mut n = 0;
+        for s in self.saved_rows(date, date)? {
+            if s.exported_at.is_none() && sheet.includes(&s.entry.project_id) {
+                n += self
+                    .conn
+                    .execute("DELETE FROM timesheet_entries WHERE id = ?1", [&s.id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Aktarılan kayıtları `sheet_id` çizelgesine aktarılmış işaretler.
+    pub fn mark_timesheet_exported(
+        &self,
+        ids: &[String],
+        at: DateTime<Utc>,
+        sheet_id: &str,
+    ) -> Result<()> {
         let tx = self.savepoint()?;
         for id in ids {
             self.conn.execute(
-                "UPDATE timesheet_entries SET exported_at = ?2 WHERE id = ?1",
-                params![id, ms(at)],
+                "UPDATE timesheet_entries SET exported_at = ?2, timesheet_id = ?3 WHERE id = ?1",
+                params![id, ms(at), sheet_id],
             )?;
         }
         tx.commit()?;
@@ -362,7 +853,7 @@ impl Store {
         let tx = self.savepoint()?;
         for id in ids {
             self.conn.execute(
-                "UPDATE timesheet_entries SET exported_at = NULL WHERE id = ?1",
+                "UPDATE timesheet_entries SET exported_at = NULL, timesheet_id = NULL WHERE id = ?1",
                 params![id],
             )?;
         }
@@ -370,12 +861,34 @@ impl Store {
         Ok(())
     }
 
+    /// Satırın düzenlenebilir alanlarını yazar (aralıkları, aktarım ve gizlenme durumu değişmez).
+    fn update_entry(&self, id: &str, e: &TimesheetEntry) -> Result<()> {
+        self.conn.execute(
+            "UPDATE timesheet_entries SET date = ?2, start = ?3, hours = ?4, kind = ?5,
+                details = ?6, party = ?7, project_id = ?8, division = ?9, actual_hours = ?10
+             WHERE id = ?1",
+            params![
+                id,
+                e.date.to_string(),
+                e.start.format("%H:%M").to_string(),
+                e.hours,
+                e.kind.label(),
+                e.details.trim(),
+                e.party.trim(),
+                e.project_id,
+                e.division.trim(),
+                e.actual_hours,
+            ],
+        )?;
+        Ok(())
+    }
+
     fn insert_entry(&self, id: &str, e: &TimesheetEntry) -> Result<()> {
         self.conn.execute(
             "INSERT INTO timesheet_entries
                 (id, date, start, hours, kind, details, party, project_id, division, created_at,
-                 actual_hours)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 actual_hours, coverage)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 id,
                 e.date.to_string(),
@@ -388,81 +901,543 @@ impl Store {
                 e.division.trim(),
                 ms(Utc::now()),
                 e.actual_hours,
+                coverage_json(e)?,
             ],
         )?;
         Ok(())
     }
 }
 
+/// Satırın aralıkları veritabanındaki biçimiyle (JSON; eski satırda `NULL`).
+fn coverage_json(e: &TimesheetEntry) -> Result<Option<String>> {
+    Ok(e.coverage.as_ref().map(serde_json::to_string).transpose()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classify::{Client, Tag};
+    use crate::model::Session;
+    use chrono::{Duration, Local, TimeZone};
 
-    fn meeting_row(project: &str, hours: f64) -> TimesheetEntry {
-        TimesheetEntry {
-            date: NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
-            start: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
-            hours,
-            actual_hours: Some(hours),
-            kind: EntryKind::Online,
-            details: "Haftalık toplantı".into(),
-            party: "Togg".into(),
-            project_id: project.into(),
-            division: project.into(),
+    /// 2026-03-02 (yerel) 09:00'dan `min` dakika sonra.
+    fn t(min: i64) -> DateTime<Utc> {
+        Local
+            .with_ymd_and_hms(2026, 3, 2, 9, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc)
+            + Duration::minutes(min)
+    }
+
+    fn day() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 3, 2).unwrap()
+    }
+
+    fn work(store: &Store, title: &str, from: i64, to: i64, project: Option<&str>) {
+        let s = Session {
+            id: Uuid::new_v4(),
+            app_id: "com.figma.Desktop".into(),
+            app_name: "Figma".into(),
+            title: title.into(),
+            url: None,
+            domain: None,
+            started_at: t(from),
+            ended_at: t(to),
+            category_id: None,
+            project_id: None,
+        };
+        store.upsert_session(&s).unwrap();
+        if let Some(p) = project {
+            store.set_project_between(t(from), t(to), Some(p)).unwrap();
         }
     }
 
-    #[test]
-    fn reassigning_a_meeting_replaces_its_rows() {
-        let store = Store::open_in_memory().unwrap();
-        let date = NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
-        let a = meeting_row("A", 1.0);
-        let b = meeting_row("B", 1.0);
-        // Onaylı gün: başka bir iş ve A'ya atanmış toplantı.
-        let mut other = meeting_row("A", 2.0);
-        other.start = NaiveTime::from_hms_opt(13, 0, 0).unwrap();
-        other.kind = EntryKind::Working;
-        store.replace_timesheet_day(date, &[other.clone()]).unwrap();
+    fn project(store: &Store, id: &str, name: &str) {
         store
-            .replace_meeting_entries(date, &[], std::slice::from_ref(&a))
+            .upsert_tag(
+                &Tag {
+                    id: id.into(),
+                    kind: TagKind::Project,
+                    name: name.into(),
+                    color: 1,
+                },
+                0,
+            )
             .unwrap();
+    }
 
-        // A → B: A'nın satırı gider, B'ninki gelir; başka iş kalır.
-        store
-            .replace_meeting_entries(date, std::slice::from_ref(&a), std::slice::from_ref(&b))
-            .unwrap();
-        let rows: Vec<TimesheetEntry> = store
-            .timesheet_entries(date, date)
-            .unwrap()
-            .into_iter()
-            .map(|s| s.entry)
-            .collect();
-        assert_eq!(rows, vec![b.clone(), other.clone()]);
+    fn sheet(id: &str, projects: &[&str]) -> Timesheet {
+        Timesheet {
+            id: id.into(),
+            company: id.into(),
+            default_party: "ADBA".into(),
+            sheet_url: Some("https://script.google.com/macros/s/x/exec".into()),
+            projects: projects
+                .iter()
+                .map(|p| ProjectMapping {
+                    project_id: (*p).into(),
+                    division: String::new(),
+                    party: None,
+                    default_details: None,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
 
-        // B → yoksay: toplantı satırı kalmaz.
-        store.replace_meeting_entries(date, &[b], &[]).unwrap();
-        let rows = store.timesheet_entries(date, date).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].entry, other);
+    /// Günün satırları: (kimlik var mı, başlangıç, gerçek dakika, açıklama).
+    fn rows(store: &Store, sheet: &Timesheet) -> (Vec<DayRow>, usize) {
+        let ctx = store.timesheet_context().unwrap();
+        let pieces = store.timesheet_pieces(&ctx, t(-540), t(900), &[]).unwrap();
+        let d = store.timesheet_day(&ctx, sheet, day(), &pieces).unwrap();
+        (d.rows, d.hidden)
+    }
+
+    fn short(rows: &[DayRow]) -> Vec<(bool, String, i64, String)> {
+        rows.iter()
+            .map(|r| {
+                (
+                    r.id.is_some(),
+                    r.entry.start.format("%H:%M").to_string(),
+                    (r.entry.worked() * 60.0).round() as i64,
+                    r.entry.details.clone(),
+                )
+            })
+            .collect()
     }
 
     #[test]
-    fn exported_and_edited_meeting_rows_are_kept() {
+    fn rows_are_live_until_touched_and_later_work_is_added() {
         let store = Store::open_in_memory().unwrap();
-        let date = NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
-        let a = meeting_row("A", 1.0);
-        store
-            .replace_meeting_entries(date, &[], std::slice::from_ref(&a))
+        project(&store, "togg", "Togg");
+        project(&store, "kum", "Kum");
+        work(&store, "Loyalty", 0, 60, Some("togg"));
+        work(&store, "Kum geliştirme", 60, 120, Some("kum"));
+        work(&store, "Rapor", 180, 240, Some("togg"));
+        let togg = sheet("togg", &["togg"]);
+
+        // Yalnızca Togg'un işi; hepsi canlı öneri.
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(
+            short(&r),
+            [
+                (false, "09:00".into(), 60, "Loyalty".into()),
+                (false, "12:00".into(), 60, "Rapor".into())
+            ]
+        );
+        // Açıklama düzenlenince satır kaydedilir; anahtarı değişmez.
+        let key = r[1].key.clone();
+        let id = store
+            .save_timesheet_entry(
+                None,
+                &TimesheetEntry {
+                    details: "Aylık rapor".into(),
+                    ..r[1].entry.clone()
+                },
+            )
             .unwrap();
-        let id = store.timesheet_entries(date, date).unwrap()[0].id.clone();
-        store.mark_timesheet_exported(&[id], Utc::now()).unwrap();
-        let edited = TimesheetEntry {
-            details: "Elle yazıldı".into(),
-            ..a.clone()
+        // Eski listeyle ikinci kez kaydedilirse aynı satır güncellenir.
+        let again = store
+            .save_timesheet_entry(
+                None,
+                &TimesheetEntry {
+                    details: "Aylık rapor v2".into(),
+                    ..r[1].entry.clone()
+                },
+            )
+            .unwrap();
+        assert_eq!(again, id);
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(r[1].id.as_deref(), Some(id.as_str()));
+        assert_eq!(r[1].key, key);
+        assert_eq!(r[1].entry.details, "Aylık rapor v2");
+
+        // Raporda sonradan Togg'a atanan iş yeni satır olur; kaydedilene dokunulmaz.
+        work(&store, "Toplantı notu", 250, 280, Some("togg"));
+        work(&store, "Analiz", -120, -60, Some("togg"));
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(
+            short(&r),
+            [
+                (false, "07:00".into(), 60, "Analiz".into()),
+                (false, "09:00".into(), 60, "Loyalty".into()),
+                (true, "12:00".into(), 60, "Aylık rapor v2".into()),
+                (false, "13:10".into(), 30, "Toplantı notu".into())
+            ]
+        );
+
+        // Kum'un çizelgesinde yalnızca Kum.
+        let (r, _) = rows(&store, &sheet("kisisel", &["kum"]));
+        assert_eq!(
+            short(&r),
+            [(false, "10:00".into(), 60, "Kum geliştirme".into())]
+        );
+    }
+
+    #[test]
+    fn dismissed_rows_stay_hidden_and_come_back() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        work(&store, "Loyalty", 0, 60, Some("togg"));
+        let togg = sheet("togg", &["togg"]);
+        let (r, _) = rows(&store, &togg);
+        let id = store.dismiss_timesheet_entry(None, &r[0].entry).unwrap();
+        let (r, hidden) = rows(&store, &togg);
+        assert!(r.is_empty());
+        assert_eq!(hidden, 1);
+        // Gizleme geri alınınca (silinince) öneri yeniden gelir.
+        store.delete_timesheet_entry(&id).unwrap();
+        assert_eq!(rows(&store, &togg).0.len(), 1);
+        // Kaydedilmiş satır gizlenip geri getirilir.
+        let (r, _) = rows(&store, &togg);
+        let id = store.save_timesheet_entry(None, &r[0].entry).unwrap();
+        store
+            .dismiss_timesheet_entry(Some(&id), &r[0].entry)
+            .unwrap();
+        assert_eq!(rows(&store, &togg).1, 1);
+        assert_eq!(
+            store.restore_hidden(&togg, day()).unwrap(),
+            vec![id.clone()]
+        );
+        let (r, hidden) = rows(&store, &togg);
+        assert_eq!((r.len(), hidden), (1, 0));
+        assert_eq!(r[0].id.as_deref(), Some(id.as_str()));
+        // Gizlenen satır başka yerde (öneri modeli, müşteri raporu) sayılmaz.
+        store
+            .dismiss_timesheet_entry(Some(&id), &r[0].entry)
+            .unwrap();
+        assert!(store.timesheet_entries(day(), day()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn merging_live_and_saved_rows_and_undoing_it() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        work(&store, "Loyalty", 0, 20, Some("togg"));
+        work(&store, "Rapor", 60, 70, Some("togg"));
+        work(&store, "Loyalty", 120, 140, Some("togg"));
+        let togg = sheet("togg", &["togg"]);
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(r.len(), 3);
+        // Ortadaki düzenlendi (kaydedildi), diğer ikisi canlı.
+        let saved = TimesheetEntry {
+            details: "Haftalık rapor".into(),
+            ..r[1].entry.clone()
         };
-        store.save_timesheet_entry(None, &edited).unwrap();
-        store.replace_meeting_entries(date, &[a], &[]).unwrap();
-        assert_eq!(store.timesheet_entries(date, date).unwrap().len(), 2);
+        let mid = store.save_timesheet_entry(None, &saved).unwrap();
+        let input: Vec<(Option<String>, TimesheetEntry)> = vec![
+            (None, r[0].entry.clone()),
+            (Some(mid.clone()), r[1].entry.clone()),
+            (None, r[2].entry.clone()),
+        ];
+        let (merged, removed) = store.merge_timesheet_entries(&input).unwrap();
+        let (r2, _) = rows(&store, &togg);
+        assert_eq!(
+            short(&r2),
+            [(true, "09:00".into(), 50, "Loyalty; Haftalık rapor".into())]
+        );
+        assert_eq!(r2[0].entry.hours, 0.75);
+        assert_eq!(r2[0].key, r[0].key);
+        assert_eq!(removed, vec![(mid.clone(), saved.clone())]);
+        // Geri al: kaydedilmiş satır aynen, canlılar canlı.
+        store.unmerge_timesheet_entries(&merged, &removed).unwrap();
+        let (r3, _) = rows(&store, &togg);
+        assert_eq!(
+            short(&r3),
+            [
+                (false, "09:00".into(), 20, "Loyalty".into()),
+                (true, "10:00".into(), 10, "Haftalık rapor".into()),
+                (false, "11:00".into(), 20, "Loyalty".into())
+            ]
+        );
+        assert!(store.unmerge_timesheet_entries(&merged, &removed).is_err());
+    }
+
+    #[test]
+    fn work_moved_to_another_project_marks_the_row_stale() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        project(&store, "kum", "Kum");
+        work(&store, "Loyalty", 0, 60, Some("togg"));
+        let togg = sheet("togg", &["togg"]);
+        let (r, _) = rows(&store, &togg);
+        let id = store
+            .save_timesheet_entry(
+                None,
+                &TimesheetEntry {
+                    details: "Loyalty ekranları".into(),
+                    ..r[0].entry.clone()
+                },
+            )
+            .unwrap();
+        assert_eq!(rows(&store, &togg).0[0].stale, None);
+        // İlk yarım saat raporda Kum'a alındı.
+        store.set_project_between(t(0), t(30), Some("kum")).unwrap();
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(r.len(), 1, "Kum'un işi Togg'a önerilmez");
+        assert_eq!(r[0].stale, Some(0.5));
+        let ctx = store.timesheet_context().unwrap();
+        let pieces = store.timesheet_pieces(&ctx, t(-540), t(900), &[]).unwrap();
+        assert!(store.refresh_timesheet_entry(&id, &pieces).unwrap());
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(
+            short(&r),
+            [(true, "09:30".into(), 30, "Loyalty ekranları".into())]
+        );
+        assert_eq!(r[0].stale, None);
+        // Kalanı da gidince güncelleme satırı siler.
+        store
+            .set_project_between(t(30), t(60), Some("kum"))
+            .unwrap();
+        let pieces = store.timesheet_pieces(&ctx, t(-540), t(900), &[]).unwrap();
+        assert!(!store.refresh_timesheet_entry(&id, &pieces).unwrap());
+        assert!(rows(&store, &togg).0.is_empty());
+    }
+
+    #[test]
+    fn exported_rows_stay_with_their_sheet_and_cannot_change() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        work(&store, "Loyalty", 0, 60, Some("togg"));
+        let togg = sheet("togg", &["togg"]);
+        let (r, _) = rows(&store, &togg);
+        let id = store.save_timesheet_entry(None, &r[0].entry).unwrap();
+        store
+            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &togg.id)
+            .unwrap();
+        assert!(store.save_timesheet_entry(Some(&id), &r[0].entry).is_err());
+        assert!(
+            store
+                .dismiss_timesheet_entry(Some(&id), &r[0].entry)
+                .is_err()
+        );
+        assert_eq!(store.reset_timesheet_day(&togg, day()).unwrap(), 0);
+        // Proje başka çizelgeye taşınsa da aktarılan satır gittiği çizelgede görünür.
+        let (r, _) = rows(&store, &togg);
+        assert!(r[0].exported);
+        assert!(rows(&store, &sheet("yeni", &["togg"])).0.is_empty());
+        // Aktarılan iş yeniden önerilmez; birleştirilemez.
+        assert_eq!(r.len(), 1);
+        assert!(
+            store
+                .merge_timesheet_entries(&vec![(Some(id.clone()), r[0].entry.clone()); 2])
+                .is_err()
+        );
+        // Aktarım geri alınınca satır yeniden düzenlenebilir.
+        store
+            .unmark_timesheet_exported(std::slice::from_ref(&id))
+            .unwrap();
+        assert!(store.save_timesheet_entry(Some(&id), &r[0].entry).is_ok());
+    }
+
+    #[test]
+    fn manual_rows_and_reset() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        work(&store, "Loyalty", 0, 60, Some("togg"));
+        let togg = sheet("togg", &["togg"]);
+        let manual = TimesheetEntry {
+            date: day(),
+            start: NaiveTime::from_hms_opt(14, 0, 0).unwrap(),
+            hours: 1.0,
+            actual_hours: None,
+            kind: EntryKind::F2F,
+            details: "Atölye".into(),
+            party: "ADBA".into(),
+            project_id: "togg".into(),
+            division: "Togg".into(),
+            coverage: None,
+        };
+        let id = store.save_timesheet_entry(None, &manual).unwrap();
+        // Elle eklenen satır aralıksızdır: takipteki işi düşmez.
+        assert_eq!(
+            store.timesheet_entry(&id).unwrap().unwrap().entry.coverage,
+            Some(Vec::new())
+        );
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(r.len(), 2);
+        let (live, _) = rows(&store, &togg);
+        store
+            .save_timesheet_entry(
+                None,
+                &TimesheetEntry {
+                    details: "x".into(),
+                    ..live[0].entry.clone()
+                },
+            )
+            .unwrap();
+        // Yeniden öner: düzenlemeler ve elle eklenenler gider, iş yeniden öneri olur.
+        assert_eq!(store.reset_timesheet_day(&togg, day()).unwrap(), 2);
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(short(&r), [(false, "09:00".into(), 60, "Loyalty".into())]);
+        assert!(
+            store
+                .save_timesheet_entry(
+                    None,
+                    &TimesheetEntry {
+                        hours: 0.0,
+                        ..manual
+                    }
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn legacy_rows_are_still_subtracted_by_hours() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        work(&store, "Loyalty", 0, 60, Some("togg"));
+        work(&store, "Rapor", 120, 150, Some("togg"));
+        let togg = sheet("togg", &["togg"]);
+        // Önceki sürümde onaylanıp aktarılmış bir saatlik satır (aralığı yok).
+        let (r, _) = rows(&store, &togg);
+        let old = TimesheetEntry {
+            coverage: None,
+            ..r[0].entry.clone()
+        };
+        store.insert_entry("eski", &old).unwrap();
+        store
+            .mark_timesheet_exported(&["eski".into()], Utc::now(), &togg.id)
+            .unwrap();
+        let (r, _) = rows(&store, &togg);
+        assert_eq!(
+            short(&r),
+            [
+                (true, "09:00".into(), 60, "Loyalty".into()),
+                (false, "11:00".into(), 30, "Rapor".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn single_timesheet_moves_to_its_company() {
+        let store = Store::open_in_memory().unwrap();
+        // Şablondan gelen birim projeleri silinmiş; iş "Togg" projesinde, birim satırda seçiliyor.
+        project(&store, "togg", "Togg");
+        project(&store, "kum", "tracky");
+        project(&store, "sync", "Int.Work.Sync.");
+        store.delete_tag("sync").unwrap();
+        let adba = Client {
+            id: "adba".into(),
+            name: "ADBA".into(),
+        };
+        store.upsert_client(&adba, 0).unwrap();
+        store.set_project_client("togg", Some("adba")).unwrap();
+        store
+            .save_setting(
+                TIMESHEET_KEY,
+                &serde_json::json!({
+                    "company": "Togg",
+                    "consultant": "Kaan",
+                    "filePath": "/tmp/sablon.xlsx",
+                    "sheetUrl": "https://script.google.com/macros/s/x/exec",
+                    "sheetLink": null,
+                    "sheetToken": "anahtar",
+                    "defaultParty": "ADBA",
+                    "projects": [
+                        {"projectId": "sync", "division": "Int.Work.Sync.", "party": null},
+                        {"projectId": "yok", "division": "Trumore", "party": null}
+                    ],
+                    "meetingApps": ["us.zoom.xos"],
+                    "dayHours": 7.5
+                }),
+            )
+            .unwrap();
+        let row = |project: &str, division: &str| TimesheetEntry {
+            date: day(),
+            start: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            hours: 1.0,
+            actual_hours: Some(1.0),
+            kind: EntryKind::Online,
+            details: "Toplantı".into(),
+            party: "ADBA".into(),
+            project_id: project.into(),
+            division: division.into(),
+            coverage: None,
+        };
+        store
+            .insert_entry("a", &row("sync", "Int.Work.Sync."))
+            .unwrap();
+        store.insert_entry("b", &row("kum-eski", "tracky")).unwrap();
+        store.insert_entry("c", &row("togg", "Togg")).unwrap();
+        store
+            .mark_timesheet_exported(&["a".into(), "b".into()], Utc::now(), "")
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE timesheet_entries SET timesheet_id = NULL", [])
+            .unwrap();
+
+        store.migrate_timesheets().unwrap();
+        let config = store.timesheet_config().unwrap();
+        assert_eq!(
+            (
+                config.sheet_token.as_str(),
+                config.day_hours,
+                config.meeting_apps.len()
+            ),
+            ("anahtar", 7.5, 1)
+        );
+        let [togg] = &config.timesheets[..] else {
+            panic!("tek çizelge: {config:?}");
+        };
+        assert_eq!(togg.id, first_timesheet_id());
+        assert_eq!(
+            (
+                togg.company.as_str(),
+                togg.consultant.as_str(),
+                togg.sheet_url.is_some()
+            ),
+            ("Togg", "Kaan", true)
+        );
+        // Yalnızca Togg projesi; kişisel proje (tracky) girmez.
+        let projects: Vec<&str> = togg
+            .projects
+            .iter()
+            .map(|m| m.project_id.as_str())
+            .collect();
+        assert_eq!(projects, ["togg"]);
+        assert_eq!(togg.divisions, ["Int.Work.Sync.", "Trumore"]);
+        let saved = store.timesheet_entries(day(), day()).unwrap();
+        let by_id = |id: &str| saved.iter().find(|s| s.id == id).unwrap();
+        // Silinmiş birim projesine dönmüş satır Togg'a bağlanır; birimi korunur.
+        assert_eq!(
+            (
+                by_id("a").entry.project_id.as_str(),
+                by_id("a").entry.division.as_str()
+            ),
+            ("togg", "Int.Work.Sync.")
+        );
+        assert_eq!(by_id("a").timesheet_id.as_deref(), Some(togg.id.as_str()));
+        // Togg'a gitmiş başka projenin satırı orada görünmeye devam eder, projesi değişmez.
+        assert_eq!(by_id("b").entry.project_id, "kum-eski");
+        assert_eq!(by_id("b").timesheet_id.as_deref(), Some(togg.id.as_str()));
+        assert_eq!(by_id("c").timesheet_id, None);
+
+        // Bir kez çalışır.
+        store.migrate_timesheets().unwrap();
+        assert_eq!(store.timesheet_config().unwrap(), config);
+    }
+
+    #[test]
+    fn nothing_to_move_without_a_timesheet() {
+        let store = Store::open_in_memory().unwrap();
+        store.migrate_timesheets().unwrap();
+        assert!(
+            store
+                .setting::<serde_json::Value>(TIMESHEET_KEY)
+                .unwrap()
+                .is_none()
+        );
+        store
+            .save_setting(TIMESHEET_KEY, &serde_json::json!({ "dayHours": 6 }))
+            .unwrap();
+        store.migrate_timesheets().unwrap();
+        let config = store.timesheet_config().unwrap();
+        assert!(config.timesheets.is_empty());
+        assert_eq!(config.day_hours, 6.0);
+        assert!(!config.meeting_apps.is_empty());
     }
 
     #[test]

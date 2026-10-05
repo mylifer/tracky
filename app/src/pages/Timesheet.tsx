@@ -6,11 +6,12 @@ import {
   ChevronRight,
   CircleCheck,
   ClipboardCheck,
+  Combine,
   Copy,
   FileSpreadsheet,
+  FolderKanban,
   Loader2,
-  Plus,
-  RefreshCw,
+  RotateCcw,
   Settings2,
   Sheet,
   Sparkles,
@@ -26,7 +27,9 @@ import {
   type EntryKind,
   type EntryView,
   type Exported,
+  type RowRef,
   type Tag,
+  type Timesheet as TimesheetInfo,
   type TimesheetConfig,
   type TimesheetDay,
   type TimesheetEntry,
@@ -56,7 +59,18 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { friendlyError, notifyChanged, toast, useChanged } from "../lib/feedback";
-import { closeReport, copyDetails, UNASSIGNED_MIN, hoursDiff, needsDetails, type CloseReport } from "../lib/timesheet";
+import {
+  blocked,
+  closeReport,
+  copyDetails,
+  UNASSIGNED_MIN,
+  hoursDiff,
+  isStale,
+  mergeProblem,
+  needsDetails,
+  started,
+  type CloseReport,
+} from "../lib/timesheet";
 
 const KINDS: EntryKind[] = ["Working", "Online", "F2F"];
 const dayFmt = new Intl.DateTimeFormat("tr-TR", { weekday: "short", day: "numeric", month: "short" });
@@ -67,6 +81,10 @@ const timeFmt = new Intl.DateTimeFormat("tr-TR", { hour: "2-digit", minute: "2-d
 const WARN_BADGE = "border-amber-500/40 text-amber-700 dark:text-amber-400";
 /** Dönem denetimindeki düzeltme bağlantıları. */
 const FIX_LINK = "rounded text-muted-foreground underline-offset-2 hover:text-foreground hover:underline";
+/** Satır ızgarası: seçim, başlangıç, saat, tür, açıklama, taraf, birim, sil. */
+const ROW_GRID = "grid-cols-[20px_104px_128px_96px_minmax(160px,1fr)_96px_minmax(110px,180px)_28px]";
+/** Satır düzenlenirken kaydedilen alanlar (yeniden yüklemede yazılanın üzerine yazılmaz). */
+const EDITABLE = ["start", "hours", "kind", "details", "party", "division"] as const;
 
 /** Takvimde "yoksay" seçeneğinin değeri. */
 const IGNORE = "__yoksay__";
@@ -85,6 +103,8 @@ const MODES: { id: Mode; label: string; current: string; close: string }[] = [
   { id: "month", label: "Ay", current: "Bu ay", close: "Ayı kapat" },
 ];
 const MODE_KEY = "kum.timesheet.mode";
+/** Son açılan zaman çizelgesi (birden çok firma varsa). */
+const SHEET_KEY = "kum.timesheet.sheet";
 const longDate = new Intl.DateTimeFormat("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
 function savedMode(): Mode {
@@ -95,6 +115,14 @@ function savedMode(): Mode {
     // Depolama kapalıysa varsayılan.
   }
   return "week";
+}
+
+function savedSheet(): string | null {
+  try {
+    return localStorage.getItem(SHEET_KEY);
+  } catch {
+    return null;
+  }
 }
 
 /** Görünümün ilk günü ve gün sayısı; `anchor` görünümdeki herhangi bir gün. */
@@ -132,11 +160,19 @@ function signedHours(diff: number) {
   return `${diff > 0 ? "+" : "−"}${num.format(Math.abs(diff))} sa`;
 }
 
-/** Kaydedilecek satır: görünümün kimlik ve aktarım alanları atılır. */
-function entryOf(e: EntryView): TimesheetEntry {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { id, exported, ...entry } = e;
-  return entry;
+function toRef(e: EntryView): RowRef {
+  return { id: e.id, entry: e };
+}
+
+/** Projenin adı; çizelgenin eşlemesindeki birim değil, Kum'daki proje. */
+function projectName(projects: Tag[], id: string) {
+  return projects.find((p) => p.id === id)?.name;
+}
+
+/** Projenin satırlarına yazılan birim: eşlemedeki birim, yoksa proje adı. */
+function defaultDivision(sheet: TimesheetInfo, projects: Tag[], projectId: string) {
+  const m = sheet.projects.find((x) => x.projectId === projectId);
+  return m?.division.trim() || projectName(projects, projectId) || "";
 }
 
 /** Gün kartını ortaya getirir; `focusEmpty` ise ilk boş açıklamaya odaklanır. */
@@ -152,70 +188,68 @@ function showDay(date: string, focusEmpty = false) {
 /** Açıklama kopyalarken geriye bakılan gün sayısı (hafta sonu ve izin günlerini aşsın). */
 const COPY_LOOKBACK = 7;
 
+type Saved = { before: EntryView; id: string };
+
 /**
- * Önceki günlerin aynı projedeki açıklamalarını günün boş açıklamalı satırlarına yazar
- * ([copyDetails]). Öneriler düzenlenemediği için onaylanmamış gün önce onaylanır (yalnızca
- * kopyalanacak açıklama varsa). Bildirimden geri alınır.
+ * Kaydedilen satırları geri alır: önceden canlı olan satır silinir (yeniden takipten gelir),
+ * kaydedilmiş satır önceki haline döner.
  */
-async function copyPreviousDetails(date: string) {
+function undoSaves(saved: Saved[]) {
+  Promise.all(
+    saved.map(({ before, id }) =>
+      before.id ? api.saveTimesheetEntry(before.id, before) : api.deleteTimesheetEntry(id),
+    ),
+  ).then(notifyChanged, (e) => toast(friendlyError(e), { tone: "error" }));
+}
+
+/**
+ * Satırlara açıklama yazar (canlı satır kaydedilir); yazılanlar için "Geri al"lı bildirim.
+ * Yarıda hata olursa o ana kadar yazılanlar kalır ve yine geri alınabilir.
+ */
+async function writeDetails(changes: { entry: EntryView; details: string }[], message: (n: number) => string) {
+  const saved: Saved[] = [];
+  try {
+    for (const c of changes)
+      saved.push({ before: c.entry, id: await api.saveTimesheetEntry(c.entry.id, { ...c.entry, details: c.details }) });
+  } finally {
+    if (saved.length > 0)
+      toast(message(saved.length), { tone: "success", action: { label: "Geri al", run: () => undoSaves(saved) } });
+  }
+}
+
+/** Önceki günlerin aynı projedeki açıklamalarını günün boş açıklamalı satırlarına yazar ([copyDetails]). */
+async function copyPreviousDetails(sheetId: string, date: string) {
   const [[day], prior] = await Promise.all([
-    api.timesheetDays(date, 1),
-    api.timesheetDays(isoDate(addDays(parseIsoDate(date), -COPY_LOOKBACK)), COPY_LOOKBACK),
+    api.timesheetDays(sheetId, date, 1),
+    api.timesheetDays(sheetId, isoDate(addDays(parseIsoDate(date), -COPY_LOOKBACK)), COPY_LOOKBACK),
   ]);
   prior.reverse();
-  // Önerilerin kimliği yok; onaylamadan önce kopyalanacak bir şey var mı diye geçici kimlikle bak.
-  const probe = day.entries.map((e, i) => ({ ...e, id: e.id ?? `oneri-${i}` }));
-  if (copyDetails(probe, prior).length === 0) {
+  const changes = copyDetails(day.entries, prior);
+  if (changes.length === 0) {
     toast("Önceki günlerde bu projelere yazılmış açıklama yok");
     return;
   }
-  let entries = day.entries;
-  if (!day.approved) {
-    await api.approveTimesheetDay(date);
-    entries = (await api.timesheetDays(date, 1))[0].entries;
-  }
-  const changes = copyDetails(entries, prior);
-  for (const c of changes) await api.saveTimesheetEntry(c.entry.id, { ...entryOf(c.entry), details: c.details });
-  detailsToast(changes, `${changes.length} satıra önceki günlerden açıklama yazıldı`);
-}
-
-/** Açıklaması değişen satırlar için "Geri al"lı bildirim; geri alma satırların önceki halini yazar. */
-function detailsToast(changes: { entry: EntryView }[], message: string) {
-  toast(message, {
-    tone: "success",
-    action: {
-      label: "Geri al",
-      run: () =>
-        Promise.all(changes.map((c) => api.saveTimesheetEntry(c.entry.id, entryOf(c.entry)))).then(notifyChanged, (e) =>
-          toast(friendlyError(e), { tone: "error" }),
-        ),
-    },
-  });
+  await writeDetails(changes, (n) => `${n} satıra önceki günlerden açıklama yazıldı`);
 }
 
 /**
  * Günlerin açıklamalarını yapay zekâyla (Claude) yazar: gün başına bir istek, sırayla. Varsayılan
  * olarak yalnızca boş ya da otomatik gelen (başlıklardan, hazır açıklamadan) açıklamalar yazılır,
- * elle yazılana dokunulmaz; `rewrite` ise günün aktarılmamış bütün satırları. Onaylanmamış gün önce
- * onaylanır (öneriler düzenlenemez). Yazılanlar hemen kaydedilir, bildirimden hepsi birden geri
- * alınır. Bir gün hata verirse sonraki günlere geçilmez; o ana kadar yazılanlar kalır.
+ * elle yazılana dokunulmaz; `rewrite` ise günün aktarılmamış bütün satırları. Yazılanlar hemen
+ * kaydedilir, bildirimden hepsi birden geri alınır. Bir gün hata verirse sonraki günlere
+ * geçilmez; o ana kadar yazılanlar kalır.
  */
-async function aiWriteDays(dates: string[], rewrite: boolean, onProgress?: (done: number) => void) {
-  const changes: { entry: EntryView; details: string }[] = [];
+async function aiWriteDays(sheetId: string, dates: string[], rewrite: boolean, onProgress?: (done: number) => void) {
+  const saved: Saved[] = [];
   let failure: unknown = null;
   for (const [i, date] of dates.entries()) {
     try {
-      let [day] = await api.timesheetDays(date, 1);
+      const [day] = await api.timesheetDays(sheetId, date, 1);
       if (!day.entries.some((e) => !e.exported)) continue;
-      if (!day.approved) {
-        await api.approveTimesheetDay(date);
-        [day] = await api.timesheetDays(date, 1);
-      }
-      for (const w of await api.aiWriteDetails(date, rewrite)) {
-        const entry = day.entries.find((e) => e.id === w.id);
+      for (const w of await api.aiWriteDetails(sheetId, date, rewrite)) {
+        const entry = day.entries.find((e) => e.key === w.key);
         if (!entry || entry.details === w.details) continue;
-        await api.saveTimesheetEntry(w.id, { ...entryOf(entry), details: w.details });
-        changes.push({ entry, details: w.details });
+        saved.push({ before: entry, id: await api.saveTimesheetEntry(entry.id, { ...entry, details: w.details }) });
       }
     } catch (e) {
       failure = e;
@@ -224,14 +258,70 @@ async function aiWriteDays(dates: string[], rewrite: boolean, onProgress?: (done
       onProgress?.(i + 1);
     }
   }
-  if (changes.length > 0) detailsToast(changes, `${changes.length} satıra yapay zekâyla açıklama yazıldı`);
+  if (saved.length > 0)
+    toast(`${saved.length} satıra yapay zekâyla açıklama yazıldı`, {
+      tone: "success",
+      action: { label: "Geri al", run: () => undoSaves(saved) },
+    });
   else if (!failure) toast("Yazılacak açıklama yok: boş ya da otomatik açıklamalı, aktarılmamış satır kalmadı");
   if (failure) throw failure;
 }
 
+/** Satırları gizler (siler); bildirimden geri alınır. */
+async function dismissRows(rows: EntryView[]) {
+  const done: { row: EntryView; id: string }[] = [];
+  try {
+    for (const row of rows) done.push({ row, id: await api.dismissTimesheetEntry(row.id, row) });
+  } finally {
+    if (done.length > 0)
+      toast(done.length === 1 ? "Satır silindi" : `${done.length} satır silindi`, {
+        action: {
+          label: "Geri al",
+          run: () => {
+            const saved = done.filter((d) => d.row.id).map((d) => d.id);
+            // Canlı satır gizlenince kaydedilmişti: silinince yeniden takipten gelir.
+            const live = done.filter((d) => !d.row.id).map((d) => d.id);
+            Promise.all([
+              saved.length ? api.undismissTimesheetEntries(saved) : null,
+              ...live.map((id) => api.deleteTimesheetEntry(id)),
+            ]).then(notifyChanged, (e) => toast(friendlyError(e), { tone: "error" }));
+          },
+        },
+      });
+  }
+}
+
+/** Satırları birleştirir; bildirimden geri alınır. */
+async function mergeRows(rows: EntryView[]) {
+  const merged = await api.mergeTimesheetEntries(rows.map(toRef));
+  toast(`${rows.length} satır birleştirildi`, {
+    tone: "success",
+    action: {
+      label: "Geri al",
+      run: () =>
+        api
+          .unmergeTimesheetEntries(merged.id, merged.removed)
+          .then(notifyChanged, (e) => toast(friendlyError(e), { tone: "error" })),
+    },
+  });
+}
+
+/** Takipte değişen satırları günceller (projede işi kalmayan satır silinir). */
+async function refreshRows(ids: string[]) {
+  const removed = await api.refreshTimesheetEntries(ids);
+  const updated = ids.length - removed;
+  toast(
+    [updated ? `${updated} satır güncellendi` : "", removed ? `${removed} satırın projede işi kalmadı, silindi` : ""]
+      .filter(Boolean)
+      .join("; "),
+    { tone: "success" },
+  );
+}
+
 /**
- * Zaman çizelgesi: haftanın günleri için projeye atanmış süreden önerilen iş kayıtları.
- * Gün onaylanınca satırlar düzenlenebilir; onaylı ve aktarılmamış satırlar Excel dosyasına eklenir.
+ * Zaman çizelgesi: seçili firmanın çizelgesine bağlı projelere atanan süreden iş kayıtları.
+ * Raporda projeye atanan süre burada hemen satır olur; düzenlenen satır kaydedilir, sonradan
+ * atanan iş yeni satır olarak eklenir. Satırlar seçilip birleştirilir ya da gönderilir.
  */
 export default function Timesheet({
   onOpenDay,
@@ -241,7 +331,7 @@ export default function Timesheet({
   onOpenDay: (iso: string) => void;
   /** Günün projeye atanmamış süresini Gözden geçir'de aç. */
   onReviewDay: (iso: string) => void;
-  /** Ayarlar'ı bu bölümle aç (Bağlantılar ya da Zaman çizelgesi). */
+  /** Ayarlar'ı bu bölümle aç (Bağlantılar ya da Zaman çizelgeleri). */
   onOpenSettings: (section: string) => void;
 }) {
   const [mode, setModeState] = useState<Mode>(savedMode);
@@ -255,13 +345,23 @@ export default function Timesheet({
       // Hatırlanmasa da olur.
     }
   };
+  const [sheetId, setSheetIdState] = useState<string | null>(savedSheet);
+  const setSheetId = (id: string) => {
+    setSheetIdState(id);
+    try {
+      localStorage.setItem(SHEET_KEY, id);
+    } catch {
+      // Hatırlanmasa da olur.
+    }
+  };
   const { start: rangeStart, days: rangeDays } = range(mode, parseIsoDate(anchor));
   const start = isoDate(rangeStart);
   const [config, setConfig] = useState<TimesheetConfig | null>(null);
+  const sheet = config?.timesheets.find((t) => t.id === sheetId) ?? config?.timesheets[0];
   const [days, setDays] = useState<TimesheetDay[]>([]);
-  // Ekrandaki günlerin aralığı: yeni aralık yüklenene kadar aktarma/onay eski satırlarla çalışmasın.
+  // Ekrandaki günlerin çizelgesi ve aralığı: yeni günler yüklenene kadar gönderme eski satırlarla çalışmasın.
   const [daysOf, setDaysOf] = useState("");
-  const fresh = daysOf === `${start}/${rangeDays}`;
+  const fresh = !!sheet && daysOf === `${sheet.id}/${start}/${rangeDays}`;
   const [details, setDetails] = useState<string[]>([]);
   const [projects, setProjects] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -273,13 +373,15 @@ export default function Timesheet({
     setNotice(exportNotice(r));
     setUndoable(true);
   };
-  // Aktarım sürerken düğme kilitli: çift tıklama aynı satırları dosyaya iki kez yazmasın.
+  // Gönderim sürerken düğmeler kilitli: çift tıklama aynı satırları dosyaya iki kez yazmasın.
   const [exporting, setExporting] = useState(false);
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   // Dönemi kapatma denetimi açık.
   const [closing, setClosing] = useState(false);
   // Yapay zekâyla yazma açık ve anahtar girilmiş (Ayarlar → Yapay zekâ).
   const [ai, setAi] = useState(false);
+  // Seçili satırlar (anahtarlarıyla): birleştir, gönder, sil.
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     api.aiSettings().then(
       (s) => setAi(s.enabled && s.hasKey),
@@ -292,23 +394,24 @@ export default function Timesheet({
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
     try {
-      const [c, d, det, tax] = await Promise.all([
-        api.timesheetConfig(),
-        api.timesheetDays(start, rangeDays),
+      const c = await api.timesheetConfig();
+      const t = c.timesheets.find((x) => x.id === sheetId) ?? c.timesheets[0];
+      const [d, det, tax] = await Promise.all([
+        t ? api.timesheetDays(t.id, start, rangeDays) : Promise.resolve<TimesheetDay[]>([]),
         api.timesheetDetails(),
         api.taxonomy(),
       ]);
       if (seq !== loadSeq.current) return;
       setConfig(c);
       setDays(d);
-      setDaysOf(`${start}/${rangeDays}`);
+      setDaysOf(t ? `${t.id}/${start}/${rangeDays}` : "");
       setDetails(det);
-      setProjects(tax.tags.filter((t) => t.kind === "project"));
+      setProjects(tax.tags.filter((x) => x.kind === "project"));
       setError(null);
     } catch (e) {
       if (seq === loadSeq.current) setError(friendlyError(e));
     }
-  }, [start, rangeDays]);
+  }, [sheetId, start, rangeDays]);
   useEffect(() => {
     load();
     api.calendarStatus().then(setCalendar, () => {});
@@ -319,9 +422,17 @@ export default function Timesheet({
     setCalendar(s);
     load();
   });
+  // Ekrandan kalkan (gönderilen, silinen, birleşen) satırlar seçimden çıkar.
+  useEffect(() => {
+    setSelected((s) => {
+      const keys = new Set(days.flatMap((d) => d.entries.filter((e) => !e.exported).map((e) => e.key)));
+      const next = new Set([...s].filter((k) => keys.has(k)));
+      return next.size === s.size ? s : next;
+    });
+  }, [days]);
 
-  // Klavye: ←/→ önceki/sonraki dönem, T bugün (rapor sayfalarındaki gibi). İşleyici her
-  // çizimde güncellenir; dinleyici bir kez eklenir.
+  // Klavye: ←/→ önceki/sonraki dönem, T bugün (rapor sayfalarındaki gibi), Esc seçimi kaldırır.
+  // İşleyici her çizimde güncellenir; dinleyici bir kez eklenir.
   const keys = useRef<((e: KeyboardEvent) => void) | null>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => keys.current?.(e);
@@ -339,15 +450,15 @@ export default function Timesheet({
     }
   };
 
-  // Dönemi kapat: onaylanmamış günleri onaylar, sonra aktarır. Yarıda kalırsa (örn. yeni
-  // önerilerde boş açıklama) onaylanan günler onaylı kalır; sayfa her durumda yenilenir.
-  const closeRange = async (toApprove: string[]) => {
+  /** Satırları çizelgenin dosyasına gönderir (canlı satırlar önce kaydedilir). */
+  const send = async (rows: EntryView[], after?: () => void) => {
+    if (!sheet || rows.length === 0) return;
     setExporting(true);
     setError(null);
     try {
-      for (const d of toApprove) await api.approveTimesheetDay(d);
-      exported(await api.exportTimesheet(start, rangeDays));
-      setClosing(false);
+      exported(await api.exportTimesheet(sheet.id, rows.map(toRef)));
+      setSelected(new Set());
+      after?.();
     } catch (e) {
       setError(friendlyError(e));
     } finally {
@@ -367,17 +478,29 @@ export default function Timesheet({
         ))}
       </div>
     );
-  if (!config.filePath && !config.sheetUrl) return <Setup onDone={load} />;
-  const target = config.sheetUrl ? "Google Sheets" : `Excel · ${fileName(config.filePath ?? "")}`;
+  if (!sheet) return <Setup onDone={load} />;
+  const target = sheet.sheetUrl
+    ? "Google Sheets"
+    : sheet.filePath
+      ? `Excel · ${fileName(sheet.filePath)}`
+      : "Dosya seçilmedi";
+  const sendLabel = sheet.sheetUrl ? "Sheets'e gönder" : "Excel'e aktar";
   const calendarText = !calendar?.url
     ? "Outlook takvimi bağlı değil"
     : calendar.last && !calendar.last.ok
       ? "Outlook takvimi okunamadı"
       : "Outlook takvimi bağlı";
+  const sheetProjects = sheet.projects
+    .map((m) => projects.find((p) => p.id === m.projectId))
+    .filter((p): p is Tag => !!p);
 
   const all = days.flatMap((d) => d.entries);
-  const pending = days.filter((d) => d.approved).flatMap((d) => d.entries.filter((e) => !e.exported));
-  const unapproved = days.filter((d) => !d.approved && d.entries.length > 0);
+  const unsent = all.filter((e) => !e.exported);
+  // Toplu gönderim yalnızca başlamış işi gönderir; ilerideki satırlar seçilerek gönderilebilir.
+  const now = new Date();
+  const pending = unsent.filter((e) => started(e, now));
+  const later = unsent.length - pending.length;
+  const selectedRows = unsent.filter((e) => selected.has(e.key));
   const report = closeReport(days, config.dayHours, isoDate(today()));
   const total = all.reduce((s, e) => s + e.hours, 0);
   const totalActual = all.reduce((s, e) => s + worked(e), 0);
@@ -396,34 +519,85 @@ export default function Timesheet({
     if (e.key === "ArrowLeft") step(-1);
     else if (e.key === "ArrowRight" && start < current) step(1);
     else if (e.key === "t" || e.key === "T") setAnchor(isoDate(today()));
+    else if (e.key === "Escape" && selected.size > 0) setSelected(new Set());
     else return;
     e.preventDefault();
   };
+  const toggle = (rowKeys: string[], on: boolean) =>
+    setSelected((s) => {
+      const next = new Set(s);
+      for (const k of rowKeys) {
+        if (on) next.add(k);
+        else next.delete(k);
+      }
+      return next;
+    });
+  const sendBlocked = pending.some(blocked);
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-4 px-6 pt-2 pb-10">
+      {config.timesheets.length > 1 && (
+        <Tabs value={sheet.id} onValueChange={(v) => setSheetId(v)}>
+          <TabsList aria-label="Zaman çizelgesi">
+            {config.timesheets.map((t) => (
+              <TabsTrigger key={t.id} value={t.id} className="px-3">
+                {t.company || "Adsız çizelge"}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <h1 className="text-[15px] font-semibold">
-            {config.company || "Zaman çizelgesi"} · {rangeTitle(mode, rangeStart)}
+            {sheet.company || "Zaman çizelgesi"} · {rangeTitle(mode, rangeStart)}
           </h1>
           <p className="text-xs text-muted-foreground">
             Toplam {manDays(total, config.dayHours)}
             {all.length > 0 && <span title="Takip edilen gerçek süre"> (gerçek {actual(totalActual)})</span>}
             {[...byDivision.entries()].map(([d, h]) => ` · ${d}: ${num.format(h)} sa`).join("")}
           </p>
-          {/* Kayıtların nereden gelip nereye gittiği; tıklayınca Ayarlar → Bağlantılar. */}
-          <button
-            className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            onClick={() => onOpenSettings(CONNECTIONS_SECTION)}
-            title="Ayarlar → Bağlantılar"
-          >
-            {config.sheetUrl ? <Sheet className="size-3" /> : <FileSpreadsheet className="size-3" />}
-            <span className="max-w-60 truncate">{target}</span>
+          {/* Kayıtların nereden gelip nereye gittiği; tıklayınca Ayarlar. */}
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
+            <button
+              className="flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline"
+              onClick={() => onOpenSettings(TIMESHEET_SECTION)}
+              title="Bu çizelgeye yalnızca bu projelerin işi gider (Ayarlar → Zaman çizelgeleri)"
+            >
+              <FolderKanban className="size-3" />
+              {sheetProjects.length ? (
+                sheetProjects.map((p) => (
+                  <span key={p.id} className="flex items-center gap-1">
+                    <i className="size-1.5 rounded-full" style={{ background: tagColor(p) }} />
+                    {p.name}
+                  </span>
+                ))
+              ) : (
+                <span className="text-amber-700 dark:text-amber-400">proje seçilmedi</span>
+              )}
+            </button>
             <span aria-hidden>·</span>
-            <CalendarDays className="size-3" />
-            <span className={cn(calendar?.last && !calendar.last.ok && "text-destructive")}>{calendarText}</span>
-          </button>
+            <button
+              className={cn(
+                "flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline",
+                !sheet.filePath && !sheet.sheetUrl && "text-amber-700 dark:text-amber-400",
+              )}
+              onClick={() => onOpenSettings(TIMESHEET_SECTION)}
+              title="Ayarlar → Zaman çizelgeleri"
+            >
+              {sheet.sheetUrl ? <Sheet className="size-3" /> : <FileSpreadsheet className="size-3" />}
+              <span className="max-w-60 truncate">{target}</span>
+            </button>
+            <span aria-hidden>·</span>
+            <button
+              className="flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline"
+              onClick={() => onOpenSettings(CONNECTIONS_SECTION)}
+              title="Ayarlar → Bağlantılar"
+            >
+              <CalendarDays className="size-3" />
+              <span className={cn(calendar?.last && !calendar.last.ok && "text-destructive")}>{calendarText}</span>
+            </button>
+          </div>
         </div>
         <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
           <TabsList aria-label="Görünüm">
@@ -462,7 +636,7 @@ export default function Timesheet({
           size="sm"
           aria-expanded={closing}
           onClick={() => setClosing((v) => !v)}
-          title="Aktarmadan önce dönemi denetle: atanmamış süre, toplantılar, saatler, açıklamalar, onaylar"
+          title="Göndermeden önce dönemi denetle: atanmamış süre, toplantılar, saatler, açıklamalar"
         >
           <ClipboardCheck /> {modeInfo.close}
           {fresh && report.issues > 0 && (
@@ -471,41 +645,20 @@ export default function Timesheet({
             </span>
           )}
         </Button>
-        {fresh && unapproved.length > 1 && (
-          <Button
-            size="sm"
-            variant="outline"
-            title="Önerilen satırları gün gün onaylar; onaylı günlere dokunulmaz"
-            onClick={run(async () => {
-              for (const d of unapproved) await api.approveTimesheetDay(d.date);
-            })}
-          >
-            <Check /> Tümünü onayla ({unapproved.length} gün)
-          </Button>
-        )}
         <Button
           size="sm"
-          disabled={!fresh || pending.length === 0 || exporting}
+          disabled={!fresh || pending.length === 0 || exporting || sendBlocked}
           title={
             pending.length === 0
-              ? unapproved.length
-                ? "Aktarmak için önce günleri onayla"
-                : "Aktarılacak onaylı satır yok"
-              : config.sheetUrl
-                ? (config.sheetLink ?? "Google Sheets")
-                : (config.filePath ?? "")
+              ? "Gönderilecek satır yok"
+              : sendBlocked
+                ? "Açıklaması boş ya da takipte değişen satırlar var: düzelt ya da gönderilecekleri seç"
+                : `Bu dönemin gönderilmemiş ${pending.length} satırı${later ? ` (henüz başlamamış ${later} satır hariç)` : ""}: ${sheet.sheetUrl ? (sheet.sheetLink ?? "Google Sheets") : (sheet.filePath ?? "")}`
           }
-          onClick={run(async () => {
-            setExporting(true);
-            try {
-              exported(await api.exportTimesheet(start, rangeDays));
-            } finally {
-              setExporting(false);
-            }
-          })}
+          onClick={() => send(pending)}
         >
-          {config.sheetUrl ? <Sheet /> : <FileSpreadsheet />}
-          {config.sheetUrl ? "Sheets'e aktar" : "Excel'e aktar"}
+          {exporting ? <Loader2 className="animate-spin" /> : sheet.sheetUrl ? <Sheet /> : <FileSpreadsheet />}
+          {sendLabel}
           {pending.length ? ` (${pending.length})` : ""}
         </Button>
       </div>
@@ -544,18 +697,22 @@ export default function Timesheet({
           </button>
         </div>
       )}
+      {sheet.projects.length === 0 && (
+        <ProjectsPrompt config={config} sheet={sheet} projects={projects} onSaved={load} onError={setError} />
+      )}
       {closing && (
         <ClosePanel
           title={modeInfo.close}
           report={report}
           days={days}
           config={config}
+          sheet={sheet}
           projects={projects}
           ready={fresh && !exporting}
           ai={ai}
-          pending={pending.length}
+          pending={pending}
           onClose={() => setClosing(false)}
-          onFinish={() => closeRange(report.unapproved)}
+          onSend={() => send(pending, () => setClosing(false))}
           onOpenDay={onOpenDay}
           onReviewDay={onReviewDay}
           run={run}
@@ -568,7 +725,7 @@ export default function Timesheet({
         ))}
       </datalist>
       <datalist id="timesheet-parties">
-        {[...new Set([config.defaultParty, config.company, ...config.projects.map((p) => p.party ?? "")])]
+        {[...new Set([sheet.defaultParty, sheet.company, ...sheet.projects.map((p) => p.party ?? "")])]
           .filter(Boolean)
           .map((p) => (
             <option key={p} value={p} />
@@ -580,17 +737,33 @@ export default function Timesheet({
           key={d.date}
           day={d}
           config={config}
+          sheet={sheet}
           projects={projects}
           onOpenDay={onOpenDay}
           onReviewDay={onReviewDay}
           run={run}
           ai={ai}
+          selected={selected}
+          onToggle={toggle}
           // Gün görünümünde boş gün de gösterilir (yoksa sayfa boş kalır).
           alwaysShow={mode === "day"}
         />
       ))}
       {mode !== "day" && days.length > 0 && days.every((d) => d.entries.length === 0) && (
-        <p className="px-1 text-sm text-muted-foreground">Bu dönemde kayıt yok.</p>
+        <p className="px-1 text-sm text-muted-foreground">
+          Bu dönemde kayıt yok. Raporda (gün, hafta) bu çizelgenin projelerine atadığın süre burada satır olur.
+        </p>
+      )}
+      {selectedRows.length > 0 && (
+        <SelectionBar
+          rows={selectedRows}
+          sendLabel={sendLabel}
+          busy={exporting}
+          onClear={() => setSelected(new Set())}
+          onMerge={run(() => mergeRows(selectedRows).then(() => setSelected(new Set())))}
+          onSend={() => send(selectedRows)}
+          onDismiss={run(() => dismissRows(selectedRows).then(() => setSelected(new Set())))}
+        />
       )}
     </div>
   );
@@ -598,23 +771,146 @@ export default function Timesheet({
 
 type Run = (f: () => Promise<unknown>) => () => Promise<void>;
 
+/** Seçili satırların işlemleri: birleştir, gönder, sil. */
+function SelectionBar({
+  rows,
+  sendLabel,
+  busy,
+  onClear,
+  onMerge,
+  onSend,
+  onDismiss,
+}: {
+  rows: EntryView[];
+  sendLabel: string;
+  busy: boolean;
+  onClear: () => void;
+  onMerge: () => void;
+  onSend: () => void;
+  onDismiss: () => void;
+}) {
+  const hours = rows.reduce((s, e) => s + e.hours, 0);
+  const mergeWhy = mergeProblem(rows);
+  const blockedRows = rows.filter(blocked).length;
+  return (
+    <div className="sticky bottom-3 z-20 flex justify-center">
+      <div
+        role="toolbar"
+        aria-label="Seçili satırlar"
+        className="flex flex-wrap items-center gap-2 rounded-xl border bg-popover px-3 py-2 text-xs shadow-lg"
+      >
+        <span className="tabular">
+          <b className="font-semibold">{rows.length}</b> satır seçildi · {num.format(hours)} sa
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!!mergeWhy}
+          title={mergeWhy ?? "En erken başlangıçta tek satır olur; süreler toplanır, açıklamalar birleşir"}
+          onClick={onMerge}
+        >
+          <Combine /> Birleştir
+        </Button>
+        <Button
+          size="sm"
+          disabled={busy || blockedRows > 0}
+          title={
+            blockedRows > 0
+              ? "Seçimde açıklaması boş ya da takipte değişen satır var"
+              : "Yalnızca seçili satırları gönder"
+          }
+          onClick={onSend}
+        >
+          {busy ? <Loader2 className="animate-spin" /> : <Sheet />} {sendLabel}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onDismiss} title="Satırları sil; bildirimden geri alınır">
+          <Trash2 /> Sil
+        </Button>
+        <button
+          aria-label="Seçimi kaldır"
+          title="Seçimi kaldır (Esc)"
+          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          onClick={onClear}
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Çizelgede proje yoksa: hangi projelerin işi bu firmaya gidecek? */
+function ProjectsPrompt({
+  config,
+  sheet,
+  projects,
+  onSaved,
+  onError,
+}: {
+  config: TimesheetConfig;
+  sheet: TimesheetInfo;
+  projects: Tag[];
+  onSaved: () => void;
+  onError: (e: string) => void;
+}) {
+  const taken = new Set(config.timesheets.flatMap((t) => t.projects.map((m) => m.projectId)));
+  const free = projects.filter((p) => !taken.has(p.id));
+  const add = async (projectId: string) => {
+    try {
+      await api.saveTimesheetConfig({
+        ...config,
+        timesheets: config.timesheets.map((t) =>
+          t.id === sheet.id
+            ? { ...t, projects: [...t.projects, { projectId, division: "", party: null, defaultDetails: null }] }
+            : t,
+        ),
+      });
+      onSaved();
+    } catch (e) {
+      onError(friendlyError(e));
+    }
+  };
+  return (
+    <section className="space-y-2 rounded-xl border border-dashed bg-card px-4 py-3 shadow-xs">
+      <div className="text-[13px] font-semibold">Bu zaman çizelgesine hangi projeler gitsin?</div>
+      <p className="text-xs text-muted-foreground">
+        Yalnızca seçtiğin projelere atanan süre {sheet.company ? `${sheet.company} çizelgesinde` : "burada"} satır olur
+        ve tablosuna gönderilir. Bir proje tek bir çizelgeye bağlanır.
+      </p>
+      {free.length > 0 ? (
+        <ProjectSelect
+          value=""
+          projects={free}
+          placeholder="Proje ekle…"
+          className="w-60"
+          aria-label="Çizelgeye proje ekle"
+          onChange={add}
+        />
+      ) : (
+        <p className="text-xs text-muted-foreground">Boşta proje yok; kenar çubuğundaki Projeler'den ekle.</p>
+      )}
+    </section>
+  );
+}
+
 /**
  * Dönemi kapatmadan önce denetim: atanmamış süre, projesi belli olmayan toplantılar, günlük
- * saati tutmayan ya da kaydı olmayan iş günleri, açıklaması boş satırlar ve onaylanmamış günler;
- * her birinin yanında düzeltme bağlantısı. Boş açıklama aktarımı engeller (dosyaya açıklamasız
- * satır gitmez), diğerleri uyarıdır. Ana düğme onaylanmamış günleri onaylayıp aktarır.
+ * saati tutmayan ya da kaydı olmayan iş günleri, açıklaması boş ve takipte değişen satırlar;
+ * her birinin yanında düzeltme bağlantısı. Boş açıklama ve takipte değişen satır gönderimi
+ * engeller, diğerleri uyarıdır. Ana düğme dönemin gönderilmemiş satırlarını gönderir.
  */
 function ClosePanel({
   title,
   report,
   days,
   config,
+  sheet,
   projects,
   ready,
   ai,
   pending,
   onClose,
-  onFinish,
+  onSend,
   onOpenDay,
   onReviewDay,
   run,
@@ -623,15 +919,16 @@ function ClosePanel({
   report: CloseReport;
   days: TimesheetDay[];
   config: TimesheetConfig;
+  sheet: TimesheetInfo;
   projects: Tag[];
-  /** Ekrandaki günler güncel ve aktarım sürmüyor. */
+  /** Ekrandaki günler güncel ve gönderim sürmüyor. */
   ready: boolean;
   /** Yapay zekâyla yazma açık. */
   ai: boolean;
-  /** Onaylı ve aktarılmamış satır sayısı. */
-  pending: number;
+  /** Dönemin gönderilmemiş satırları. */
+  pending: EntryView[];
   onClose: () => void;
-  onFinish: () => void;
+  onSend: () => void;
   onOpenDay: (iso: string) => void;
   onReviewDay: (iso: string) => void;
   run: Run;
@@ -647,9 +944,8 @@ function ClosePanel({
       takvim
     </button>
   );
-  const exportLabel = config.sheetUrl ? "Sheets'e aktar" : "Excel'e aktar";
-  const work = report.unapproved.length > 0 || pending > 0;
-  const blocked = report.blocking > 0;
+  const sendLabel = sheet.sheetUrl ? "Sheets'e gönder" : "Excel'e aktar";
+  const isBlocked = report.blocking > 0;
   // Yapay zekâyla yazılacak günler: bugüne kadar, aktarılmamış satırı olanlar. Yazarken ilerleme.
   const todayIso = isoDate(today());
   const aiDays = days.filter((d) => d.date <= todayIso && d.entries.some((e) => !e.exported)).map((d) => d.date);
@@ -657,11 +953,12 @@ function ClosePanel({
   const writeAll = async () => {
     setAiDone(0);
     try {
-      await run(() => aiWriteDays(aiDays, false, setAiDone))();
+      await run(() => aiWriteDays(sheet.id, aiDays, false, setAiDone))();
     } finally {
       setAiDone(null);
     }
   };
+  const staleIds = report.stale.flatMap((s) => s.rows.map((e) => e.id).filter((id): id is string => !!id));
 
   return (
     <section className="rounded-xl border bg-card shadow-xs" aria-label={`${title}: denetim`}>
@@ -669,7 +966,7 @@ function ClosePanel({
         <ClipboardCheck className="size-4 text-muted-foreground" />
         <span className="text-[13px] font-semibold">{title}</span>
         <span className="text-xs text-muted-foreground">
-          {report.issues === 0 ? "aktarmadan önce denetim" : `${report.issues} konu`}
+          {report.issues === 0 ? "göndermeden önce denetim" : `${report.issues} konu`}
         </span>
         <button
           aria-label="Kapat"
@@ -683,48 +980,63 @@ function ClosePanel({
         <div className="m-3 flex items-start gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs">
           <CircleCheck className="mt-0.5 size-3.5 shrink-0 text-success" />
           <span>
-            <b className="text-success">Hazır.</b> Günler onaylı, açıklamalar dolu, iş günleri{" "}
-            {num.format(config.dayHours)} saat; atanmamış süre ya da toplantı yok.
-            {!work && " Aktarılacak satır kalmadı."}
+            <b className="text-success">Hazır.</b> Açıklamalar dolu, iş günleri {num.format(config.dayHours)} saat;
+            atanmamış süre ya da toplantı yok.
+            {pending.length === 0 && " Gönderilecek satır kalmadı."}
           </span>
         </div>
       ) : (
         <ul className="divide-y">
+          {report.stale.length > 0 && (
+            <CheckGroup
+              blocking
+              title="Takipte değişen satırlar"
+              hint="İşi raporda başka projeye alınmış; güncellenmeden gönderilmez."
+            >
+              {report.stale.map((s) => (
+                <li key={s.date} className="flex flex-wrap items-center gap-2">
+                  {label(s.date)}
+                  <span>{s.rows.length} satır</span>
+                  <span className="ml-auto flex gap-2">
+                    <button
+                      className={FIX_LINK}
+                      onClick={run(() => refreshRows(s.rows.map((e) => e.id).filter((id): id is string => !!id)))}
+                    >
+                      güncelle
+                    </button>
+                    {show(s.date)}
+                  </span>
+                </li>
+              ))}
+              {report.stale.length > 1 && (
+                <li className="flex justify-end">
+                  <button className={cn(FIX_LINK, "text-[11px]")} onClick={run(() => refreshRows(staleIds))}>
+                    Hepsini güncelle ({staleIds.length})
+                  </button>
+                </li>
+              )}
+            </CheckGroup>
+          )}
           {report.details.length > 0 && (
-            <CheckGroup blocking title="Açıklaması boş satırlar" hint="Doldurulmadan aktarılamaz.">
+            <CheckGroup blocking title="Açıklaması boş satırlar" hint="Doldurulmadan gönderilmez.">
               {report.details.map((d) => (
                 <li key={d.date} className="flex flex-wrap items-center gap-2">
                   {label(d.date)}
                   <span>{d.rows} satır</span>
                   <span className="ml-auto flex gap-2">
-                    <button className={FIX_LINK} onClick={run(() => copyPreviousDetails(d.date))}>
+                    <button className={FIX_LINK} onClick={run(() => copyPreviousDetails(sheet.id, d.date))}>
                       önceki günden kopyala
                     </button>
                     {ai && (
                       <button
                         className={FIX_LINK}
                         disabled={aiDone !== null}
-                        onClick={run(() => aiWriteDays([d.date], false))}
+                        onClick={run(() => aiWriteDays(sheet.id, [d.date], false))}
                       >
                         yapay zekâyla yaz
                       </button>
                     )}
                     {show(d.date, true)}
-                  </span>
-                </li>
-              ))}
-            </CheckGroup>
-          )}
-          {report.unapproved.length > 0 && (
-            <CheckGroup title="Onaylanmamış günler" hint="Aşağıdaki düğme hepsini onaylayıp aktarır.">
-              {report.unapproved.map((iso) => (
-                <li key={iso} className="flex flex-wrap items-center gap-2">
-                  {label(iso)}
-                  <span className="ml-auto flex gap-2">
-                    <button className={FIX_LINK} onClick={run(() => api.approveTimesheetDay(iso))}>
-                      onayla
-                    </button>
-                    {show(iso)}
                   </span>
                 </li>
               ))}
@@ -756,7 +1068,6 @@ function ClosePanel({
                   <span className="pt-1">{label(iso)}</span>
                   <div className="min-w-0 flex-1">
                     <MeetingRows
-                      date={iso}
                       meetings={days.find((d) => d.date === iso)?.meetings ?? []}
                       projects={projects}
                       run={run}
@@ -789,7 +1100,7 @@ function ClosePanel({
           {report.empty.length > 0 && (
             <CheckGroup
               title="Kaydı olmayan iş günleri"
-              hint="İzin ya da tatilse geçebilirsin; değilse elle kayıt ekle."
+              hint="İzin ya da tatilse geçebilirsin; değilse elle satır ekle."
             >
               {report.empty.map((iso) => (
                 <li key={iso} className="flex flex-wrap items-center gap-2">
@@ -806,10 +1117,10 @@ function ClosePanel({
       )}
       <div className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5">
         <p className="mr-auto text-[11px] text-muted-foreground">
-          {blocked
-            ? "Açıklaması boş satırlar doldurulmadan aktarılamaz."
+          {isBlocked
+            ? "Açıklaması boş ya da takipte değişen satırlar düzeltilmeden gönderilmez."
             : report.issues > 0
-              ? "Uyarılar aktarımı engellemez."
+              ? "Uyarılar göndermeyi engellemez."
               : ""}
         </p>
         {ai && aiDays.length > 0 && (
@@ -817,7 +1128,7 @@ function ClosePanel({
             size="sm"
             variant="outline"
             disabled={!ready || aiDone !== null}
-            title="Boş ya da otomatik gelen açıklamaları Claude yazar (gün başına bir istek); elle yazdıklarına dokunulmaz. Onaylanmamış günler onaylanır."
+            title="Boş ya da otomatik gelen açıklamaları Claude yazar (gün başına bir istek); elle yazdıklarına dokunulmaz."
             onClick={writeAll}
           >
             {aiDone !== null ? <Loader2 className="animate-spin" /> : <Sparkles />}
@@ -826,20 +1137,19 @@ function ClosePanel({
         )}
         <Button
           size="sm"
-          disabled={!ready || blocked || !work}
+          disabled={!ready || isBlocked || pending.length === 0}
           title={
-            blocked
-              ? "Önce açıklaması boş satırları doldur"
-              : !work
-                ? "Aktarılacak satır yok"
-                : report.unapproved.length
-                  ? `${report.unapproved.length} gün onaylanır, onaylı satırlar aktarılır`
-                  : undefined
+            isBlocked
+              ? "Önce açıklaması boş ve takipte değişen satırları düzelt"
+              : pending.length === 0
+                ? "Gönderilecek satır yok"
+                : `Dönemin gönderilmemiş ${pending.length} satırı`
           }
-          onClick={onFinish}
+          onClick={onSend}
         >
-          {config.sheetUrl ? <Sheet /> : <FileSpreadsheet />}
-          {report.unapproved.length ? `Onayla ve ${exportLabel}` : exportLabel}
+          {sheet.sheetUrl ? <Sheet /> : <FileSpreadsheet />}
+          {sendLabel}
+          {pending.length ? ` (${pending.length})` : ""}
         </Button>
       </div>
     </section>
@@ -875,21 +1185,27 @@ function CheckGroup({
 function DayCard({
   day,
   config,
+  sheet,
   projects,
   onOpenDay,
   onReviewDay,
   run,
   ai,
+  selected,
+  onToggle,
   alwaysShow,
 }: {
   day: TimesheetDay;
   config: TimesheetConfig;
+  sheet: TimesheetInfo;
   projects: Tag[];
   onOpenDay: (iso: string) => void;
   onReviewDay: (iso: string) => void;
   run: Run;
   /** Yapay zekâyla yazma açık. */
   ai: boolean;
+  selected: Set<string>;
+  onToggle: (keys: string[], on: boolean) => void;
   alwaysShow: boolean;
 }) {
   const [confirmReset, setConfirmReset] = useState(false);
@@ -898,34 +1214,56 @@ function DayCard({
   const aiWrite = async (rewrite: boolean) => {
     setWriting(true);
     try {
-      await run(() => aiWriteDays([day.date], rewrite))();
+      await run(() => aiWriteDays(sheet.id, [day.date], rewrite))();
     } finally {
       setWriting(false);
     }
   };
+  // Satırın birim seçeneği: çizelgenin projelerinin birimleri ve dosyadaki birimler.
+  const divisions = useMemo(() => {
+    const list: string[] = [];
+    const add = (d: string) => {
+      const t = d.trim();
+      if (t && !list.some((x) => x.toLocaleLowerCase("tr") === t.toLocaleLowerCase("tr"))) list.push(t);
+    };
+    for (const m of sheet.projects) add(m.division || projectName(projects, m.projectId) || "");
+    for (const d of sheet.divisions) add(d);
+    return list;
+  }, [sheet, projects]);
   const date = parseIsoDate(day.date);
   const total = day.entries.reduce((s, e) => s + e.hours, 0);
   const totalActual = day.entries.reduce((s, e) => s + worked(e), 0);
   const exported = day.entries.length > 0 && day.entries.every((e) => e.exported);
-  const empty = day.entries.length === 0 && day.unassignedSeconds < 60 && day.meetings.length === 0;
+  const empty = day.entries.length === 0 && day.unassignedSeconds < 60 && day.meetings.length === 0 && day.hidden === 0;
   const weekend = date.getDay() === 0 || date.getDay() === 6;
   if (empty && weekend && !alwaysShow) return null;
   // Günlük saatten sapma (bugün ve öncesi; ileri tarihli gün henüz bitmedi).
   const diff = day.date <= isoDate(today()) ? hoursDiff(day, config.dayHours) : 0;
   const missing = day.entries.some(needsDetails);
   const open = day.entries.filter((e) => !e.exported);
+  // Kaydedilmiş (düzenlenmiş, elle eklenmiş) ya da gizlenmiş satır varsa sıfırlanabilir.
+  const touched = open.some((e) => e.id) || day.hidden > 0;
+  const openKeys = open.map((e) => e.key);
+  const chosen = openKeys.filter((k) => selected.has(k)).length;
+  const sheetProjects = sheet.projects
+    .map((m) => projects.find((p) => p.id === m.projectId))
+    .filter((p): p is Tag => !!p);
 
-  const firstMapping = config.projects[0];
-  const blank: TimesheetEntry = {
-    date: day.date,
-    start: "09:00:00",
-    hours: 1,
-    kind: "Working",
-    details: "",
-    party: config.defaultParty,
-    projectId: firstMapping?.projectId ?? projects[0]?.id ?? "",
-    division: firstMapping?.division ?? projects[0]?.name ?? "",
-  };
+  const addRow = (projectId: string) =>
+    run(() =>
+      api.saveTimesheetEntry(null, {
+        date: day.date,
+        start: "09:00:00",
+        hours: 1,
+        actualHours: null,
+        kind: "Working",
+        details: "",
+        party: sheet.projects.find((m) => m.projectId === projectId)?.party || sheet.defaultParty,
+        projectId,
+        division: defaultDivision(sheet, projects, projectId),
+        coverage: [],
+      }),
+    )();
 
   return (
     <section id={`gun-${day.date}`} className="scroll-mt-4 rounded-xl border bg-card shadow-xs">
@@ -935,9 +1273,9 @@ function DayCard({
           {total ? manDays(total, config.dayHours) : "—"}
           {total > 0 && <span title="Takip edilen gerçek süre"> · gerçek {actual(totalActual)}</span>}
         </span>
-        {day.entries.length > 0 && (
-          <Badge variant="outline" className={cn(exported && "border-success/40 text-success")}>
-            {exported ? "Aktarıldı" : day.approved ? "Onaylandı" : "Öneri"}
+        {exported && (
+          <Badge variant="outline" className="border-success/40 text-success">
+            Gönderildi
           </Badge>
         )}
         {diff !== 0 && (
@@ -968,17 +1306,25 @@ function DayCard({
             </button>
           </span>
         )}
-        <span className="ml-auto flex gap-1.5">
+        {day.hidden > 0 && (
+          <button
+            className="rounded text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            title="Silinen satırları geri getir"
+            onClick={run(async () => {
+              const ids = await api.restoreHiddenEntries(sheet.id, day.date);
+              toast(`${ids.length} satır geri getirildi`, { tone: "success" });
+            })}
+          >
+            {day.hidden} silinmiş · geri getir
+          </button>
+        )}
+        <span className="ml-auto flex items-center gap-1.5">
           {missing && (
             <Button
               size="sm"
               variant="ghost"
-              title={
-                day.approved
-                  ? "Önceki günlerin aynı projedeki açıklamalarını boş satırlara yaz"
-                  : "Günü onaylar ve önceki günlerin aynı projedeki açıklamalarını boş satırlara yazar"
-              }
-              onClick={run(() => copyPreviousDetails(day.date))}
+              title="Önceki günlerin aynı projedeki açıklamalarını boş satırlara yaz"
+              onClick={run(() => copyPreviousDetails(sheet.id, day.date))}
             >
               <Copy /> Önceki günden kopyala
             </Button>
@@ -988,16 +1334,13 @@ function DayCard({
               size="sm"
               variant="ghost"
               disabled={writing}
-              title={
-                (day.approved ? "" : "Günü onaylar; ") +
-                "boş ya da otomatik gelen açıklamaları Claude yazar, elle yazdıklarına dokunulmaz. Bildirimden geri alınır."
-              }
+              title="Boş ya da otomatik gelen açıklamaları Claude yazar, elle yazdıklarına dokunulmaz. Bildirimden geri alınır."
               onClick={() => aiWrite(false)}
             >
               {writing ? <Loader2 className="animate-spin" /> : <Sparkles />} Yapay zekâyla yaz
             </Button>
           )}
-          {ai && day.approved && open.some((e) => e.details.trim()) && (
+          {ai && open.some((e) => e.details.trim()) && (
             <Button
               size="icon-sm"
               variant="ghost"
@@ -1009,24 +1352,7 @@ function DayCard({
               <WandSparkles />
             </Button>
           )}
-          {!day.approved && day.entries.length > 0 && (
-            <Button size="sm" onClick={run(() => api.approveTimesheetDay(day.date))}>
-              <Check /> Onayla
-            </Button>
-          )}
-          {day.approved && exported && (
-            // Aktarılmış satırlar korunur ve tekrar önerilmez: aktarımdan sonra yapılan iş eklenir.
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={run(() => api.approveTimesheetDay(day.date))}
-              title="Aktarımdan sonra takip edilen işi öner; aktarılan satırlar değişmez"
-            >
-              <RefreshCw /> Yeni işleri öner
-            </Button>
-          )}
-          {day.approved &&
-            !exported &&
+          {touched &&
             (confirmReset ? (
               <Button
                 size="sm"
@@ -1034,7 +1360,7 @@ function DayCard({
                 onClick={() => {
                   // Onay tek kullanımlık: sonraki tıklama yeniden onay istesin.
                   setConfirmReset(false);
-                  run(() => api.approveTimesheetDay(day.date))();
+                  run(() => api.resetTimesheetDay(sheet.id, day.date))();
                 }}
               >
                 Düzenlemeler silinsin, yeniden öner
@@ -1044,22 +1370,42 @@ function DayCard({
                 size="sm"
                 variant="ghost"
                 onClick={() => setConfirmReset(true)}
-                title="Satırları takip verisinden yeniden üret"
+                title="Düzenlemeleri, birleştirmeleri, elle eklenen ve silinen satırları geri al; satırlar takipten yeniden önerilir. Gönderilenlere dokunulmaz."
               >
-                <RefreshCw /> Yeniden öner
+                <RotateCcw /> Sıfırla
               </Button>
             ))}
-          {(day.approved || day.entries.length === 0) && blank.projectId && (
-            <Button size="sm" variant="outline" onClick={run(() => api.saveTimesheetEntry(null, blank))}>
-              <Plus /> Satır
+          {sheetProjects.length === 1 && (
+            <Button size="sm" variant="outline" onClick={() => addRow(sheetProjects[0].id)}>
+              + Satır
             </Button>
+          )}
+          {sheetProjects.length > 1 && (
+            <ProjectSelect
+              value=""
+              projects={sheetProjects}
+              placeholder="+ Satır…"
+              className="w-32"
+              aria-label="Satır ekle: proje"
+              onChange={addRow}
+            />
           )}
         </span>
       </div>
       {day.entries.length > 0 && (
         // Dar pencerede açıklama sütunu ezilmesin: satırlar kart içinde yatay kayar.
         <div className="overflow-x-auto border-t">
-          <div className="grid grid-cols-[112px_128px_96px_minmax(160px,1fr)_96px_minmax(110px,180px)_28px] gap-2 px-4 pt-2 text-[11px] text-muted-foreground">
+          <div className={cn("grid items-center gap-2 px-4 pt-2 text-[11px] text-muted-foreground", ROW_GRID)}>
+            {openKeys.length > 0 ? (
+              <SelectBox
+                checked={chosen === openKeys.length}
+                indeterminate={chosen > 0 && chosen < openKeys.length}
+                onChange={(on) => onToggle(openKeys, on)}
+                label={`${dayFmt.format(date)}: gönderilmemiş satırların hepsini seç`}
+              />
+            ) : (
+              <span />
+            )}
             <span>Başlangıç</span>
             <span>Saat</span>
             <span>Tür</span>
@@ -1069,26 +1415,48 @@ function DayCard({
             <span />
           </div>
           <ul className="pb-1.5">
-            {day.entries.map((e, i) => (
+            {day.entries.map((e) => (
               <EntryRow
-                key={e.id ?? `oneri-${i}`}
+                key={e.key}
                 entry={e}
-                editable={day.approved && !e.exported}
-                config={config}
+                divisions={divisions}
                 projects={projects}
                 run={run}
+                selected={selected.has(e.key)}
+                onSelect={(on) => onToggle([e.key], on)}
               />
             ))}
           </ul>
-          {!day.approved && (
-            <p className="px-4 pb-2.5 text-[11px] text-muted-foreground">
-              Bunlar takip verisinden öneriler; düzenlemek ve aktarmak için günü onayla.
-            </p>
-          )}
         </div>
       )}
-      {day.meetings.length > 0 && <MeetingList date={day.date} meetings={day.meetings} projects={projects} run={run} />}
+      {day.meetings.length > 0 && <MeetingList meetings={day.meetings} projects={projects} run={run} />}
     </section>
+  );
+}
+
+/** Satır seçim kutusu (yarı seçili hali de olur). */
+function SelectBox({
+  checked,
+  indeterminate = false,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  indeterminate?: boolean;
+  onChange: (on: boolean) => void;
+  label: string;
+}) {
+  return (
+    <input
+      type="checkbox"
+      className="size-3.5 cursor-pointer accent-primary"
+      checked={checked}
+      ref={(el) => {
+        if (el) el.indeterminate = indeterminate;
+      }}
+      onChange={(e) => onChange(e.target.checked)}
+      aria-label={label}
+    />
   );
 }
 
@@ -1096,7 +1464,7 @@ function DayCard({
  * Takvimde olup hiçbir projeye düşmeyen toplantılar. Seçilen proje serinin tüm tekrarlarına
  * uygulanır (haftalık toplantı bir kez atanır); "Yoksay" seriyi zaman çizelgesinden çıkarır.
  */
-function MeetingList(props: { date: string; meetings: UnassignedMeeting[]; projects: Tag[]; run: Run }) {
+function MeetingList(props: { meetings: UnassignedMeeting[]; projects: Tag[]; run: Run }) {
   return (
     <div className="border-t px-4 py-2">
       <div className="flex items-center gap-1.5 pb-1 text-[11px] text-muted-foreground">
@@ -1112,32 +1480,22 @@ function MeetingList(props: { date: string; meetings: UnassignedMeeting[]; proje
  * yanında "→ Proje" olarak durur (gerekçesi ipucunda); tıklayınca seri o projeye atanır.
  * Birden çok seri için öneri varsa hepsi tek düğmeyle atanır.
  */
-function MeetingRows({
-  date,
-  meetings,
-  projects,
-  run,
-}: {
-  date: string;
-  meetings: UnassignedMeeting[];
-  projects: Tag[];
-  run: Run;
-}) {
-  const projectName = (id: string) => projects.find((p) => p.id === id)?.name;
+function MeetingRows({ meetings, projects, run }: { meetings: UnassignedMeeting[]; projects: Tag[]; run: Run }) {
+  const nameOf = (id: string) => projectName(projects, id);
   // Seri başına bir öneri (aynı gün iki tekrar olsa da bir kez atanır); adı bilinmeyen
   // (seçicide olmayan) proje önerilmez.
   const suggested = new Map<string, string>();
   for (const m of meetings) {
-    if (m.suggestion && projectName(m.suggestion.projectId)) suggested.set(m.uid, m.suggestion.projectId);
+    if (m.suggestion && nameOf(m.suggestion.projectId)) suggested.set(m.uid, m.suggestion.projectId);
   }
   const assignAll = run(async () => {
-    for (const [uid, projectId] of suggested) await api.assignMeeting(uid, projectId, date);
+    for (const [uid, projectId] of suggested) await api.assignMeeting(uid, projectId);
   });
   return (
     <ul className="space-y-1">
       {meetings.map((m) => {
         const s = m.suggestion;
-        const name = s ? projectName(s.projectId) : undefined;
+        const name = s ? nameOf(s.projectId) : undefined;
         return (
           <li key={`${m.uid}-${m.start}`} className="flex flex-wrap items-center gap-2 text-xs">
             <span className="w-24 shrink-0 text-muted-foreground tabular">
@@ -1153,7 +1511,7 @@ function MeetingRows({
                 className="max-w-40 truncate rounded-md border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-solid hover:bg-accent hover:text-foreground"
                 title={`Öneri: ${s.reason}`}
                 aria-label={`${m.subject} toplantısını ${name} projesine ata (${s.reason})`}
-                onClick={run(() => api.assignMeeting(m.uid, s.projectId, date))}
+                onClick={run(() => api.assignMeeting(m.uid, s.projectId))}
               >
                 → {name}
               </button>
@@ -1165,7 +1523,7 @@ function MeetingRows({
               extra={[{ value: IGNORE, label: "Zaman çizelgesine alma" }]}
               className="w-44"
               aria-label={`${m.subject} projesi`}
-              onChange={(v) => run(() => api.assignMeeting(m.uid, v === IGNORE ? null : v, date))()}
+              onChange={(v) => run(() => api.assignMeeting(m.uid, v === IGNORE ? null : v))()}
             />
           </li>
         );
@@ -1183,155 +1541,169 @@ function MeetingRows({
 
 function EntryRow({
   entry,
-  editable,
-  config,
+  divisions,
   projects,
   run,
+  selected,
+  onSelect,
 }: {
   entry: EntryView;
-  editable: boolean;
-  config: TimesheetConfig;
+  /** Çizelgenin birimleri (satırın birimi bunlardan seçilir). */
+  divisions: string[];
   projects: Tag[];
   run: Run;
+  selected: boolean;
+  onSelect: (on: boolean) => void;
 }) {
+  const editable = !entry.exported;
   const [draft, setDraft] = useState(entry);
   // Her yeniden yüklemede satırlar yeni nesne olarak gelir; yalnızca içerik değişince taslak
-  // sıfırlansın (başka satırın kaydı ya da takvim yenilemesi yazılanı silmesin).
+  // yenilenir ve henüz kaydedilmemiş yazılanlar yeni içeriğin üzerinde kalır (başka satırın
+  // kaydı ya da takvim yenilemesi yazılanı silmesin).
+  const base = useRef(entry);
   const entryJson = JSON.stringify(entry);
-  useEffect(() => setDraft(JSON.parse(entryJson)), [entryJson]);
-  const save = (next: TimesheetEntry) => run(() => api.saveTimesheetEntry(entry.id, next))();
+  useEffect(() => {
+    const prev = base.current;
+    const next: EntryView = JSON.parse(entryJson);
+    base.current = next;
+    setDraft((d) => {
+      const out = { ...next };
+      for (const k of EDITABLE) if (d[k] !== prev[k]) Object.assign(out, { [k]: d[k] });
+      return out;
+    });
+  }, [entryJson]);
+  // Canlı satır ilk düzenlemede kaydedilir (aralıklarıyla); sonra kimliğiyle güncellenir.
+  const save = (next: EntryView) => run(() => api.saveTimesheetEntry(entry.id, next))();
   const commit = () => {
-    if (JSON.stringify(draft) !== JSON.stringify(entry)) save(draft);
+    const next = { ...draft, details: draft.details.trim(), party: draft.party.trim() };
+    if (EDITABLE.some((k) => next[k] !== entry[k])) save(next);
   };
-  const divisions = useMemo(() => {
-    const list = config.projects.map((m) => ({ projectId: m.projectId, division: m.division }));
-    for (const p of projects)
-      if (!list.some((m) => m.projectId === p.id)) list.push({ projectId: p.id, division: p.name });
-    return list;
-  }, [config.projects, projects]);
-  const color = tagColor(projects.find((p) => p.id === draft.projectId));
+  const project = projects.find((p) => p.id === entry.projectId);
+  const options =
+    divisions.some((d) => d === draft.division) || !draft.division ? divisions : [...divisions, draft.division];
   const cell = "h-7 px-1.5 text-xs";
-  // Açıklaması boş satır aktarılamaz: hafifçe vurgulanır.
-  const missing = !entry.exported && !draft.details.trim();
+  // Açıklaması boş satır gönderilemez: hafifçe vurgulanır.
+  const missing = editable && !draft.details.trim();
+  const stale = isStale(entry);
 
   return (
-    <li
-      className={cn(
-        "grid grid-cols-[112px_128px_96px_minmax(160px,1fr)_96px_minmax(110px,180px)_28px] items-center gap-2 px-4 py-1",
-        !editable && "text-muted-foreground",
-      )}
-    >
-      <Input
-        type="time"
-        className={cell}
-        disabled={!editable}
-        value={draft.start.slice(0, 5)}
-        onChange={(e) => setDraft({ ...draft, start: `${e.target.value}:00` })}
-        onBlur={commit}
-        aria-label="Başlangıç"
-      />
-      <div className="flex items-center gap-1.5">
+    <li className={cn(stale && "bg-amber-500/5")}>
+      <div className={cn("grid items-center gap-2 px-4 py-1", ROW_GRID, !editable && "text-muted-foreground")}>
+        {editable ? (
+          <SelectBox checked={selected} onChange={onSelect} label="Satırı seç" />
+        ) : (
+          <Check className="size-3.5 text-success" aria-label="Gönderildi" />
+        )}
         <Input
-          type="number"
-          step="0.25"
-          min="0.25"
-          className={cn(cell, "w-16 tabular")}
+          type="time"
+          className={cell}
           disabled={!editable}
-          value={Number(draft.hours.toFixed(2))}
-          onChange={(e) => setDraft({ ...draft, hours: Number(e.target.value) })}
+          value={draft.start.slice(0, 5)}
+          onChange={(e) => setDraft({ ...draft, start: `${e.target.value}:00` })}
           onBlur={commit}
-          aria-label="Saat"
+          aria-label="Başlangıç"
         />
-        {draft.actualHours != null && (
-          <span
-            className="truncate text-[11px] text-muted-foreground tabular"
-            title="Takip edilen gerçek süre; saat çeyreğe yuvarlanır"
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="number"
+            step="0.25"
+            min="0.25"
+            className={cn(cell, "w-16 tabular")}
+            disabled={!editable}
+            value={Number(draft.hours.toFixed(2))}
+            onChange={(e) => setDraft({ ...draft, hours: Number(e.target.value) })}
+            onBlur={commit}
+            aria-label="Saat"
+          />
+          {draft.actualHours != null && (
+            <span
+              className="truncate text-[11px] text-muted-foreground tabular"
+              title="Takip edilen gerçek süre; saat çeyreğe yuvarlanır"
+            >
+              {actual(draft.actualHours)}
+            </span>
+          )}
+        </div>
+        <Select value={draft.kind} disabled={!editable} onValueChange={(v) => save({ ...draft, kind: v as EntryKind })}>
+          <SelectTrigger size="sm" className="h-7 text-xs" aria-label="Tür">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {KINDS.map((k) => (
+              <SelectItem key={k} value={k}>
+                {k}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Input
+          className={cn(cell, missing && "border-amber-500/50 bg-amber-500/5")}
+          data-empty={missing || undefined}
+          title={missing ? "Açıklama boş: bu satır gönderilemez" : undefined}
+          disabled={!editable}
+          list="timesheet-details"
+          value={draft.details}
+          placeholder={editable ? (draft.kind === "Working" ? "Ne yaptın?" : "Toplantı konusu?") : ""}
+          onChange={(e) => setDraft({ ...draft, details: e.target.value })}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          aria-label="Açıklama"
+        />
+        <Input
+          className={cell}
+          disabled={!editable}
+          list="timesheet-parties"
+          value={draft.party}
+          onChange={(e) => setDraft({ ...draft, party: e.target.value })}
+          onBlur={commit}
+          aria-label="Taraf"
+        />
+        <Select value={draft.division} disabled={!editable} onValueChange={(division) => save({ ...draft, division })}>
+          <SelectTrigger
+            size="sm"
+            className="h-7 min-w-0 text-xs"
+            aria-label="Birim"
+            title={project ? `Proje: ${project.name}` : undefined}
           >
-            {actual(draft.actualHours)}
-          </span>
+            <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(project) }} />
+            <SelectValue placeholder="Birim seç" />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((d) => (
+              <SelectItem key={d} value={d}>
+                {d}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {editable ? (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            className="size-7 text-muted-foreground hover:text-destructive"
+            aria-label="Satırı sil"
+            title="Sil; bildirimden geri alınır"
+            onClick={run(() => dismissRows([entry]))}
+          >
+            <Trash2 />
+          </Button>
+        ) : (
+          <span />
         )}
       </div>
-      <Select value={draft.kind} disabled={!editable} onValueChange={(v) => save({ ...draft, kind: v as EntryKind })}>
-        <SelectTrigger size="sm" className="h-7 text-xs" aria-label="Tür">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {KINDS.map((k) => (
-            <SelectItem key={k} value={k}>
-              {k}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Input
-        className={cn(cell, missing && "border-amber-500/50 bg-amber-500/5")}
-        data-empty={missing || undefined}
-        title={missing ? "Açıklama boş: bu satır aktarılamaz" : undefined}
-        disabled={!editable}
-        list="timesheet-details"
-        value={draft.details}
-        placeholder={editable ? (draft.kind === "Working" ? "Ne yaptın?" : "Toplantı konusu?") : ""}
-        onChange={(e) => setDraft({ ...draft, details: e.target.value })}
-        onBlur={commit}
-        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-        aria-label="Açıklama"
-      />
-      <Input
-        className={cell}
-        disabled={!editable}
-        list="timesheet-parties"
-        value={draft.party}
-        onChange={(e) => setDraft({ ...draft, party: e.target.value })}
-        onBlur={commit}
-        aria-label="Taraf"
-      />
-      <Select
-        value={draft.projectId}
-        disabled={!editable}
-        onValueChange={(id) => {
-          const d = divisions.find((x) => x.projectId === id);
-          if (d) save({ ...draft, projectId: id, division: d.division });
-        }}
-      >
-        <SelectTrigger size="sm" className="h-7 min-w-0 text-xs" aria-label="Birim">
-          <i className="size-2 shrink-0 rounded-full" style={{ background: color }} />
-          <SelectValue placeholder={draft.division} />
-        </SelectTrigger>
-        <SelectContent>
-          {divisions.map((d) => (
-            <SelectItem key={d.projectId} value={d.projectId}>
-              {d.division}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {entry.exported ? (
-        <Check className="size-3.5 text-success" aria-label="Excel'e aktarıldı" />
-      ) : editable && entry.id ? (
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          className="size-7 text-muted-foreground hover:text-destructive"
-          aria-label="Satırı sil"
-          onClick={run(async () => {
-            await api.deleteTimesheetEntry(entry.id!);
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { id, exported, ...saved } = entry;
-            toast("Satır silindi", {
-              action: {
-                label: "Geri al",
-                run: () =>
-                  api
-                    .saveTimesheetEntry(null, saved)
-                    .then(notifyChanged, (e) => toast(friendlyError(e), { tone: "error" })),
-              },
-            });
-          })}
-        >
-          <Trash2 />
-        </Button>
-      ) : (
-        <span />
+      {stale && entry.id && (
+        <div className="flex flex-wrap items-center gap-1.5 px-4 pb-1.5 pl-[42px] text-[11px] text-amber-700 dark:text-amber-400">
+          <TriangleAlert className="size-3" />
+          {entry.stale! > 0
+            ? `Takipte değişti: işin bir kısmı raporda başka projeye alınmış, projede ${actual(entry.stale!)} kaldı.`
+            : "Takipte değişti: bu satırın işi raporda başka projeye alınmış."}
+          <button
+            className="rounded font-medium underline underline-offset-2 hover:text-foreground"
+            onClick={run(() => refreshRows([entry.id!]))}
+          >
+            {entry.stale! > 0 ? "Güncelle" : "Kaldır"}
+          </button>
+        </div>
       )}
     </li>
   );
@@ -1339,7 +1711,7 @@ function EntryRow({
 
 /**
  * İlk kurulum: kayıtların yazılacağı dosya (Excel ya da Google Sheets) ve isteğe bağlı Outlook
- * takvimi. Sonradan Ayarlar → Bağlantılar'dan değiştirilir.
+ * takvimi. Sonradan Ayarlar'dan değiştirilir; başka firmalar için yeni çizelge eklenir.
  */
 function Setup({ onDone }: { onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
@@ -1351,8 +1723,9 @@ function Setup({ onDone }: { onDone: () => void }) {
       <div className="space-y-1.5 px-1">
         <h1 className="text-base font-semibold">Zaman çizelgesi</h1>
         <p className="text-sm text-muted-foreground">
-          Projeye atanmış çalışma süren ve takvimindeki toplantılar günlük iş kayıtlarına dönüşür; onayladığın kayıtlar
-          firmanın dosyasına aynı sütun ve biçimle eklenir.
+          Projeye atanmış çalışma süren ve takvimindeki toplantılar günlük iş kayıtlarına dönüşür; gönderdiğin kayıtlar
+          firmanın dosyasına aynı sütun ve biçimle eklenir. Her firmanın çizelgesine yalnızca ona bağladığın projelerin
+          işi gider.
         </p>
       </div>
       <section className={step}>
@@ -1361,7 +1734,7 @@ function Setup({ onDone }: { onDone: () => void }) {
           Firma, danışman, birimler (projeler) ve geçmiş açıklamalar seçtiğin dosyadan alınır.
         </p>
         {sheets ? (
-          <SheetConnect onDone={onDone} onCancel={() => setSheets(false)} />
+          <SheetConnect timesheetId={null} onDone={onDone} onCancel={() => setSheets(false)} />
         ) : (
           <div className="flex flex-wrap gap-2">
             <Button
@@ -1372,7 +1745,7 @@ function Setup({ onDone }: { onDone: () => void }) {
                 try {
                   const path = await api.pickTimesheetFile();
                   if (path) {
-                    await api.importTimesheetTemplate(path);
+                    await api.importTimesheetTemplate(null, path);
                     onDone();
                   }
                 } catch (e) {
@@ -1399,7 +1772,7 @@ function Setup({ onDone }: { onDone: () => void }) {
         <CalendarConnect />
       </section>
       <p className="px-1 text-xs text-muted-foreground">
-        İkisini de sonra <b>Ayarlar → Bağlantılar</b>'dan değiştirebilirsin.
+        İkisini de sonra <b>Ayarlar</b>'dan değiştirebilirsin.
       </p>
     </div>
   );

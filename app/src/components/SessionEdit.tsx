@@ -271,7 +271,7 @@ export function MeetingMenu({
     const before = value;
     setValue(v);
     setError(null);
-    api.assignMeeting(m.uid, v === IGNORE ? null : v, isoDate(a)).then(onChanged, (e) => {
+    api.assignMeeting(m.uid, v === IGNORE ? null : v).then(onChanged, (e) => {
       setValue(before);
       setError(message(e));
     });

@@ -20,7 +20,9 @@ use crate::report::{self, Report};
 
 pub use edits::EditSnapshot;
 pub use taxonomy::TagExtras;
-pub use timesheet::{SavedEntry, SplitMeetings};
+pub use timesheet::{
+    DayRow, DayRows, SavedEntry, SplitMeetings, TimesheetContext, first_timesheet_id,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -209,6 +211,14 @@ CREATE INDEX rules_tag ON rules (tag_id);
 ALTER TABLE tags ADD COLUMN archived_at INTEGER;
 ALTER TABLE tags ADD COLUMN budget_days REAL;
 ALTER TABLE clients ADD COLUMN budget_days REAL;
+"#,
+    r#"
+-- Zaman çizelgesi satırının kapsadığı takip aralıkları (JSON [[başlangıç, bitiş], …], unix ms;
+-- boş dizi: elle eklenen satır, NULL: aralığı bilinmeyen eski satır), aktarıldığı çizelge ve
+-- gizlenme (silinme) anı. Kaydedilmiş satırların aralıkları yeniden önerilmez.
+ALTER TABLE timesheet_entries ADD COLUMN coverage TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN timesheet_id TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN dismissed_at INTEGER;
 "#,
 ];
 
@@ -401,6 +411,7 @@ impl Store {
             instance_id: Uuid::new_v4(),
         };
         store.seed_default_tags()?;
+        store.migrate_timesheets()?;
         Ok(store)
     }
 
@@ -1030,7 +1041,7 @@ fn from_ms(v: i64) -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crate::classify::{Client, DEFAULT_CATEGORIES, Rule, RuleField, Tag};
-    use crate::timesheet::{EntryKind, TimesheetConfig, TimesheetEntry};
+    use crate::timesheet::{EntryKind, ProjectMapping, Timesheet, TimesheetConfig, TimesheetEntry};
 
     fn t(secs: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(1_700_000_000 + secs, 0).unwrap()
@@ -1488,38 +1499,63 @@ mod tests {
     }
 
     #[test]
-    fn timesheet_day_can_be_approved_edited_and_exported() {
+    fn timesheet_rows_can_be_edited_added_and_exported() {
         let store = Store::open_in_memory().unwrap();
         let mut work = session("Figma", None, 0, 3600);
         work.title = "Trumore Loyalty UI/UX — Figma".into();
         store.upsert_session(&work).unwrap();
         let p = store.accept_project_suggestion("Trumore").unwrap();
+        let sheet = Timesheet {
+            id: "togg".into(),
+            default_party: "ADBA".into(),
+            projects: vec![ProjectMapping {
+                project_id: p.id.clone(),
+                division: String::new(),
+                party: None,
+                default_details: None,
+            }],
+            ..Default::default()
+        };
         store
             .save_timesheet_config(&TimesheetConfig {
-                default_party: "ADBA".into(),
+                timesheets: vec![sheet.clone()],
                 ..Default::default()
             })
             .unwrap();
-        let proposed = store.propose_timesheet(t(-36_000), t(36_000), &[]).unwrap();
+        let ctx = store.timesheet_context().unwrap();
+        let (from, to) = (t(-36_000), t(36_000));
+        let pieces = store.timesheet_pieces(&ctx, from, to, &[]).unwrap();
+        let day = chrono::DateTime::<chrono::Local>::from(t(0)).date_naive();
+        let rows = |store: &Store| {
+            let pieces = store.timesheet_pieces(&ctx, from, to, &[]).unwrap();
+            store
+                .timesheet_day(&ctx, &sheet, day, &pieces)
+                .unwrap()
+                .rows
+        };
+        let proposed = store
+            .timesheet_day(&ctx, &sheet, day, &pieces)
+            .unwrap()
+            .rows;
         assert_eq!(proposed.len(), 1);
         assert_eq!(
-            (proposed[0].division.as_str(), proposed[0].party.as_str()),
+            (
+                proposed[0].entry.division.as_str(),
+                proposed[0].entry.party.as_str()
+            ),
             ("Trumore", "ADBA")
         );
-        assert_eq!(proposed[0].project_id, p.id);
-        let day = proposed[0].date;
+        assert_eq!(proposed[0].entry.project_id, p.id);
+        assert_eq!(proposed[0].id, None, "düzenlenene kadar canlı öneri");
 
-        // Onayla, düzenle, ekle.
-        store.replace_timesheet_day(day, &proposed).unwrap();
-        let saved = store.timesheet_entries(day, day).unwrap();
-        let mut edited = saved[0].entry.clone();
+        // Düzenle (kaydedilir), elle satır ekle.
+        let mut edited = proposed[0].entry.clone();
         edited.details = "Loyalty ekranları".into();
-        store
-            .save_timesheet_entry(Some(&saved[0].id), &edited)
-            .unwrap();
+        let id = store.save_timesheet_entry(None, &edited).unwrap();
         let mut extra = edited.clone();
         extra.kind = EntryKind::F2F;
         extra.hours = 0.5;
+        extra.coverage = None;
         let extra_id = store.save_timesheet_entry(None, &extra).unwrap();
         assert_eq!(store.timesheet_entries(day, day).unwrap().len(), 2);
         assert!(
@@ -1534,23 +1570,21 @@ mod tests {
                 .is_err()
         );
 
-        // Aktarılan kayıt korunur: değiştirilemez, gün yeniden önerilince silinmez.
+        // Aktarılan kayıt korunur: değiştirilemez, gün yeniden önerilince silinmez ve işi
+        // ikinci kez önerilmez (dosyaya iki kez yazılırdı).
         store
-            .mark_timesheet_exported(&[saved[0].id.clone()], Utc::now())
+            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &sheet.id)
             .unwrap();
-        assert!(
-            store
-                .save_timesheet_entry(Some(&saved[0].id), &edited)
-                .is_err()
-        );
-        store.replace_timesheet_day(day, &[]).unwrap();
-        // Yeniden öneri aktarılmış işi ikinci kez önermez (dosyaya iki kez yazılırdı).
-        store.replace_timesheet_day(day, &proposed).unwrap();
-        let left = store.timesheet_entries(day, day).unwrap();
+        assert!(store.save_timesheet_entry(Some(&id), &edited).is_err());
+        assert_eq!(store.reset_timesheet_day(&sheet, day).unwrap(), 1);
+        let left = rows(&store);
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].entry.details, "Loyalty ekranları");
-        assert!(left[0].exported_at.is_some());
-        assert!(left.iter().all(|e| e.id != extra_id));
+        assert!(left[0].exported);
+        assert!(
+            left.iter()
+                .all(|e| e.id.as_deref() != Some(extra_id.as_str()))
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 18. Eğilimler: proje ve kategorilerin son 8/12/26 haftadaki haftalık süresi, bu hafta ve haftalık ortalama
 - [x] 19. Proje hedefleri: proje başına haftalık saat; hafta özeti ve eğilimlerde ilerleme, dolunca bildirim
 - [x] 20. Zaman çizelgesi: projeye atanan süreden günlük iş kayıtları (başlangıç, saat, Working/Online/F2F,
-      açıklama, taraf, birim), gözden geçirip onaylama ve firmanın Excel dosyasına biçimini koruyarak ekleme
+      açıklama, taraf, birim), gözden geçirip firmanın Excel dosyasına biçimini koruyarak ekleme
 - [x] 21. Outlook takvimi: yayımlanan ICS bağlantısından toplantılar (tekrarlar, saat dilimleri, iptaller); konusu
       proje kuralına uyan toplantı zaman çizelgesine Online/F2F kayıt olarak girer ve o sürede takip edilen işin
       yerini alır; diğerleri gün kartında seri olarak projeye atanır ya da yoksayılır
@@ -60,8 +60,8 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 33. Görünüm: kum tonlarında marka rengi, hedef halkaları, canlı kart, iskelet yükleme, sayfa geçişleri,
       okunur hata mesajları, karşılamada proje adımı (elle ya da zaman çizelgesi şablonundan)
 - [x] 34. Haftayı kapat: aktarmadan önce dönem denetimi (atanmamış süre, projesiz toplantılar, günlük saati
-      tutmayan ya da kaydı olmayan iş günleri, boş açıklamalar, onaylanmamış günler) ve her birine düzeltme
-      bağlantısı; tek düğmeyle onayla ve aktar. Gün kartında saat farkı rozeti, boş açıklama vurgusu
+      tutmayan ya da kaydı olmayan iş günleri, boş açıklamalar, takipte değişen satırlar) ve her birine düzeltme
+      bağlantısı; tek düğmeyle gönder. Gün kartında saat farkı rozeti, boş açıklama vurgusu
 - [x] 35. Hazır açıklamalar: proje başına açıklama metni (başlıklardan açıklama çıkmayan önerilere yazılır);
       gün kartında "Önceki günden kopyala" boş açıklamaları aynı projenin son açıklamalarıyla doldurur (geri alınır)
 - [x] 36. Proje seçici: projeler müşteriye göre gruplanır, son seçilen 5 proje en üstte; 12 ve daha fazla projede
@@ -102,6 +102,19 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       ipucunda); tek tıkla ya da "Önerilenleri ata" ile seri atanır. Takvim katılımcı yayımlamıyorsa konu ve
       düzenleyen yeter; belirsizse, arşivdeki projeye ya da 15 dakikadan kısa toplantıya öneri yok. Gün takvimindeki
       toplantı menüsünde de görünür
+- [x] 49. Projeye özel zaman çizelgeleri: her firmanın çizelgesi (Excel ya da Google Sheets) ayrıdır ve yalnızca
+      ona bağlanan projelerin işini alır; bir proje tek bir çizelgeye bağlanır (Ayarlar → Zaman çizelgeleri, birden
+      çok firmada sayfanın üstünde seçici). Satırın birimi dosyadaki birimlerden seçilir, projesi değişmez. Önceki
+      sürümün tek çizelgesi firmanın çizelgesi olur; ona eşlemesi olan projeler ve adı (ya da müşterisinin adı)
+      firmayla aynı olan projeler girer
+- [x] 50. Canlı satırlar: onay adımı yok; raporda çizelgenin projelerine atanan süre hemen "gönderilecek" satır
+      olur. İlk düzenlemede (birleştirme, silme, gönderme) satır kaydedilir ve kapsadığı takip aralıklarını
+      saklar; bu aralıklar yeniden önerilmez, sonradan atanan iş (sabah unutulan da) kendi saatinde yeni satır
+      olur. Satırlar seçilip birleştirilir (aynı gün ve proje: en erken başlangıç, toplam süre, açıklamalar),
+      gönderilir ya da silinir; hepsi geri alınır, silinenler gün kartından geri getirilir, "Sıfırla" günü takipten
+      yeniden kurar. Kaydedilen satırın işi raporda başka projeye alınırsa satır "takipte değişti" olur ve
+      güncellenmeden gönderilmez. Toplu gönderim henüz başlamamış işi (ileri tarihli toplantı) göndermez; müşteri
+      raporunun zaman çizelgesi kaynağı sayfadaki satırlardır
 
 ## Yapı
 
@@ -204,12 +217,13 @@ Windows platform kodu macOS'ta da denetlenebilir:
 
 **Outlook takvimi:** Outlook web'de *Ayarlar → Takvim → Paylaşılan takvimler → Takvim yayımla*
 ile takvimi "Tüm ayrıntılar" (en az "Başlıklar ve konumlar") düzeyinde yayımla, **ICS**
-bağlantısını Kum'da *Zaman çizelgesi → Ayarlar → Outlook takvimi* alanına yapıştır. Kum takvimi
+bağlantısını Kum'da *Ayarlar → Bağlantılar → Outlook takvimi* alanına yapıştır. Kum takvimi
 15 dakikada bir okur. Konusu bir projenin başlık kuralına uyan toplantı o projeye yazılır; diğerleri
 gün kartında listelenir, seçilen proje serinin tüm tekrarlarına uygulanır. Bağlantıyı bilen herkes
 takvimi görebilir; şirket yayımlamayı kapattıysa bu seçenek Outlook'ta görünmez.
 
-**Google Sheets:** *Zaman çizelgesi → Google Sheets'e bağla* betiği gösterir. Tabloda
+**Google Sheets:** *Ayarlar → Zaman çizelgeleri → Google Sheets'e bağla* (ya da yeni firma için *Başka firmanın
+zaman çizelgesi*) betiği gösterir. Her firmanın tablosuna aynı betik eklenir. Tabloda
 *Uzantılar → Apps Script*'e yapıştır, *Dağıt → Yeni dağıtım → Web uygulaması* ("Ben" olarak yürüt,
 erişim "Herkes") ile dağıt ve `…/exec` adresini Kum'a gir. Betik yalnızca Kum'un anahtarını taşıyan
 istekleri kabul eder, kayıtları ilk sayfaya Excel aktarımıyla aynı kurallarla ekler ve aynı kaydı
