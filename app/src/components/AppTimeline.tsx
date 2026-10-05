@@ -1,14 +1,15 @@
 import { useMemo, useRef, useState } from "react";
 import { ChevronRight, PenLine } from "lucide-react";
-import { formatDuration, type Tag, type WindowSpan } from "../api";
+import { formatDuration, NO_PROJECT, type Tag, type WindowSpan } from "../api";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
 import { tagColor } from "../lib/tags";
+import { detailRows, onlyOther, type MinorBond } from "../lib/minorWindows";
 import { cn } from "../lib/utils";
 import { clampZoom, useZoomGestures } from "../lib/zoom";
 import { AppIcon } from "./AppIcon";
 
 const HOUR_MS = 3600_000;
-/** Bir uygulama açıldığında en çok bu kadar pencere ayrı satırda; kalanı "diğer". */
+/** Bir uygulama açıldığında en çok bu kadar satır; kalanı "Diğer". */
 const MAX_TITLES = 8;
 /** Bundan kısa süren uygulamalar "Diğer uygulamalar" satırında toplanır. */
 const MIN_APP_SECS = 60;
@@ -21,20 +22,44 @@ type AppLane = Lane & { appId: string; categoryId: string | null; titles: Lane[]
 
 const secsOf = (spans: WindowSpan[]) => spans.reduce((s, w) => s + (+new Date(w.end) - +new Date(w.start)) / 1000, 0);
 
-function group(windows: WindowSpan[]): { apps: AppLane[]; rest: Lane | null } {
+/** Pencerenin (başlığın) bağı: süresinin çoğunun yazıldığı proje, yoksa sitesi. */
+function bondOf(spans: WindowSpan[], tags: Map<string, Tag>): MinorBond | null {
+  const ms = new Map<string | null, number>();
+  for (const w of spans) {
+    const id = w.projectId && w.projectId !== NO_PROJECT ? w.projectId : null;
+    ms.set(id, (ms.get(id) ?? 0) + +new Date(w.end) - +new Date(w.start));
+  }
+  const top = [...ms.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const project = top ? tags.get(top) : undefined;
+  if (project) return { key: `p:${project.id}`, label: project.name, projectId: project.id };
+  const domain = spans.find((w) => w.domain)?.domain;
+  return domain ? { key: `d:${domain}`, label: domain, domain } : null;
+}
+
+export function group(windows: WindowSpan[], tags: Map<string, Tag>): { apps: AppLane[]; rest: Lane | null } {
   const byApp = new Map<string, WindowSpan[]>();
   for (const w of windows) byApp.set(w.appId, [...(byApp.get(w.appId) ?? []), w]);
   const lanes: AppLane[] = [...byApp.entries()].map(([appId, spans]) => {
     const byTitle = new Map<string, WindowSpan[]>();
     for (const w of spans) byTitle.set(w.title, [...(byTitle.get(w.title) ?? []), w]);
-    const titles = [...byTitle.entries()]
+    const each = [...byTitle.entries()]
       .map(([title, s]) => ({ key: title, label: title || "(başlıksız)", secs: secsOf(s), spans: s }))
       .sort((a, b) => b.secs - a.secs);
-    if (titles.length > MAX_TITLES) {
-      const extra = titles.splice(MAX_TITLES - 1);
-      const s = extra.flatMap((t) => t.spans);
-      titles.push({ key: "\u0000rest", label: `Diğer ${extra.length} pencere`, secs: secsOf(s), spans: s });
-    }
+    // Kısa pencereler adıyla değil, ortak projede/sitede ya da "Diğer"de toplanır.
+    const rows = detailRows(
+      each,
+      (t) => t.secs,
+      (t) => bondOf(t.spans, tags),
+      "pencere",
+      MAX_TITLES,
+    );
+    const titles: Lane[] = onlyOther(rows)
+      ? []
+      : rows.map((r) => {
+          if (r.kind === "item") return r.item;
+          const s = r.items.flatMap((t) => t.spans);
+          return { key: r.key, label: r.label, secs: r.seconds, spans: s };
+        });
     // Kategori: en çok sürenin kategorisi (elle atama pencere bazında farklı olabilir).
     const cat = new Map<string | null, number>();
     for (const w of spans) cat.set(w.categoryId, (cat.get(w.categoryId) ?? 0) + +new Date(w.end) - +new Date(w.start));
@@ -199,7 +224,7 @@ export default function AppTimeline({
 }) {
   const dates = useMemo(() => Array.from({ length: days + 1 }, (_, i) => addDays(from, i)), [from, days]);
   const starts = useMemo(() => dates.map(Number), [dates]);
-  const { apps, rest } = useMemo(() => group(windows), [windows]);
+  const { apps, rest } = useMemo(() => group(windows, tags), [windows, tags]);
   const range = useMemo(() => hourRange(windows, starts), [windows, starts]);
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [hover, setHover] = useState<Hover | null>(null);

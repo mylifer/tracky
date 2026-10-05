@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, PenLine } from "lucide-react";
 import { api, formatDuration, type AppBucket, type Tag, type UsageTotal } from "../api";
+import { detailRows, onlyOther } from "../lib/minorWindows";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { AppIcon } from "./AppIcon";
@@ -27,6 +28,11 @@ export function AppList({
   const [open, setOpen] = useState<string | null>(null);
   const [titles, setTitles] = useState<UsageTotal[]>([]);
   const max = apps[0]?.seconds || 1;
+  // Kısa pencereler adıyla görünmez, "Diğer"de toplanır; tek satır "Diğer" kalırsa liste boş.
+  const titleRows = useMemo(() => {
+    const rows = detailRows(titles, (t) => t.seconds, undefined, "pencere", MAX_TITLES);
+    return onlyOther(rows) ? [] : rows;
+  }, [titles]);
 
   // Açık uygulamanın süresi dakika olarak değişince yenile (her canlı raporda değil).
   const openMinutes = Math.floor((apps.find((a) => a.appId === open)?.seconds ?? 0) / 60);
@@ -107,16 +113,20 @@ export function AppList({
             </div>
             {isOpen && (
               <ul className="mb-1 ml-[52px] border-l pl-3">
-                {titles.slice(0, MAX_TITLES).map((t) => (
-                  <li key={t.key} className="flex items-center gap-3 py-1 pr-2 text-xs">
-                    <span className="min-w-0 flex-1 truncate selectable" title={t.label}>
-                      {t.label || <em className="text-muted-foreground">(başlık okunamadı)</em>}
-                    </span>
-                    <span className="shrink-0 text-muted-foreground tabular">{formatDuration(t.seconds)}</span>
-                  </li>
-                ))}
-                {titles.length > MAX_TITLES && (
-                  <li className="py-1 text-xs text-muted-foreground">+{titles.length - MAX_TITLES} başlık daha</li>
+                {titleRows.map((r) =>
+                  r.kind === "item" ? (
+                    <li key={r.item.key} className="flex items-center gap-3 py-1 pr-2 text-xs">
+                      <span className="min-w-0 flex-1 truncate selectable" title={r.item.label}>
+                        {r.item.label || <em className="text-muted-foreground">(başlık okunamadı)</em>}
+                      </span>
+                      <span className="shrink-0 text-muted-foreground tabular">{formatDuration(r.seconds)}</span>
+                    </li>
+                  ) : (
+                    <li key={r.key} className="flex items-center gap-3 py-1 pr-2 text-xs text-muted-foreground">
+                      <span className="min-w-0 flex-1 truncate">{r.label}</span>
+                      <span className="shrink-0 tabular">{formatDuration(r.seconds)}</span>
+                    </li>
+                  ),
                 )}
               </ul>
             )}

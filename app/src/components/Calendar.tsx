@@ -3,6 +3,7 @@ import { Briefcase, CalendarDays, ChevronDown, Coffee, FolderInput, Shapes, Vide
 import type { CalendarMeeting, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../api";
 import { api, formatDuration, NO_PROJECT } from "../api";
 import { blockWindows, type BlockApp, type BlockWindow } from "../lib/blockWindows";
+import { detailRows, onlyOther, type DetailRow } from "../lib/minorWindows";
 import { friendlyError, toast, undoable } from "../lib/feedback";
 import { UNASSIGNED_MIN } from "../lib/timesheet";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
@@ -359,14 +360,27 @@ function BlockApps({
 
 function AppWindows({ block, app, tags }: { block: WorkBlock; app: BlockApp; tags: Map<string, Tag> }) {
   const [all, setAll] = useState(false);
-  const shown = all ? app.windows : app.windows.slice(0, FIRST_WINDOWS);
-  const hidden = app.windows.length - shown.length;
+  const rows = useMemo(() => windowRows(app.windows, tags), [app.windows, tags]);
+  // Yalnızca "Diğer" kalan uygulamada liste, üstteki süreyi tekrarlamaktan öteye geçmez.
+  if (onlyOther(rows)) return null;
+  const shown = all ? rows : rows.slice(0, FIRST_WINDOWS);
+  const hidden = rows.length - shown.length;
   return (
     <ul className="mt-1.5 ml-[42px] space-y-0.5 border-l pl-2">
-      {shown.map((w) => (
-        <WindowRow key={`${w.title}\u0000${w.projectId ?? ""}`} block={block} appId={app.appId} w={w} tags={tags} />
-      ))}
-      {(hidden > 0 || all) && app.windows.length > FIRST_WINDOWS && (
+      {shown.map((r) =>
+        r.kind === "item" ? (
+          <WindowRow
+            key={`${r.item.title}\u0000${r.item.projectId ?? ""}`}
+            block={block}
+            appId={app.appId}
+            w={r.item}
+            tags={tags}
+          />
+        ) : (
+          <GroupRow key={r.key} row={r} tags={tags} />
+        ),
+      )}
+      {(hidden > 0 || all) && rows.length > FIRST_WINDOWS && (
         <li>
           <button
             className="flex items-center gap-1 rounded py-0.5 text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
@@ -374,11 +388,46 @@ function AppWindows({ block, app, tags }: { block: WorkBlock; app: BlockApp; tag
             onClick={() => setAll(!all)}
           >
             <ChevronDown className={cn("size-3 transition-transform", all && "rotate-180")} />
-            {all ? "Daha az göster" : `${hidden} pencere daha`}
+            {all ? "Daha az göster" : `${hidden} satır daha`}
           </button>
         </li>
       )}
     </ul>
+  );
+}
+
+/**
+ * Bloktaki pencereler ayrıntı satırlarına: kısa olanlar aynı projede (projesizse aynı sitede)
+ * birlikte anlamlıysa toplanır, gerisi "Diğer".
+ */
+function windowRows(windows: BlockWindow[], tags: Map<string, Tag>): DetailRow<BlockWindow>[] {
+  return detailRows(
+    windows,
+    (w) => w.seconds,
+    (w) => {
+      const project = w.projectId && w.projectId !== NO_PROJECT ? tags.get(w.projectId) : undefined;
+      if (project) return { key: `p:${project.id}`, label: project.name, projectId: project.id };
+      if (w.domain) return { key: `d:${w.domain}`, label: w.domain, domain: w.domain };
+      return null;
+    },
+  );
+}
+
+/** Kısa pencerelerin toplam satırı: adları tek tek gösterilmez, yalnızca ortak bağ ve süre. */
+function GroupRow({ row, tags }: { row: Extract<DetailRow<BlockWindow>, { kind: "group" }>; tags: Map<string, Tag> }) {
+  const project = row.bond?.projectId ? tags.get(row.bond.projectId) : undefined;
+  return (
+    <li className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs text-muted-foreground">
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        {project ? (
+          <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(project) }} aria-hidden />
+        ) : (
+          row.bond?.domain && <SiteIcon domain={row.bond.domain} />
+        )}
+        <span className="truncate">{row.label}</span>
+      </span>
+      <span className="shrink-0 text-[11px] tabular">{formatDuration(row.seconds)}</span>
+    </li>
   );
 }
 
