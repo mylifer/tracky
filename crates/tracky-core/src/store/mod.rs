@@ -627,6 +627,10 @@ impl Store {
             ),
             params![ms(from), ms(to), project_id, ms(Utc::now())],
         )?;
+        // Raporda bilerek atanan süre, projenin silinmiş satırında kalsa da yeniden önerilir.
+        if let Some(id) = project_id.filter(|id| *id != crate::classify::NO_PROJECT) {
+            self.forget_dismissed(id, from, to)?;
+        }
         tx.commit()?;
         Ok(n)
     }

@@ -572,16 +572,18 @@ pub fn pieces(
 }
 
 /// Parçalardan `sheet`'e bağlı projelerin iş kaydı önerileri; başlangıca göre sıralı.
-/// `saved` proje başına kaydedilmiş satırların aralıklarıdır ([`coalesce`] edilmiş): bu süre
-/// yeniden önerilmez. Kaydedilmiş satırın artığı `MIN_REMAINDER`'dan kısaysa önerilmez: satır
-/// kaydedilirken süren işin birkaç dakikası (satıra `MERGE_GAP`'ten yakın oturumlar) ya da bir
-/// kısmı kaydedilmiş toplantının uzayan ucu yeni iş sayılmaz. Kaydedilmiş toplantının ardından
-/// gelen ayrı bir toplantı ise kısa da olsa önerilir.
+/// `saved` proje başına kaydedilmiş (silinmişler dahil) satırların aralıklarıdır, satır satır:
+/// bu süre yeniden önerilmez. Kaydedilmiş satırın artığı `MIN_REMAINDER`'dan kısaysa önerilmez:
+/// satır kaydedilirken süren işin birkaç dakikası (satıra `MERGE_GAP`'ten yakın oturumlar) ya da
+/// bir kısmı kaydedilmiş toplantının uzayan ucu yeni iş sayılmaz. Satırın ilk ve son aralığı
+/// arasındaki boşluklara düşen süre ise satır kaydedilirken projenin değildi (raporda sonradan
+/// atandı): en az `MIN_ENTRY` ise kısa da olsa önerilir. Kaydedilmiş toplantının ardından gelen
+/// ayrı bir toplantı da kısa da olsa önerilir.
 pub fn propose(
     pieces: &[Piece],
     project_names: &HashMap<String, String>,
     sheet: &Timesheet,
-    saved: &HashMap<String, Vec<Interval>>,
+    saved: &HashMap<String, Vec<Vec<Interval>>>,
 ) -> Vec<TimesheetEntry> {
     struct Run {
         project: String,
@@ -622,14 +624,31 @@ pub fn propose(
         }
     }
 
+    // Proje başına kaydedilmiş süre ve satırların kapladığı aralıklar (ilk aralığın başından
+    // sonuncunun sonuna).
+    let cuts: HashMap<&str, (Vec<Interval>, Vec<Interval>)> = saved
+        .iter()
+        .map(|(project, rows)| {
+            let hulls = rows
+                .iter()
+                .filter_map(|spans| {
+                    Some((
+                        spans.iter().map(|s| s.0).min()?,
+                        spans.iter().map(|s| s.1).max()?,
+                    ))
+                })
+                .collect();
+            (project.as_str(), (coalesce(rows.concat()), hulls))
+        })
+        .collect();
     let none: Vec<Interval> = Vec::new();
     let mut parts: Vec<(DateTime<Utc>, DateTime<Utc>, &Piece, bool)> = pieces
         .iter()
         .filter(|p| sheet.includes(&p.project))
         .flat_map(|p| {
-            let left = saved
-                .get(&p.project)
-                .unwrap_or(&none)
+            let left = cuts
+                .get(p.project.as_str())
+                .map_or(&none, |c| &c.0)
                 .iter()
                 .fold(vec![(p.start, p.end)], |v, &c| subtract(v, c));
             let trimmed = total(&left) < p.end - p.start;
@@ -669,15 +688,24 @@ pub fn propose(
     runs.extend(meetings.into_iter().map(|(_, run)| run));
 
     // Kaydedilmiş satırın artığı mı: oturumlarda satıra yakın iş, toplantıda aynı toplantının ucu.
+    // Satırın kapladığı aralığa sonradan atanmış en az `MIN_ENTRY` iş varsa artık değildir.
     let remainder = |r: &Run| {
         if r.meeting {
             return r.trimmed;
         }
-        saved.get(&r.project).is_some_and(|cut| {
-            r.spans.iter().any(|&(a, b)| {
+        cuts.get(r.project.as_str()).is_some_and(|(cut, hulls)| {
+            let near = r.spans.iter().any(|&(a, b)| {
                 cut.iter()
                     .any(|&(c, d)| a <= d + MERGE_GAP && c <= b + MERGE_GAP)
-            })
+            });
+            let inside: Duration = r
+                .spans
+                .iter()
+                .flat_map(|&(a, b)| hulls.iter().map(move |&(c, d)| (a.max(c), b.min(d))))
+                .filter(|(a, b)| b > a)
+                .map(|(a, b)| b - a)
+                .sum();
+            near && inside < MIN_ENTRY
         })
     };
     let mut out: Vec<TimesheetEntry> = runs
@@ -1220,7 +1248,7 @@ mod tests {
         let all = propose(&p, &names, &sheet, &HashMap::new());
         assert_eq!(all.len(), 2);
         // İkinci satır kaydedildi (düzenlendi): ilki önerilmeye devam eder, ikincisi gelmez.
-        let saved = HashMap::from([("tru".to_string(), all[1].spans())]);
+        let saved = HashMap::from([("tru".to_string(), vec![all[1].spans()])]);
         let left = propose(&p, &names, &sheet, &saved);
         assert_eq!(left, vec![all[0].clone()]);
 
@@ -1228,10 +1256,7 @@ mod tests {
         let mut later = sessions.to_vec();
         later.push(s("Mail", "Rapor taslağı", -120, -60, Some("tru")));
         let p = pieces(&later, &[], &classifier, &config, t(-540), t(900));
-        let saved = HashMap::from([(
-            "tru".to_string(),
-            coalesce([all[0].spans(), all[1].spans()].concat()),
-        )]);
+        let saved = HashMap::from([("tru".to_string(), vec![all[0].spans(), all[1].spans()])]);
         let got = propose(&p, &names, &sheet, &saved);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].start.format("%H:%M").to_string(), "07:00");
@@ -1241,10 +1266,7 @@ mod tests {
         let mut tail = sessions.to_vec();
         tail.push(s("Figma", "Trumore Rapor — Figma", 180, 190, None));
         let p = pieces(&tail, &[], &classifier, &config, t(-540), t(900));
-        let saved = HashMap::from([(
-            "tru".to_string(),
-            coalesce([all[0].spans(), all[1].spans()].concat()),
-        )]);
+        let saved = HashMap::from([("tru".to_string(), vec![all[0].spans(), all[1].spans()])]);
         assert!(propose(&p, &names, &sheet, &saved).is_empty());
         tail.push(s("Figma", "Trumore Rapor — Figma", 190, 200, None));
         let p = pieces(&tail, &[], &classifier, &config, t(-540), t(900));
@@ -1252,6 +1274,33 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].start.format("%H:%M").to_string(), "12:00");
         assert_eq!(got[0].spans(), vec![(t(180), t(200))]);
+    }
+
+    #[test]
+    fn work_assigned_later_inside_a_saved_row_is_proposed() {
+        let (classifier, names, config, sheet) = setup();
+        let sessions = [
+            s("Figma", "Trumore Loyalty — Figma", 0, 20, None),
+            s("Slack", "#genel", 20, 30, None), // projesiz
+            s("Figma", "Trumore Loyalty — Figma", 30, 60, None),
+        ];
+        let p = pieces(&sessions, &[], &classifier, &config, t(-540), t(900));
+        let row = propose(&p, &names, &sheet, &HashMap::new()).remove(0);
+        assert_eq!(row.spans(), vec![(t(0), t(20)), (t(30), t(60))]);
+        // Satır kaydedildi (ya da silindi); aradaki 6 dakika sonradan raporda projeye atandı:
+        // satırın artığı değil, yeni iş.
+        let saved = HashMap::from([("tru".to_string(), vec![row.spans()])]);
+        let mut later = sessions.to_vec();
+        later[1] = s("Slack", "#genel", 20, 26, Some("tru"));
+        let p = pieces(&later, &[], &classifier, &config, t(-540), t(900));
+        let got = propose(&p, &names, &sheet, &saved);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].spans(), vec![(t(20), t(26))]);
+        // Satırın dışındaki kısa kuyruk ise önerilmez.
+        let mut tail = sessions.to_vec();
+        tail.push(s("Figma", "Trumore Loyalty — Figma", 60, 70, None));
+        let p = pieces(&tail, &[], &classifier, &config, t(-540), t(900));
+        assert!(propose(&p, &names, &sheet, &saved).is_empty());
     }
 
     #[test]
@@ -1268,7 +1317,7 @@ mod tests {
         let p = pieces(&[], &[first, second], &classifier, &config, t(-540), t(900));
         let all = propose(&p, &names, &sheet, &HashMap::new());
         assert_eq!(all.len(), 2);
-        let saved = HashMap::from([("tru".to_string(), all[0].spans())]);
+        let saved = HashMap::from([("tru".to_string(), vec![all[0].spans()])]);
         assert_eq!(propose(&p, &names, &sheet, &saved), vec![all[1].clone()]);
         // Kaydedilmiş toplantı takvimde 10 dakika uzadı: uç yeni iş sayılmaz.
         let longer = (

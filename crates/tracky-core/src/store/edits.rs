@@ -8,10 +8,10 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-use super::{FOREIGN_LIVE_WINDOW_MS, OVERLAPS, Result, Store, StoreError, ms};
+use super::{FOREIGN_LIVE_WINDOW_MS, OVERLAPS, Result, Store, StoreError, from_ms, ms};
 use crate::classify::{Classifier, NO_PROJECT, Rule, TagKind};
 use crate::inbox::{self, RulePreview, Unassigned};
 use crate::model::{IDLE_APP_ID, MANUAL_APP_ID};
@@ -181,6 +181,22 @@ impl Store {
                     IDLE_APP_ID,
                 ],
             )?;
+        }
+        // Raporda bilerek atanan süre, projenin silinmiş satırında kalsa da yeniden önerilir.
+        if let Some(project) = project_id.filter(|id| *id != NO_PROJECT) {
+            for id in ids {
+                if let Some((from, to)) = self
+                    .conn
+                    .query_row(
+                        "SELECT started_at, ended_at FROM sessions WHERE id = ?1 AND project_id = ?2",
+                        params![id.to_string(), project],
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()?
+                {
+                    self.forget_dismissed(project, from_ms(from), from_ms(to))?;
+                }
+            }
         }
         tx.commit()?;
         Ok(n)

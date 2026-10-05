@@ -403,20 +403,17 @@ impl Store {
         pieces: &[Piece],
     ) -> Result<DayRows> {
         let saved = self.saved_rows(date, date)?;
-        let mut covered: HashMap<String, Vec<Interval>> = HashMap::new();
+        let mut covered: HashMap<String, Vec<Vec<Interval>>> = HashMap::new();
         let mut legacy = Vec::new();
         for s in &saved {
             match &s.entry.coverage {
                 Some(_) => covered
                     .entry(s.entry.project_id.clone())
                     .or_default()
-                    .extend(s.entry.spans()),
+                    .push(s.entry.spans()),
                 None if sheet.includes(&s.entry.project_id) => legacy.push(s.entry.clone()),
                 None => {}
             }
-        }
-        for spans in covered.values_mut() {
-            *spans = timesheet::coalesce(std::mem::take(spans));
         }
         let live = timesheet::without_legacy(
             &timesheet::propose(pieces, &ctx.names, sheet, &covered),
@@ -681,6 +678,43 @@ impl Store {
         }
         tx.commit()?;
         Ok(id)
+    }
+
+    /// `[from, to)` raporda `project`'e atandı: projenin bu aralığı kaplayan silinmiş satırları
+    /// aralığı artık kapsamaz (iş yeniden canlı öneri olur); aralığı kalmayan silinmiş satır
+    /// tamamen silinir. Değişen satır sayısı.
+    pub(crate) fn forget_dismissed(
+        &self,
+        project: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<usize> {
+        let day = |t: DateTime<Utc>| t.with_timezone(&chrono::Local).date_naive();
+        let mut n = 0;
+        for s in self.saved_rows(day(from), day(to))? {
+            if !s.dismissed || s.entry.project_id != project || s.entry.coverage.is_none() {
+                continue;
+            }
+            let spans = s.entry.spans();
+            let left: Vec<Interval> = spans
+                .iter()
+                .flat_map(|&span| timesheet::subtract(vec![span], (from, to)))
+                .collect();
+            if left == spans {
+                continue;
+            }
+            n += if left.is_empty() {
+                self.conn
+                    .execute("DELETE FROM timesheet_entries WHERE id = ?1", [&s.id])?
+            } else {
+                let coverage = serde_json::to_string(&timesheet::to_coverage(&left))?;
+                self.conn.execute(
+                    "UPDATE timesheet_entries SET coverage = ?2 WHERE id = ?1",
+                    params![s.id, coverage],
+                )?
+            };
+        }
+        Ok(n)
     }
 
     /// Gizlenen satırları geri getirir.
@@ -1149,6 +1183,37 @@ mod tests {
             .dismiss_timesheet_entry(Some(&id), &r[0].entry)
             .unwrap();
         assert!(store.timesheet_entries(day(), day()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn assigning_time_again_brings_back_a_deleted_rows_work() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        project(&store, "kum", "Kum");
+        work(&store, "Loyalty", 0, 60, Some("togg"));
+        let togg = sheet("togg", &["togg"]);
+        let (r, _) = rows(&store, &togg);
+        let id = store.dismiss_timesheet_entry(None, &r[0].entry).unwrap();
+        assert!(rows(&store, &togg).0.is_empty());
+        // Başka projeye atamak silinmiş satıra dokunmaz.
+        store.set_project_between(t(0), t(10), Some("kum")).unwrap();
+        let spans = |store: &Store| store.timesheet_entry(&id).unwrap().unwrap().entry.spans();
+        assert_eq!(spans(&store), vec![(t(0), t(60))]);
+        store.set_project_between(t(0), t(10), None).unwrap();
+        // Raporda yeniden projeye atanan yarım saat geri gelir; kalanı silinmiş kalır.
+        store
+            .set_project_between(t(30), t(60), Some("togg"))
+            .unwrap();
+        let (r, hidden) = rows(&store, &togg);
+        assert_eq!((r.len(), hidden), (1, 1));
+        assert_eq!(r[0].entry.spans(), vec![(t(30), t(60))]);
+        // Bütün aralık atanınca silinmiş satır kalmaz.
+        store
+            .set_project_between(t(0), t(60), Some("togg"))
+            .unwrap();
+        let (r, hidden) = rows(&store, &togg);
+        assert_eq!((r.len(), hidden), (1, 0));
+        assert_eq!(r[0].entry.spans(), vec![(t(0), t(60))]);
     }
 
     #[test]
