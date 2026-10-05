@@ -356,7 +356,7 @@ impl DayPieces<'_> {
                 .store
                 .timesheet_pieces(self.ctx, from, to, &todays)
                 .map_err(err)?;
-            self.days.insert(date, pieces);
+            self.days.insert(date, pieces.pieces);
         }
         Ok(&self.days[&date])
     }

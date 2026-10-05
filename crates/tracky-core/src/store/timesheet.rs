@@ -5,7 +5,7 @@
 //! kaydedilen satır kapsadığı takip aralıklarını saklar ve bu aralıklar yeniden önerilmez
 //! ([`crate::timesheet::propose`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use rusqlite::params;
@@ -73,6 +73,42 @@ pub struct DayRows {
     pub rows: Vec<DayRow>,
     /// Gizlenen satır sayısı.
     pub hidden: usize,
+}
+
+/// Günün zaman çizelgesine giren süresi ([`Store::timesheet_pieces`]).
+#[derive(Debug, Clone, Default)]
+pub struct TimesheetPieces {
+    pub pieces: Vec<Piece>,
+    /// Toplantısı yapılmamış sayılan (çizelgeden silinmiş) satırlar.
+    skipped: HashSet<String>,
+}
+
+impl std::ops::Deref for TimesheetPieces {
+    type Target = [Piece];
+
+    fn deref(&self) -> &[Piece] {
+        &self.pieces
+    }
+}
+
+/// Satır toplantının satırı mı: aralıkları toplantının içinde ya da (aralıkları bilinmeyen eski
+/// satırda) aynı gün ve saatte başlıyor; türü aynı.
+fn meeting_row(m: &Meeting, e: &TimesheetEntry) -> bool {
+    let kind = if m.online {
+        EntryKind::Online
+    } else {
+        EntryKind::F2F
+    };
+    if e.kind != kind {
+        return false;
+    }
+    let spans = e.spans();
+    if e.coverage.is_some() {
+        return !spans.is_empty() && spans.iter().all(|&(a, b)| m.start <= a && b <= m.end);
+    }
+    let start = m.start.with_timezone(&chrono::Local);
+    e.date == start.date_naive()
+        && e.start.format("%H:%M").to_string() == start.format("%H:%M").to_string()
 }
 
 /// Zaman çizelgesi hesabının ortak girdileri: birkaç gün boyunca bir kez okunur.
@@ -364,14 +400,22 @@ impl Store {
     }
 
     /// `from`–`to` (yerel gün) arasında zaman çizelgesine giren süre: projesi belli takvim
-    /// toplantıları ve oturumlar ([`timesheet::pieces`]).
+    /// toplantıları ve oturumlar ([`timesheet::pieces`]). Çizelgeden silinmiş satırı olan
+    /// toplantı yapılmamış sayılır: süresi çakışan başka toplantıya ya da o saatteki işe kalır.
     pub fn timesheet_pieces(
         &self,
         ctx: &TimesheetContext,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
         meetings: &[Meeting],
-    ) -> Result<Vec<Piece>> {
+    ) -> Result<TimesheetPieces> {
+        let day = |t: DateTime<Utc>| t.with_timezone(&chrono::Local).date_naive();
+        let dismissed: Vec<SavedEntry> = self
+            .saved_rows(day(from), day(to))?
+            .into_iter()
+            .filter(|s| s.dismissed && s.entry.kind != EntryKind::Working)
+            .collect();
+        let mut skipped = HashSet::new();
         let known: Vec<(Meeting, String)> = meetings
             .iter()
             .filter_map(
@@ -380,16 +424,20 @@ impl Store {
                     _ => None,
                 },
             )
+            .filter(|(m, p)| {
+                let rows: Vec<&SavedEntry> = dismissed
+                    .iter()
+                    .filter(|s| s.entry.project_id == *p && meeting_row(m, &s.entry))
+                    .collect();
+                skipped.extend(rows.iter().map(|s| s.id.clone()));
+                rows.is_empty()
+            })
             .collect();
         let sessions = self.merged_sessions_between(from, to)?;
-        Ok(timesheet::pieces(
-            &sessions,
-            &known,
-            &ctx.classifier,
-            &ctx.config,
-            from,
-            to,
-        ))
+        Ok(TimesheetPieces {
+            pieces: timesheet::pieces(&sessions, &known, &ctx.classifier, &ctx.config, from, to),
+            skipped,
+        })
     }
 
     /// Günün `sheet` çizelgesindeki satırları: kaydedilmiş satırlar (aktarılmışsa bu çizelgeye
@@ -400,12 +448,13 @@ impl Store {
         ctx: &TimesheetContext,
         sheet: &Timesheet,
         date: NaiveDate,
-        pieces: &[Piece],
+        pieces: &TimesheetPieces,
     ) -> Result<DayRows> {
         let saved = self.saved_rows(date, date)?;
         let mut covered: HashMap<String, Vec<Vec<Interval>>> = HashMap::new();
         let mut legacy = Vec::new();
-        for s in &saved {
+        // Yapılmamış sayılan toplantının silinmiş satırı başka işi kapsamaz.
+        for s in saved.iter().filter(|s| !pieces.skipped.contains(&s.id)) {
             match &s.entry.coverage {
                 Some(_) => covered
                     .entry(s.entry.project_id.clone())
@@ -1214,6 +1263,57 @@ mod tests {
         let (r, hidden) = rows(&store, &togg);
         assert_eq!((r.len(), hidden), (1, 0));
         assert_eq!(r[0].entry.spans(), vec![(t(0), t(60))]);
+    }
+
+    #[test]
+    fn a_deleted_meeting_leaves_its_time_to_an_overlapping_one() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        let togg = sheet("togg", &["togg"]);
+        let meeting = |uid: &str, subject: &str, from: i64, to: i64, online: bool| Meeting {
+            uid: uid.into(),
+            start: t(from),
+            end: t(to),
+            subject: subject.into(),
+            online,
+            ..Meeting::default()
+        };
+        let meetings = [
+            meeting("plan", "Haftalık plan", 0, 60, true),
+            meeting("ux", "Charging UX", 30, 60, false),
+        ];
+        store.assign_meeting("plan", Some("togg")).unwrap();
+        store.assign_meeting("ux", Some("togg")).unwrap();
+        let rows = |store: &Store| {
+            let ctx = store.timesheet_context().unwrap();
+            let pieces = store
+                .timesheet_pieces(&ctx, t(-540), t(900), &meetings)
+                .unwrap();
+            let d = store.timesheet_day(&ctx, &togg, day(), &pieces).unwrap();
+            d.rows
+                .into_iter()
+                .map(|r| ((r.entry.worked() * 60.0).round() as i64, r.entry.details))
+                .collect::<Vec<_>>()
+        };
+        // Önce başlayan toplantı çakışan yarım saati alır.
+        assert_eq!(rows(&store), [(60, "Haftalık plan".to_string())]);
+        // Planlama çizelgeden silindi (yapılmadı): süresi ikinci toplantıya kalır.
+        let ctx = store.timesheet_context().unwrap();
+        let pieces = store
+            .timesheet_pieces(&ctx, t(-540), t(900), &meetings)
+            .unwrap();
+        let r = store
+            .timesheet_day(&ctx, &togg, day(), &pieces)
+            .unwrap()
+            .rows;
+        store.dismiss_timesheet_entry(None, &r[0].entry).unwrap();
+        assert_eq!(rows(&store), [(30, "Charging UX".to_string())]);
+        // Aralıkları bilinmeyen eski satır da aynı saatte başlayan toplantısıyla eşlenir.
+        store
+            .conn
+            .execute("UPDATE timesheet_entries SET coverage = NULL", [])
+            .unwrap();
+        assert_eq!(rows(&store), [(30, "Charging UX".to_string())]);
     }
 
     #[test]
