@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { ChevronRight, PenLine } from "lucide-react";
 import { formatDuration, type Tag, type WindowSpan } from "../api";
-import { addDays, formatTime, isoDate, today, wallMs } from "../lib/dates";
+import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { clampZoom, useZoomGestures } from "../lib/zoom";
@@ -11,6 +11,9 @@ const HOUR_MS = 3600_000;
 const MAX_TITLES = 8;
 /** Bundan kısa süren uygulamalar "Diğer uygulamalar" satırında toplanır. */
 const MIN_APP_SECS = 60;
+const MIN_MS = 60_000;
+/** Dilim boyları (dk): çubuklar bu ızgaraya oturur, tek tek pencereler değil. */
+const SLOT_STEPS = [5, 10, 15, 30, 60];
 
 type Lane = { key: string; label: string; secs: number; spans: WindowSpan[] };
 type AppLane = Lane & { appId: string; categoryId: string | null; titles: Lane[] };
@@ -79,7 +82,93 @@ function hourRange(windows: WindowSpan[], starts: number[]) {
   return { first, last };
 }
 
-type Hover = { span: WindowSpan; x: number; y: number };
+/**
+ * Izgaraya oturmuş çubuk: art arda dolu dilimlerin birleşimi. `a`/`b` günün duvar saati,
+ * `start`/`end` zaman damgası; `ms` içinde gerçekten geçen süre.
+ */
+export type SlotBar = {
+  day: number;
+  a: number;
+  b: number;
+  start: number;
+  end: number;
+  ms: number;
+  categoryId: string | null;
+  /** En çok süren pencereler (en fazla 3). */
+  titles: { title: string; ms: number }[];
+};
+
+/**
+ * Görünen aralığa göre dilim boyu: tam günde 15 dk, yakınlaştıkça incelir (en az 5 dk);
+ * çok günde ise dilim günlerle orantılı büyür ki çubuklar tıklanabilir kalsın.
+ */
+export function slotMinutes(days: number, zoom: number): number {
+  const want = (15 * days) / Math.max(1, zoom);
+  return SLOT_STEPS.find((m) => m >= want - 1e-9) ?? SLOT_STEPS[SLOT_STEPS.length - 1];
+}
+
+/**
+ * Pencereleri `slotMin` dakikalık dilimlere toplar; dilimin en az üçte biri doluysa dilim
+ * dolu sayılır, değilse boş kalır. Art arda dolu dilimler tek çubuk olur.
+ */
+export function slotBars(spans: WindowSpan[], starts: number[], slotMin: number): SlotBar[] {
+  const step = slotMin * MIN_MS;
+  type Acc = { ms: number; cats: Map<string | null, number>; titles: Map<string, number> };
+  const slots = new Map<string, Acc>();
+  for (const w of spans) {
+    for (const p of pieces(w, starts)) {
+      for (let i = Math.floor(p.a / step); i * step < p.b; i++) {
+        const ms = Math.min(p.b, (i + 1) * step) - Math.max(p.a, i * step);
+        if (ms <= 0) continue;
+        const key = `${p.day}:${i}`;
+        const acc = slots.get(key) ?? { ms: 0, cats: new Map(), titles: new Map() };
+        acc.ms += ms;
+        acc.cats.set(w.categoryId, (acc.cats.get(w.categoryId) ?? 0) + ms);
+        acc.titles.set(w.title, (acc.titles.get(w.title) ?? 0) + ms);
+        slots.set(key, acc);
+      }
+    }
+  }
+  const filled = [...slots.entries()]
+    .filter(([, acc]) => acc.ms >= step / 3)
+    .map(([key, acc]) => {
+      const [day, i] = key.split(":").map(Number);
+      return { day, i, acc };
+    })
+    .sort((x, y) => x.day - y.day || x.i - y.i);
+  const out: SlotBar[] = [];
+  let run: { day: number; i0: number; i1: number; acc: Acc } | null = null;
+  const flush = () => {
+    if (!run) return;
+    const { day, i0, i1, acc } = run;
+    const top = (m: Map<string | null, number>) => [...m.entries()].sort((x, y) => y[1] - x[1]);
+    out.push({
+      day,
+      a: i0 * step,
+      b: (i1 + 1) * step,
+      start: fromWallMs(i0 * step, starts[day]),
+      end: fromWallMs((i1 + 1) * step, starts[day]),
+      ms: acc.ms,
+      categoryId: top(acc.cats)[0]?.[0] ?? null,
+      titles: (top(acc.titles) as [string, number][]).slice(0, 3).map(([title, ms]) => ({ title, ms })),
+    });
+  };
+  for (const { day, i, acc } of filled) {
+    if (run && run.day === day && run.i1 === i - 1) {
+      run.i1 = i;
+      run.acc.ms += acc.ms;
+      for (const [k, v] of acc.cats) run.acc.cats.set(k, (run.acc.cats.get(k) ?? 0) + v);
+      for (const [k, v] of acc.titles) run.acc.titles.set(k, (run.acc.titles.get(k) ?? 0) + v);
+    } else {
+      flush();
+      run = { day, i0: i, i1: i, acc: { ms: acc.ms, cats: new Map(acc.cats), titles: new Map(acc.titles) } };
+    }
+  }
+  flush();
+  return out;
+}
+
+type Hover = { bar: SlotBar; label: string; x: number; y: number };
 
 /**
  * Uygulama çizelgesi: her uygulama bir şerit, kullanıldığı saatler çubuk.
@@ -184,47 +273,50 @@ export default function AppTimeline({
     });
   }
 
-  // Her çubuk kendi penceresinin kategorisinde (örn. Chrome'da GitHub ile YouTube farklı renk).
-  const spanColor = (w: WindowSpan) => tagColor(w.categoryId ? tags.get(w.categoryId) : undefined);
-  const bars = (lane: Lane, muted = false) =>
-    lane.spans.flatMap((w, i) =>
-      pieces(w, starts).map((p) => {
-        if (p.b <= startMs || p.a >= startMs + spanMs) return null;
-        const a = x(p.day, p.a);
-        const b = x(p.day, p.b);
-        const props = {
-          className: cn(
-            "absolute inset-y-1 rounded-[3px]",
-            muted && "opacity-70",
-            onSelectSpan &&
-              "cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
-          ),
-          style: { left: `${a * 100}%`, width: `max(2px, ${(b - a) * 100}%)`, background: spanColor(w) },
-          onMouseEnter: (e: React.MouseEvent) => setHover({ span: w, x: e.clientX, y: e.clientY }),
-          onMouseMove: (e: React.MouseEvent) => setHover({ span: w, x: e.clientX, y: e.clientY }),
-          onMouseLeave: () => setHover(null),
-        };
-        if (!onSelectSpan) return <span key={`${i}:${p.day}`} {...props} />;
-        const label = `${w.appName}${w.title ? ` · ${w.title}` : ""} · ${formatTime(new Date(w.start))}–${formatTime(new Date(w.end))}`;
-        return (
-          <button
-            key={`${i}:${p.day}`}
-            type="button"
-            aria-label={`${label}: projeye ya da kategoriye ata`}
-            {...props}
-            onClick={(e) => {
-              // Satırın açılıp kapanmasını tetiklemesin.
-              e.stopPropagation();
-              setHover(null);
-              // Klavyeyle (Enter/Boşluk) basılınca imleç konumu yok: menü çubuğun yanında açılır.
-              const r = e.currentTarget.getBoundingClientRect();
-              const [px, py] = e.detail === 0 ? [r.left + r.width / 2, r.bottom] : [e.clientX, e.clientY];
-              onSelectSpan(+new Date(w.start), +new Date(w.end), px, py);
-            }}
-          />
-        );
-      }),
-    );
+  // Çubuklar dilim ızgarasına oturur: birkaç saniyelik pencereler 1 px'lik şeritler olmasın.
+  const slotMin = slotMinutes(days, zoom);
+  const bars = (lane: Lane, appName: string, muted = false) =>
+    slotBars(lane.spans, starts, slotMin).map((bar) => {
+      if (bar.b <= startMs || bar.a >= startMs + spanMs) return null;
+      const a = x(bar.day, bar.a);
+      const b = x(bar.day, bar.b);
+      const key = `${bar.day}:${bar.a}`;
+      const label = `${appName} · ${formatTime(new Date(bar.start))}–${formatTime(new Date(bar.end))}`;
+      const props = {
+        className: cn(
+          "absolute inset-y-1 rounded-[4px] transition-[filter] hover:brightness-95 dark:hover:brightness-125",
+          muted && "opacity-70",
+          onSelectSpan &&
+            "cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring",
+        ),
+        style: {
+          left: `${a * 100}%`,
+          width: `${(b - a) * 100}%`,
+          background: tagColor(bar.categoryId ? tags.get(bar.categoryId) : undefined),
+        },
+        onMouseEnter: (e: React.MouseEvent) => setHover({ bar, label: appName, x: e.clientX, y: e.clientY }),
+        onMouseMove: (e: React.MouseEvent) => setHover({ bar, label: appName, x: e.clientX, y: e.clientY }),
+        onMouseLeave: () => setHover(null),
+      };
+      if (!onSelectSpan) return <span key={key} {...props} />;
+      return (
+        <button
+          key={key}
+          type="button"
+          aria-label={`${label}: projeye ya da kategoriye ata`}
+          {...props}
+          onClick={(e) => {
+            // Satırın açılıp kapanmasını tetiklemesin.
+            e.stopPropagation();
+            setHover(null);
+            // Klavyeyle (Enter/Boşluk) basılınca imleç konumu yok: menü çubuğun yanında açılır.
+            const r = e.currentTarget.getBoundingClientRect();
+            const [px, py] = e.detail === 0 ? [r.left + r.width / 2, r.bottom] : [e.clientX, e.clientY];
+            onSelectSpan(bar.start, bar.end, px, py);
+          }}
+        />
+      );
+    });
 
   const grid = (
     <>
@@ -323,9 +415,9 @@ export default function AppTimeline({
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular">{formatDuration(app.secs)}</span>
                 </button>
                 {/* Çubukların arasına tıklamak da satırı açar (fareyle; klavyede soldaki düğme). */}
-                <span data-track className="relative block h-7 overflow-hidden" onClick={() => toggle(app.key)}>
+                <span data-track className="relative block h-8 overflow-hidden" onClick={() => toggle(app.key)}>
                   {grid}
-                  {bars(app)}
+                  {bars(app, app.label)}
                 </span>
               </div>
               {expanded && (
@@ -336,9 +428,9 @@ export default function AppTimeline({
                         <span className="min-w-0 flex-1 truncate text-muted-foreground">{t.label}</span>
                         <span className="shrink-0 text-muted-foreground tabular">{formatDuration(t.secs)}</span>
                       </span>
-                      <span className="relative block h-5 overflow-hidden">
+                      <span className="relative block h-6 overflow-hidden">
                         {grid}
-                        {bars(t, true)}
+                        {bars(t, app.label, true)}
                       </span>
                     </li>
                   ))}
@@ -355,7 +447,7 @@ export default function AppTimeline({
             </span>
             <span className="relative block h-6 overflow-hidden">
               {grid}
-              {bars(rest, true)}
+              {bars(rest, rest.label, true)}
             </span>
           </li>
         )}
@@ -382,9 +474,8 @@ export function timeTicks(start: number, span: number): number[] {
 }
 
 function HoverCard({ hover, tags }: { hover: Hover; tags: Map<string, Tag> }) {
-  const w = hover.span;
-  const tag = w.categoryId ? tags.get(w.categoryId) : undefined;
-  const secs = (+new Date(w.end) - +new Date(w.start)) / 1000;
+  const { bar } = hover;
+  const tag = bar.categoryId ? tags.get(bar.categoryId) : undefined;
   // İmlecin sağında; ekranın sağına taşacaksa solunda.
   const left = hover.x + 260 > window.innerWidth ? hover.x - 252 : hover.x + 12;
   return (
@@ -394,13 +485,22 @@ function HoverCard({ hover, tags }: { hover: Hover; tags: Map<string, Tag> }) {
     >
       <div className="flex items-center gap-1.5 text-xs font-medium">
         <i className="size-2 shrink-0 rounded-full" style={{ background: tagColor(tag) }} />
-        <span className="min-w-0 truncate">{w.appName}</span>
+        <span className="min-w-0 truncate">{hover.label}</span>
       </div>
-      {w.title && <p className="mt-0.5 line-clamp-2 text-[11px] break-words text-muted-foreground">{w.title}</p>}
       <p className="mt-1 text-[11px] tabular">
-        {formatTime(new Date(w.start))} – {formatTime(new Date(w.end))} · {formatDuration(secs)}
+        {formatTime(new Date(bar.start))} – {formatTime(new Date(bar.end))} · {formatDuration(bar.ms / 1000)}
         {tag && <span className="text-muted-foreground"> · {tag.name}</span>}
       </p>
+      {bar.titles.some((t) => t.title) && (
+        <ul className="mt-1 space-y-0.5">
+          {bar.titles.map((t) => (
+            <li key={t.title} className="flex gap-2 text-[11px] text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate">{t.title || "(başlıksız)"}</span>
+              <span className="shrink-0 tabular">{formatDuration(t.ms / 1000)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

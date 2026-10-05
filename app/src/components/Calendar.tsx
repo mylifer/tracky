@@ -14,7 +14,7 @@ import { ProjectSelect } from "./ProjectSelect";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
 /** Yakınlaştırılmamış takvimde bir saatin yüksekliği. */
-export const HOUR_PX = 52;
+export const HOUR_PX = 80;
 const HOUR_MS = 3600_000;
 /** Bu yükseklikten küçük bloklarda yalnızca başlık gösterilir. */
 const FULL_LABEL_PX = 40;
@@ -652,6 +652,39 @@ function blockGeometry(b: { start: string; end: string }, top: (t: number) => nu
   return { top: t, height: Math.max(3, top(+new Date(b.end)) - t - 2) };
 }
 
+/** Takvimin dilimi: bloklar en az bu süre kadar yüksek çizilir ki rahat tıklansın. */
+const SLOT_MS = 15 * MIN;
+/** Bundan kısa oturum ve boşta süre takvimde boş kalır (dilimin üçte biri). */
+const SHOW_MIN_MS = SLOT_MS / 3;
+
+type SessionItem = { start: string; end: string; ms: number } & (
+  { block: WorkBlock; idle?: undefined } | { idle: IdleSpan; block?: undefined }
+);
+
+/**
+ * Oturumlar sütununun yerleşimi: kısa (anlamsız) bloklar gösterilmez; kalanlar en az bir
+ * dilim yüksekliğinde, ama bir sonrakinin üstüne binmeden çizilir.
+ */
+export function placeSessions(
+  blocks: WorkBlock[],
+  idle: IdleSpan[],
+  top: (t: number) => number,
+  hourPx: number,
+): (SessionItem & { top: number; height: number })[] {
+  const items: SessionItem[] = [
+    ...blocks.map((b) => ({ start: b.start, end: b.end, ms: b.activeSeconds * 1000, block: b })),
+    ...idle.map((s) => ({ start: s.start, end: s.end, ms: +new Date(s.end) - +new Date(s.start), idle: s })),
+  ];
+  const shown = items.filter((i) => i.ms >= SHOW_MIN_MS).sort((a, b) => +new Date(a.start) - +new Date(b.start));
+  const minHeight = (SLOT_MS / HOUR_MS) * hourPx - 2;
+  return shown.map((item, k) => {
+    const g = blockGeometry(item, top);
+    const next = shown[k + 1];
+    const room = next ? top(+new Date(next.start)) - g.top - 2 : Infinity;
+    return { ...item, top: g.top, height: Math.max(g.height, Math.min(minHeight, room)) };
+  });
+}
+
 /** Gün takvimi: Oturumlar · Toplantılar (takvim bağlıysa) · Kategori şeridi. */
 export function DayCalendar({
   from,
@@ -705,12 +738,13 @@ export function DayCalendar({
     [from, blocks, idle, segments, meetingSpans, hourPx],
   );
   const top = topFn(+from, range);
-  const step = range.px >= 150 ? 5 : 15;
+  // 5 dk'lık dilim ancak rahat tıklanacak kadar yüksekse; yoksa 15 dk.
+  const step = range.px >= 240 ? 5 : 15;
   const buckets = useMemo(() => categoryBuckets(segments, +from, step), [segments, from, step]);
   const showMeetings = meetings !== null;
   const grid = cn(
     "grid gap-x-2",
-    showMeetings ? "grid-cols-[40px_minmax(0,1fr)_minmax(0,0.6fr)_10px]" : "grid-cols-[40px_minmax(0,1fr)_10px]",
+    showMeetings ? "grid-cols-[40px_minmax(0,1fr)_minmax(0,0.6fr)_14px]" : "grid-cols-[40px_minmax(0,1fr)_14px]",
   );
   const strip = showMeetings ? "col-start-4" : "col-start-3";
 
@@ -742,12 +776,13 @@ export function DayCalendar({
           }
           onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y))}
         >
-          {idle.map((span) => (
-            <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} {...blockGeometry(span, top)} />
-          ))}
-          {blocks.map((b) => (
-            <Block key={b.start} b={b} tags={tags} lens={lens} windows={windows} {...blockGeometry(b, top)} />
-          ))}
+          {placeSessions(blocks, idle, top, range.px).map(({ block, idle: span, top: t, height }) =>
+            span ? (
+              <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
+            ) : (
+              <Block key={block.start} b={block} tags={tags} lens={lens} windows={windows} top={t} height={height} />
+            ),
+          )}
           <Preview range={preview} top={top} />
           <NowLine day={from} range={range} />
         </Column>
@@ -965,24 +1000,27 @@ export function WeekCalendar({
               }
               onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, dayStart), fromWallMs(b, dayStart), x, y))}
             >
-              {idle
-                .filter((s) => +new Date(s.start) >= dayStart && +new Date(s.start) < dayEnd)
-                .map((s) => (
-                  <IdleBlock key={`idle-${s.start}`} span={s} onSelect={onRange} {...blockGeometry(s, top)} />
-                ))}
-              {blocks
-                .filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd)
-                .map((b) => (
+              {placeSessions(
+                blocks.filter((b) => +new Date(b.start) >= dayStart && +new Date(b.start) < dayEnd),
+                idle.filter((s) => +new Date(s.start) >= dayStart && +new Date(s.start) < dayEnd),
+                top,
+                range.px,
+              ).map(({ block, idle: span, top: t, height }) =>
+                span ? (
+                  <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
+                ) : (
                   <Block
-                    key={b.start}
-                    b={b}
+                    key={block.start}
+                    b={block}
                     tags={tags}
                     narrow
                     lens={lens}
                     windows={windows}
-                    {...blockGeometry(b, top)}
+                    top={t}
+                    height={height}
                   />
-                ))}
+                ),
+              )}
               <Preview range={preview && preview[0] >= dayStart && preview[0] < dayEnd ? preview : null} top={top} />
               <NowLine day={d} range={range} />
             </Column>
@@ -1004,8 +1042,8 @@ export type CategoryBucket = {
   shares: { id: string | null; share: number }[];
 };
 
-/** Bundan az takip edilen aralık şeritte boş kalır. */
-const BUCKET_MIN_MS = 30_000;
+/** Aralığın bundan azı takip edildiyse şeritte boş kalır. */
+const BUCKET_MIN_SHARE = 1 / 3;
 
 /**
  * Günü `stepMin` dakikalık aralıklara böler (duvar saatiyle); her aralık o sürede en çok
@@ -1026,7 +1064,7 @@ export function categoryBuckets(segments: Segment[], dayStart: number, stepMin: 
   const out: CategoryBucket[] = [];
   sums.forEach((m, i) => {
     const total = [...m.values()].reduce((x, y) => x + y, 0);
-    if (total < BUCKET_MIN_MS) return;
+    if (total < step * BUCKET_MIN_SHARE) return;
     const shares = [...m.entries()].sort((x, y) => y[1] - x[1]).map(([id, ms]) => ({ id, share: ms / total }));
     out.push({
       start: fromWallMs(i * step, dayStart),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { categoryBuckets, gapAround, HOUR_PX, subMarks } from "./Calendar";
+import { categoryBuckets, gapAround, HOUR_PX, placeSessions, subMarks } from "./Calendar";
 
 const MIN = 60_000;
 const day = +new Date(2026, 9, 1);
@@ -59,5 +59,31 @@ describe("subMarks", () => {
     expect(subMarks(320, true)).toEqual([15, 30, 45]);
     expect(subMarks(20, false)).toEqual([]);
     expect(subMarks(30, true)).toEqual([]);
+  });
+});
+
+describe("oturum yerleşimi", () => {
+  const block = (a: number, b: number) =>
+    ({
+      ...span(a, b),
+      activeSeconds: (b - a) / 1000,
+      categoryId: null,
+      projectId: null,
+      switches: 0,
+      topApps: [],
+    }) as never;
+  const top = (t: number) => ((t - at(8)) / (60 * MIN)) * HOUR_PX;
+
+  it("kısa bloğu göstermez, kalanı en az çeyrek saat yüksekliğinde ama sonrakine binmeden çizer", () => {
+    const placed = placeSessions(
+      [block(at(9), at(9, 2)), block(at(10), at(10, 6)), block(at(10, 10), at(11)), block(at(12), at(12, 5))],
+      [],
+      top,
+      HOUR_PX,
+    );
+    expect(placed.map((p) => p.start)).toEqual([at(10), at(10, 10), at(12)].map((t) => new Date(t).toISOString()));
+    // 10:00 bloğu 10:10'dakine kadar uzar, 12:00 bloğu tam çeyrek saat.
+    expect(placed[0].height).toBeCloseTo(top(at(10, 10)) - top(at(10)) - 2);
+    expect(placed[2].height).toBeCloseTo(HOUR_PX / 4 - 2);
   });
 });
