@@ -59,7 +59,34 @@ struct Table {
     /// bütçe). Sunucuda yoksa satırlar onlarsız gönderilir; çekilen satırda yoksa yerel değer
     /// korunur.
     optional: &'static [&'static str],
+    /// Yereldeki kimlik sütunu (sunucuda her zaman `id`).
+    key: &'static str,
+    /// Doluysa yalnızca bu kimlikteki satırlar gönderilir ve uygulanır.
+    only: Option<&'static [&'static str]>,
 }
+
+/// Cihazlar arasında taşınan ayarlar (settings tablosunun anahtarları). Yeni Mac'te giriş
+/// yapınca zaman çizelgeleri, takvim, gizlilik, hedefler, görünüm ve yapay zekâ ayarları da
+/// gelir. Cihaza özgü olanlar (oturum jetonları, imleçler, otomatik başlatma, izin
+/// kurulumu, duraklatma süresi, bildirim ve yedek işaretleri) eşitlenmez.
+pub const SYNCED_SETTINGS: &[&str] = &[
+    "privacy",
+    "goals",
+    "theme",
+    "timesheet",
+    "timesheet_details",
+    "meeting_assignments",
+    "calendar_url",
+    "ai_details",
+    "dismissed_suggestions",
+    "dismissed_rule_suggestions",
+    "ignored_unassigned",
+];
+
+/// Gizlilik ayarında yalnızca bu cihazın kalan alanı: bir Mac'te duraklatmak diğerini
+/// duraklatmaz.
+const PRIVACY_KEY: &str = "privacy";
+const LOCAL_PRIVACY_FIELDS: &[&str] = &["paused"];
 
 /// Sıra önemli: kurallar etiketlere başvurur, önce etiketler uygulanır. Etiketlerin müşterisi
 /// (`client_id`) yabancı anahtar değildir; müşteri sonra gelse de etiket uygulanır.
@@ -75,6 +102,8 @@ const TABLES: &[Table] = &[
             ("deleted_at", Col::OptTime),
         ],
         optional: &["budget_days"],
+        key: "id",
+        only: None,
     },
     Table {
         name: "tags",
@@ -91,6 +120,8 @@ const TABLES: &[Table] = &[
             ("deleted_at", Col::OptTime),
         ],
         optional: &["archived_at", "budget_days"],
+        key: "id",
+        only: None,
     },
     Table {
         name: "rules",
@@ -104,6 +135,8 @@ const TABLES: &[Table] = &[
             ("deleted_at", Col::OptTime),
         ],
         optional: &[],
+        key: "id",
+        only: None,
     },
     Table {
         name: "sessions",
@@ -123,8 +156,43 @@ const TABLES: &[Table] = &[
             ("deleted_at", Col::OptTime),
         ],
         optional: &[],
+        key: "id",
+        only: None,
+    },
+    // Kendi başına durur (başka tabloya başvurmaz); sunucuda tablo yoksa (0008 öncesi)
+    // eşitlemenin geri kalanı sürer.
+    Table {
+        name: "settings",
+        cols: &[
+            ("id", Col::Text),
+            ("value", Col::Text),
+            ("updated_at", Col::Time),
+            ("deleted_at", Col::OptTime),
+        ],
+        optional: &[],
+        key: "key",
+        only: Some(SYNCED_SETTINGS),
     },
 ];
+
+impl Table {
+    /// Sunucudaki sütunun yereldeki adı.
+    fn local(&self, name: &'static str) -> &'static str {
+        if name == "id" { self.key } else { name }
+    }
+
+    /// Yalnızca eşitlenen satırları seçen ek koşul (`only` sabit listesinden).
+    fn filter(&self) -> String {
+        self.only.map_or_else(String::new, |ids| {
+            let ids: Vec<String> = ids.iter().map(|id| format!("'{id}'")).collect();
+            format!(" AND {} IN ({})", self.key, ids.join(", "))
+        })
+    }
+
+    fn allows(&self, id: &str) -> bool {
+        self.only.is_none_or(|ids| ids.contains(&id))
+    }
+}
 
 const PUSH_BATCH: usize = 500;
 const PULL_BATCH: usize = 1000;
@@ -145,6 +213,11 @@ pub struct SyncSummary {
     /// Sunucu şeması eski (0007 çalıştırılmamış): proje arşivi ve bütçeler gönderilemedi;
     /// bunları taşıyan satırlar şema güncellenince yeniden gönderilir.
     pub outdated_schema: bool,
+    /// Sunucuda ayarlar tablosu yok (0008 çalıştırılmamış): ayarlar eşitlenmedi.
+    pub settings_unavailable: bool,
+    /// Başka cihazdan ayar geldi: uygulama çalışan durumunu (gizlilik, hedefler, görünüm)
+    /// yeniden okumalı.
+    pub settings_pulled: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -187,6 +260,7 @@ pub fn run(
             &mut summary.outdated_schema,
         ) {
             Ok(n) => summary.pushed += n,
+            Err(e) if missing_table(table, &e) => summary.settings_unavailable = true,
             Err(e) => {
                 tags_failed |= table.name == "tags";
                 first_error.get_or_insert(e);
@@ -209,7 +283,9 @@ pub fn run(
             Ok((n, skipped)) => {
                 summary.pulled += n;
                 summary.skipped += skipped;
+                summary.settings_pulled |= table.name == "settings" && n > 0;
             }
+            Err(e) if missing_table(table, &e) => summary.settings_unavailable = true,
             Err(e) => {
                 first_error.get_or_insert(e);
             }
@@ -242,6 +318,17 @@ fn is_foreign_key_error(e: &SyncError) -> bool {
         SyncError::Sqlite(rusqlite::Error::SqliteFailure(f, _))
             if f.code == rusqlite::ErrorCode::ConstraintViolation
     )
+}
+
+/// Sunucuda sonradan eklenen ayarlar tablosu (0008) yok mu? Bu durumda yalnızca ayarlar
+/// eşitlenmez; diğer tablolar hata vermeden sürer.
+fn missing_table(table: &Table, e: &SyncError) -> bool {
+    let SyncError::Remote(e) = e else {
+        return false;
+    };
+    table.name == "settings"
+        && e.contains(table.name)
+        && (e.contains("Could not find the table") || e.contains("does not exist"))
 }
 
 /// Sunucu şeması 0003'ten eskiyse `writer` sütunu bulunamaz.
@@ -440,12 +527,13 @@ fn pull_pages(
 type Pending = (Map<String, Value>, String, i64);
 
 fn unsynced(store: &Store, table: &Table, limit: usize) -> Result<Vec<Pending>, SyncError> {
-    let names: Vec<&str> = table.cols.iter().map(|c| c.0).collect();
+    let names: Vec<&str> = table.cols.iter().map(|c| table.local(c.0)).collect();
     let sql = format!(
-        "SELECT {} FROM {} WHERE synced_at IS NULL OR synced_at < updated_at
+        "SELECT {} FROM {} WHERE (synced_at IS NULL OR synced_at < updated_at){}
          ORDER BY updated_at LIMIT ?1",
         names.join(", "),
-        table.name
+        table.name,
+        table.filter()
     );
     let mut stmt = store.conn().prepare(&sql)?;
     let rows = stmt.query_map([limit as i64], |r| {
@@ -483,8 +571,8 @@ fn unsynced(store: &Store, table: &Table, limit: usize) -> Result<Vec<Pending>, 
 
 fn mark_synced(store: &Store, table: &Table, rows: &[Pending]) -> Result<usize, SyncError> {
     let sql = format!(
-        "UPDATE {} SET synced_at = ?2 WHERE id = ?1 AND updated_at = ?2",
-        table.name
+        "UPDATE {} SET synced_at = ?2 WHERE {} = ?1 AND updated_at = ?2",
+        table.name, table.key
     );
     let tx = store.conn().unchecked_transaction()?;
     let mut marked = 0;
@@ -501,8 +589,8 @@ fn mark_synced(store: &Store, table: &Table, rows: &[Pending]) -> Result<usize, 
 /// Satırların `updated_at`'ini (arada değişmediyse) bir milisaniye ilerletir.
 fn bump(store: &Store, table: &Table, rows: &[Pending]) -> Result<(), SyncError> {
     let sql = format!(
-        "UPDATE {} SET updated_at = updated_at + 1 WHERE id = ?1 AND updated_at = ?2",
-        table.name
+        "UPDATE {} SET updated_at = updated_at + 1 WHERE {} = ?1 AND updated_at = ?2",
+        table.name, table.key
     );
     for (_, id, updated) in rows {
         store.conn().execute(&sql, rusqlite::params![id, updated])?;
@@ -512,9 +600,17 @@ fn bump(store: &Store, table: &Table, rows: &[Pending]) -> Result<(), SyncError>
 
 /// Uzak satırı yerelde uygular; yerel sürüm daha yeniyse dokunmaz. Değişen satır sayısı.
 fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, SyncError> {
-    let obj = row
+    let mut obj = row
         .as_object()
-        .ok_or_else(|| SyncError::Invalid(row.to_string()))?;
+        .ok_or_else(|| SyncError::Invalid(row.to_string()))?
+        .clone();
+    let id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
+    if !table.allows(id) {
+        return Err(SyncError::Invalid(format!("{}.{id}", table.name)));
+    }
+    if table.name == "settings" && id == PRIVACY_KEY {
+        keep_local_privacy(store, &mut obj)?;
+    }
     // Eski sunucunun hiç göndermediği isteğe bağlı sütunlar yazılmaz: yerel değer korunur.
     let cols: Vec<&(&str, Col)> = table
         .cols
@@ -546,7 +642,7 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
     }
     values.push(SqlValue::Integer(updated)); // synced_at
 
-    let names: Vec<&str> = cols.iter().map(|c| c.0).collect();
+    let names: Vec<&str> = cols.iter().map(|c| table.local(c.0)).collect();
     let placeholders: Vec<String> = (1..=names.len() + 1).map(|i| format!("?{i}")).collect();
     let updates: Vec<String> = names
         .iter()
@@ -556,14 +652,37 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
         .collect();
     let sql = format!(
         "INSERT INTO {t} ({cols}, synced_at) VALUES ({ph})
-         ON CONFLICT (id) DO UPDATE SET {up}
+         ON CONFLICT ({key}) DO UPDATE SET {up}
          WHERE excluded.updated_at > {t}.updated_at",
         t = table.name,
+        key = table.key,
         cols = names.join(", "),
         ph = placeholders.join(", "),
         up = updates.join(", "),
     );
     Ok(store.conn().execute(&sql, params_from_iter(values))?)
+}
+
+/// Uzaktan gelen gizlilik ayarına bu cihazın kendi alanlarını (duraklatma) yazar.
+fn keep_local_privacy(store: &Store, obj: &mut Map<String, Value>) -> Result<(), SyncError> {
+    let Some(Value::String(raw)) = obj.get("value") else {
+        return Ok(());
+    };
+    let Ok(Value::Object(mut remote)) = serde_json::from_str::<Value>(raw) else {
+        return Ok(());
+    };
+    let local: Option<Value> = store.setting(PRIVACY_KEY)?;
+    for field in LOCAL_PRIVACY_FIELDS {
+        match local.as_ref().and_then(|l| l.get(*field)) {
+            Some(v) => remote.insert((*field).into(), v.clone()),
+            None => remote.remove(*field),
+        };
+    }
+    obj.insert(
+        "value".into(),
+        Value::String(Value::Object(remote).to_string()),
+    );
+    Ok(())
 }
 
 fn iso(ms: i64) -> String {
@@ -620,13 +739,20 @@ mod tests {
         write_after_pull: Vec<(String, Value)>,
         /// Sunucuda olmayan sütunlar (0007 öncesi şema).
         missing: Vec<&'static str>,
+        /// Sunucuda ayarlar tablosu yok (0008 öncesi şema).
+        no_settings: bool,
     }
+
+    const NO_SETTINGS: &str = "Could not find the table 'public.settings' in the schema cache";
 
     const NO_WRITER: &str = "Could not find the 'writer' column in the schema cache";
 
     impl Remote for FakeRemote {
         fn push(&mut self, table: &str, rows: &[Value]) -> Result<(), String> {
             self.pushes += 1;
+            if self.no_settings && table == "settings" {
+                return Err(NO_SETTINGS.into());
+            }
             if self.legacy && rows.iter().any(|r| r.get(WRITER).is_some()) {
                 return Err(NO_WRITER.into());
             }
@@ -667,6 +793,9 @@ mod tests {
             if self.legacy && skip_writer.is_some() {
                 return Err(NO_WRITER.into());
             }
+            if self.no_settings && table == "settings" {
+                return Err(NO_SETTINGS.into());
+            }
             let since = since.map(|s| parse_time(s).unwrap());
             let mut rows: Vec<Value> = self
                 .rows
@@ -690,6 +819,9 @@ mod tests {
         }
 
         fn latest(&mut self, table: &str, since: Option<&str>) -> Result<Option<String>, String> {
+            if self.no_settings && table == "settings" {
+                return Err(NO_SETTINGS.into());
+            }
             let since = since.map(|s| parse_time(s).unwrap());
             Ok(self
                 .rows
@@ -1224,5 +1356,130 @@ mod tests {
             Some(10.0)
         );
         assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 0);
+    }
+
+    #[test]
+    fn device_independent_settings_reach_a_new_device() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        {
+            let a = lock(&a);
+            a.save_setting("calendar_url", &Some("https://cal.example/ics"))
+                .unwrap();
+            a.save_setting("timesheet", &serde_json::json!({ "sheetToken": "t" }))
+                .unwrap();
+            a.save_setting("sync_auth", &"jeton").unwrap();
+            a.save_setting("onboarded", &true).unwrap();
+        }
+        run(&a, &mut remote, "u1").unwrap();
+        let ids: Vec<&String> = remote.rows["settings"].keys().collect();
+        assert!(ids.iter().all(|k| SYNCED_SETTINGS.contains(&k.as_str())));
+
+        let summary = run(&b, &mut remote, "u1").unwrap();
+        assert!(summary.settings_pulled);
+        let b = lock(&b);
+        assert_eq!(
+            b.setting::<Option<String>>("calendar_url").unwrap(),
+            Some(Some("https://cal.example/ics".into()))
+        );
+        assert_eq!(
+            b.setting::<Value>("timesheet").unwrap().unwrap()["sheetToken"],
+            "t"
+        );
+        // Cihaza özgü ayarlar gelmez.
+        assert_eq!(b.setting::<String>("sync_auth").unwrap(), None);
+        assert_eq!(b.setting::<bool>("onboarded").unwrap(), None);
+    }
+
+    #[test]
+    fn device_only_settings_from_remote_are_not_applied() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        remote
+            .push(
+                "settings",
+                &[serde_json::json!({
+                    "id": "sync_auth",
+                    "value": "\"başkasının jetonu\"",
+                    "updated_at": iso(1_800_000_000_000),
+                    "deleted_at": null,
+                })],
+            )
+            .unwrap();
+        let summary = run(&a, &mut remote, "u1").unwrap();
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(lock(&a).setting::<String>("sync_auth").unwrap(), None);
+    }
+
+    #[test]
+    fn pausing_stays_on_its_own_device() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let mut privacy = crate::PrivacySettings {
+            paused: true,
+            ..Default::default()
+        };
+        privacy.excluded_apps = vec!["com.secret".into()];
+        lock(&a).save_privacy_settings(&privacy).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+
+        let got = lock(&b).privacy_settings().unwrap();
+        assert_eq!(got.excluded_apps, vec!["com.secret".to_string()]);
+        assert!(!got.paused);
+    }
+
+    #[test]
+    fn signing_in_on_a_new_device_takes_the_accounts_settings() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        lock(&a).save_setting("theme", &"dark").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+
+        // Yeni cihaz girişten önce kendi (daha yeni) değerini kaydetmişti.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        lock(&b).save_setting("theme", &"light").unwrap();
+        lock(&b)
+            .save_setting("goals", &serde_json::json!({ "dailyHours": 6 }))
+            .unwrap();
+        lock(&b).reset_sync_state().unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+
+        assert_eq!(
+            lock(&b).setting::<String>("theme").unwrap().unwrap(),
+            "dark"
+        );
+        assert_eq!(
+            lock(&a).setting::<String>("theme").unwrap().unwrap(),
+            "dark"
+        );
+        // Hesapta olmayan ayar yine de diğer cihaza geçer.
+        assert_eq!(
+            lock(&a).setting::<Value>("goals").unwrap().unwrap()["dailyHours"],
+            6
+        );
+    }
+
+    #[test]
+    fn server_without_settings_table_still_syncs_the_rest() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote {
+            no_settings: true,
+            ..Default::default()
+        };
+        lock(&a).save_setting("theme", &"dark").unwrap();
+        lock(&a).upsert_session(&session("Code", 60)).unwrap();
+        let summary = run(&a, &mut remote, "u1").unwrap();
+        assert!(summary.settings_unavailable);
+        assert_eq!(remote.rows["sessions"].len(), 1);
+
+        // Tablo eklenince bekleyen ayar gönderilir.
+        remote.no_settings = false;
+        run(&a, &mut remote, "u1").unwrap();
+        assert!(remote.rows["settings"].contains_key("theme"));
     }
 }

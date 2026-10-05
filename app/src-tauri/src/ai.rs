@@ -1,6 +1,6 @@
 //! Yapay zekâyla zaman çizelgesi açıklaması: kullanıcının kendi Anthropic API anahtarıyla
 //! Claude'a gün başına bir istek. İsteğe bağlı, varsayılan kapalı; yalnızca düğmeye basınca
-//! çalışır. Anahtar bu cihazın ayarlarında durur (settings tablosu eşitlenmez), günlüğe yazılmaz
+//! çalışır. Anahtar ayarlarda durur (senkronizasyon açıksa kendi Supabase projene eşitlenir), günlüğe yazılmaz
 //! ve yalnızca api.anthropic.com'a gönderilir.
 //!
 //! İstek gövdesi ve yanıt ayrıştırma saf işlevlerdir ([`request_body`], [`parse_response`]);

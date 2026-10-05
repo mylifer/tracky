@@ -61,7 +61,7 @@ impl EntryKind {
     }
 }
 
-/// Zaman çizelgesi ayarları (bu cihazda; senkronize edilmez).
+/// Zaman çizelgesi ayarları (cihazlar arasında eşitlenir; bkz. [`crate::sync::SYNCED_SETTINGS`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TimesheetConfig {

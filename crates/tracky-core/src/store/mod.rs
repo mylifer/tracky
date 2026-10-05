@@ -220,6 +220,12 @@ ALTER TABLE timesheet_entries ADD COLUMN coverage TEXT;
 ALTER TABLE timesheet_entries ADD COLUMN timesheet_id TEXT;
 ALTER TABLE timesheet_entries ADD COLUMN dismissed_at INTEGER;
 "#,
+    r#"
+-- Cihazdan bağımsız ayarlar da eşitlenir (crate::sync::SYNCED_SETTINGS; supabase/migrations/0008).
+-- Ayar silinmez (null yazılır); deleted_at sunucu şemasıyla aynı olsun diye var.
+ALTER TABLE settings ADD COLUMN deleted_at INTEGER;
+ALTER TABLE settings ADD COLUMN synced_at INTEGER;
+"#,
 ];
 
 /// Yedek dosyasının içeriği (geri yüklemeden önce göstermek için).
@@ -389,7 +395,7 @@ impl Store {
         self.conn
             .execute("DELETE FROM settings WHERE key LIKE 'sync_cursor:%'", [])?;
         let now = ms(Utc::now());
-        for table in ["sessions", "tags", "rules", "clients"] {
+        for table in ["sessions", "tags", "rules", "clients", "settings"] {
             self.conn.execute(
                 &format!(
                     "UPDATE {table} SET updated_at = MAX(updated_at + 1, ?1), synced_at = NULL"
@@ -453,7 +459,8 @@ impl Store {
     pub fn save_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
         self.conn.execute(
             "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+             WHERE settings.value IS NOT excluded.value",
             params![key, serde_json::to_string(value)?, ms(Utc::now())],
         )?;
         Ok(())
@@ -781,15 +788,23 @@ impl Store {
     }
 
     /// Senkronizasyon başka hesaba/projeye bağlandığında: imleçleri sil, her şeyi
-    /// yeniden gönderilecek işaretle.
+    /// yeniden gönderilecek işaretle. Eşitlenen ayarlar en eski sayılır: hesapta kayıtlı
+    /// ayarlar (örn. diğer Mac'te kurulan zaman çizelgeleri) bu cihazın varsayılanlarını
+    /// ezer; hesapta olmayanlar gönderilir.
     pub fn reset_sync_state(&self) -> Result<()> {
-        self.conn.execute_batch(
+        let keys: Vec<String> = crate::sync::SYNCED_SETTINGS
+            .iter()
+            .map(|k| format!("'{k}'"))
+            .collect();
+        self.conn.execute_batch(&format!(
             "DELETE FROM settings WHERE key LIKE 'sync_cursor:%';
              UPDATE sessions SET synced_at = NULL;
              UPDATE tags SET synced_at = NULL;
              UPDATE rules SET synced_at = NULL;
-             UPDATE clients SET synced_at = NULL;",
-        )?;
+             UPDATE clients SET synced_at = NULL;
+             UPDATE settings SET synced_at = NULL, updated_at = 0 WHERE key IN ({});",
+            keys.join(", ")
+        ))?;
         Ok(())
     }
 

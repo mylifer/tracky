@@ -737,7 +737,8 @@ export function SheetConnect({
 
 /**
  * Yapay zekâyla açıklama yazma: isteğe bağlı, varsayılan kapalı. Kullanıcının kendi Anthropic API
- * anahtarı bu cihazda saklanır (eşitlenmez); istek yalnızca zaman çizelgesindeki düğmeyle gider.
+ * anahtarı ayarlarda saklanır (senkronizasyon açıksa kendi Supabase projene eşitlenir); istek
+ * yalnızca zaman çizelgesindeki düğmeyle gider.
  */
 function AiSettings() {
   const [status, setStatus] = useState<AiStatus | null>(null);
@@ -787,7 +788,7 @@ function AiSettings() {
         hint={
           status.hasKey
             ? `Kayıtlı (${status.keyHint ?? "…"}). Değiştirmek için yenisini yaz.`
-            : "console.anthropic.com → API Keys'ten oluştur. Yalnızca bu bilgisayarda saklanır, eşitlenmez."
+            : "console.anthropic.com → API Keys'ten oluştur. Ayarlarda saklanır; senkronizasyon açıksa kendi Supabase projene eşitlenir."
         }
       >
         <form

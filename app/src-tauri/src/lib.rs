@@ -100,6 +100,31 @@ fn apply_theme(app: &AppHandle, theme: &str) {
     }
 }
 
+/// Başka cihazdan ayar geldikten sonra: takibin ve pencerenin kullandığı ayarları yeniden
+/// okur (diğerleri her kullanımda depodan okunur).
+pub(crate) fn reload_synced_settings(app: &AppHandle) {
+    let shared = app.state::<Shared>();
+    let (privacy, goals, theme) = {
+        let store = lock(&shared.store);
+        (
+            store.privacy_settings().ok(),
+            store
+                .setting::<tracky_core::Goals>(tracking::GOALS_KEY)
+                .ok()
+                .map(Option::unwrap_or_default),
+            theme_setting(&store),
+        )
+    };
+    let tx = &app.state::<Worker>().tx;
+    if let Some(privacy) = privacy {
+        let _ = tx.send(Command::SetPrivacy(privacy));
+    }
+    if let Some(goals) = goals {
+        let _ = tx.send(Command::SetGoals(goals));
+    }
+    apply_theme(app, &theme);
+}
+
 /// Görünüm tercihini kaydeder ve pencereye uygular.
 #[tauri::command]
 async fn set_theme(app: AppHandle, theme: String) -> Result<(), String> {

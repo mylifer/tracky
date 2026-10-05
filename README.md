@@ -242,8 +242,8 @@ iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
 - **Ne gönderilir:** yalnızca düğmeye basınca ve yalnızca `api.anthropic.com`'a; yazılacak satırların proje
   ve müşteri adı, türü, saati ve başlangıcı; o satırın süresindeki en çok 15 pencere başlığı (süreleriyle),
   iş anahtarları ve site adları ya da toplantı konusu; üslup örneği olarak o projeye daha önce yazdığın en
-  çok 10 açıklama (projede hiç yoksa diğer projelerden 5). Anahtar yalnızca bu bilgisayarın ayarlarında
-  durur, eşitlenmez ve günlüğe yazılmaz (yerel yedek dosyalarına girer).
+  çok 10 açıklama (projede hiç yoksa diğer projelerden 5). Anahtar ayarlarda durur, senkronizasyon açıksa
+  diğer ayarlarla birlikte kendi Supabase projene eşitlenir ve günlüğe yazılmaz (yerel yedek dosyalarına girer).
 - **Maliyet:** gün başına bir istek (`claude-opus-5`, düşük çaba), ücreti senin API hesabından düşer;
   hafta için en çok beş-yedi istek.
 
@@ -252,7 +252,7 @@ iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
 Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birleşik rapor için:
 
 1. [supabase.com](https://supabase.com) üzerinde ücretsiz bir proje oluştur.
-2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0007_…`) çalıştır.
+2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0008_…`) çalıştır.
    Önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli. `0003_writer.sql`
    cihazların kendi gönderdiklerini geri indirmesini önler; çalıştırılmazsa eşitleme eskisi gibi sürer.
    `0004_session_project.sql` elle verilen projeleri eşitler; Kum 0.4'ten itibaren gereklidir.
@@ -262,10 +262,16 @@ Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birl
    `0007_archive_budget.sql` proje arşivini ve sözleşme bütçelerini eşitler. Çalıştırılmazsa eşitleme sürer
    (Kum bu sütunları göndermeden yeniden dener ve Ayarlar'da uyarır), yalnızca arşiv ve bütçeler diğer
    cihazlara geçmez; dosya sonradan çalıştırılınca bekleyenler kendiliğinden gönderilir.
+   `0008_settings.sql` ayarları (zaman çizelgeleri ve Google Sheets bağlantıları, takvim, gizlilik,
+   hedefler, görünüm, yapay zekâ) eşitler; yeni bilgisayarda giriş yapınca hepsi gelir. Çalıştırılmazsa
+   eşitleme sürer, yalnızca ayarlar taşınmaz.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.
-5. Diğer bilgisayarda aynı proje bilgileri ve aynı hesapla giriş yap.
+5. Diğer bilgisayarda aynı proje bilgileri ve aynı hesapla giriş yap. Sürüm iş akışında
+   `KUM_SUPABASE_URL` ve `KUM_SUPABASE_ANON_KEY` depo değişkenleri (*Settings → Secrets and variables
+   → Actions → Variables*) tanımlıysa bu proje uygulamaya varsayılan olarak gömülür; yeni bilgisayarda
+   yalnızca e-posta ve şifreyle giriş yapmak yeter.
 
 **Ücretsiz plandaki proje sınırı dolduysa** Kum, başka bir uygulamanın projesinde ayrı bir şemada
 çalışabilir: 2. adımda göçler yerine `supabase/kum_schema.sql` dosyasını çalıştır, *Project Settings →
@@ -275,7 +281,9 @@ uygulamanın tablolarına dokunulmaz; ancak kullanıcı listesi ve kota o projey
 Nasıl çalışır: her satırın kimliği UUID'dir; değişen satırlar gönderilir, sunucuda son çekimden
 beri değişenler alınır. Aynı satır iki cihazda değiştiyse daha yeni olan kazanır. Silmeler
 yumuşaktır, o yüzden silinenler de eşitlenir. Satır güvenliği (RLS) sayesinde her kullanıcı yalnız
-kendi verisini görür. Bağlantı bilgileri ve oturum yalnızca o cihazda saklanır.
+kendi verisini görür. Ayarlardan cihazdan bağımsız olanlar da eşitlenir; giriş yapılan cihazda
+hesapta kayıtlı ayarlar o cihazın varsayılanlarının yerine geçer. Bağlantı bilgileri, oturum,
+izin kurulumu ve takibin duraklatılması yalnızca o cihazda kalır.
 
 ## Sürüm çıkarmak
 

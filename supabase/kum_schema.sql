@@ -164,6 +164,29 @@ alter table kum.clients drop constraint if exists clients_budget_days_check;
 alter table kum.clients add constraint clients_budget_days_check
     check (budget_days is null or budget_days > 0);
 
+-- ===== 0008_settings.sql =====
+-- Cihazdan bağımsız ayarlar (id: ayarın anahtarı, value: JSON metni).
+create table if not exists kum.settings (
+    id                text not null,
+    user_id           uuid not null default auth.uid() references auth.users (id) on delete cascade,
+    value             text not null,
+    updated_at        timestamptz not null,
+    deleted_at        timestamptz,
+    server_updated_at timestamptz not null default now(),
+    writer            uuid,
+    primary key (user_id, id)
+);
+create index if not exists settings_user_cursor on kum.settings (user_id, server_updated_at);
+
+drop trigger if exists kum_lww on kum.settings;
+create trigger kum_lww before insert or update on kum.settings
+    for each row execute function kum.kum_lww();
+alter table kum.settings enable row level security;
+drop policy if exists "kendi satırları" on kum.settings;
+create policy "kendi satırları" on kum.settings for all to authenticated
+    using (user_id = (select auth.uid()))
+    with check (user_id = (select auth.uid()));
+
 -- Erişim: oturum açmış kullanıcılar (satır güvenliğiyle yalnız kendi satırları) ve sunucu rolü.
 grant all on all tables in schema kum to authenticated, service_role;
 alter default privileges in schema kum grant all on tables to authenticated, service_role;

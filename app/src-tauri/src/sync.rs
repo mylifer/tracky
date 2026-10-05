@@ -1,7 +1,9 @@
 //! Supabase senkronizasyonu: ayarlar, oturum ve arka plan döngüsü.
 //!
 //! Bağlantı ayarları ve oturum jetonları yalnızca bu cihazın ayarlarında
-//! tutulur (settings tablosu senkronize edilmez).
+//! tutulur; settings tablosundan yalnızca cihazdan bağımsız ayarlar eşitlenir
+//! ([`tracky_core::sync::SYNCED_SETTINGS`]). Bağlantı girilmemişse uygulamayla
+//! derlenen varsayılan proje kullanılır: yeni cihazda yalnızca giriş yapmak yeter.
 
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -75,8 +77,30 @@ fn clear(app: &AppHandle, key: &str) -> CmdResult<()> {
     save(app, key, &serde_json::Value::Null)
 }
 
+/// Derlemede verilen varsayılan Supabase projesi (sürüm iş akışında depo değişkenlerinden).
+/// Anon anahtar gizli değildir: satırları RLS korur.
+fn default_config() -> Option<Config> {
+    let url = option_env!("KUM_SUPABASE_URL")?.trim();
+    let anon_key = option_env!("KUM_SUPABASE_ANON_KEY")?.trim();
+    (url.starts_with("https://") && !anon_key.is_empty()).then(|| Config {
+        url: url.trim_end_matches('/').to_string(),
+        anon_key: anon_key.to_string(),
+        schema: None,
+    })
+}
+
+/// Kayıtlı bağlantı; yoksa (ve kullanıcı kaldırmadıysa) varsayılan proje.
+fn config(app: &AppHandle) -> Option<Config> {
+    match lock(&app.state::<Shared>().store).setting::<serde_json::Value>(CONFIG_KEY) {
+        // Hiç girilmemiş: varsayılan. `null`: kullanıcı bağlantıyı kaldırdı.
+        Ok(None) => default_config(),
+        Ok(Some(v)) => serde_json::from_value(v).ok(),
+        Err(_) => None,
+    }
+}
+
 fn status(app: &AppHandle) -> SyncStatus {
-    let config: Option<Config> = load(app, CONFIG_KEY);
+    let config = config(app);
     let auth: Option<AuthSession> = load(app, AUTH_KEY);
     SyncStatus {
         configured: config.is_some(),
@@ -89,10 +113,7 @@ fn status(app: &AppHandle) -> SyncStatus {
 
 /// Bir kez eşitler; gerekirse oturumu yeniler. Giriş yoksa `Ok(None)`.
 fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
-    let (Some(config), Some(mut auth)) = (
-        load::<Config>(app, CONFIG_KEY),
-        load::<AuthSession>(app, AUTH_KEY),
-    ) else {
+    let (Some(config), Some(mut auth)) = (config(app), load::<AuthSession>(app, AUTH_KEY)) else {
         return Ok(None);
     };
     let client = Client::new(config);
@@ -158,6 +179,10 @@ fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) {
                 } else {
                     format!("{} gönderildi, {} alındı", summary.pushed, summary.pulled)
                 };
+                if summary.settings_unavailable {
+                    m += ". Ayarlar eşitlenmedi: Supabase'de \
+                          supabase/migrations/0008_settings.sql dosyasını çalıştır";
+                }
                 if summary.outdated_schema {
                     m += ". Proje arşivi ve bütçeler eşitlenmedi: Supabase'de \
                           supabase/migrations/0007_archive_budget.sql dosyasını çalıştır";
@@ -173,6 +198,9 @@ fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) {
             summary: None,
         },
     };
+    if last.summary.is_some_and(|s| s.settings_pulled) {
+        crate::reload_synced_settings(app);
+    }
     *lock(&app.state::<SyncWorker>().last) = Some(last);
     let _ = app.emit("sync", status(app));
 }
@@ -239,7 +267,7 @@ pub async fn sync_sign_in(
     password: String,
     sign_up: bool,
 ) -> CmdResult<SyncStatus> {
-    let config: Config = load(&app, CONFIG_KEY).ok_or("Önce Supabase bağlantısını kaydet")?;
+    let config: Config = config(&app).ok_or("Önce Supabase bağlantısını kaydet")?;
     // Şema da hesabın parçası: başka şemaya geçince imleçler sıfırlanır (şemasızda eskisi gibi).
     let url = match &config.schema {
         Some(schema) => format!("{}#{schema}", config.url),
