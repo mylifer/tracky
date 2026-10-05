@@ -2257,7 +2257,7 @@ dependencies = [
 
 [[package]]
 name = "kum"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "chrono",
  "objc2",
