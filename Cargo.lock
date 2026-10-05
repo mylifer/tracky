@@ -2259,12 +2259,14 @@ dependencies = [
 name = "kum"
 version = "0.9.10"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "objc2",
  "objc2-app-kit",
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

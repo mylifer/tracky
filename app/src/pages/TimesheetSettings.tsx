@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import {
   api,
+  type GoogleStatus,
   type AiStatus,
   type CalendarStatus,
   type ProjectMapping,
@@ -77,6 +78,12 @@ export function TimesheetSections() {
           hint="Toplantılar zaman çizelgesine girer: konusu bir projenin kuralına uyan toplantı o projeye yazılır."
         >
           <CalendarConnect />
+        </SettingBlock>
+        <SettingBlock
+          label="Google hesabı"
+          hint="Bağlıysa zaman çizelgesi tabloları Google Sheets API ile doğrudan okunup yazılır: Apps Script'e göre çok daha hızlı (saniyeler değil, yarım saniyenin altında). Çizelgenin tablo bağlantısı (docs.google.com/…) girilmiş olmalı."
+        >
+          <GoogleConnect />
         </SettingBlock>
       </SettingsGroup>
       {config && <Timesheets config={config} projects={projects} onChange={load} onError={setError} />}
@@ -603,6 +610,120 @@ export function CalendarConnect() {
           kimseyle paylaşma.
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * Google hesabı: kullanıcının kendi Google Cloud projesindeki "Masaüstü uygulaması" OAuth
+ * istemcisiyle tarayıcıda giriş. Bağlantı yalnızca bu cihazda saklanır.
+ */
+function GoogleConnect() {
+  const [status, setStatus] = useState<GoogleStatus | null>(null);
+  const [clientId, setClientId] = useState("");
+  const [secret, setSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.googleStatus().then(
+      (s) => {
+        setStatus(s);
+        setClientId(s.clientId);
+      },
+      (e) => setError(friendlyError(e)),
+    );
+  }, []);
+  const connect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await api.googleConnect(clientId, secret));
+      setSecret("");
+    } catch (e) {
+      setError(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!status) return <ErrorText>{error}</ErrorText>;
+  if (status.connected)
+    return (
+      <div className="space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Check className="size-3.5 text-success" />
+          <span className="min-w-0 flex-1">
+            Bağlı{status.email ? `: ${status.email}` : ""} · tablolar doğrudan okunup yazılıyor
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={async () => {
+              try {
+                setStatus(await api.googleDisconnect());
+              } catch (e) {
+                setError(friendlyError(e));
+              }
+            }}
+          >
+            Bağlantıyı kes
+          </Button>
+        </div>
+        <ErrorText>{error}</ErrorText>
+      </div>
+    );
+  return (
+    <div className="space-y-2">
+      <details className="rounded-md border bg-muted/30 px-3 py-2 text-xs" open={!status.clientId}>
+        <summary className="cursor-pointer font-medium">Kurulum (bir kez, ~5 dakika)</summary>
+        <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-muted-foreground">
+          <li>
+            <b>console.cloud.google.com</b>'da yeni bir proje aç (örn. "Kum").
+          </li>
+          <li>
+            <b>APIs &amp; Services → Library</b>'de <b>Google Sheets API</b>'yi bul, <b>Enable</b>.
+          </li>
+          <li>
+            <b>Google Auth Platform → Get started</b>: uygulama adı "Kum", e-postan, kullanıcı türü <b>External</b>.
+            Sonra <b>Audience → Publish app</b> (yayınlamazsan bağlantı 7 günde bir düşer).
+          </li>
+          <li>
+            <b>Clients → Create client</b>: tür <b>Desktop app</b>. Çıkan <b>Client ID</b> ve <b>Client secret</b>'ı
+            aşağıya yapıştır.
+          </li>
+          <li>
+            <b>Google ile bağlan</b>: tarayıcıda tablonun erişimi olan hesabı seç. "Google bu uygulamayı doğrulamadı"
+            uyarısında <b>Gelişmiş → Kum'a git</b> (uygulama senin projen).
+          </li>
+        </ol>
+      </details>
+      <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+        <Input
+          className="h-8 text-xs"
+          placeholder="Client ID (…apps.googleusercontent.com)"
+          value={clientId}
+          onChange={(e) => setClientId(e.target.value)}
+          aria-label="OAuth istemci kimliği"
+        />
+        <Input
+          className="h-8 text-xs"
+          type="password"
+          placeholder={status.hasSecret ? "Client secret (kayıtlı)" : "Client secret"}
+          value={secret}
+          onChange={(e) => setSecret(e.target.value)}
+          aria-label="OAuth istemcisinin gizli anahtarı"
+        />
+        {busy ? (
+          <Button size="sm" variant="outline" onClick={() => api.googleCancel()}>
+            <Loader2 className="animate-spin" /> İptal
+          </Button>
+        ) : (
+          <Button size="sm" disabled={!clientId.trim() || (!secret.trim() && !status.hasSecret)} onClick={connect}>
+            Google ile bağlan
+          </Button>
+        )}
+      </div>
+      {busy && <p className="text-[11px] text-muted-foreground">Tarayıcıda Google girişini tamamla…</p>}
+      <ErrorText>{error}</ErrorText>
     </div>
   );
 }

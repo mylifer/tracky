@@ -1113,8 +1113,7 @@ function FileNotice({
       {rows === null ? (
         <span className="flex items-center gap-1">
           <Loader2 className="size-3 animate-spin" />
-          {where} satırlar okunuyor (Google Sheets yanıtı yarım dakikayı bulabilir; Kum'un satırlarıyla çalışmaya devam
-          edebilirsin)…
+          {where} satırlar okunuyor… (bu sırada Kum'un satırlarıyla çalışabilirsin)
         </span>
       ) : (
         <span>

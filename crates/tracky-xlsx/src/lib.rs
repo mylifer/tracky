@@ -13,6 +13,7 @@
 //!
 //! Google Sheets'e aynı kurallarla yazmak için [`sheets`], aylık müşteri raporu için [`report`].
 
+pub mod gsheets;
 pub mod report;
 pub mod sheets;
 
@@ -105,29 +106,36 @@ pub struct Appended {
 
 /// Başlık satırındaki sütun konumları (1'den başlar).
 #[derive(Debug, Clone, Copy)]
-struct Columns {
-    date: u32,
-    day: Option<u32>,
-    consultant: Option<u32>,
-    start: u32,
-    hours: u32,
-    kind: u32,
-    details: u32,
-    party: u32,
-    division: u32,
+pub(crate) struct Columns {
+    pub(crate) date: u32,
+    pub(crate) day: Option<u32>,
+    pub(crate) consultant: Option<u32>,
+    pub(crate) start: u32,
+    pub(crate) hours: u32,
+    pub(crate) kind: u32,
+    pub(crate) details: u32,
+    pub(crate) party: u32,
+    pub(crate) division: u32,
 }
 
-const HEADER_ROW: u32 = 1;
-const DAY_FORMULA: &str = r#"SWITCH(WEEKDAY(B{r}),1,"Sunday",2,"Monday",3,"Tuesday",4,"Wednesday",5,"Thursday",6,"Friday",7,"Saturday")"#;
+pub(crate) const HEADER_ROW: u32 = 1;
+pub(crate) const DAY_FORMULA: &str = r#"SWITCH(WEEKDAY(B{r}),1,"Sunday",2,"Monday",3,"Tuesday",4,"Wednesday",5,"Thursday",6,"Friday",7,"Saturday")"#;
 
 fn columns(ws: &Worksheet) -> Result<Columns> {
     let last = ws.get_highest_column().max(1);
-    let headers: Vec<(u32, String)> = (1..=last)
-        .map(|c| {
+    let headers: Vec<String> = (1..=last).map(|c| ws.get_value((c, HEADER_ROW))).collect();
+    columns_of(&headers)
+}
+
+/// Başlık satırının hücrelerinden (soldan sağa) sütun konumları.
+pub(crate) fn columns_of(headers: &[String]) -> Result<Columns> {
+    let headers: Vec<(u32, String)> = headers
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
             (
-                c,
-                ws.get_value((c, HEADER_ROW))
-                    .split_whitespace()
+                i as u32 + 1,
+                h.split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ")
                     .to_lowercase(),
@@ -156,8 +164,32 @@ fn columns(ws: &Worksheet) -> Result<Columns> {
     })
 }
 
+/// Değerler en sıktan seyreğe (boşlar atlanır).
+pub(crate) fn ranked(values: impl Iterator<Item = String>) -> Vec<String> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for v in values {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            *counts.entry(v).or_default() += 1;
+        }
+    }
+    let mut v: Vec<_> = counts.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v.into_iter().map(|(k, _)| k).collect()
+}
+
+/// Birim sütununun başlığından firma: "Togg Division" → "Togg".
+pub(crate) fn company_of(header: &str) -> Option<String> {
+    let company = header
+        .split_whitespace()
+        .take_while(|w| !w.eq_ignore_ascii_case("division"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!company.is_empty()).then_some(company)
+}
+
 /// Excel tarih seri numarası (1900 sistemi) → tarih.
-fn serial_to_date(v: &str) -> Option<NaiveDate> {
+pub(crate) fn serial_to_date(v: &str) -> Option<NaiveDate> {
     let n: f64 = v.trim().parse().ok()?;
     if !(1.0..2_958_466.0).contains(&n) {
         return None;
@@ -165,11 +197,11 @@ fn serial_to_date(v: &str) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(1899, 12, 30)?.checked_add_days(chrono::Days::new(n.floor() as u64))
 }
 
-fn date_to_serial(d: NaiveDate) -> f64 {
+pub(crate) fn date_to_serial(d: NaiveDate) -> f64 {
     (d - NaiveDate::from_ymd_opt(1899, 12, 30).expect("sabit tarih")).num_days() as f64
 }
 
-fn time_to_fraction(t: NaiveTime) -> f64 {
+pub(crate) fn time_to_fraction(t: NaiveTime) -> f64 {
     f64::from(t.num_seconds_from_midnight()) / 86_400.0
 }
 
@@ -194,26 +226,11 @@ pub fn inspect(path: &Path) -> Result<Template> {
         umya_spreadsheet::reader::xlsx::read(path).map_err(|e| Error::Read(e.to_string()))?;
     let ws = book.get_sheet(&0).ok_or(Error::NoSheet)?;
     let cols = columns(ws)?;
-    let ranked = |col: u32| -> Vec<String> {
-        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for r in (HEADER_ROW + 1)..=ws.get_highest_row() {
-            let v = ws.get_value((col, r)).trim().to_string();
-            if !v.is_empty() {
-                *counts.entry(v).or_default() += 1;
-            }
-        }
-        let mut v: Vec<_> = counts.into_iter().collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        v.into_iter().map(|(k, _)| k).collect()
+    let ranked = |col: u32| {
+        ranked(((HEADER_ROW + 1)..=ws.get_highest_row()).map(|r| ws.get_value((col, r))))
     };
-    let header = ws.get_value((cols.division, HEADER_ROW));
-    let company = header
-        .split_whitespace()
-        .take_while(|w| !w.eq_ignore_ascii_case("division"))
-        .collect::<Vec<_>>()
-        .join(" ");
     Ok(Template {
-        company: (!company.is_empty()).then_some(company),
+        company: company_of(&ws.get_value((cols.division, HEADER_ROW))),
         consultant: cols.consultant.and_then(|c| ranked(c).into_iter().next()),
         parties: ranked(cols.party),
         divisions: ranked(cols.division),
@@ -264,7 +281,7 @@ fn edit_backup(path: &Path) -> Result<()> {
 }
 
 /// Başlangıç hücresi → saat: gün kesri (tarihli de olabilir) ya da "09:30" metni.
-fn cell_time(v: &str) -> Option<NaiveTime> {
+pub(crate) fn cell_time(v: &str) -> Option<NaiveTime> {
     let v = v.trim();
     if let Ok(n) = v.parse::<f64>() {
         if n < 0.0 {
@@ -279,7 +296,7 @@ fn cell_time(v: &str) -> Option<NaiveTime> {
 }
 
 /// Saat hücresi → sayı ("1,5" de olur).
-fn cell_hours(v: &str) -> Option<f64> {
+pub(crate) fn cell_hours(v: &str) -> Option<f64> {
     v.trim().replace(',', ".").parse().ok()
 }
 

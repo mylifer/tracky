@@ -21,6 +21,7 @@ use tracky_core::timesheet::{
 };
 use tracky_core::{Rule, RuleField, Store, Tag, TagKind};
 
+use crate::google::GoogleAuth;
 use crate::lock;
 use crate::tracking::{Shared, local_midnight};
 
@@ -45,6 +46,11 @@ enum ExportTarget {
     Sheets {
         url: String,
         token: String,
+    },
+    /// Sheets API ile doğrudan.
+    Api {
+        id: String,
+        auth: GoogleAuth,
     },
     /// Dosya aktarımdan sonra değiştiyse yedek geri yüklenmez (sonraki emek kaybolmasın).
     Excel {
@@ -83,21 +89,54 @@ fn not_exporting() -> CmdResult<()> {
 static FILE_WRITES: tauri::async_runtime::Mutex<()> = tauri::async_runtime::Mutex::const_new(());
 
 /// Çizelgenin kayıtlarının yazıldığı yer: Google Sheets (bağlıysa) ya da Excel dosyası.
+/// Google bağlıysa ve tablonun bağlantısı biliniyorsa Sheets API ile doğrudan (hızlı); yoksa
+/// Apps Script web uygulaması, o da yoksa Excel dosyası.
 #[derive(Clone)]
 enum FileTarget {
+    Api { id: String, auth: GoogleAuth },
     Sheets { url: String, token: String },
     Excel { path: std::path::PathBuf },
 }
 
+/// Sheets API çağrısı: geçerli erişim anahtarıyla; anahtar reddedilirse bir kez yenilenip
+/// yinelenir.
+fn with_google<T>(
+    auth: &GoogleAuth,
+    f: impl Fn(&str) -> tracky_xlsx::Result<T>,
+) -> tracky_xlsx::Result<T> {
+    let token = crate::google::access_token(auth).map_err(tracky_xlsx::Error::Sheets)?;
+    match f(&token) {
+        Err(tracky_xlsx::Error::Sheets(m)) if m.contains("oturumu geçersiz") => {
+            crate::google::forget_access();
+            let token = crate::google::access_token(auth).map_err(tracky_xlsx::Error::Sheets)?;
+            f(&token)
+        }
+        r => r,
+    }
+}
+
 impl FileTarget {
-    fn of(sheet: &Timesheet, token: &str) -> CmdResult<Self> {
-        match (&sheet.sheet_url, &sheet.file_path) {
-            (Some(url), _) => Ok(Self::Sheets {
+    fn of(sheet: &Timesheet, token: &str, google: &GoogleAuth) -> CmdResult<Self> {
+        let api = google
+            .connected()
+            .then(|| {
+                sheet
+                    .sheet_link
+                    .as_deref()
+                    .and_then(tracky_xlsx::gsheets::spreadsheet_id)
+            })
+            .flatten();
+        match (api, &sheet.sheet_url, &sheet.file_path) {
+            (Some(id), _, _) => Ok(Self::Api {
+                id,
+                auth: google.clone(),
+            }),
+            (None, Some(url), _) => Ok(Self::Sheets {
                 url: url.clone(),
                 token: token.to_string(),
             }),
-            (None, Some(path)) => Ok(Self::Excel { path: path.into() }),
-            (None, None) => Err(NO_TARGET.into()),
+            (None, None, Some(path)) => Ok(Self::Excel { path: path.into() }),
+            (None, None, None) => Err(NO_TARGET.into()),
         }
     }
 
@@ -105,13 +144,16 @@ impl FileTarget {
     fn load(store: &Store, timesheet_id: &str) -> CmdResult<(Timesheet, Self)> {
         let config = store.timesheet_config().map_err(err)?;
         let sheet = config.timesheet(timesheet_id).cloned().ok_or(NO_SHEET)?;
-        let target = Self::of(&sheet, &config.sheet_token)?;
+        let target = Self::of(&sheet, &config.sheet_token, &crate::google::load(store))?;
         Ok((sheet, target))
     }
 
     async fn list(&self, from: NaiveDate, to: NaiveDate) -> CmdResult<Vec<FileRow>> {
         let target = self.clone();
         let rows = tauri::async_runtime::spawn_blocking(move || match &target {
+            Self::Api { id, auth } => {
+                with_google(auth, |t| tracky_xlsx::gsheets::list(t, id, from, to))
+            }
             Self::Sheets { url, token } => tracky_xlsx::sheets::list(url, token, from, to),
             Self::Excel { path } => tracky_xlsx::list(path, from, to),
         })
@@ -130,6 +172,9 @@ impl FileTarget {
         let (target, consultant) = (self.clone(), consultant.to_string());
         let (expect, row) = (sheet_row(expect), xlsx_row(row));
         tauri::async_runtime::spawn_blocking(move || match &target {
+            Self::Api { id, auth } => with_google(auth, |t| {
+                tracky_xlsx::gsheets::update(t, id, &consultant, &expect, &row)
+            }),
             Self::Sheets { url, token } => {
                 tracky_xlsx::sheets::update(url, token, &consultant, &expect, &row)
             }
@@ -143,6 +188,9 @@ impl FileTarget {
     async fn insert(&self, consultant: &str, row: &TimesheetEntry) -> CmdResult<u32> {
         let (target, consultant, row) = (self.clone(), consultant.to_string(), xlsx_row(row));
         tauri::async_runtime::spawn_blocking(move || match &target {
+            Self::Api { id, auth } => with_google(auth, |t| {
+                tracky_xlsx::gsheets::insert(t, id, &consultant, &row)
+            }),
             Self::Sheets { url, token } => {
                 tracky_xlsx::sheets::insert(url, token, &consultant, &row)
             }
@@ -157,6 +205,9 @@ impl FileTarget {
     async fn remove(&self, expect: &FileRow, id: Option<&str>) -> CmdResult<()> {
         let (target, expect, id) = (self.clone(), sheet_row(expect), id.map(str::to_string));
         tauri::async_runtime::spawn_blocking(move || match &target {
+            Self::Api { id: sid, auth } => {
+                with_google(auth, |t| tracky_xlsx::gsheets::remove(t, sid, &expect))
+            }
             Self::Sheets { url, token } => {
                 tracky_xlsx::sheets::remove(url, token, &expect, id.as_deref())
             }
@@ -1268,7 +1319,7 @@ pub async fn export_timesheet(
         local_midnight(first),
         local_midnight(last + Days::new(1)),
     );
-    let (sheet, token, ids, pending) = {
+    let (sheet, file_target, ids, pending) = {
         let shared = app.state::<Shared>();
         let store = lock(&shared.store);
         let ctx = store.timesheet_context().map_err(err)?;
@@ -1277,9 +1328,11 @@ pub async fn export_timesheet(
             .timesheet(&timesheet_id)
             .cloned()
             .ok_or(NO_SHEET)?;
-        if !sheet.has_target() {
-            return Err(NO_TARGET.into());
-        }
+        let file_target = FileTarget::of(
+            &sheet,
+            &ctx.config.sheet_token,
+            &crate::google::load(&store),
+        )?;
         // Kaydedilmiş satırlar veritabanından okunur (arayüzdeki kopya eski olabilir).
         let mut entries: Vec<(Option<String>, TimesheetEntry)> = Vec::new();
         for r in rows {
@@ -1359,12 +1412,37 @@ pub async fn export_timesheet(
             .filter(|(id, _)| seen.insert(id.clone()))
             .collect();
         let ids: Vec<String> = pending.iter().map(|(id, _)| id.clone()).collect();
-        (sheet, ctx.config.sheet_token.clone(), ids, pending)
+        (sheet, file_target, ids, pending)
     };
     let rows: Vec<tracky_xlsx::Row> = pending.iter().map(|(_, e)| xlsx_row(e)).collect();
     let consultant = sheet.consultant.clone();
-    let (exported, target) = match (sheet.sheet_url.clone(), sheet.file_path.clone()) {
-        (Some(url), _) => {
+    let (exported, target) = match file_target {
+        FileTarget::Api { id, auth } => {
+            let keyed: Vec<_> = ids.iter().cloned().zip(rows).collect();
+            let target = ExportTarget::Api {
+                id: id.clone(),
+                auth: auth.clone(),
+            };
+            let done = tauri::async_runtime::spawn_blocking(move || {
+                with_google(&auth, |t| {
+                    tracky_xlsx::gsheets::append(t, &id, &consultant, &keyed)
+                })
+            })
+            .await
+            .map_err(err)?
+            .map_err(err)?;
+            let exported = Exported {
+                rows: ids.len(),
+                filled: done.filled,
+                inserted: done.inserted,
+                skipped: done.skipped,
+                backup: None,
+                target: done.sheet,
+                sheets: true,
+            };
+            (exported, target)
+        }
+        FileTarget::Sheets { url, token } => {
             let keyed: Vec<_> = ids.iter().cloned().zip(rows).collect();
             let target = ExportTarget::Sheets {
                 url: url.clone(),
@@ -1387,8 +1465,7 @@ pub async fn export_timesheet(
             };
             (exported, target)
         }
-        (None, Some(path)) => {
-            let file = std::path::PathBuf::from(&path);
+        FileTarget::Excel { path: file } => {
             let written = file.clone();
             let done = tauri::async_runtime::spawn_blocking(move || {
                 tracky_xlsx::append(&written, &consultant, &rows)
@@ -1402,7 +1479,7 @@ pub async fn export_timesheet(
                 inserted: done.inserted,
                 skipped: 0,
                 backup: Some(done.backup.display().to_string()),
-                target: path,
+                target: file.display().to_string(),
                 sheets: false,
             };
             let target = ExportTarget::Excel {
@@ -1412,7 +1489,6 @@ pub async fn export_timesheet(
             };
             (exported, target)
         }
-        (None, None) => return Err(NO_TARGET.into()),
     };
     lock(&app.state::<Shared>().store)
         .mark_timesheet_exported(&ids, Utc::now(), &sheet.id)
@@ -1434,12 +1510,25 @@ pub async fn undo_last_export(app: AppHandle) -> CmdResult<String> {
         return Err("Geri alınacak aktarım yok.".into());
     };
     let message = match &last.target {
-        ExportTarget::Sheets { url, token } => {
-            let (url, token, ids) = (url.clone(), token.clone(), last.ids.clone());
-            let done = tauri::async_runtime::spawn_blocking(move || {
-                tracky_xlsx::sheets::undo(&url, &token, &ids)
-            })
-            .await
+        ExportTarget::Sheets { .. } | ExportTarget::Api { .. } => {
+            let ids = last.ids.clone();
+            let done = match &last.target {
+                ExportTarget::Api { id, auth } => {
+                    let (id, auth) = (id.clone(), auth.clone());
+                    tauri::async_runtime::spawn_blocking(move || {
+                        with_google(&auth, |t| tracky_xlsx::gsheets::undo(t, &id, &ids))
+                    })
+                    .await
+                }
+                ExportTarget::Sheets { url, token } => {
+                    let (url, token) = (url.clone(), token.clone());
+                    tauri::async_runtime::spawn_blocking(move || {
+                        tracky_xlsx::sheets::undo(&url, &token, &ids)
+                    })
+                    .await
+                }
+                ExportTarget::Excel { .. } => unreachable!("yukarıda ayrıldı"),
+            }
             .map_err(err)?;
             let done = match done {
                 Ok(d) => d,

@@ -243,6 +243,14 @@ export type CalendarStatus = {
   /** Yoksayılan toplantı serisi sayısı. */
   ignored: number;
 };
+/** Google hesabı bağlantısı: bağlıysa tablolar Sheets API ile doğrudan okunup yazılır. */
+export type GoogleStatus = {
+  connected: boolean;
+  email: string | null;
+  clientId: string;
+  /** Gizli anahtar kayıtlı (kendisi gönderilmez). */
+  hasSecret: boolean;
+};
 export type Imported = {
   config: TimesheetConfig;
   /** İçe aktarılan (yeni ya da güncellenen) zaman çizelgesi. */
@@ -554,6 +562,13 @@ export const api = {
   /** Son aktarımı geri alır (Sheets satırları silinir, Excel yedekten döner); sonuç iletisini verir. */
   undoLastExport: () => invoke<string>("undo_last_export"),
   sheetScript: () => invoke<string>("sheet_script"),
+  /** Sheets API ile doğrudan bağlantı (Google hesabı). */
+  googleStatus: () => invoke<GoogleStatus>("google_status"),
+  /** Tarayıcıda Google girişi; `clientSecret` boşsa kayıtlı olan. */
+  googleConnect: (clientId: string, clientSecret: string) =>
+    invoke<GoogleStatus>("google_connect", { clientId, clientSecret }),
+  googleCancel: () => invoke<void>("google_cancel"),
+  googleDisconnect: () => invoke<GoogleStatus>("google_disconnect"),
   /** `timesheetId` `null` ise yeni zaman çizelgesi. */
   connectSheet: (timesheetId: string | null, url: string, link: string | null) =>
     invoke<Imported>("connect_sheet", { timesheetId, url, link }),

@@ -9,6 +9,7 @@ mod commands;
 mod dock;
 mod edits;
 mod effects;
+mod google;
 mod sync;
 mod timesheet;
 mod tracking;
@@ -449,6 +450,10 @@ pub fn run() {
             timesheet::save_sheet_row,
             timesheet::delete_sheet_row,
             timesheet::restore_sheet_row,
+            google::google_status,
+            google::google_connect,
+            google::google_cancel,
+            google::google_disconnect,
             ai::get_ai_settings,
             ai::save_ai_settings,
             ai::test_ai_connection,
