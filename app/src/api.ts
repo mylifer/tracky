@@ -296,6 +296,8 @@ export type SyncStatus = {
 export type PrivacySettings = {
   paused: boolean;
   excluded_apps: string[];
+  /** Tarayıcıda bu adreslerde geçen süre kaydedilmez (`site.com` alt alan adlarını da kapsar). */
+  excluded_urls: string[];
   hidden_title_apps: string[];
   hide_private_windows: boolean;
   title_suffixes: string[];
@@ -555,6 +557,7 @@ export const api = {
     invoke<Edited>("set_range_project", { start, end, projectId }),
   privacy: () => invoke<PrivacySettings>("get_privacy"),
   savePrivacy: (settings: PrivacySettings) => invoke<void>("save_privacy", { settings }),
+  defaultExcludedUrls: () => invoke<string[]>("default_excluded_urls"),
   goals: () => invoke<Goals>("get_goals"),
   saveGoals: (goals: Goals) => invoke<void>("save_goals", { goals }),
   exportCsv: () => invoke<string>("export_csv"),

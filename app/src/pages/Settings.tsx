@@ -192,6 +192,10 @@ export default function Settings({
             apps={apps}
             onChange={(excluded_apps) => save({ ...privacy, excluded_apps })}
           />
+          <UrlEditor
+            urls={privacy.excluded_urls ?? []}
+            onChange={(excluded_urls) => save({ ...privacy, excluded_urls })}
+          />
           <AppPicker
             title="Başlığı kaydedilmeyen uygulamalar"
             hint="Süre kaydedilir ama pencere başlığı “Gizli” olarak saklanır (örn. e-posta)."
@@ -313,6 +317,58 @@ function AppPicker({
           ))}
         </SelectContent>
       </Select>
+    </SettingBlock>
+  );
+}
+
+function UrlEditor({ urls, onChange }: { urls: string[]; onChange: (u: string[]) => void }) {
+  const [text, setText] = useState("");
+  const [open, setOpen] = useState(false);
+  return (
+    <SettingBlock
+      label="Takip edilmeyen adresler"
+      hint="Tarayıcıda bu sitelerde geçen süre hiç kaydedilmez; alt alan adları da kapsanır. Varsayılan olarak yetişkin sitelerini içerir."
+    >
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        {urls.length} adres
+        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setOpen((o) => !o)}>
+          {open ? "Gizle" : "Göster"}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2 text-xs"
+          onClick={() => api.defaultExcludedUrls().then((d) => onChange([...new Set([...urls, ...d])]))}
+        >
+          Varsayılanları ekle
+        </Button>
+      </div>
+      {open && (
+        <div className="max-h-40 overflow-auto">
+          <Chips
+            items={urls.map((u) => ({ key: u, label: u }))}
+            onRemove={(u) => onChange(urls.filter((x) => x !== u))}
+          />
+        </div>
+      )}
+      <form
+        className="flex max-w-sm gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (text.trim()) onChange([...urls, text.trim()]);
+          setText("");
+        }}
+      >
+        <Input
+          className="h-7 text-xs"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="örn. site.com"
+        />
+        <Button type="submit" variant="outline" size="sm" disabled={!text.trim()}>
+          Ekle
+        </Button>
+      </form>
     </SettingBlock>
   );
 }

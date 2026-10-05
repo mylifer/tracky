@@ -14,6 +14,10 @@ pub struct PrivacySettings {
     pub paused: bool,
     /// Bu uygulamalarda geçen süre hiç kaydedilmez (örn. şifre yöneticileri).
     pub excluded_apps: Vec<String>,
+    /// Tarayıcıda bu adreslerde geçen süre hiç kaydedilmez. Desenler alan adı kuralları
+    /// gibi eşleşir (bkz. [`crate::url_util::pattern_matches`]): `site.com` alt alan
+    /// adlarını da kapsar. Varsayılan olarak yetişkin siteleri içerir.
+    pub excluded_urls: Vec<String>,
     /// Bu uygulamalarda süre kaydedilir ama pencere başlığı kaydedilmez.
     pub hidden_title_apps: Vec<String>,
     /// Tarayıcıların gizli pencerelerinde başlığı kaydetme.
@@ -34,6 +38,7 @@ impl Default for PrivacySettings {
         Self {
             paused: false,
             excluded_apps: Vec::new(),
+            excluded_urls: default_excluded_urls(),
             hidden_title_apps: Vec::new(),
             hide_private_windows: true,
             title_suffixes: Vec::new(),
@@ -51,6 +56,10 @@ impl PrivacySettings {
             return None;
         }
         let is_browser = browser::is_browser(&window.app_id);
+        // Gizli pencerede de: adres yalnızca burada bakılıp atılır.
+        if is_browser && self.excludes_url(window.url.as_deref()) {
+            return None;
+        }
         let hide = contains(&self.hidden_title_apps, &window.app_id)
             || (is_browser
                 && self.hide_private_windows
@@ -112,6 +121,97 @@ impl PrivacySettings {
     pub fn reads_title(&self, app_id: &str) -> bool {
         !contains(&self.excluded_apps, app_id) && !contains(&self.hidden_title_apps, app_id)
     }
+}
+
+impl PrivacySettings {
+    /// Adres takip edilmeyenler listesinde mi?
+    pub fn excludes_url(&self, url: Option<&str>) -> bool {
+        let Some(hp) = url.and_then(crate::url_util::host_path) else {
+            return false;
+        };
+        self.excluded_urls
+            .iter()
+            .any(|p| crate::url_util::pattern_matches(p, &hp))
+    }
+}
+
+/// Varsayılan takip edilmeyen adresler: yaygın yetişkin siteleri. Alt alan adları da
+/// eşleştiği için (örn. `tr.pornhub.com`) yalnızca ana alan adları yazılır.
+pub fn default_excluded_urls() -> Vec<String> {
+    const ADULT: &[&str] = &[
+        "4tube.com",
+        "adultfriendfinder.com",
+        "alohatube.com",
+        "anysex.com",
+        "ashemaletube.com",
+        "beeg.com",
+        "bongacams.com",
+        "brazzers.com",
+        "cam4.com",
+        "camsoda.com",
+        "chaturbate.com",
+        "drtuber.com",
+        "eporner.com",
+        "e-hentai.org",
+        "erome.com",
+        "fansly.com",
+        "faphouse.com",
+        "fapello.com",
+        "flirt4free.com",
+        "fuq.com",
+        "hclips.com",
+        "hentaihaven.xxx",
+        "hqporner.com",
+        "hotmovs.com",
+        "imagefap.com",
+        "ixxx.com",
+        "jerkmate.com",
+        "livejasmin.com",
+        "manyvids.com",
+        "motherless.com",
+        "myfreecams.com",
+        "nhentai.net",
+        "nudevista.com",
+        "nuvid.com",
+        "onlyfans.com",
+        "pornhat.com",
+        "porn.com",
+        "porndig.com",
+        "porndoe.com",
+        "pornhd.com",
+        "pornhub.com",
+        "pornhub.org",
+        "pornone.com",
+        "porntrex.com",
+        "porntube.com",
+        "realitykings.com",
+        "redtube.com",
+        "rule34.xxx",
+        "rule34video.com",
+        "spankbang.com",
+        "streamate.com",
+        "stripchat.com",
+        "sunporno.com",
+        "thumbzilla.com",
+        "tnaflix.com",
+        "tube8.com",
+        "txxx.com",
+        "upornia.com",
+        "vjav.com",
+        "vporn.com",
+        "xhamster.com",
+        "xhamster.desi",
+        "xhamsterlive.com",
+        "xnxx.com",
+        "xnxx.tv",
+        "xvideos.com",
+        "xvideos.es",
+        "xvideos2.com",
+        "xxxbunker.com",
+        "youjizz.com",
+        "youporn.com",
+    ];
+    ADULT.iter().map(|s| s.to_string()).collect()
 }
 
 fn contains(list: &[String], app_id: &str) -> bool {
@@ -243,5 +343,35 @@ mod tests {
     fn missing_fields_use_defaults() {
         let s: PrivacySettings = serde_json::from_str(r#"{"paused":true}"#).unwrap();
         assert!(s.paused && s.hide_private_windows);
+        assert!(s.excluded_urls.iter().any(|u| u == "pornhub.com"));
+        // Kullanıcı listeyi boşalttıysa varsayılanlar geri gelmez.
+        let s: PrivacySettings = serde_json::from_str(r#"{"excluded_urls":[]}"#).unwrap();
+        assert!(s.excluded_urls.is_empty());
+    }
+
+    #[test]
+    fn excluded_urls_are_not_recorded() {
+        let s = PrivacySettings {
+            excluded_urls: vec!["pornhub.com".into(), "example.com/gizli".into()],
+            ..Default::default()
+        };
+        let mut win = w("com.google.Chrome", "Sayfa - Google Chrome");
+        for url in [
+            "https://www.pornhub.com/view?x=1",
+            "tr.pornhub.com/",
+            "https://example.com/gizli/sayfa",
+        ] {
+            win.url = Some(url.into());
+            assert_eq!(s.apply(win.clone()), None, "{url}");
+        }
+        // Gizli pencerede de.
+        let mut private = win.clone();
+        private.title = "Yeni sekme (Gizli) - Google Chrome".into();
+        private.url = Some("https://pornhub.com".into());
+        assert_eq!(s.apply(private), None);
+        for url in ["https://example.com/acik", "https://notpornhub.com"] {
+            win.url = Some(url.into());
+            assert!(s.apply(win.clone()).is_some(), "{url}");
+        }
     }
 }

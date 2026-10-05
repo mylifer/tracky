@@ -438,6 +438,7 @@ pub fn run() {
             commands::add_manual_entry,
             commands::get_privacy,
             commands::save_privacy,
+            commands::default_excluded_urls,
             commands::get_goals,
             commands::save_goals,
             commands::export_csv,

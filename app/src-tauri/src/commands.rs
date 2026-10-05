@@ -455,6 +455,12 @@ pub async fn get_privacy(app: AppHandle) -> CmdResult<PrivacySettings> {
         .map_err(err)
 }
 
+/// Varsayılan takip edilmeyen adresler (listeyi sıfırlamak için).
+#[tauri::command]
+pub fn default_excluded_urls() -> Vec<String> {
+    tracky_core::privacy::default_excluded_urls()
+}
+
 /// Duraklatma durumu ayrı yönetilir (menü çubuğu); buradan değiştirilmez.
 #[tauri::command]
 pub async fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResult<()> {
@@ -464,8 +470,14 @@ pub async fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResul
         let paused = store.privacy_settings().map_err(err)?.paused;
         let mut settings = settings;
         settings.paused = paused;
+        settings.excluded_urls = settings
+            .excluded_urls
+            .iter()
+            .filter_map(|u| tracky_core::url_util::normalize_pattern(u))
+            .collect();
         for list in [
             &mut settings.excluded_apps,
+            &mut settings.excluded_urls,
             &mut settings.hidden_title_apps,
             &mut settings.title_suffixes,
         ] {
