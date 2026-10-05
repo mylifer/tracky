@@ -589,7 +589,10 @@ function ProjectLegend({ buckets, tags }: { buckets: Bucket[]; tags: Map<string,
       {rows.map((b) => {
         const tag = b.id ? tags.get(b.id) : undefined;
         return (
-          <li key={b.id ?? "none"} className="flex items-center gap-1.5 text-[11px] whitespace-nowrap text-muted-foreground">
+          <li
+            key={b.id ?? "none"}
+            className="flex items-center gap-1.5 text-[11px] whitespace-nowrap text-muted-foreground"
+          >
             {b.id ? (
               <Dot color={tagColor(tag)} />
             ) : (
