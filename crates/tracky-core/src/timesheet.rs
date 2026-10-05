@@ -757,27 +757,44 @@ pub fn propose(
 }
 
 /// Aralıkları bilinmeyen eski satırların (önceki sürümde onaylanan ya da aktarılan) işini
-/// önerilerden düşer: her (proje, tür) için eski satırların gerçek süresi (yoksa yazılan saat)
-/// o türün en erken önerilerinden düşülür, yalnızca artan süre kalır (eski + önerilen = takip
-/// edilen); kalanın saati yeniden yuvarlanır. Satırın saati ya da süresi elle değiştirilmiş olsa
-/// da iş ikinci kez önerilmez. Kısmen düşülen önerinin kalanı `MIN_REMAINDER`'dan kısaysa atılır,
-/// değilse başlangıcı ve aralıkları düşülen süre kadar ileri alınır.
+/// önerilerden düşer: aynı gün ve saatte (dakikasıyla) başlayan öneri varsa eski satırın gerçek
+/// süresi (yoksa yazılan saat) önce ondan düşülür (türü elle değiştirilmiş toplantı satırı yine
+/// kendi toplantısını kapsar); kalanı her (proje, tür) için o türün en erken önerilerinden
+/// düşülür. Yalnızca artan süre kalır (eski + önerilen = takip edilen); kalanın saati yeniden
+/// yuvarlanır. Satırın saati ya da süresi elle değiştirilmiş olsa da iş ikinci kez önerilmez.
+/// Kısmen düşülen önerinin kalanı `MIN_REMAINDER`'dan kısaysa atılır, değilse başlangıcı ve
+/// aralıkları düşülen süre kadar ileri alınır.
 pub fn without_legacy(
     proposed: &[TimesheetEntry],
     legacy: &[TimesheetEntry],
 ) -> Vec<TimesheetEntry> {
     let min_rest = MIN_REMAINDER.num_seconds() as f64 / 3600.0;
-    let mut budget: HashMap<(&str, EntryKind), f64> = HashMap::new();
-    for x in legacy {
-        *budget.entry((x.project_id.as_str(), x.kind)).or_default() += x.worked();
-    }
     let mut sorted: Vec<&TimesheetEntry> = proposed.iter().collect();
     sorted.sort_by_key(|e| e.start);
+    let minute = |t: NaiveTime| (t.hour(), t.minute());
+    // Önerilerden düşülen süre; aynı saatte başlayan eski satırlar önce.
+    let mut used: Vec<f64> = vec![0.0; sorted.len()];
+    let mut budget: HashMap<(&str, EntryKind), f64> = HashMap::new();
+    for x in legacy {
+        let mut left = x.worked();
+        if let Some(i) = sorted.iter().enumerate().position(|(i, e)| {
+            e.project_id == x.project_id
+                && e.date == x.date
+                && minute(e.start) == minute(x.start)
+                && used[i] < e.worked()
+        }) {
+            let take = left.min(sorted[i].worked() - used[i]);
+            used[i] += take;
+            left -= take;
+        }
+        *budget.entry((x.project_id.as_str(), x.kind)).or_default() += left;
+    }
     let mut out = Vec::new();
-    for e in sorted {
+    for (e, before) in sorted.into_iter().zip(used) {
         let left = budget.entry((e.project_id.as_str(), e.kind)).or_default();
-        let used = left.min(e.worked());
-        *left -= used;
+        let more = left.min(e.worked() - before);
+        *left -= more;
+        let used = before + more;
         let rest = e.worked() - used;
         if used == 0.0 {
             out.push(e.clone());
@@ -1787,10 +1804,9 @@ mod tests {
         ];
         // Hiç eski satır yoksa öneriler aynen.
         assert_eq!(without_legacy(&proposed, &[]).len(), 4);
-        // Aktarırken 09:10 kaydının saati 09:00'a çekilmiş ve 0,75'e yuvarlanmış; 13:00 kaydı
-        // aktarıldığında 1 saatti, sonra 2 saate uzadı. Düzenlenmiş kayıt tekrar önerilmez;
-        // toplam korunur (aktarılan 1,75 + önerilen 1,08 = takip edilen 2,83). Toplantı ve
-        // b projesi aktarılmadı: aynen kalır.
+        // Aktarırken 09:10 kaydının saati 09:00'a çekilmiş ve 0,75'e yuvarlanmış (kalan 0,08
+        // yuvarlama artığı); 13:00 kaydı aktarıldığında 1 saatti, sonra 2 saate uzadı: yalnızca
+        // uzayan saat önerilir. Toplantı ve b projesi aktarılmadı: aynen kalır.
         let exported = [
             entry("a", Working, 9, 0, 0.75),
             entry("a", Working, 13, 0, 1.0),
@@ -1800,9 +1816,16 @@ mod tests {
             [
                 ("b", "10:00", 1.0),
                 ("a", "11:00", 0.5),
-                ("a", "13:55", 1.08)
+                ("a", "14:00", 1.0)
             ]
             .map(|(p, t, h)| (p.to_string(), t.to_string(), h))
+        );
+        // Türü elle değiştirilmiş toplantı satırı (Online → F2F) yine kendi toplantısını kapsar.
+        let exported = [entry("a", EntryKind::F2F, 11, 0, 0.5)];
+        assert!(
+            without_legacy(&proposed, &exported)
+                .iter()
+                .all(|e| e.kind != Online)
         );
         // Kalan 15 dakikadan kısaysa (yuvarlama artığı) önerilmez.
         let exported = [entry("a", Working, 9, 0, 2.75)];
