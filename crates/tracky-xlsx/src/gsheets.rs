@@ -885,26 +885,6 @@ mod tests {
         assert!(forbidden(&Value::Null, msg).contains("düzenleme yetkisi yok"));
     }
 
-    #[test]
-    fn forbidden_reasons() {
-        let err = |reason: Option<&str>| {
-            let details = reason.map_or(
-                json!([]),
-                |r| json!([{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": r}]),
-            );
-            json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "details": details}})
-        };
-        let msg = "The caller does not have permission";
-        assert!(forbidden(&err(Some("SERVICE_DISABLED")), msg).contains("Sheets API kapalı"));
-        assert!(
-            forbidden(&err(Some("ACCESS_TOKEN_SCOPE_INSUFFICIENT")), msg)
-                .contains("izni verilmedi")
-        );
-        let plain = forbidden(&err(None), msg);
-        assert!(plain.contains("düzenleme yetkisi yok") && plain.contains(msg));
-        assert!(forbidden(&Value::Null, msg).contains("düzenleme yetkisi yok"));
-    }
-
     fn d(day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, day).unwrap()
     }
