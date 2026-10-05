@@ -78,14 +78,9 @@ fn not_exporting() -> CmdResult<()> {
     Ok(())
 }
 
-/// Dosyaya tek satır yazan komutlar da aktarım bayrağını tutar: aktarımla ya da birbirleriyle
-/// aynı anda dosyaya yazılmasın.
-fn begin_write() -> CmdResult<ExportGuard> {
-    if EXPORTING.swap(true, Ordering::Acquire) {
-        return Err("Zaman çizelgesi dosyasına yazılıyor; bitince tekrar dene.".into());
-    }
-    Ok(ExportGuard)
-}
+/// Dosyaya yazan işlemler (aktarım, tek satır düzenleme, silme, geri ekleme) sırayla çalışır:
+/// tablo yanıtı saniyeler sürebilir; arka arkaya yapılan düzenlemeler reddedilmez, sıraya girer.
+static FILE_WRITES: tauri::async_runtime::Mutex<()> = tauri::async_runtime::Mutex::const_new(());
 
 /// Çizelgenin kayıtlarının yazıldığı yer: Google Sheets (bağlıysa) ya da Excel dosyası.
 #[derive(Clone)]
@@ -544,21 +539,21 @@ pub async fn save_timesheet_entry(
     entry: TimesheetEntry,
     sheet_row: Option<u32>,
 ) -> CmdResult<String> {
-    let exported = {
+    {
         let shared = app.state::<Shared>();
         let store = lock(&shared.store);
         not_exporting()?;
-        match exported_entry(&store, id.as_deref())? {
-            Some(found) => found,
-            None => {
-                return store
-                    .save_timesheet_entry(id.as_deref(), &entry)
-                    .map_err(err);
-            }
+        if exported_entry(&store, id.as_deref())?.is_none() {
+            return store
+                .save_timesheet_entry(id.as_deref(), &entry)
+                .map_err(err);
         }
     };
-    let _guard = begin_write()?;
-    let (saved, sheet, target) = exported;
+    // Satır sıra gelince okunur: önceki düzenleme (sırada bekleyen) dosyaya ve Kum'a yazılmış olsun.
+    let _write = FILE_WRITES.lock().await;
+    let (saved, sheet, target) =
+        exported_entry(&lock(&app.state::<Shared>().store), id.as_deref())?
+            .ok_or("Satır değişti; sayfa yenilendi, tekrar dene.")?;
     // Yalnızca satırın alanları değişir; proje, tarih, gerçek süre ve aralıklar Kum'da kalır.
     let entry = TimesheetEntry {
         date: saved.entry.date,
@@ -590,21 +585,19 @@ pub async fn dismiss_timesheet_entry(
     entry: TimesheetEntry,
     sheet_row: Option<u32>,
 ) -> CmdResult<String> {
-    let exported = {
+    {
         let shared = app.state::<Shared>();
         let store = lock(&shared.store);
         not_exporting()?;
-        match exported_entry(&store, id.as_deref())? {
-            Some(found) => found,
-            None => {
-                return store
-                    .dismiss_timesheet_entry(id.as_deref(), &entry)
-                    .map_err(err);
-            }
+        if exported_entry(&store, id.as_deref())?.is_none() {
+            return store
+                .dismiss_timesheet_entry(id.as_deref(), &entry)
+                .map_err(err);
         }
     };
-    let _guard = begin_write()?;
-    let (saved, _, target) = exported;
+    let _write = FILE_WRITES.lock().await;
+    let (saved, _, target) = exported_entry(&lock(&app.state::<Shared>().store), id.as_deref())?
+        .ok_or("Satır değişti; sayfa yenilendi, tekrar dene.")?;
     let expect = FileRow::of(&saved.entry, sheet_row.unwrap_or(0));
     target.remove(&expect, Some(&saved.id)).await?;
     lock(&app.state::<Shared>().store)
@@ -735,7 +728,7 @@ pub async fn save_sheet_row(
     expect: FileRow,
     row: FileRow,
 ) -> CmdResult<u32> {
-    let _guard = begin_write()?;
+    let _write = FILE_WRITES.lock().await;
     let (sheet, target) = FileTarget::load(&lock(&app.state::<Shared>().store), &timesheet_id)?;
     let entry = file_entry(row)?;
     target.update(&sheet.consultant, &expect, &entry).await
@@ -749,7 +742,7 @@ pub async fn restore_sheet_row(
     timesheet_id: String,
     row: FileRow,
 ) -> CmdResult<u32> {
-    let _guard = begin_write()?;
+    let _write = FILE_WRITES.lock().await;
     let (sheet, target) = FileTarget::load(&lock(&app.state::<Shared>().store), &timesheet_id)?;
     let entry = file_entry(row)?;
     target.insert(&sheet.consultant, &entry).await
@@ -762,7 +755,7 @@ pub async fn delete_sheet_row(
     timesheet_id: String,
     expect: FileRow,
 ) -> CmdResult<()> {
-    let _guard = begin_write()?;
+    let _write = FILE_WRITES.lock().await;
     let (_, target) = FileTarget::load(&lock(&app.state::<Shared>().store), &timesheet_id)?;
     target.remove(&expect, None).await
 }
@@ -847,6 +840,8 @@ pub async fn unmerge_timesheet_entries(
 /// satır sayısı.
 #[tauri::command]
 pub async fn refresh_timesheet_entries(app: AppHandle, ids: Vec<String>) -> CmdResult<usize> {
+    // Aktarılmış satırlar dosyaya da yazılır: sıradaki yazmalar bitince okunsun.
+    let _write = FILE_WRITES.lock().await;
     let dates: Vec<NaiveDate> = {
         let shared = app.state::<Shared>();
         let store = lock(&shared.store);
@@ -901,7 +896,6 @@ pub async fn refresh_timesheet_entries(app: AppHandle, ids: Vec<String>) -> CmdR
     if remote.is_empty() {
         return Ok(removed);
     }
-    let _guard = begin_write()?;
     for (saved, sheet, target, fresh) in remote {
         let expect = FileRow::of(&saved.entry, 0);
         match fresh {
@@ -1262,6 +1256,7 @@ pub async fn export_timesheet(
         return Err("Aktarım zaten sürüyor.".into());
     }
     let _guard = ExportGuard;
+    let _write = FILE_WRITES.lock().await;
     let (Some(first), Some(last)) = (
         rows.iter().map(|r| r.entry.date).min(),
         rows.iter().map(|r| r.entry.date).max(),
@@ -1434,6 +1429,7 @@ pub async fn undo_last_export(app: AppHandle) -> CmdResult<String> {
         return Err("Aktarım sürüyor; bitince tekrar dene.".into());
     }
     let _guard = ExportGuard;
+    let _write = FILE_WRITES.lock().await;
     let Some(last) = lock(&LAST_EXPORT).take() else {
         return Err("Geri alınacak aktarım yok.".into());
     };

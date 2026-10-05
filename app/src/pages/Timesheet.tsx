@@ -398,9 +398,11 @@ export default function Timesheet({
     );
   }, []);
 
-  // Çizelgenin dosyasındaki satırlar (gün ve hafta görünümünde): hangi çizelge ve aralığın
-  // olduğu, okunuyor mu, okunamadıysa neden.
+  // Çizelgenin dosyasındaki satırlar: hangi çizelge ve ay aralığının olduğu, okunuyor mu,
+  // okunamadıysa neden.
   const [file, setFile] = useState<{ of: string; data: SheetRows } | null>(null);
+  // Dosyaya yazılmakta olan değişiklik sayısı (Sheets yanıtı saniyeler sürer; arka planda yazılır).
+  const [writing, setWriting] = useState(0);
   const [fileError, setFileError] = useState<{ of: string; message: string } | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
 
@@ -435,29 +437,80 @@ export default function Timesheet({
 
   const fileSeq = useRef(0);
   const fileSheet = config?.timesheets.find((t) => t.id === sheetId) ?? config?.timesheets[0];
-  const fileOf =
-    fileSheet && (fileSheet.sheetUrl || fileSheet.filePath) ? `${fileSheet.id}/${start}/${rangeDays}` : null;
-  /** Dosyanın satırlarını okur; dosyada değiştirilen satırlar Kum'a geçtiyse günler yeniden yüklenir. */
-  const loadFile = useCallback(async () => {
-    const seq = ++fileSeq.current;
-    if (!fileOf || !fileSheet) return;
-    setFileLoading(true);
-    try {
-      const data = await api.sheetRows(fileSheet.id, start, rangeDays);
-      if (seq !== fileSeq.current) return;
-      setFile({ of: fileOf, data });
-      setFileError(null);
-      if (data.synced > 0) await load();
-    } catch (e) {
-      if (seq === fileSeq.current) setFileError({ of: fileOf, message: friendlyError(e) });
-    } finally {
-      if (seq === fileSeq.current) setFileLoading(false);
-    }
-    // `fileSheet` her yüklemede yeni nesne: yalnızca kimliği ve dosyası önemli.
-  }, [fileOf, fileSheet?.sheetUrl, fileSheet?.filePath, start, rangeDays, load]);
+  // Dosya ay ay okunur ve saklanır: hafta değiştirmek ya da ay sınırını geçmek yalnızca henüz
+  // okunmamış (ya da eskimiş) ayı ister.
+  const fileBase =
+    fileSheet && (fileSheet.sheetUrl || fileSheet.filePath)
+      ? `${fileSheet.id}|${fileSheet.sheetUrl ?? fileSheet.filePath}`
+      : null;
+  const months = [...new Set([start.slice(0, 7), isoDate(addDays(rangeStart, rangeDays - 1)).slice(0, 7)])];
+  const fileOf = fileBase ? `${fileBase}|${months.join(",")}` : null;
+  /**
+   * Dosyanın satırlarını okur. Önbellekteki aylar hemen gösterilir; `force` değilse yalnızca
+   * olmayan ya da eskimiş aylar istenir. Dosyada değiştirilen satırlar Kum'a geçtiyse günler
+   * yeniden yüklenir.
+   */
+  const loadFile = useCallback(
+    async (force = false) => {
+      const seq = ++fileSeq.current;
+      if (!fileOf || !fileBase || !fileSheet) return;
+      const ms = fileOf.split("|").pop()!.split(",");
+      const show = () => {
+        const parts = ms.map((m) => readFileCache(`${fileBase}|${m}`));
+        if (parts.every(Boolean)) setFile({ of: fileOf, data: mergeFileParts(parts.map((p) => p!.data)) });
+        return parts;
+      };
+      const parts = show();
+      const need = ms.filter((_, i) => force || !parts[i] || Date.now() - parts[i]!.at >= FILE_FRESH_MS);
+      if (need.length === 0) return;
+      setFileLoading(true);
+      try {
+        const from = parseIsoDate(`${need[0]}-01`);
+        const last = parseIsoDate(`${need[need.length - 1]}-01`);
+        const days = Math.round((+addDays(last, daysInMonth(last)) - +from) / 86_400_000);
+        const data = await api.sheetRows(fileSheet.id, isoDate(from), days);
+        if (seq !== fileSeq.current) return;
+        for (const m of need)
+          writeFileCache(`${fileBase}|${m}`, {
+            rows: data.rows.filter((r) => r.date.startsWith(m)),
+            missing: data.missing,
+            synced: 0,
+          });
+        show();
+        setFileError(null);
+        if (data.synced > 0) await load();
+      } catch (e) {
+        if (seq === fileSeq.current) setFileError({ of: fileOf, message: friendlyError(e) });
+      } finally {
+        if (seq === fileSeq.current) setFileLoading(false);
+      }
+    },
+    // `fileSheet` her yüklemede yeni nesne: kimliği ve dosyası `fileBase`'te.
+    [fileOf, fileBase, load],
+  );
   useEffect(() => {
     loadFile();
   }, [loadFile]);
+  /**
+   * Yazılan değişikliği ekrandaki (ve önbellekteki) dosya satırlarına uygular; dosya yeniden
+   * okunmaz. Satır numaraları kayabilir: yazarken yalnızca ipucudur, satır içeriğinden bulunur.
+   */
+  const patchFile = (f: (rows: SheetRowView[]) => SheetRowView[]) =>
+    setFile((cur) => {
+      if (!cur) return cur;
+      const data = { ...cur.data, rows: f(cur.data.rows) };
+      const [id, target, list] = cur.of.split("|");
+      for (const m of list.split(",")) {
+        const key = `${id}|${target}|${m}`;
+        const old = readFileCache(key);
+        writeFileCache(
+          key,
+          { rows: data.rows.filter((r) => r.date.startsWith(m)), missing: old?.data.missing ?? [], synced: 0 },
+          old?.at,
+        );
+      }
+      return { of: cur.of, data };
+    });
   // Takvim arka planda yenilenince toplantılar değişmiş olabilir.
   useTauriEvent(api.onCalendar, (s) => {
     setCalendar(s);
@@ -490,10 +543,18 @@ export default function Timesheet({
       setError(friendlyError(e));
     }
   };
-  /** Dosyaya da yazan işlemler: sonra dosyanın satırları yeniden okunur (hata olsa da). */
+  /**
+   * Dosyaya da yazan işlemler: beklenmez (Sheets yanıtı saniyeler sürer), arka planda sırayla
+   * yazılır; yazılırken üstte "tabloya yazılıyor" görünür. Ekrandaki satırları `f` kendisi
+   * günceller ([patchFile]); dosya yeniden okunmaz.
+   */
   const runFile: Run = (f) => async () => {
-    await run(f)();
-    void loadFile();
+    setWriting((n) => n + 1);
+    try {
+      await run(f)();
+    } finally {
+      setWriting((n) => n - 1);
+    }
   };
 
   /** Satırları çizelgenin dosyasına gönderir (canlı satırlar önce kaydedilir). */
@@ -510,7 +571,7 @@ export default function Timesheet({
     } finally {
       setExporting(false);
       await load();
-      void loadFile();
+      void loadFile(true);
     }
   };
 
@@ -546,8 +607,11 @@ export default function Timesheet({
   const fileData = file && file.of === fileOf ? file.data : null;
   const fileRowOf = new Map<string, number>();
   for (const r of fileData?.rows ?? []) if (r.entryId) fileRowOf.set(r.entryId, r.row);
+  // Dosya ay ay okunur: yalnızca ekrandaki günlerin satırları.
+  const shownDates = new Set(days.map((d) => d.date));
+  const fileRows = (fileData?.rows ?? []).filter((r) => shownDates.has(r.date));
   const missing = new Set(fileData?.missing ?? []);
-  const outside = (fileData?.rows ?? []).filter((r) => !r.entryId);
+  const outside = fileRows.filter((r) => !r.entryId);
   const outsideHours = new Map<string, number>();
   for (const r of outside) outsideHours.set(r.date, (outsideHours.get(r.date) ?? 0) + (r.hours ?? 0));
   const unsent = all.filter((e) => !e.exported);
@@ -628,6 +692,8 @@ export default function Timesheet({
       onReviewDay={onReviewDay}
       run={run}
       runFile={runFile}
+      patchFile={patchFile}
+      reloadFile={() => void loadFile(true)}
       file={fileState}
       outside={outside.filter((r) => r.date === d.date)}
       ai={ai}
@@ -779,12 +845,13 @@ export default function Timesheet({
       {fileOf && (
         <FileNotice
           sheets={!!sheet.sheetUrl}
-          rows={fileData?.rows.length ?? null}
+          rows={fileData ? fileRows.length : null}
           outside={outside.length}
-          missing={missing.size}
+          missing={all.filter((e) => e.id && missing.has(e.id)).length}
           loading={fileLoading}
           error={fileError?.of === fileOf ? fileError.message : null}
-          onReload={() => void loadFile()}
+          writing={writing}
+          onReload={() => void loadFile(true)}
         />
       )}
       {notice && (
@@ -806,7 +873,7 @@ export default function Timesheet({
                 } finally {
                   setUndoing(false);
                   await load();
-                  void loadFile();
+                  void loadFile(true);
                 }
               }}
             >
@@ -906,8 +973,51 @@ type Run = (f: () => Promise<unknown>) => () => Promise<void>;
  * Dosyanın satırlarının durumu: okunduysa Kum'un aktardığı kayıtların dosyadaki satır numarası
  * ve dosyada bulunamayan kayıtlar. Aktarılmış satır yalnızca dosyadaki satırı bilinince düzenlenir.
  */
+type PatchFile = (f: (rows: SheetRowView[]) => SheetRowView[]) => void;
+
 type FileState =
   { kind: "off" | "loading" | "error" } | { kind: "ready"; rowOf: Map<string, number>; missing: Set<string> };
+
+/** Dosyanın satırları bu süreden yeniyse sayfa açılınca yeniden okunmaz. */
+const FILE_FRESH_MS = 2 * 60_000;
+const FILE_CACHE_KEY = "kum.timesheet.file";
+/** Okunan dosya satırları (çizelge, dosya ve aya göre); uygulama yeniden açılınca da durur. */
+let fileCache: Record<string, { at: number; data: SheetRows }> | null = null;
+
+function readFileCache(of: string) {
+  if (!fileCache) {
+    try {
+      fileCache = JSON.parse(localStorage.getItem(FILE_CACHE_KEY) ?? "{}");
+    } catch {
+      fileCache = {};
+    }
+  }
+  return fileCache?.[of] ?? null;
+}
+
+/** Ayların satırları tek listede. */
+function mergeFileParts(parts: SheetRows[]): SheetRows {
+  return {
+    rows: parts.flatMap((p) => p.rows),
+    missing: [...new Set(parts.flatMap((p) => p.missing))],
+    synced: 0,
+  };
+}
+
+/** Önbelleğe yazar; en yeni 12 ay tutulur. `at` verilirse okunma anı korunur (yerel düzeltme). */
+function writeFileCache(of: string, data: SheetRows, at = Date.now()) {
+  readFileCache(of);
+  const all = { ...fileCache, [of]: { at, data } };
+  const keep = Object.entries(all)
+    .sort((a, b) => b[1].at - a[1].at)
+    .slice(0, 12);
+  fileCache = Object.fromEntries(keep);
+  try {
+    localStorage.setItem(FILE_CACHE_KEY, JSON.stringify(fileCache));
+  } catch {
+    // Saklanamasa da bu oturumda bellekte durur.
+  }
+}
 
 /** Dosyanın adı, ekleriyle: "tablodan", "Excel dosyasından"… */
 function fileWords(sheets: boolean) {
@@ -936,6 +1046,7 @@ function FileNotice({
   outside,
   missing,
   loading,
+  writing,
   error,
   onReload,
 }: {
@@ -944,6 +1055,8 @@ function FileNotice({
   outside: number;
   missing: number;
   loading: boolean;
+  /** Arka planda yazılmakta olan değişiklik sayısı. */
+  writing: number;
   error: string | null;
   onReload: () => void;
 }) {
@@ -998,7 +1111,11 @@ function FileNotice({
     <div className="flex flex-wrap items-center gap-x-2 px-1 text-[11px] text-muted-foreground">
       {sheets ? <Sheet className="size-3" /> : <FileSpreadsheet className="size-3" />}
       {rows === null ? (
-        <span>{where} satırlar okunuyor…</span>
+        <span className="flex items-center gap-1">
+          <Loader2 className="size-3 animate-spin" />
+          {where} satırlar okunuyor (Google Sheets yanıtı yarım dakikayı bulabilir; Kum'un satırlarıyla çalışmaya devam
+          edebilirsin)…
+        </span>
       ) : (
         <span>
           {where} {rows} satır
@@ -1011,6 +1128,12 @@ function FileNotice({
         </span>
       )}
       {rows !== null && reload}
+      {writing > 0 && (
+        <span className="flex items-center gap-1 text-primary" role="status">
+          <Loader2 className="size-3 animate-spin" />
+          {sheets ? "tabloya" : "Excel dosyasına"} yazılıyor{writing > 1 ? ` (${writing})` : ""}…
+        </span>
+      )}
     </div>
   );
 }
@@ -1438,6 +1561,8 @@ function DayCard({
   onReviewDay,
   run,
   runFile,
+  patchFile,
+  reloadFile,
   file,
   outside,
   ai,
@@ -1452,8 +1577,12 @@ function DayCard({
   onOpenDay: (iso: string) => void;
   onReviewDay: (iso: string) => void;
   run: Run;
-  /** Dosyaya da yazan işlemler (sonra dosyanın satırları yeniden okunur). */
+  /** Dosyaya da yazan işlemler (arka planda; beklenmez). */
   runFile: Run;
+  /** Yazılan değişikliği ekrandaki dosya satırlarına uygular. */
+  patchFile: PatchFile;
+  /** Dosyayı yeniden okur (Kum'un satırı yeniden gönderilince eşlensin). */
+  reloadFile: () => void;
   file: FileState;
   /** Günün dosyada Kum dışında girilmiş satırları. */
   outside: SheetRowView[];
@@ -1693,6 +1822,8 @@ function DayCard({
                   projects={projects}
                   run={run}
                   runFile={runFile}
+                  patchFile={patchFile}
+                  reloadFile={reloadFile}
                   file={file}
                   sheets={!!sheet.sheetUrl}
                   sheetId={sheet.id}
@@ -1706,6 +1837,7 @@ function DayCard({
                   sheet={sheet}
                   divisions={divisions}
                   runFile={runFile}
+                  patchFile={patchFile}
                 />
               ),
             )}
@@ -1828,6 +1960,8 @@ function EntryRow({
   projects,
   run,
   runFile,
+  patchFile,
+  reloadFile,
   file,
   sheets,
   sheetId,
@@ -1840,6 +1974,8 @@ function EntryRow({
   projects: Tag[];
   run: Run;
   runFile: Run;
+  patchFile: PatchFile;
+  reloadFile: () => void;
   file: FileState;
   /** Çizelge Google Sheets'e bağlı (değilse Excel). */
   sheets: boolean;
@@ -1886,6 +2022,7 @@ function EntryRow({
     const id = entry.id;
     return runFile(async () => {
       await api.dismissTimesheetEntry(id, entry, fileRow);
+      patchFile((rows) => rows.filter((r) => r.entryId !== id));
       toast(`Satır ${w.from} da silindi`, {
         action: {
           label: "Geri al",
@@ -1894,6 +2031,7 @@ function EntryRow({
               await api.undismissTimesheetEntries([id]);
               await api.exportTimesheet(sheetId, [{ id, entry }]);
               toast(`Satır ${w.to} geri eklendi`, { tone: "success" });
+              reloadFile();
             })(),
         },
       });
@@ -2040,13 +2178,36 @@ function EntryRow({
           <button
             className="rounded font-medium underline underline-offset-2 hover:text-foreground disabled:opacity-50"
             disabled={entry.exported && fileRow === undefined}
-            onClick={(entry.exported ? runFile : run)(() => refreshRows([entry.id!]))}
+            onClick={
+              entry.exported
+                ? runFile(async () => {
+                    const id = entry.id!;
+                    // İşi kalmayan satır dosyadan da kaldırılır.
+                    if ((await api.refreshTimesheetEntries([id])) > 0)
+                      patchFile((rows) => rows.filter((r) => r.entryId !== id));
+                    toast("Satır güncellendi", { tone: "success" });
+                  })
+                : run(() => refreshRows([entry.id!]))
+            }
           >
             {entry.stale! > 0 ? "Güncelle" : "Kaldır"}
           </button>
         </div>
       )}
     </li>
+  );
+}
+
+/** İki dosya satırının içeriği aynı (satır numarası hariç). */
+function sameFileRow(a: FileRow, b: FileRow) {
+  return (
+    a.date === b.date &&
+    a.start === b.start &&
+    a.hours === b.hours &&
+    a.kind === b.kind &&
+    a.details === b.details &&
+    a.party === b.party &&
+    a.division === b.division
   );
 }
 
@@ -2063,11 +2224,13 @@ function FileRowItem({
   sheet,
   divisions,
   runFile,
+  patchFile,
 }: {
   row: SheetRowView;
   sheet: TimesheetInfo;
   divisions: string[];
   runFile: Run;
+  patchFile: PatchFile;
 }) {
   const pick = (r: FileRow): FileDraft => ({
     start: r.start,
@@ -2078,8 +2241,17 @@ function FileRowItem({
     division: r.division,
   });
   const [draft, setDraft] = useState<FileDraft>(() => pick(row));
+  // Dosyadaki satırın, sıraya giren bütün yazmalardan sonraki hali: her yazma bir öncekinin
+  // sonucunu bekler (art arda düzenlemeler "satır değişmiş" diye reddedilmesin).
+  const latest = useRef<SheetRowView>(row);
+  const pending = useRef(0);
   const rowJson = JSON.stringify(row);
-  useEffect(() => setDraft(pick(JSON.parse(rowJson))), [rowJson]);
+  useEffect(() => {
+    if (pending.current > 0) return;
+    const r: SheetRowView = JSON.parse(rowJson);
+    latest.current = r;
+    setDraft(pick(r));
+  }, [rowJson]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => {
     if (!confirmDelete) return;
@@ -2088,39 +2260,70 @@ function FileRowItem({
   }, [confirmDelete]);
   const w = fileWords(!!sheet.sheetUrl);
   const clean = (next: FileDraft) => ({ ...next, details: next.details.trim(), party: next.party.trim() });
+  /**
+   * Satırı `next` haline getirir (arka planda, sırayla); yazılınca ekrandaki dosya satırı ve
+   * numarası güncellenir. Taslak bu sırada ekranda kalır.
+   */
+  const write = (next: SheetRowView, after?: (written: SheetRowView) => void) => {
+    const expect = latest.current;
+    latest.current = next;
+    pending.current++;
+    runFile(async () => {
+      try {
+        const written = { ...next, row: await api.saveSheetRow(sheet.id, expect, next) };
+        if (latest.current === next) latest.current = written;
+        patchFile((rows) => rows.map((r) => (sameFileRow(r, expect) ? written : r)));
+        after?.(written);
+      } catch (e) {
+        if (latest.current === next) latest.current = expect;
+        throw e;
+      } finally {
+        pending.current--;
+      }
+    })();
+  };
   const save = (next: FileDraft) => {
     const c = clean(next);
-    const changed = (Object.keys(c) as (keyof FileDraft)[]).some((k) => c[k] !== row[k]);
+    const cur = latest.current;
+    const changed = (Object.keys(c) as (keyof FileDraft)[]).some((k) => c[k] !== cur[k]);
     if (!changed || !c.start || !c.hours) return;
-    runFile(() => api.saveSheetRow(sheet.id, row, { ...row, ...c }))();
+    write({ ...cur, ...c });
   };
   // Dosyaya yeniden yazılabilir: başlangıcı, saati ve türü geçerli (geri ekleme, taşıma).
   const complete = (r: FileDraft) => !!r.start && !!r.hours && KINDS.includes(r.kind as EntryKind);
   const restorable = complete(row);
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveTo, setMoveTo] = useState(row.date);
-  /** Satırı başka güne taşır; bildirimden geri alınır (eski gününe döner). */
+  /**
+   * Satırı başka güne taşır; bildirimden geri alınır (eski gününe döner). Satır başka güne geçince
+   * bu bileşen kalkar: geri alma ona bağlı değildir.
+   */
   const move = () => {
     const date = moveTo;
     if (!date || date === row.date) return;
     setMoveOpen(false);
-    const next: FileRow = { ...row, ...clean(draft), date };
-    runFile(async () => {
-      const at = await api.saveSheetRow(sheet.id, row, next);
+    const before = latest.current;
+    write({ ...before, ...clean(draft), date }, (moved) =>
       toast(`Satır ${dayFmt.format(parseIsoDate(date))} gününe taşındı`, {
         tone: "success",
         action: {
           label: "Geri al",
-          run: () => runFile(() => api.saveSheetRow(sheet.id, { ...next, row: at }, row))(),
+          run: () =>
+            runFile(async () => {
+              const back = { ...before, row: await api.saveSheetRow(sheet.id, moved, before) };
+              patchFile((rows) => rows.map((r) => (sameFileRow(r, moved) ? back : r)));
+            })(),
         },
-      });
-    })();
+      }),
+    );
   };
   const remove = () => {
     if (!restorable && !confirmDelete) return setConfirmDelete(true);
     setConfirmDelete(false);
+    const gone = latest.current;
     runFile(async () => {
-      await api.deleteSheetRow(sheet.id, row);
+      await api.deleteSheetRow(sheet.id, gone);
+      patchFile((rows) => rows.filter((r) => !sameFileRow(r, gone)));
       toast(
         `Satır ${w.from} silindi`,
         restorable
@@ -2129,7 +2332,8 @@ function FileRowItem({
                 label: "Geri al",
                 run: () =>
                   runFile(async () => {
-                    await api.restoreSheetRow(sheet.id, row);
+                    const at = await api.restoreSheetRow(sheet.id, gone);
+                    patchFile((rows) => [...rows, { ...gone, row: at }]);
                     toast(`Satır ${w.to} geri eklendi`, { tone: "success" });
                   })(),
               },

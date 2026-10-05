@@ -66,11 +66,15 @@ pub fn check_url(url: &str) -> Result<String> {
 
 fn call(url: &str, body: Value) -> Result<Value> {
     let url = check_url(url)?;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(TIMEOUT))
-        .build()
-        .into();
+    // Bağlantılar istekler arasında yeniden kullanılır (her istekte yeni TLS el sıkışması yok).
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    let agent = AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(TIMEOUT))
+            .build()
+            .into()
+    });
     // Google yanıtı 302 ile başka adrese yönlendirir; ureq bunu GET ile izler (betik zaten
     // POST'ta çalışmıştır, yönlendirilen adres yalnızca sonucu verir).
     let mut resp = agent
