@@ -407,6 +407,7 @@ pub fn run() {
             timesheet::pick_timesheet_file,
             timesheet::import_timesheet_template,
             timesheet::export_timesheet,
+            timesheet::undo_last_export,
             timesheet::assign_meeting,
             timesheet::calendar_meetings,
             timesheet::sheet_script,

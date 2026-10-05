@@ -168,6 +168,35 @@ pub fn append(
     })
 }
 
+/// Geri almanın özeti.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SheetUndone {
+    /// Silinen (aktarımın eklediği) satır sayısı.
+    pub removed: usize,
+    /// Boşaltılan (önceden var olan) satır sayısı.
+    pub cleared: usize,
+    /// Tabloda bulunamayan kayıt sayısı (elle silinmiş ya da daha sonra yeni aktarım yapılmış).
+    pub missing: usize,
+}
+
+/// Son aktarımda yazılan `ids` kayıtlarının satırlarını tablodan geri alır.
+pub fn undo(url: &str, token: &str, ids: &[String]) -> Result<SheetUndone> {
+    let v = call(url, json!({ "token": token, "action": "undo", "ids": ids })).map_err(
+        |e| match e {
+            Error::Sheets(m) if m.starts_with("Bilinmeyen işlem") => Error::Sheets(
+                "tablodaki betik eski; Kum'dan betiği yeniden kopyalayıp dağıtımı güncelle".into(),
+            ),
+            e => e,
+        },
+    )?;
+    let count = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
+    Ok(SheetUndone {
+        removed: count("removed"),
+        cleared: count("cleared"),
+        missing: count("missing"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

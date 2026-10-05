@@ -8,6 +8,7 @@
  * Excel aktarımıyla aynı kurallar: sütunlar başlık satırındaki adlardan bulunur; önce o günün
  * önceden doldurulmuş boş satırı kullanılır, yoksa o günün son satırının altına satır eklenir
  * ve biçimi üstteki satırdan alınır. Aynı kayıt iki kez gönderilse de bir kez yazılır.
+ * Son aktarımın satırları işaretlenir; Kum'dan "Geri al" denince silinir ya da boşaltılır.
  *
  * @OnlyCurrentDoc
  */
@@ -15,6 +16,8 @@ const TOKEN = "{{TOKEN}}";
 const HEADER_ROW = 1;
 const DONE_KEY = "kum_done";
 const DONE_MAX = 500;
+/** Son aktarımda yazılan satırın işareti: değeri "<kimlik>|<1: eklendi, 0: dolduruldu>". */
+const ROW_KEY = "kum_row";
 const DAY_FORMULA =
   '=SWITCH(WEEKDAY({c}),1,"Sunday",2,"Monday",3,"Tuesday",4,"Wednesday",5,"Thursday",6,"Friday",7,"Saturday")';
 
@@ -26,11 +29,12 @@ function doPost(e) {
     const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
     if (req.action === "inspect") {
       out = inspect_(sheet);
-    } else if (req.action === "append") {
+    } else if (req.action === "append" || req.action === "undo") {
       const lock = LockService.getDocumentLock();
       lock.waitLock(30000);
       try {
-        out = append_(sheet, req.consultant || "", req.rows || []);
+        out =
+          req.action === "append" ? append_(sheet, req.consultant || "", req.rows || []) : undo_(sheet, req.ids || []);
       } finally {
         lock.releaseLock();
       }
@@ -139,6 +143,8 @@ function append_(sheet, consultant, rows) {
   const todo = rows
     .filter((r) => !seen.has(String(r.id).slice(0, 13)))
     .sort((a, b) => (a.date + a.start < b.date + b.start ? -1 : a.date + a.start > b.date + b.start ? 1 : 0));
+  // Yalnızca son aktarım geri alınabilir: önceki işaretler silinir (meta veri sınırlı).
+  for (const m of sheet.createDeveloperMetadataFinder().withKey(ROW_KEY).find()) m.remove();
   let filled = 0;
   let inserted = 0;
   for (const row of todo) {
@@ -146,6 +152,7 @@ function append_(sheet, consultant, rows) {
     const values = n ? sheet.getRange(HEADER_ROW + 1, 1, n, cols.last).getValues() : [];
     const dates = values.map((r) => iso_(r[cols.date - 1], tz));
     let target = -1;
+    let fresh = false;
     for (let i = 0; i < values.length; i++) {
       if (dates[i] === row.date && blank_(values[i][cols.details - 1]) && blank_(values[i][cols.kind - 1])) {
         target = HEADER_ROW + 1 + i;
@@ -166,15 +173,54 @@ function append_(sheet, consultant, rows) {
           .copyTo(sheet.getRange(target, 1, 1, cols.last), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
       }
       inserted++;
+      fresh = true;
     }
     put_(sheet, target, cols, consultant, row);
     if (cols.day) day_(sheet, target, cols, row.date);
+    sheet
+      .getRange(target + ":" + target)
+      .addDeveloperMetadata(ROW_KEY, String(row.id).slice(0, 13) + "|" + (fresh ? 1 : 0));
     // Her satırdan sonra: betik yarıda kesilirse yeniden denemede yazılanlar atlansın.
     SpreadsheetApp.flush();
     done.push(String(row.id).slice(0, 13));
     props.setProperty(DONE_KEY, JSON.stringify(done.slice(-DONE_MAX)));
   }
   return { filled: filled, inserted: inserted, skipped: rows.length - todo.length };
+}
+
+/**
+ * Son aktarımda yazılan `ids` satırlarını geri alır: eklenen satır silinir, önceden var olan
+ * boş satırın yazılan hücreleri boşaltılır. Kayıtlar yeniden gönderilebilsin diye unutulur.
+ */
+function undo_(sheet, ids) {
+  const want = new Set(ids.map((id) => String(id).slice(0, 13)));
+  const cols = columns_(sheet);
+  const hits = [];
+  for (const m of sheet.createDeveloperMetadataFinder().withKey(ROW_KEY).find()) {
+    const [id, fresh] = m.getValue().split("|");
+    if (want.has(id)) hits.push({ id: id, fresh: fresh === "1", row: m.getLocation().getRow().getRow(), meta: m });
+  }
+  // Alttan yukarı: silinen satır üsttekilerin yerini kaydırmasın.
+  hits.sort((a, b) => b.row - a.row);
+  let removed = 0;
+  let cleared = 0;
+  for (const h of hits) {
+    if (h.fresh) {
+      sheet.deleteRow(h.row);
+      removed++;
+    } else {
+      for (const c of [cols.start, cols.hours, cols.kind, cols.details, cols.party, cols.division]) {
+        sheet.getRange(h.row, c).clearContent();
+      }
+      h.meta.remove();
+      cleared++;
+    }
+  }
+  const props = PropertiesService.getDocumentProperties();
+  const gone = new Set(hits.map((h) => h.id));
+  const done = JSON.parse(props.getProperty(DONE_KEY) || "[]").filter((id) => !gone.has(id));
+  props.setProperty(DONE_KEY, JSON.stringify(done));
+  return { removed: removed, cleared: cleared, missing: want.size - gone.size };
 }
 
 /**

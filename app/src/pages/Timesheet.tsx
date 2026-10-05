@@ -266,6 +266,13 @@ export default function Timesheet({
   const [projects, setProjects] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Bildirimdeki ileti son aktarımın sonucuysa geri alınabilir. */
+  const [undoable, setUndoable] = useState(false);
+  const [undoing, setUndoing] = useState(false);
+  const exported = (r: Exported) => {
+    setNotice(exportNotice(r));
+    setUndoable(true);
+  };
   // Aktarım sürerken düğme kilitli: çift tıklama aynı satırları dosyaya iki kez yazmasın.
   const [exporting, setExporting] = useState(false);
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
@@ -339,7 +346,7 @@ export default function Timesheet({
     setError(null);
     try {
       for (const d of toApprove) await api.approveTimesheetDay(d);
-      setNotice(exportNotice(await api.exportTimesheet(start, rangeDays)));
+      exported(await api.exportTimesheet(start, rangeDays));
       setClosing(false);
     } catch (e) {
       setError(friendlyError(e));
@@ -491,7 +498,7 @@ export default function Timesheet({
           onClick={run(async () => {
             setExporting(true);
             try {
-              setNotice(exportNotice(await api.exportTimesheet(start, rangeDays)));
+              exported(await api.exportTimesheet(start, rangeDays));
             } finally {
               setExporting(false);
             }
@@ -507,6 +514,27 @@ export default function Timesheet({
         <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs">
           <Check className="mt-0.5 size-3.5 shrink-0 text-success" />
           <span className="min-w-0 flex-1 break-words selectable">{notice}</span>
+          {undoable && (
+            <button
+              disabled={undoing}
+              className="-my-0.5 shrink-0 rounded px-1.5 py-0.5 font-medium underline-offset-2 hover:bg-accent hover:underline disabled:opacity-50"
+              onClick={async () => {
+                setUndoing(true);
+                setError(null);
+                try {
+                  setNotice(await api.undoLastExport());
+                  setUndoable(false);
+                } catch (e) {
+                  setError(friendlyError(e));
+                } finally {
+                  setUndoing(false);
+                  await load();
+                }
+              }}
+            >
+              {undoing ? "Geri alınıyor…" : "Aktarımı geri al"}
+            </button>
+          )}
           <button
             aria-label="Kapat"
             className="-m-1 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"

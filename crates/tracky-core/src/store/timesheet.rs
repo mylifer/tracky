@@ -357,6 +357,19 @@ impl Store {
         Ok(())
     }
 
+    /// Aktarım geri alınınca kayıtlar yeniden aktarılmamış sayılır.
+    pub fn unmark_timesheet_exported(&self, ids: &[String]) -> Result<()> {
+        let tx = self.savepoint()?;
+        for id in ids {
+            self.conn.execute(
+                "UPDATE timesheet_entries SET exported_at = NULL WHERE id = ?1",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     fn insert_entry(&self, id: &str, e: &TimesheetEntry) -> Result<()> {
         self.conn.execute(
             "INSERT INTO timesheet_entries

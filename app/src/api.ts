@@ -459,6 +459,8 @@ export const api = {
   pickTimesheetFile: () => invoke<string | null>("pick_timesheet_file"),
   importTimesheetTemplate: (path: string) => invoke<Imported>("import_timesheet_template", { path }),
   exportTimesheet: (start: string, days: number) => invoke<Exported>("export_timesheet", { start, days }),
+  /** Son aktarımı geri alır (Sheets satırları silinir, Excel yedekten döner); sonuç iletisini verir. */
+  undoLastExport: () => invoke<string>("undo_last_export"),
   sheetScript: () => invoke<string>("sheet_script"),
   connectSheet: (url: string, link: string | null) => invoke<Imported>("connect_sheet", { url, link }),
   disconnectSheet: () => invoke<TimesheetConfig>("disconnect_sheet"),

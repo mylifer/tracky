@@ -24,6 +24,30 @@ fn err(e: impl std::fmt::Display) -> String {
 /// Excel'e aktarım sürüyor: ikinci bir aktarım (çift tıklama) aynı kayıtları dosyaya
 /// ikinci kez yazmasın diye reddedilir.
 static EXPORTING: AtomicBool = AtomicBool::new(false);
+/// Geri alınabilecek son aktarım (yalnızca bu oturumda).
+static LAST_EXPORT: std::sync::Mutex<Option<LastExport>> = std::sync::Mutex::new(None);
+
+struct LastExport {
+    ids: Vec<String>,
+    target: ExportTarget,
+}
+
+enum ExportTarget {
+    Sheets {
+        url: String,
+        token: String,
+    },
+    /// Dosya aktarımdan sonra değiştiyse yedek geri yüklenmez (sonraki emek kaybolmasın).
+    Excel {
+        path: std::path::PathBuf,
+        backup: std::path::PathBuf,
+        modified: Option<std::time::SystemTime>,
+    },
+}
+
+fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
 
 /// Aktarım bayrağını bırakır (hata ya da panikte de).
 struct ExportGuard;
@@ -659,17 +683,21 @@ pub async fn export_timesheet(app: AppHandle, start: String, days: u32) -> CmdRe
         .collect();
     let ids: Vec<String> = pending.iter().map(|e| e.id.clone()).collect();
     let consultant = config.consultant.clone();
-    let exported = match (config.sheet_url.clone(), config.file_path.clone()) {
+    let (exported, target) = match (config.sheet_url.clone(), config.file_path.clone()) {
         (Some(url), _) => {
             let token = config.sheet_token.clone();
             let keyed: Vec<_> = ids.iter().cloned().zip(rows).collect();
+            let target = ExportTarget::Sheets {
+                url: url.clone(),
+                token: token.clone(),
+            };
             let done = tauri::async_runtime::spawn_blocking(move || {
                 tracky_xlsx::sheets::append(&url, &token, &consultant, &keyed)
             })
             .await
             .map_err(err)?
             .map_err(err)?;
-            Exported {
+            let exported = Exported {
                 rows: ids.len(),
                 filled: done.filled,
                 inserted: done.inserted,
@@ -677,17 +705,19 @@ pub async fn export_timesheet(app: AppHandle, start: String, days: u32) -> CmdRe
                 backup: None,
                 target: done.sheet,
                 sheets: true,
-            }
+            };
+            (exported, target)
         }
         (None, Some(path)) => {
             let file = std::path::PathBuf::from(&path);
+            let written = file.clone();
             let done = tauri::async_runtime::spawn_blocking(move || {
-                tracky_xlsx::append(&file, &consultant, &rows)
+                tracky_xlsx::append(&written, &consultant, &rows)
             })
             .await
             .map_err(err)?
             .map_err(err)?;
-            Exported {
+            let exported = Exported {
                 rows: ids.len(),
                 filled: done.filled,
                 inserted: done.inserted,
@@ -695,12 +725,83 @@ pub async fn export_timesheet(app: AppHandle, start: String, days: u32) -> CmdRe
                 backup: Some(done.backup.display().to_string()),
                 target: path,
                 sheets: false,
-            }
+            };
+            let target = ExportTarget::Excel {
+                modified: modified(&file),
+                path: file,
+                backup: done.backup,
+            };
+            (exported, target)
         }
         (None, None) => return Err(NO_TARGET.into()),
     };
     lock(&app.state::<Shared>().store)
         .mark_timesheet_exported(&ids, Utc::now())
         .map_err(err)?;
+    *lock(&LAST_EXPORT) = Some(LastExport { ids, target });
     Ok(exported)
+}
+
+/// Son aktarımı geri alır: Sheets'te yazılan satırlar silinir ya da boşaltılır, Excel dosyası
+/// aktarım öncesi yedeğinden geri yüklenir. Kayıtlar yeniden aktarılmamış sayılır.
+#[tauri::command]
+pub async fn undo_last_export(app: AppHandle) -> CmdResult<String> {
+    if EXPORTING.swap(true, Ordering::Acquire) {
+        return Err("Aktarım sürüyor; bitince tekrar dene.".into());
+    }
+    let _guard = ExportGuard;
+    let Some(last) = lock(&LAST_EXPORT).take() else {
+        return Err("Geri alınacak aktarım yok.".into());
+    };
+    let message = match &last.target {
+        ExportTarget::Sheets { url, token } => {
+            let (url, token, ids) = (url.clone(), token.clone(), last.ids.clone());
+            let done = tauri::async_runtime::spawn_blocking(move || {
+                tracky_xlsx::sheets::undo(&url, &token, &ids)
+            })
+            .await
+            .map_err(err)?;
+            let done = match done {
+                Ok(d) => d,
+                Err(e) => {
+                    *lock(&LAST_EXPORT) = Some(last);
+                    return Err(err(e));
+                }
+            };
+            let missing = if done.missing > 0 {
+                format!(" {} satır tabloda bulunamadı.", done.missing)
+            } else {
+                String::new()
+            };
+            format!(
+                "Aktarım geri alındı: {} satır silindi, {} satır boşaltıldı.{missing}",
+                done.removed, done.cleared
+            )
+        }
+        ExportTarget::Excel {
+            path,
+            backup,
+            modified: at,
+        } => {
+            if modified(path) != *at {
+                let msg = format!(
+                    "Excel dosyası aktarımdan sonra değişmiş; üzerine yazılmadı. Aktarım öncesi yedek: {}",
+                    backup.display()
+                );
+                return Err(msg);
+            }
+            if let Err(e) = std::fs::copy(backup, path) {
+                let msg = format!(
+                    "Excel dosyası geri yüklenemedi (Excel'de açıksa kapatıp tekrar dene): {e}"
+                );
+                *lock(&LAST_EXPORT) = Some(last);
+                return Err(msg);
+            }
+            "Aktarım geri alındı: Excel dosyası aktarım öncesi haline döndü.".to_string()
+        }
+    };
+    lock(&app.state::<Shared>().store)
+        .unmark_timesheet_exported(&last.ids)
+        .map_err(err)?;
+    Ok(message)
 }
