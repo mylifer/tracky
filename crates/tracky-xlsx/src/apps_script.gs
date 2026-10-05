@@ -168,6 +168,7 @@ function append_(sheet, consultant, rows) {
       inserted++;
     }
     put_(sheet, target, cols, consultant, row);
+    if (cols.day) day_(sheet, target, cols);
     // Her satırdan sonra: betik yarıda kesilirse yeniden denemede yazılanlar atlansın.
     SpreadsheetApp.flush();
     done.push(String(row.id).slice(0, 13));
@@ -176,23 +177,43 @@ function append_(sheet, consultant, rows) {
   return { filled: filled, inserted: inserted, skipped: rows.length - todo.length };
 }
 
-function put_(sheet, r, cols, consultant, row) {
-  sheet.getRange(r, cols.date).setValue(serial_(row.date)).setNumberFormat("d/m/yy");
-  if (cols.day) {
-    const day = sheet.getRange(r, cols.day);
-    if (blank_(day.getValue()) && !day.getFormula()) {
-      const letter = sheet.getRange(r, cols.date).getA1Notation();
-      day.setFormula(DAY_FORMULA.replace("{c}", letter));
+/**
+ * Day hücresi tablonun kendi yöntemiyle doldurulur: sütunda ARRAYFORMULA varsa hiç
+ * dokunulmaz (yazılan her değer dizi formülünü bozar); yoksa üstteki dolu Day hücresi
+ * örnek alınır (formülse göreli olarak kopyalanır, değerse aynı türde değer yazılır).
+ */
+function day_(sheet, r, cols) {
+  const cell = sheet.getRange(r, cols.day);
+  if (cell.getFormula() || !blank_(cell.getValue())) return;
+  const col = sheet.getRange(HEADER_ROW, cols.day, sheet.getLastRow() - HEADER_ROW + 1, 1);
+  const formulas = col.getFormulas().map((f) => f[0]);
+  if (formulas.some((f) => /arrayformula/i.test(f))) return;
+  const values = col.getValues().map((v) => v[0]);
+  for (let i = r - HEADER_ROW - 1; i > 0; i--) {
+    if (formulas[i]) {
+      sheet.getRange(HEADER_ROW + i, cols.day).copyTo(cell, SpreadsheetApp.CopyPasteType.PASTE_FORMULA, false);
+      return;
+    }
+    if (!blank_(values[i])) {
+      const date = sheet.getRange(r, cols.date).getValue();
+      if (Object.prototype.toString.call(values[i]) === "[object Date]") cell.setValue(date);
+      else cell.setValue(Utilities.formatDate(date, sheet.getParent().getSpreadsheetTimeZone(), "EEEE"));
+      return;
     }
   }
+  cell.setFormula(DAY_FORMULA.replace("{c}", sheet.getRange(r, cols.date).getA1Notation()));
+}
+
+function put_(sheet, r, cols, consultant, row) {
+  sheet.getRange(r, cols.date).setValue(serial_(row.date)).setNumberFormat("d/m/yy");
   if (cols.consultant && consultant.trim()) sheet.getRange(r, cols.consultant).setValue(text_(consultant.trim()));
   const [hh, mm] = row.start.split(":").map(Number);
   sheet
     .getRange(r, cols.start)
     .setValue((hh * 60 + mm) / 1440)
     .setNumberFormat("hh:mm");
-  // Tam değer yazılır (toplamlar kesin olsun); yalnızca gösterim iki ondalık.
-  sheet.getRange(r, cols.hours).setValue(row.hours).setNumberFormat("0.00");
+  // Genel biçim: 1, 0,5, 0,25 (gereksiz sıfırlar olmadan).
+  sheet.getRange(r, cols.hours).setValue(row.hours).setNumberFormat("General");
   sheet.getRange(r, cols.kind).setValue(text_(row.kind));
   sheet.getRange(r, cols.details).setValue(text_(row.details));
   sheet.getRange(r, cols.party).setValue(text_(row.party));
