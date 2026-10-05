@@ -278,11 +278,11 @@ fn put_row(ws: &mut Worksheet, r: u32, cols: Columns, consultant: &str, row: &Ro
     ws.get_style_mut((cols.start, r))
         .get_number_format_mut()
         .set_format_code("hh:mm");
-    // Tam değer yazılır (toplamlar kesin olsun); yalnızca gösterim iki ondalık.
+    // Genel biçim: 1, 0,5, 0,25 (gereksiz sıfırlar olmadan).
     ws.get_cell_mut((cols.hours, r)).set_value_number(row.hours);
     ws.get_style_mut((cols.hours, r))
         .get_number_format_mut()
-        .set_format_code("0.00");
+        .set_format_code("General");
     ws.get_cell_mut((cols.kind, r)).set_value(row.kind.as_str());
     ws.get_cell_mut((cols.details, r))
         .set_value(row.details.as_str());

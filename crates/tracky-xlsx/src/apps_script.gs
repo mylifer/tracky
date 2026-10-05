@@ -168,7 +168,7 @@ function append_(sheet, consultant, rows) {
       inserted++;
     }
     put_(sheet, target, cols, consultant, row);
-    if (cols.day) day_(sheet, target, cols);
+    if (cols.day) day_(sheet, target, cols, row.date);
     // Her satırdan sonra: betik yarıda kesilirse yeniden denemede yazılanlar atlansın.
     SpreadsheetApp.flush();
     done.push(String(row.id).slice(0, 13));
@@ -182,7 +182,7 @@ function append_(sheet, consultant, rows) {
  * dokunulmaz (yazılan her değer dizi formülünü bozar); yoksa üstteki dolu Day hücresi
  * örnek alınır (formülse göreli olarak kopyalanır, değerse aynı türde değer yazılır).
  */
-function day_(sheet, r, cols) {
+function day_(sheet, r, cols, iso) {
   const cell = sheet.getRange(r, cols.day);
   if (cell.getFormula() || !blank_(cell.getValue())) return;
   const col = sheet.getRange(HEADER_ROW, cols.day, sheet.getLastRow() - HEADER_ROW + 1, 1);
@@ -195,9 +195,8 @@ function day_(sheet, r, cols) {
       return;
     }
     if (!blank_(values[i])) {
-      const date = sheet.getRange(r, cols.date).getValue();
-      if (Object.prototype.toString.call(values[i]) === "[object Date]") cell.setValue(date);
-      else cell.setValue(Utilities.formatDate(date, sheet.getParent().getSpreadsheetTimeZone(), "EEEE"));
+      if (Object.prototype.toString.call(values[i]) === "[object Date]") cell.setValue(serial_(iso));
+      else cell.setValue(Utilities.formatDate(new Date(iso + "T12:00:00Z"), "UTC", "EEEE"));
       return;
     }
   }
