@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44">
+  <defs>
+    <mask id="hands">
+      <rect width="44" height="44" fill="#fff"/>
+      <path d="M29 17.6V22L32.2 23.8" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect x="5.5" y="12.5" width="33" height="19" rx="9.5" fill="none" stroke="#000" stroke-width="3"/>
+  <circle cx="29" cy="22" r="6" fill="#000" mask="url(#hands)"/>
+</svg>

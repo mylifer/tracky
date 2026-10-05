@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F6F7F9"/>
+      <stop offset="1" stop-color="#D5DAE2"/>
+    </linearGradient>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C3C9D2"/>
+      <stop offset="1" stop-color="#FBFCFD"/>
+    </linearGradient>
+    <linearGradient id="track" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#45E596"/>
+      <stop offset="1" stop-color="#0E9F55"/>
+    </linearGradient>
+    <linearGradient id="inset" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#000" stop-opacity=".28"/>
+      <stop offset=".35" stop-color="#000" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="knob" cx=".38" cy=".3" r=".8">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E3E7EC"/>
+    </radialGradient>
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="125%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+    <filter id="knob-shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+  </defs>
+  <!-- gövde -->
+  <rect x="100" y="110" width="824" height="824" rx="185" fill="#1B2330" fill-opacity=".22" filter="url(#drop)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#1B2330" stroke-opacity=".08" stroke-width="3"/>
+  <!-- anahtar yuvası -->
+  <rect x="172" y="354" width="680" height="336" rx="168" fill="url(#bezel)"/>
+  <rect x="190" y="372" width="644" height="300" rx="150" fill="url(#track)"/>
+  <rect x="190" y="372" width="644" height="300" rx="150" fill="url(#inset)"/>
+  <rect x="318" y="476" width="18" height="92" rx="9" fill="#FFFFFF" fill-opacity=".9"/>
+  <!-- saat topuzu -->
+  <circle cx="682" cy="536" r="130" fill="#063D20" fill-opacity=".45" filter="url(#knob-shadow)"/>
+  <circle cx="682" cy="522" r="130" fill="url(#knob)"/>
+  <g stroke="#A3ABB8" stroke-linecap="round">
+    <line x1="682.0" y1="434.0" x2="682.0" y2="416.0" stroke-width="8"/>
+    <line x1="730.0" y1="438.9" x2="735.0" y2="430.2" stroke-width="5"/>
+    <line x1="765.1" y1="474.0" x2="773.8" y2="469.0" stroke-width="5"/>
+    <line x1="770.0" y1="522.0" x2="788.0" y2="522.0" stroke-width="8"/>
+    <line x1="765.1" y1="570.0" x2="773.8" y2="575.0" stroke-width="5"/>
+    <line x1="730.0" y1="605.1" x2="735.0" y2="613.8" stroke-width="5"/>
+    <line x1="682.0" y1="610.0" x2="682.0" y2="628.0" stroke-width="8"/>
+    <line x1="634.0" y1="605.1" x2="629.0" y2="613.8" stroke-width="5"/>
+    <line x1="598.9" y1="570.0" x2="590.2" y2="575.0" stroke-width="5"/>
+    <line x1="594.0" y1="522.0" x2="576.0" y2="522.0" stroke-width="8"/>
+    <line x1="598.9" y1="474.0" x2="590.2" y2="469.0" stroke-width="5"/>
+    <line x1="634.0" y1="438.9" x2="629.0" y2="430.2" stroke-width="5"/>
+  </g>
+  <g stroke="#2B3340" stroke-width="12" stroke-linecap="round">
+    <line x1="682" y1="522" x2="682" y2="452"/>
+    <line x1="682" y1="522" x2="726" y2="548"/>
+  </g>
+  <circle cx="682" cy="522" r="13" fill="#12A85A"/>
+</svg>
