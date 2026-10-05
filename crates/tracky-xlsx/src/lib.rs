@@ -4,8 +4,8 @@
 //! "Consultant", "Started at", "Amount of Hours", "Type", "Details", "Parties",
 //! "… Division"); sütunların yeri değişse de çalışır. Her kayıt için önce o günün
 //! önceden doldurulmuş boş satırı (tarih ve danışman yazılı, ayrıntı boş) kullanılır;
-//! yetmezse o günün son satırının altına, gün hiç yoksa tarih sırasını bozmayacak
-//! yere satır eklenir. Eklenen satırlar biçimini üstteki satırdan alır. Yazmadan önce
+//! yetmezse gün ve saat sırasını bozmayacak yere (kendisinden önce gelen kaydın altına)
+//! satır eklenir ([`slot`]). Eklenen satırlar biçimini üstteki satırdan alır. Yazmadan önce
 //! dosyanın yanına zaman damgalı yedek alınır.
 //!
 //! Dosyadaki kayıtlar okunur ([`list`]) ve tek tek değiştirilir ya da kaldırılır ([`update`],
@@ -319,6 +319,66 @@ fn read_row(ws: &Worksheet, cols: Columns, r: u32) -> Option<SheetRow> {
     (!blank).then_some(row)
 }
 
+/// Başlık altındaki bir satır, yerleştirme için ([`slot`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Line {
+    /// Tarihsiz satır (boşluk, toplam…): sıralamada yok sayılır.
+    Undated,
+    /// Önceden doldurulmuş boş gün satırı.
+    Blank(NaiveDate),
+    /// Kayıt; başlangıcı boşsa günün başında sayılır.
+    Entry(NaiveDate, Option<NaiveTime>),
+}
+
+fn key(date: NaiveDate, start: Option<NaiveTime>) -> (NaiveDate, NaiveTime) {
+    (date, start.unwrap_or(NaiveTime::MIN))
+}
+
+/// `date` günü `start` saatli yeni kaydın satırı: tablo gün ve saate göre sıralı kalır. Gün ve
+/// saati kendisinden önce gelen son kaydın altındaki aralıkta (bir sonraki kayda kadar) o günün
+/// boş satırı varsa o doldurulur; yoksa aralıkta tarihi önce gelen boş gün satırlarının altına
+/// satır eklenir. Hiçbir satır silinmez. `lines[0]` başlığın altındaki satırdır.
+/// (satır, eklenecek mi)
+pub(crate) fn slot(lines: &[Line], date: NaiveDate, start: NaiveTime) -> (u32, bool) {
+    let new = (date, start);
+    let row = |i: usize| HEADER_ROW + 1 + i as u32;
+    let prev = lines
+        .iter()
+        .rposition(|l| matches!(*l, Line::Entry(d, s) if key(d, s) <= new));
+    let from = prev.map_or(0, |i| i + 1);
+    let to = lines[from..]
+        .iter()
+        .position(|l| matches!(l, Line::Entry(..)))
+        .map_or(lines.len(), |i| from + i);
+    if let Some(i) = (from..to).find(|&i| lines[i] == Line::Blank(date)) {
+        return (row(i), false);
+    }
+    let after = (from..to)
+        .rev()
+        .find(|&i| matches!(lines[i], Line::Blank(d) if d <= date))
+        .or(prev);
+    (after.map_or(HEADER_ROW + 1, |i| row(i) + 1), true)
+}
+
+/// `lines` içindeki `i` kaydı `date`/`start` ile yerinde kalabilir mi: üstündeki kayıt önce,
+/// altındaki sonra geliyor.
+pub(crate) fn in_order(lines: &[Line], i: usize, date: NaiveDate, start: NaiveTime) -> bool {
+    let new = key(date, Some(start));
+    let entry = |l: &Line| match *l {
+        Line::Entry(d, s) => Some(key(d, s)),
+        _ => None,
+    };
+    lines[..i]
+        .iter()
+        .rev()
+        .find_map(entry)
+        .is_none_or(|k| k <= new)
+        && lines[i + 1..]
+            .iter()
+            .find_map(entry)
+            .is_none_or(|k| k >= new)
+}
+
 /// `from`–`to` (dahil) tarihli kayıt satırları, dosyadaki sırayla.
 pub fn list(path: &Path, from: NaiveDate, to: NaiveDate) -> Result<Vec<SheetRow>> {
     let book =
@@ -348,17 +408,24 @@ fn locate(ws: &Worksheet, cols: Columns, expect: &SheetRow) -> Result<u32> {
 }
 
 /// `expect` satırını `row` değerleriyle değiştirir; yazılan satırın numarası. Tarih değiştiyse
-/// satır eski gününden kaldırılır ([`vacate`]) ve yeni gününe Kum'un aktarımıyla aynı kurallarla
-/// yerleşir ([`place`]): tarih sırası bozulmaz.
+/// ya da yeni saatiyle yerinde sıra bozulacaksa satır eski yerinden kaldırılır ([`vacate`]) ve
+/// Kum'un aktarımıyla aynı kurallarla yerleşir ([`place`]): gün ve saat sırası bozulmaz.
 pub fn update(path: &Path, consultant: &str, expect: &SheetRow, row: &Row) -> Result<u32> {
     let mut book =
         umya_spreadsheet::reader::xlsx::read(path).map_err(|e| Error::Read(e.to_string()))?;
     let ws = book.get_sheet_mut(&0).ok_or(Error::NoSheet)?;
     let cols = columns(ws)?;
     let mut r = locate(ws, cols, expect)?;
-    if row.date != expect.date {
+    let moved = row.date != expect.date
+        || !in_order(
+            &lines(ws, cols),
+            (r - HEADER_ROW - 1) as usize,
+            row.date,
+            row.start,
+        );
+    if moved {
         vacate(ws, cols, r, expect.date);
-        r = place(ws, cols, row.date).0;
+        r = place(ws, cols, row.date, row.start).0;
     }
     put_row(ws, r, cols, consultant, row);
     edit_backup(path)?;
@@ -386,7 +453,7 @@ pub fn insert(path: &Path, consultant: &str, row: &Row) -> Result<u32> {
         umya_spreadsheet::reader::xlsx::read(path).map_err(|e| Error::Read(e.to_string()))?;
     let ws = book.get_sheet_mut(&0).ok_or(Error::NoSheet)?;
     let cols = columns(ws)?;
-    let r = place(ws, cols, row.date).0;
+    let r = place(ws, cols, row.date, row.start).0;
     put_row(ws, r, cols, consultant, row);
     edit_backup(path)?;
     umya_spreadsheet::writer::xlsx::write(&book, path).map_err(|e| Error::Write(e.to_string()))?;
@@ -414,28 +481,27 @@ fn vacate(ws: &mut Worksheet, cols: Columns, r: u32, date: NaiveDate) {
     }
 }
 
-/// `date` gününe yazılacak satır: o günün önceden doldurulmuş boş satırı, yoksa o günün son
-/// satırının (gün yoksa daha önceki son tarihin) altına eklenen satır. (satır, eklendi mi)
-fn place(ws: &mut Worksheet, cols: Columns, date: NaiveDate) -> (u32, bool) {
-    let last = ws.get_highest_row();
-    let date_at = |ws: &Worksheet, r: u32| serial_to_date(&ws.get_value((cols.date, r)));
-    let empty = |ws: &Worksheet, r: u32| {
-        ws.get_value((cols.details, r)).trim().is_empty()
-            && ws.get_value((cols.kind, r)).trim().is_empty()
-    };
-    if let Some(r) =
-        ((HEADER_ROW + 1)..=last).find(|&r| date_at(ws, r) == Some(date) && empty(ws, r))
-    {
-        return (r, false);
+fn lines(ws: &Worksheet, cols: Columns) -> Vec<Line> {
+    ((HEADER_ROW + 1)..=ws.get_highest_row())
+        .map(|r| match serial_to_date(&ws.get_value((cols.date, r))) {
+            None => Line::Undated,
+            Some(d) => read_row(ws, cols, r).map_or(Line::Blank(d), |e| Line::Entry(d, e.start)),
+        })
+        .collect()
+}
+
+/// `date` günü `start` saatli kaydın satırı ([`slot`]); eklenen satır biçimini üstteki kayıt
+/// satırından (başlığın hemen altındaysa alttakinden) alır. (satır, eklendi mi)
+fn place(ws: &mut Worksheet, cols: Columns, date: NaiveDate, start: NaiveTime) -> (u32, bool) {
+    let (r, fresh) = slot(&lines(ws, cols), date, start);
+    if fresh {
+        ws.insert_new_row(&r, &1);
+        let from = if r - 1 > HEADER_ROW { r - 1 } else { r + 1 };
+        if from <= ws.get_highest_row() {
+            copy_row_style(ws, from, r, cols);
+        }
     }
-    let after = ((HEADER_ROW + 1)..=last)
-        .filter(|&r| date_at(ws, r).is_some_and(|d| d <= date))
-        .max()
-        .unwrap_or(HEADER_ROW);
-    let r = after + 1;
-    ws.insert_new_row(&r, &1);
-    copy_row_style(ws, after.max(HEADER_ROW + 1).min(r - 1), r, cols);
-    (r, true)
+    (r, fresh)
 }
 
 fn write_rows(book: &mut Spreadsheet, consultant: &str, rows: &[Row]) -> Result<(usize, usize)> {
@@ -445,7 +511,7 @@ fn write_rows(book: &mut Spreadsheet, consultant: &str, rows: &[Row]) -> Result<
     sorted.sort_by_key(|r| (r.date, r.start));
     let (mut filled, mut inserted) = (0, 0);
     for row in sorted {
-        let (target, fresh) = place(ws, cols, row.date);
+        let (target, fresh) = place(ws, cols, row.date, row.start);
         if fresh {
             inserted += 1;
         } else {
@@ -564,6 +630,37 @@ mod tests {
     }
 
     #[test]
+    fn slots_keep_day_and_time_order() {
+        let t = |h: u32| NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+        let lines = [
+            Line::Entry(d(1), None),
+            Line::Entry(d(1), Some(t(10))),
+            Line::Undated,
+            Line::Blank(d(2)),
+            Line::Entry(d(3), Some(t(9))),
+            Line::Blank(d(5)),
+        ];
+        // Satır numaraları: başlık 1, lines[0] 2. Saatsiz kayıt günün başında sayılır.
+        assert_eq!(slot(&lines, d(1), t(9)), (3, true), "10:00'ın üstü");
+        assert_eq!(
+            slot(&lines, d(1), t(11)),
+            (4, true),
+            "günün son kaydının altı"
+        );
+        assert_eq!(slot(&lines, d(2), t(15)), (5, false), "günün boş satırı");
+        assert_eq!(
+            slot(&lines, d(3), t(8)),
+            (6, true),
+            "2 Eki'nin altı, 3 Eki 09:00'ın üstü"
+        );
+        assert_eq!(slot(&lines, d(4), t(9)), (7, true));
+        assert_eq!(slot(&lines, d(6), t(9)), (8, true));
+        assert_eq!(slot(&[], d(1), t(9)), (2, true));
+        assert!(in_order(&lines, 4, d(3), t(7)));
+        assert!(!in_order(&lines, 0, d(1), t(23)));
+    }
+
+    #[test]
     fn fills_prefilled_rows_then_inserts_and_keeps_order() {
         let dir = std::env::temp_dir().join(format!("kum-xlsx-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -612,6 +709,46 @@ mod tests {
         assert_eq!(ws.get_value((4, 3)), "Kaan Baytur");
         assert_eq!(ws.get_value((9, 6)), "ADBA");
         assert_eq!(ws.get_value((10, 6)), "Trumore");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_earlier_time_is_inserted_above_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("kum-xlsx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sablon.xlsx");
+        template(&path);
+        assert_eq!(
+            insert(&path, "Kaan Baytur", &row(3, 10, 1.0, "On")).unwrap(),
+            4
+        );
+        assert_eq!(
+            insert(&path, "Kaan Baytur", &row(3, 9, 1.0, "Dokuz")).unwrap(),
+            4
+        );
+        assert_eq!(
+            insert(&path, "Kaan Baytur", &row(3, 11, 1.0, "Onbir")).unwrap(),
+            6
+        );
+        let got: Vec<(u32, u32, String)> = list(&path, d(1), d(9))
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.row, r.date.day(), r.details))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (2, 1, "Eski kayıt".into()),
+                (4, 3, "Dokuz".into()),
+                (5, 3, "On".into()),
+                (6, 3, "Onbir".into())
+            ]
+        );
+        // Boş gün satırları yerinde: 2 Eki üstte, 4 Eki altta.
+        let book = umya_spreadsheet::reader::xlsx::read(&path).unwrap();
+        let ws = book.get_sheet(&0).unwrap();
+        assert_eq!(serial_to_date(&ws.get_value((2, 3))), Some(d(2)));
+        assert_eq!(serial_to_date(&ws.get_value((2, 7))), Some(d(4)));
         std::fs::remove_dir_all(dir).ok();
     }
 

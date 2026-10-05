@@ -3,8 +3,8 @@
 //! çalışır (anahtarı uygulama alır ve yeniler).
 //!
 //! Kurallar betikle ([`crate::sheets`]) ve Excel'le aynıdır: tablonun ilk sayfası, sütunlar
-//! başlıklardan; önce günün önceden doldurulmuş boş satırı, yoksa günün son satırının altına
-//! (biçimi üstteki satırdan) eklenen satır; satır beklenen eski içeriğiyle bulunur. Son aktarımın
+//! başlıklardan; önce günün önceden doldurulmuş boş satırı, yoksa gün ve saat sırasını bozmayan
+//! yere (biçimi üstteki satırdan) eklenen satır ([`crate::slot`]); satır beklenen eski içeriğiyle bulunur. Son aktarımın
 //! satırları betikle aynı biçimde işaretlenir (`kum_row` geliştirici meta verisi): iki yol
 //! birbirinin aktarımını geri alabilir.
 //!
@@ -15,13 +15,14 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, NaiveDate, NaiveTime};
 use serde_json::{Value, json};
 
 use crate::sheets::{SheetAppended, SheetUndone};
 use crate::{
-    Columns, DAY_FORMULA, Error, HEADER_ROW, Result, Row, SheetRow, Template, cell_hours,
-    cell_time, columns_of, company_of, date_to_serial, ranked, serial_to_date, time_to_fraction,
+    Columns, DAY_FORMULA, Error, HEADER_ROW, Line, Result, Row, SheetRow, Template, cell_hours,
+    cell_time, columns_of, company_of, date_to_serial, in_order, ranked, serial_to_date, slot,
+    time_to_fraction,
 };
 
 const API: &str = "https://sheets.googleapis.com/v4/spreadsheets";
@@ -442,23 +443,25 @@ impl Sheet {
         }
     }
 
-    /// `date` gününe yazılacak satır: günün önceden doldurulmuş boş satırı, yoksa günün son
-    /// satırının (gün yoksa daha önceki son tarihin) altına eklenen satır. (satır, eklendi mi)
-    fn place(&mut self, date: NaiveDate) -> (u32, bool) {
-        let cols = self.cols;
-        let empty =
-            |s: &Self, r: u32| blank(s.cell(cols.details, r)) && blank(s.cell(cols.kind, r));
-        if let Some(r) = ((HEADER_ROW + 1)..=self.last_row())
-            .find(|&r| self.date_at(r) == Some(date) && empty(self, r))
-        {
-            return (r, false);
+    fn lines(&self) -> Vec<Line> {
+        ((HEADER_ROW + 1)..=self.last_row())
+            .map(|r| match self.date_at(r) {
+                None => Line::Undated,
+                Some(d) => self
+                    .read_row(r)
+                    .map_or(Line::Blank(d), |e| Line::Entry(d, e.start)),
+            })
+            .collect()
+    }
+
+    /// `date` günü `start` saatli kaydın satırı ([`slot`]): gün ve saat sırası bozulmaz.
+    /// (satır, eklendi mi)
+    fn place(&mut self, date: NaiveDate, start: NaiveTime) -> (u32, bool) {
+        let (r, fresh) = slot(&self.lines(), date, start);
+        if fresh {
+            self.insert_row(r);
         }
-        let after = ((HEADER_ROW + 1)..=self.last_row())
-            .filter(|&r| self.date_at(r).is_some_and(|d| d <= date))
-            .max()
-            .unwrap_or(HEADER_ROW);
-        self.insert_row(after + 1);
-        (after + 1, true)
+        (r, fresh)
     }
 
     /// `r` satırındaki `date` günlü kaydı kaldırır: günün başka satırı varsa satır silinir
@@ -632,16 +635,17 @@ impl Sheet {
 
     fn plan_update(&mut self, consultant: &str, expect: &SheetRow, row: &Row) -> Result<u32> {
         let mut r = self.locate(expect)?;
-        if row.date != expect.date {
+        let i = (r - HEADER_ROW - 1) as usize;
+        if row.date != expect.date || !in_order(&self.lines(), i, row.date, row.start) {
             self.vacate(r, expect.date);
-            r = self.place(row.date).0;
+            r = self.place(row.date, row.start).0;
         }
         self.put_row(r, consultant, row);
         Ok(r)
     }
 
     fn plan_insert(&mut self, consultant: &str, row: &Row) -> u32 {
-        let r = self.place(row.date).0;
+        let r = self.place(row.date, row.start).0;
         self.put_row(r, consultant, row);
         r
     }
@@ -687,7 +691,7 @@ impl Sheet {
                 skipped += 1;
                 continue;
             }
-            let (r, fresh) = self.place(row.date);
+            let (r, fresh) = self.place(row.date, row.start);
             if fresh {
                 inserted += 1;
             } else {
@@ -860,7 +864,26 @@ pub fn inspect(token: &str, id: &str) -> Result<Template> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveTime;
+
+    #[test]
+    fn forbidden_reasons() {
+        let err = |reason: Option<&str>| {
+            let details = reason.map_or(
+                json!([]),
+                |r| json!([{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": r}]),
+            );
+            json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "details": details}})
+        };
+        let msg = "The caller does not have permission";
+        assert!(forbidden(&err(Some("SERVICE_DISABLED")), msg).contains("Sheets API kapalı"));
+        assert!(
+            forbidden(&err(Some("ACCESS_TOKEN_SCOPE_INSUFFICIENT")), msg)
+                .contains("izni verilmedi")
+        );
+        let plain = forbidden(&err(None), msg);
+        assert!(plain.contains("düzenleme yetkisi yok") && plain.contains(msg));
+        assert!(forbidden(&Value::Null, msg).contains("düzenleme yetkisi yok"));
+    }
 
     #[test]
     fn forbidden_reasons() {
@@ -1037,6 +1060,55 @@ mod tests {
         // Aynı kayıt ikinci kez yazılmaz.
         let again = sh.plan_append("Kaan", &[("id-2".into(), row(2, 9, 1.0, "Bir"))], &[]);
         assert_eq!(again.skipped, 1);
+    }
+
+    #[test]
+    fn rows_are_kept_in_day_and_time_order() {
+        let mut sh = sheet();
+        // 1 Eki 09:00 "Eski" var; 2 Eki'nin boş satırı 10:00 ile dolar.
+        sh.plan_insert("Kaan", &row(2, 10, 1.0, "On"));
+        // Önce gelen saat üstüne, arada kalan araya eklenir; hiçbir satır silinmez.
+        sh.plan_insert("Kaan", &row(2, 8, 1.0, "Sekiz"));
+        sh.plan_insert("Kaan", &row(2, 9, 1.0, "Dokuz"));
+        sh.plan_insert("Kaan", &row(1, 8, 0.5, "Erken"));
+        sh.plan_insert("Kaan", &row(2, 12, 1.0, "Öğlen"));
+        assert_eq!(
+            details(&sh),
+            [
+                (2, 1, "Erken".into()),
+                (3, 1, "Eski".into()),
+                (4, 2, "Sekiz".into()),
+                (5, 2, "Dokuz".into()),
+                (6, 2, "On".into()),
+                (7, 2, "Öğlen".into()),
+            ]
+        );
+        assert_eq!(sh.date_at(8), Some(d(3)), "3 Eki'nin boş satırı yerinde");
+        assert!(
+            !kinds(&sh).contains(&"deleteDimension".to_string()),
+            "eklemede satır silinmez"
+        );
+        // Saati değişen kayıt yeni yerine taşınır; sırası bozulmuyorsa yerinde kalır.
+        let on = sh.rows().find(|r| r.details == "On").unwrap();
+        assert_eq!(
+            sh.plan_update("Kaan", &on, &row(2, 7, 1.0, "On")).unwrap(),
+            4
+        );
+        let dokuz = sh.rows().find(|r| r.details == "Dokuz").unwrap();
+        sh.requests.clear();
+        let r = sh
+            .plan_update("Kaan", &dokuz, &row(2, 11, 1.0, "Dokuz"))
+            .unwrap();
+        assert_eq!(r, dokuz.row);
+        assert!(!kinds(&sh).contains(&"deleteDimension".to_string()));
+        assert_eq!(
+            details(&sh)
+                .into_iter()
+                .filter(|x| x.1 == 2)
+                .map(|x| x.2)
+                .collect::<Vec<_>>(),
+            ["On", "Sekiz", "Dokuz", "Öğlen"]
+        );
     }
 
     #[test]

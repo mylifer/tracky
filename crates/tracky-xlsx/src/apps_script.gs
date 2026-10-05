@@ -158,7 +158,7 @@ function append_(sheet, consultant, rows) {
   let filled = 0;
   let inserted = 0;
   for (const row of todo) {
-    const { target, fresh } = place_(sheet, cols, row.date, tz);
+    const { target, fresh } = place_(sheet, cols, row.date, row.start, tz);
     if (fresh) inserted++;
     else filled++;
     put_(sheet, target, cols, consultant, row);
@@ -286,29 +286,79 @@ function list_(sheet, from, to) {
   return { rows: rows };
 }
 
-/**
- * `date` gününe yazılacak satır: o günün önceden doldurulmuş boş satırı, yoksa o günün son satırının
- * (gün yoksa daha önceki son tarihin) altına eklenen, biçimi üstteki satırdan alınan satır.
- */
-function place_(sheet, cols, date, tz) {
+/** Sıralama anahtarı: gün ve saat; saatsiz kayıt günün başında sayılır. */
+function key_(date, start) {
+  return date + " " + (start ? String(start).slice(0, 5) : "00:00");
+}
+
+/** Başlık altındaki satırlar, yerleştirme için: tarih ve (yalnızca kayıtta) sıralama anahtarı. */
+function lines_(sheet, cols, tz) {
   const n = Math.max(sheet.getLastRow() - HEADER_ROW, 0);
-  const values = n ? sheet.getRange(HEADER_ROW + 1, 1, n, cols.last).getValues() : [];
-  const dates = values.map((r) => iso_(r[cols.date - 1], tz));
-  for (let i = 0; i < values.length; i++) {
-    if (dates[i] === date && blank_(values[i][cols.details - 1]) && blank_(values[i][cols.kind - 1])) {
-      return { target: HEADER_ROW + 1 + i, fresh: false };
+  if (!n) return [];
+  const range = sheet.getRange(HEADER_ROW + 1, 1, n, cols.last);
+  const values = range.getValues();
+  const display = range.getDisplayValues();
+  return values.map((v, i) => {
+    const e = read_(v, display[i], HEADER_ROW + 1 + i, cols, tz);
+    return { date: iso_(v[cols.date - 1], tz), key: e ? key_(e.date, e.start) : null };
+  });
+}
+
+/**
+ * Yeni kaydın satırı (Kum'daki `slot` ile aynı): tablo gün ve saate göre sıralı kalır. Kendisinden
+ * önce gelen son kaydın altındaki aralıkta (bir sonraki kayda kadar) o günün boş satırı varsa o
+ * doldurulur; yoksa aralıkta tarihi önce gelen boş gün satırlarının altına satır eklenir.
+ */
+function slot_(lines, date, start) {
+  const k = key_(date, start);
+  let prev = -1;
+  for (let i = 0; i < lines.length; i++) if (lines[i].key !== null && lines[i].key <= k) prev = i;
+  let to = lines.length;
+  for (let i = prev + 1; i < lines.length; i++) {
+    if (lines[i].key !== null) {
+      to = i;
+      break;
     }
   }
-  let after = HEADER_ROW;
-  for (let i = 0; i < dates.length; i++) if (dates[i] && dates[i] <= date) after = HEADER_ROW + 1 + i;
-  sheet.insertRowAfter(after);
-  const target = after + 1;
-  if (after > HEADER_ROW) {
-    sheet
-      .getRange(after, 1, 1, cols.last)
-      .copyTo(sheet.getRange(target, 1, 1, cols.last), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  for (let i = prev + 1; i < to; i++) {
+    if (lines[i].key === null && lines[i].date === date) return { target: HEADER_ROW + 1 + i, fresh: false };
   }
-  return { target: target, fresh: true };
+  let after = prev;
+  for (let i = to - 1; i > prev; i--) {
+    if (lines[i].key === null && lines[i].date && lines[i].date <= date) {
+      after = i;
+      break;
+    }
+  }
+  return { target: HEADER_ROW + 2 + after, fresh: true };
+}
+
+/** `i` kaydı yeni gün ve saatiyle yerinde kalabilir mi: üstündeki kayıt önce, altındaki sonra. */
+function inOrder_(lines, i, date, start) {
+  const k = key_(date, start);
+  for (let j = i - 1; j >= 0; j--) if (lines[j].key !== null) {
+    if (lines[j].key > k) return false;
+    break;
+  }
+  for (let j = i + 1; j < lines.length; j++) if (lines[j].key !== null) return lines[j].key >= k;
+  return true;
+}
+
+/**
+ * `date` günü `start` saatli kaydın satırı (`slot_`); eklenen satır biçimini üstteki kayıt satırından
+ * (başlığın hemen altındaysa alttakinden) alır.
+ */
+function place_(sheet, cols, date, start, tz) {
+  const s = slot_(lines_(sheet, cols, tz), date, start);
+  if (!s.fresh) return s;
+  sheet.insertRowBefore(s.target);
+  const from = s.target - 1 > HEADER_ROW ? s.target - 1 : s.target + 1;
+  if (from <= sheet.getLastRow()) {
+    sheet
+      .getRange(from, 1, 1, cols.last)
+      .copyTo(sheet.getRange(s.target, 1, 1, cols.last), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  }
+  return s;
 }
 
 /**
@@ -332,14 +382,14 @@ function vacate_(sheet, cols, r, date, tz) {
   return others;
 }
 
-/** Kaydı yeni değerleriyle yazar; tarih değiştiyse eski gününden kaldırılıp yeni gününe yerleşir. */
+/** Kaydı yeni değerleriyle yazar; tarih değiştiyse ya da yeni saatiyle sıra bozulacaksa eski yerinden kaldırılıp yeniden yerleşir. */
 function update_(sheet, consultant, expect, row) {
   const cols = columns_(sheet);
   const tz = sheet.getParent().getSpreadsheetTimeZone();
   let r = locate_(rows_(sheet, cols), expect);
-  if (row.date !== expect.date) {
+  if (row.date !== expect.date || !inOrder_(lines_(sheet, cols, tz), r - HEADER_ROW - 1, row.date, row.start)) {
     vacate_(sheet, cols, r, expect.date, tz);
-    r = place_(sheet, cols, row.date, tz).target;
+    r = place_(sheet, cols, row.date, row.start, tz).target;
   }
   put_(sheet, r, cols, consultant, row);
   if (cols.day) day_(sheet, r, cols, row.date);
@@ -349,7 +399,7 @@ function update_(sheet, consultant, expect, row) {
 /** Tek kaydı gününe ekler (Kum'dan silmenin geri alınması); son aktarımın işaretlerine dokunmaz. */
 function insert_(sheet, consultant, row) {
   const cols = columns_(sheet);
-  const r = place_(sheet, cols, row.date, sheet.getParent().getSpreadsheetTimeZone()).target;
+  const r = place_(sheet, cols, row.date, row.start, sheet.getParent().getSpreadsheetTimeZone()).target;
   put_(sheet, r, cols, consultant, row);
   if (cols.day) day_(sheet, r, cols, row.date);
   return { row: r };
