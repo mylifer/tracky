@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   CalendarDays,
   Check,
@@ -59,6 +59,7 @@ import {
   today,
 } from "../lib/dates";
 import { ProjectSelect } from "../components/ProjectSelect";
+import Toolbar from "../components/Toolbar";
 import { MonthBoard, WeekBoard } from "../components/TimesheetBoard";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
@@ -69,6 +70,7 @@ import {
   blocked,
   closeReport,
   copyDetails,
+  divisionColor,
   UNASSIGNED_MIN,
   hoursDiff,
   isStale,
@@ -576,17 +578,27 @@ export default function Timesheet({
   };
 
   if (!config)
-    return error ? (
-      <ErrorText>{error}</ErrorText>
-    ) : (
-      <div className="mx-auto w-full max-w-5xl space-y-3 px-6 pt-2 pb-10" aria-busy>
-        <div className="skeleton h-12 w-72 rounded-lg" />
-        {[0, 1, 2].map((i) => (
-          <div key={i} className="skeleton h-28 rounded-xl" style={{ animationDelay: `${i * 120}ms` }} />
-        ))}
-      </div>
+    return (
+      <Page title="Zaman çizelgesi">
+        {error ? (
+          <div className="px-5">
+            <ErrorText>{error}</ErrorText>
+          </div>
+        ) : (
+          <div className="mx-auto w-full max-w-[1400px] space-y-3 px-5 pt-1 pb-10" aria-busy>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="skeleton h-28 rounded-xl" style={{ animationDelay: `${i * 120}ms` }} />
+            ))}
+          </div>
+        )}
+      </Page>
     );
-  if (!sheet) return <Setup onDone={load} />;
+  if (!sheet)
+    return (
+      <Page title="Zaman çizelgesi">
+        <Setup onDone={load} />
+      </Page>
+    );
   const target = sheet.sheetUrl
     ? "Google Sheets"
     : sheet.filePath
@@ -712,257 +724,432 @@ export default function Timesheet({
       return next;
     });
   const sendBlocked = pending.some(blocked);
+  const exportedRows = all.filter((e) => e.exported).length;
+  const divisionTotals = [...byDivision.entries()].sort((a, b) => b[1] - a[1]);
+  const divisionMax = Math.max(0, ...divisionTotals.map(([, h]) => h));
+  const fileProblem = fileError?.of === fileOf ? fileError.message : null;
+  const fileMissing = all.filter((e) => e.id && missing.has(e.id)).length;
+  const where = sheet.sheetUrl ? "Tablodaki" : "Excel dosyasındaki";
 
-  return (
-    <div className="mx-auto w-full max-w-5xl space-y-4 px-6 pt-2 pb-10">
-      {config.timesheets.length > 1 && (
-        <Tabs value={sheet.id} onValueChange={(v) => setSheetId(v)}>
-          <TabsList aria-label="Zaman çizelgesi">
-            {config.timesheets.map((t) => (
-              <TabsTrigger key={t.id} value={t.id} className="px-3">
-                {t.company || "Adsız çizelge"}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="mr-auto">
-          <h1 className="text-[15px] font-semibold">
-            {sheet.company || "Zaman çizelgesi"} · {rangeTitle(mode, rangeStart)}
-          </h1>
-          <p className="text-xs text-muted-foreground">
-            Toplam {manDays(total, config.dayHours)}
-            {all.length > 0 && <span title="Takip edilen gerçek süre"> (gerçek {actual(totalActual)})</span>}
-            {[...byDivision.entries()].map(([d, h]) => ` · ${d}: ${num.format(h)} sa`).join("")}
-          </p>
-          {/* Kayıtların nereden gelip nereye gittiği; tıklayınca Ayarlar. */}
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
-            <button
-              className="flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline"
-              onClick={() => onOpenSettings(TIMESHEET_SECTION)}
-              title="Bu çizelgeye yalnızca bu projelerin işi gider (Ayarlar → Zaman çizelgeleri)"
-            >
-              <FolderKanban className="size-3" />
-              {sheetProjects.length ? (
-                sheetProjects.map((p) => (
-                  <span key={p.id} className="flex items-center gap-1">
-                    <i className="size-1.5 rounded-full" style={{ background: tagColor(p) }} />
-                    {p.name}
-                  </span>
-                ))
-              ) : (
-                <span className="text-amber-700 dark:text-amber-400">proje seçilmedi</span>
-              )}
-            </button>
-            <span aria-hidden>·</span>
-            <button
-              className={cn(
-                "flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline",
-                !sheet.filePath && !sheet.sheetUrl && "text-amber-700 dark:text-amber-400",
-              )}
-              onClick={() => onOpenSettings(TIMESHEET_SECTION)}
-              title="Ayarlar → Zaman çizelgeleri"
-            >
-              {sheet.sheetUrl ? <Sheet className="size-3" /> : <FileSpreadsheet className="size-3" />}
-              <span className="max-w-60 truncate">{target}</span>
-            </button>
-            <span aria-hidden>·</span>
-            <button
-              className="flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline"
-              onClick={() => onOpenSettings(CONNECTIONS_SECTION)}
-              title="Ayarlar → Bağlantılar"
-            >
-              <CalendarDays className="size-3" />
-              <span className={cn(calendar?.last && !calendar.last.ok && "text-destructive")}>{calendarText}</span>
-            </button>
-          </div>
-        </div>
-        <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
-          <TabsList aria-label="Görünüm">
-            {MODES.map((m) => (
-              <TabsTrigger key={m.id} value={m.id} className="px-3">
-                {m.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+  // Rapor sayfalarındaki gibi: başlık solda, görünüm ve gezinti sağda. Etiketler değişse de
+  // düğmeler yerinden oynamaz.
+  const controls = (
+    <>
+      <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
+        <TabsList aria-label="Görünüm">
+          {MODES.map((m) => (
+            <TabsTrigger key={m.id} value={m.id} className="px-3.5">
+              {m.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+      <div className="flex items-center gap-1">
         <Button
           variant="ghost"
           size="icon-sm"
           aria-label={`Önceki ${modeInfo.label.toLowerCase()}`}
+          title="Önceki (←)"
           onClick={() => step(-1)}
         >
           <ChevronLeft />
         </Button>
-        <Button variant="outline" size="sm" disabled={start === current} onClick={() => setAnchor(isoDate(today()))}>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-[4.75rem]"
+          disabled={start === current}
+          title="Bugüne dön (T)"
+          onClick={() => setAnchor(isoDate(today()))}
+        >
           {modeInfo.current}
         </Button>
         <Button
           variant="ghost"
           size="icon-sm"
           aria-label={`Sonraki ${modeInfo.label.toLowerCase()}`}
+          title="Sonraki (→)"
           disabled={start >= current}
           onClick={() => step(1)}
         >
           <ChevronRight />
         </Button>
-        <Button variant="outline" size="sm" onClick={() => onOpenSettings(TIMESHEET_SECTION)}>
-          <Settings2 /> Ayarlar
-        </Button>
-        <Button
-          variant={closing ? "secondary" : "outline"}
-          size="sm"
-          aria-expanded={closing}
-          onClick={() => setClosing((v) => !v)}
-          title="Göndermeden önce dönemi denetle: atanmamış süre, toplantılar, saatler, açıklamalar"
-        >
-          <ClipboardCheck /> {modeInfo.close}
-          {fresh && report.issues > 0 && (
-            <span className="rounded-full bg-amber-500/15 px-1.5 text-[11px] text-amber-700 tabular dark:text-amber-400">
-              {report.issues}
-            </span>
-          )}
-        </Button>
-        <Button
-          size="sm"
-          disabled={!fresh || pending.length === 0 || exporting || sendBlocked}
-          title={
-            pending.length === 0
-              ? "Gönderilecek satır yok"
-              : sendBlocked
-                ? "Açıklaması boş ya da takipte değişen satırlar var: düzelt ya da gönderilecekleri seç"
-                : `Bu dönemin gönderilmemiş ${pending.length} satırı${later ? ` (henüz başlamamış ${later} satır hariç)` : ""}: ${sheet.sheetUrl ? (sheet.sheetLink ?? "Google Sheets") : (sheet.filePath ?? "")}`
-          }
-          onClick={() => send(pending)}
-        >
-          {exporting ? <Loader2 className="animate-spin" /> : sheet.sheetUrl ? <Sheet /> : <FileSpreadsheet />}
-          {sendLabel}
-          {pending.length ? ` (${pending.length})` : ""}
-        </Button>
       </div>
-      <ErrorText>{error}</ErrorText>
-      {fileOf && (
-        <FileNotice
-          sheets={!!sheet.sheetUrl}
-          rows={fileData ? fileRows.length : null}
-          outside={outside.length}
-          missing={all.filter((e) => e.id && missing.has(e.id)).length}
-          loading={fileLoading}
-          error={fileError?.of === fileOf ? fileError.message : null}
-          writing={writing}
-          onReload={() => void loadFile(true)}
-        />
-      )}
-      {notice && (
-        <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs">
-          <Check className="mt-0.5 size-3.5 shrink-0 text-success" />
-          <span className="min-w-0 flex-1 break-words selectable">{notice}</span>
-          {undoable && (
-            <button
-              disabled={undoing}
-              className="-my-0.5 shrink-0 rounded px-1.5 py-0.5 font-medium underline-offset-2 hover:bg-accent hover:underline disabled:opacity-50"
-              onClick={async () => {
-                setUndoing(true);
-                setError(null);
-                try {
-                  setNotice(await api.undoLastExport());
-                  setUndoable(false);
-                } catch (e) {
-                  setError(friendlyError(e));
-                } finally {
-                  setUndoing(false);
-                  await load();
-                  void loadFile(true);
-                }
-              }}
+    </>
+  );
+
+  return (
+    <Page title={rangeTitle(mode, rangeStart)} controls={controls}>
+      <div className="mx-auto grid w-full max-w-[1400px] items-start gap-4 px-5 pt-1 pb-10 @[1060px]:grid-cols-[minmax(0,1fr)_256px]">
+        {/* Dönemin özeti, durumu ve kaynakları. Dar pencerede satırlar ezilmesin diye panel üstte
+            yan yana üç bölüm olur. */}
+        <aside
+          aria-label="Dönem özeti"
+          className="grid gap-px overflow-hidden rounded-xl border bg-border shadow-xs @[640px]:grid-cols-3 @[1060px]:sticky @[1060px]:top-1 @[1060px]:order-last @[1060px]:grid-cols-1"
+        >
+          <section className={RAIL}>
+            <div className="-mr-1.5 flex items-center gap-1.5">
+              {config.timesheets.length > 1 ? (
+                <Select value={sheet.id} onValueChange={setSheetId}>
+                  <SelectTrigger size="sm" className="min-w-0 flex-1 font-semibold" aria-label="Zaman çizelgesi">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {config.timesheets.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.company || "Adsız çizelge"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">
+                  {sheet.company || "Zaman çizelgesi"}
+                </span>
+              )}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Çizelge ayarları"
+                title="Ayarlar → Zaman çizelgeleri"
+                onClick={() => onOpenSettings(TIMESHEET_SECTION)}
+              >
+                <Settings2 />
+              </Button>
+            </div>
+            <div>
+              <div className="text-2xl leading-tight font-semibold tracking-tight tabular">
+                {num.format(total)}{" "}
+                <span className="text-[13px] font-medium tracking-normal text-muted-foreground">
+                  sa · {num.format(total / (config.dayHours || 8))} ag
+                </span>
+              </div>
+              {all.length > 0 && (
+                <p className="text-xs text-muted-foreground tabular" title="Takip edilen gerçek süre">
+                  gerçek {actual(totalActual)}
+                </p>
+              )}
+            </div>
+            {divisionTotals.length > 0 && (
+              <ul className="space-y-1.5" aria-label="Birimlere dağılım">
+                {divisionTotals.map(([d, h]) => (
+                  <li key={d} className="space-y-1 text-xs">
+                    <div className="flex items-center gap-2">
+                      <i
+                        className="size-2 shrink-0 rounded-full"
+                        style={{ background: divisionColor(divisionList, d) }}
+                      />
+                      <span className="min-w-0 flex-1 truncate" title={d}>
+                        {d || "(birimsiz)"}
+                      </span>
+                      <span className="font-medium tabular">{num.format(h)} sa</span>
+                    </div>
+                    <div className="h-1 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${divisionMax ? (h / divisionMax) * 100 : 0}%`,
+                          background: divisionColor(divisionList, d),
+                        }}
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className={RAIL}>
+            <h2 className={RAIL_TITLE}>Durum</h2>
+            <div className="grid grid-cols-3 gap-1.5">
+              <Stat
+                value={fresh ? report.issues : null}
+                label="sorun"
+                tone="bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                title="Göndermeden önce bakılacaklar (dönemi denetle)"
+              />
+              <Stat
+                value={pending.length}
+                label="bekliyor"
+                tone="bg-primary/10 text-primary"
+                title={later ? `Henüz başlamamış ${later} satır hariç` : "Gönderilmemiş satırlar"}
+              />
+              <Stat value={exportedRows} label="gönderildi" tone="bg-success/10 text-success" />
+            </div>
+            <Button
+              className="w-full"
+              disabled={!fresh || pending.length === 0 || exporting || sendBlocked}
+              title={
+                pending.length === 0
+                  ? "Gönderilecek satır yok"
+                  : sendBlocked
+                    ? "Açıklaması boş ya da takipte değişen satırlar var: düzelt ya da gönderilecekleri seç"
+                    : `Bu dönemin gönderilmemiş ${pending.length} satırı${later ? ` (henüz başlamamış ${later} satır hariç)` : ""}: ${sheet.sheetUrl ? (sheet.sheetLink ?? "Google Sheets") : (sheet.filePath ?? "")}`
+              }
+              onClick={() => send(pending)}
             >
-              {undoing ? "Geri alınıyor…" : "Aktarımı geri al"}
-            </button>
-          )}
-          <button
-            aria-label="Kapat"
-            className="-m-1 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={() => setNotice(null)}
-          >
-            <X className="size-3.5" />
-          </button>
-        </div>
-      )}
-      {sheet.projects.length === 0 && (
-        <ProjectsPrompt config={config} sheet={sheet} projects={projects} onSaved={load} onError={setError} />
-      )}
-      {closing && (
-        <ClosePanel
-          title={modeInfo.close}
-          report={report}
-          days={days}
-          config={config}
-          sheet={sheet}
-          projects={projects}
-          ready={fresh && !exporting}
-          ai={ai}
-          pending={pending}
-          onClose={() => setClosing(false)}
-          onSend={() => send(pending, () => setClosing(false))}
-          onOpenDay={onOpenDay}
-          onReviewDay={onReviewDay}
-          onShowDay={showDayCard}
-          run={run}
-        />
-      )}
+              {exporting ? <Loader2 className="animate-spin" /> : sheet.sheetUrl ? <Sheet /> : <FileSpreadsheet />}
+              {sendLabel}
+              {pending.length ? ` (${pending.length})` : ""}
+            </Button>
+            <Button
+              variant={closing ? "secondary" : "outline"}
+              className="w-full"
+              aria-expanded={closing}
+              onClick={() => setClosing((v) => !v)}
+              title="Göndermeden önce dönemi denetle: atanmamış süre, toplantılar, saatler, açıklamalar"
+            >
+              <ClipboardCheck /> {modeInfo.close}
+            </Button>
+            {notice && (
+              <div className="space-y-1 rounded-lg border border-success/30 bg-success/10 px-2.5 py-2 text-xs">
+                <div className="flex items-start gap-1.5">
+                  <Check className="mt-0.5 size-3.5 shrink-0 text-success" />
+                  <span className="min-w-0 flex-1 break-words selectable">{notice}</span>
+                  <button
+                    aria-label="Kapat"
+                    className="-m-1 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    onClick={() => setNotice(null)}
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </div>
+                {undoable && (
+                  <button
+                    disabled={undoing}
+                    className="ml-5 font-medium underline-offset-2 hover:underline disabled:opacity-50"
+                    onClick={async () => {
+                      setUndoing(true);
+                      setError(null);
+                      try {
+                        setNotice(await api.undoLastExport());
+                        setUndoable(false);
+                      } catch (e) {
+                        setError(friendlyError(e));
+                      } finally {
+                        setUndoing(false);
+                        await load();
+                        void loadFile(true);
+                      }
+                    }}
+                  >
+                    {undoing ? "Geri alınıyor…" : "Aktarımı geri al"}
+                  </button>
+                )}
+              </div>
+            )}
+          </section>
 
-      <datalist id="timesheet-details">
-        {details.slice(0, 200).map((d) => (
-          <option key={d} value={d} />
-        ))}
-      </datalist>
-      <datalist id="timesheet-parties">
-        {[...new Set([sheet.defaultParty, sheet.company, ...sheet.projects.map((p) => p.party ?? "")])]
-          .filter(Boolean)
-          .map((p) => (
-            <option key={p} value={p} />
-          ))}
-      </datalist>
+          {/* Kayıtların nereden gelip nereye gittiği; tıklayınca Ayarlar. */}
+          <section className={RAIL}>
+            <h2 className={RAIL_TITLE}>Kaynaklar</h2>
+            <ul className="space-y-2.5 text-xs">
+              <li>
+                <button
+                  className={SOURCE}
+                  onClick={() => onOpenSettings(TIMESHEET_SECTION)}
+                  title="Bu çizelgeye yalnızca bu projelerin işi gider (Ayarlar → Zaman çizelgeleri)"
+                >
+                  <FolderKanban className="mt-px size-3.5 shrink-0" />
+                  {sheetProjects.length ? (
+                    <span className="flex min-w-0 flex-wrap gap-x-2 gap-y-0.5">
+                      {sheetProjects.map((p) => (
+                        <span key={p.id} className="flex min-w-0 items-center gap-1">
+                          <i className="size-1.5 shrink-0 rounded-full" style={{ background: tagColor(p) }} />
+                          <span className="truncate">{p.name}</span>
+                        </span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="text-amber-700 dark:text-amber-400">Proje seçilmedi</span>
+                  )}
+                </button>
+              </li>
+              <li className="space-y-0.5">
+                <button
+                  className={cn(SOURCE, !fileOf && "text-amber-700 dark:text-amber-400")}
+                  onClick={() => onOpenSettings(TIMESHEET_SECTION)}
+                  title="Ayarlar → Zaman çizelgeleri"
+                >
+                  {sheet.sheetUrl ? (
+                    <Sheet className="mt-px size-3.5 shrink-0" />
+                  ) : (
+                    <FileSpreadsheet className="mt-px size-3.5 shrink-0" />
+                  )}
+                  <span className="truncate">{target}</span>
+                </button>
+                {fileOf && (
+                  <div className="flex items-center gap-1.5 pl-5.5 text-[11px] text-muted-foreground">
+                    {fileProblem ? (
+                      <span className="text-amber-700 dark:text-amber-400">satırlar okunamadı</span>
+                    ) : !fileData ? (
+                      <span className="flex items-center gap-1" title="Bu sırada Kum'un satırlarıyla çalışabilirsin">
+                        <Loader2 className="size-3 animate-spin" /> satırlar okunuyor…
+                      </span>
+                    ) : (
+                      <span className="tabular">
+                        {where.toLocaleLowerCase("tr")} {fileRows.length} satır
+                        {outside.length > 0 && ` · ${outside.length} Kum dışında`}
+                        {fileMissing > 0 && (
+                          <span
+                            className="text-amber-700 dark:text-amber-400"
+                            title={`Gönderilen ${fileMissing} satır dosyada bulunamadı`}
+                          >
+                            {` · ${fileMissing} bulunamadı`}
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    {(fileData || fileProblem) && (
+                      <button
+                        className="ml-auto rounded p-0.5 hover:bg-accent hover:text-foreground disabled:opacity-50"
+                        disabled={fileLoading}
+                        onClick={() => void loadFile(true)}
+                        aria-label={`${where} satırları yeniden oku`}
+                        title={`${where} satırları yeniden oku`}
+                      >
+                        {fileLoading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                      </button>
+                    )}
+                  </div>
+                )}
+                {writing > 0 && (
+                  <div className="flex items-center gap-1 pl-5.5 text-[11px] text-primary" role="status">
+                    <Loader2 className="size-3 animate-spin" />
+                    {sheet.sheetUrl ? "tabloya" : "Excel dosyasına"} yazılıyor{writing > 1 ? ` (${writing})` : ""}…
+                  </div>
+                )}
+              </li>
+              <li>
+                <button
+                  className={SOURCE}
+                  onClick={() => onOpenSettings(CONNECTIONS_SECTION)}
+                  title="Ayarlar → Bağlantılar"
+                >
+                  <CalendarDays className="mt-px size-3.5 shrink-0" />
+                  <span className={cn(calendar?.last && !calendar.last.ok && "text-destructive")}>{calendarText}</span>
+                </button>
+              </li>
+            </ul>
+          </section>
+        </aside>
 
-      {mode === "day" ? (
-        // Gün görünümünde boş gün de gösterilir (yoksa sayfa boş kalır).
-        days.map((d) => dayCard(d, true))
-      ) : (
-        <>
-          {mode === "week" ? (
-            <WeekBoard
-              summaries={summaries}
-              divisions={divisionList}
-              dayHours={config.dayHours}
-              selected={shown ?? null}
-              onSelect={setPicked}
-              todayIso={todayIso}
+        <div className="min-w-0 space-y-4">
+          <ErrorText>{error}</ErrorText>
+          {fileOf && fileProblem && (
+            <FileError
+              sheets={!!sheet.sheetUrl}
+              loading={fileLoading}
+              error={fileProblem}
+              onReload={() => void loadFile(true)}
             />
+          )}
+          {sheet.projects.length === 0 && (
+            <ProjectsPrompt config={config} sheet={sheet} projects={projects} onSaved={load} onError={setError} />
+          )}
+          {closing && (
+            <ClosePanel
+              title={modeInfo.close}
+              report={report}
+              days={days}
+              config={config}
+              sheet={sheet}
+              projects={projects}
+              ready={fresh && !exporting}
+              ai={ai}
+              pending={pending}
+              onClose={() => setClosing(false)}
+              onSend={() => send(pending, () => setClosing(false))}
+              onOpenDay={onOpenDay}
+              onReviewDay={onReviewDay}
+              onShowDay={showDayCard}
+              run={run}
+            />
+          )}
+
+          <datalist id="timesheet-details">
+            {details.slice(0, 200).map((d) => (
+              <option key={d} value={d} />
+            ))}
+          </datalist>
+          <datalist id="timesheet-parties">
+            {[...new Set([sheet.defaultParty, sheet.company, ...sheet.projects.map((p) => p.party ?? "")])]
+              .filter(Boolean)
+              .map((p) => (
+                <option key={p} value={p} />
+              ))}
+          </datalist>
+
+          {mode === "day" ? (
+            // Gün görünümünde boş gün de gösterilir (yoksa sayfa boş kalır).
+            days.map((d) => dayCard(d, true))
           ) : (
-            <MonthBoard
-              summaries={summaries}
-              divisions={divisionList}
-              dayHours={config.dayHours}
-              selected={shown ?? null}
-              onSelect={setPicked}
-              todayIso={todayIso}
+            <>
+              {mode === "week" ? (
+                <WeekBoard
+                  summaries={summaries}
+                  divisions={divisionList}
+                  dayHours={config.dayHours}
+                  selected={shown ?? null}
+                  onSelect={setPicked}
+                  todayIso={todayIso}
+                />
+              ) : (
+                <MonthBoard
+                  summaries={summaries}
+                  divisions={divisionList}
+                  dayHours={config.dayHours}
+                  selected={shown ?? null}
+                  onSelect={setPicked}
+                  todayIso={todayIso}
+                />
+              )}
+              {shownDay && dayCard(shownDay, true)}
+            </>
+          )}
+          {selectedRows.length > 0 && (
+            <SelectionBar
+              rows={selectedRows}
+              sendLabel={sendLabel}
+              busy={exporting}
+              onClear={() => setSelected(new Set())}
+              onMerge={run(() => mergeRows(selectedRows).then(() => setSelected(new Set())))}
+              onSend={() => send(selectedRows)}
+              onDismiss={run(() => dismissRows(selectedRows).then(() => setSelected(new Set())))}
             />
           )}
-          {shownDay && dayCard(shownDay, true)}
-        </>
-      )}
-      {selectedRows.length > 0 && (
-        <SelectionBar
-          rows={selectedRows}
-          sendLabel={sendLabel}
-          busy={exporting}
-          onClear={() => setSelected(new Set())}
-          onMerge={run(() => mergeRows(selectedRows).then(() => setSelected(new Set())))}
-          onSend={() => send(selectedRows)}
-          onDismiss={run(() => dismissRows(selectedRows).then(() => setSelected(new Set())))}
-        />
-      )}
+        </div>
+      </div>
+    </Page>
+  );
+}
+
+/** Sağ paneldeki bölüm ve başlığı. */
+const RAIL = "space-y-3 bg-card px-4 py-3";
+const RAIL_TITLE = "text-[11px] font-semibold text-muted-foreground";
+/** Kaynak satırı: simge ve ad; tıklayınca Ayarlar. */
+const SOURCE =
+  "flex w-full min-w-0 items-start gap-2 text-left text-muted-foreground underline-offset-2 hover:text-foreground hover:underline";
+
+/** Sayfanın üst çubuğu ve kayan içeriği. */
+function Page({ title, controls, children }: { title: string; controls?: ReactNode; children: ReactNode }) {
+  return (
+    <>
+      <Toolbar title={title}>{controls}</Toolbar>
+      <div className="page-enter @container flex-1 overflow-y-auto">{children}</div>
+    </>
+  );
+}
+
+/** Durum sayacı: değer sıfırsa sönük, bilinmiyorsa "—". */
+function Stat({ value, label, tone, title }: { value: number | null; label: string; tone: string; title?: string }) {
+  return (
+    <div
+      className={cn("flex flex-col rounded-lg px-2 py-1.5", value ? tone : "bg-muted text-muted-foreground")}
+      title={title}
+    >
+      <span className="text-base leading-tight font-semibold tabular">{value ?? "—"}</span>
+      <span className="text-[11px] opacity-80">{label}</span>
     </div>
   );
 }
@@ -1037,32 +1224,23 @@ function fileWords(sheets: boolean) {
 const OUTDATED = "betik eski";
 
 /**
- * Dosyadaki satırların durumu: kaç satır okundu, kaçı Kum dışında girilmiş, okunamadıysa neden.
+ * Dosyadaki satırlar okunamadıysa neden (satır sayısı ve okuma durumu sağ panelde).
  * Betik eskiyse yeni betik kopyalanıp dağıtım güncellenir (adres değişmez).
  */
-function FileNotice({
+function FileError({
   sheets,
-  rows,
-  outside,
-  missing,
   loading,
-  writing,
   error,
   onReload,
 }: {
   sheets: boolean;
-  rows: number | null;
-  outside: number;
-  missing: number;
   loading: boolean;
-  /** Arka planda yazılmakta olan değişiklik sayısı. */
-  writing: number;
-  error: string | null;
+  error: string;
   onReload: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const where = sheets ? "Tablodaki" : "Excel dosyasındaki";
-  const outdated = !!error?.includes(OUTDATED);
+  const outdated = error.includes(OUTDATED);
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(await api.sheetScript());
@@ -1071,67 +1249,35 @@ function FileNotice({
       toast(friendlyError(e), { tone: "error" });
     }
   };
-  const reload = (
-    <button
-      className={cn(FIX_LINK, "flex items-center gap-1")}
-      disabled={loading}
-      onClick={onReload}
-      title={`${where} satırları yeniden oku`}
-    >
-      {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-      {loading ? "okunuyor…" : "yenile"}
-    </button>
-  );
-  if (error)
-    return (
-      <div className="space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <TriangleAlert className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-          <span className="min-w-0 flex-1 selectable">
-            {outdated
-              ? "Tablodaki betik eski: satırları buradan okuyup değiştirmek için yeni betik gerekiyor."
-              : `${where} satırlar okunamadı: ${error}`}
-          </span>
-          {reload}
-        </div>
-        {outdated && (
-          <div className="flex flex-wrap items-center gap-2 pl-5.5 text-muted-foreground">
-            <Button size="sm" variant="outline" className="h-6 text-[11px]" onClick={copy}>
-              {copied ? <Check /> : <Copy />} {copied ? "Kopyalandı" : "Yeni betiği kopyala"}
-            </Button>
-            <span>
-              Tabloda <b>Uzantılar → Apps Script</b>'te içindekini silip yapıştır, kaydet; sonra{" "}
-              <b>Dağıt → Dağıtımları yönet → ✎ → Sürüm: Yeni sürüm → Dağıt</b>. Adres değişmez.
-            </span>
-          </div>
-        )}
-      </div>
-    );
   return (
-    <div className="flex flex-wrap items-center gap-x-2 px-1 text-[11px] text-muted-foreground">
-      {sheets ? <Sheet className="size-3" /> : <FileSpreadsheet className="size-3" />}
-      {rows === null ? (
-        <span className="flex items-center gap-1">
-          <Loader2 className="size-3 animate-spin" />
-          {where} satırlar okunuyor… (bu sırada Kum'un satırlarıyla çalışabilirsin)
+    <div className="space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <TriangleAlert className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+        <span className="min-w-0 flex-1 selectable">
+          {outdated
+            ? "Tablodaki betik eski: satırları buradan okuyup değiştirmek için yeni betik gerekiyor."
+            : `${where} satırlar okunamadı: ${error}`}
         </span>
-      ) : (
-        <span>
-          {where} {rows} satır
-          {outside > 0 && ` · ${outside} satır Kum dışında girilmiş`}
-          {missing > 0 && (
-            <span className="text-amber-700 dark:text-amber-400">
-              {` · gönderilen ${missing} satır dosyada bulunamadı`}
-            </span>
-          )}
-        </span>
-      )}
-      {rows !== null && reload}
-      {writing > 0 && (
-        <span className="flex items-center gap-1 text-primary" role="status">
-          <Loader2 className="size-3 animate-spin" />
-          {sheets ? "tabloya" : "Excel dosyasına"} yazılıyor{writing > 1 ? ` (${writing})` : ""}…
-        </span>
+        <button
+          className={cn(FIX_LINK, "flex items-center gap-1")}
+          disabled={loading}
+          onClick={onReload}
+          title={`${where} satırları yeniden oku`}
+        >
+          {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+          {loading ? "okunuyor…" : "yenile"}
+        </button>
+      </div>
+      {outdated && (
+        <div className="flex flex-wrap items-center gap-2 pl-5.5 text-muted-foreground">
+          <Button size="sm" variant="outline" className="h-6 text-[11px]" onClick={copy}>
+            {copied ? <Check /> : <Copy />} {copied ? "Kopyalandı" : "Yeni betiği kopyala"}
+          </Button>
+          <span>
+            Tabloda <b>Uzantılar → Apps Script</b>'te içindekini silip yapıştır, kaydet; sonra{" "}
+            <b>Dağıt → Dağıtımları yönet → ✎ → Sürüm: Yeni sürüm → Dağıt</b>. Adres değişmez.
+          </span>
+        </div>
       )}
     </div>
   );
@@ -2488,7 +2634,6 @@ function Setup({ onDone }: { onDone: () => void }) {
   return (
     <div className="mx-auto w-full max-w-xl space-y-4 px-6 pt-8 pb-10">
       <div className="space-y-1.5 px-1">
-        <h1 className="text-base font-semibold">Zaman çizelgesi</h1>
         <p className="text-sm text-muted-foreground">
           Projeye atanmış çalışma süren ve takvimindeki toplantılar günlük iş kayıtlarına dönüşür; gönderdiğin kayıtlar
           firmanın dosyasına aynı sütun ve biçimle eklenir. Her firmanın çizelgesine yalnızca ona bağladığın projelerin

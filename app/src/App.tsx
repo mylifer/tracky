@@ -532,6 +532,16 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
               )
             }
           />
+        ) : view === "timesheet" ? (
+          // Zaman çizelgesi üst çubuğu kendisi çizer (dönem ve görünüm denetimleriyle).
+          <Timesheet
+            onOpenDay={(iso) => {
+              setDay(iso);
+              setView("day");
+            }}
+            onReviewDay={(iso) => openReview({ start: iso, days: 1 })}
+            onOpenSettings={openSettings}
+          />
         ) : (
           <>
             <Toolbar title={TITLES[view] ?? ""} />
@@ -542,16 +552,6 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                   range={reviewRange}
                   onOpenTimesheet={() => setView("timesheet")}
                   onOpenProjects={() => setView("projects")}
-                />
-              )}
-              {view === "timesheet" && (
-                <Timesheet
-                  onOpenDay={(iso) => {
-                    setDay(iso);
-                    setView("day");
-                  }}
-                  onReviewDay={(iso) => openReview({ start: iso, days: 1 })}
-                  onOpenSettings={openSettings}
                 />
               )}
               {view === "trends" && (
