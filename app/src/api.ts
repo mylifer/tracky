@@ -124,6 +124,23 @@ export type Report = {
 };
 export type IdleSpan = { start: string; end: string };
 
+/** Proje profili (`get_project_stats`). */
+export type ProjectStats = {
+  totalSeconds: number;
+  /** Gün başına süre, istenen ilk günden itibaren. */
+  days: number[];
+  /** Yerel saate göre günün 24 saatine dağılım. */
+  hours: number[];
+  apps: { appId: string; appName: string; seconds: number }[];
+  titles: { appName: string; title: string; seconds: number }[];
+  categories: Bucket[];
+  /** Çoğunluğu bu projede geçen çalışma blokları. */
+  blocks: number;
+  /** Bu blokların ortalama etkin süresi. */
+  focusSeconds: number;
+  switchesPerHourX10: number;
+};
+
 export type ProjectSuggestion = { key: string; name: string; seconds: number; apps: string[] };
 export type CategorySuggestion = {
   key: string;
@@ -523,6 +540,8 @@ export const api = {
   /** `start` (YYYY-MM-DD) gününden itibaren `days` günde `query` geçen süre. */
   search: (query: string, start: string, days: number) => invoke<SearchResult>("search", { query, start, days }),
   trends: (weeks: number) => invoke<Trends>("get_trends", { weeks }),
+  projectStats: (id: string, start: string, days: number) =>
+    invoke<ProjectStats>("get_project_stats", { id, start, days }),
   timesheetConfig: () => invoke<TimesheetConfig>("get_timesheet_config"),
   saveTimesheetConfig: (config: TimesheetConfig) => invoke<void>("save_timesheet_config", { config }),
   timesheetDays: (timesheetId: string, start: string, days: number) =>

@@ -20,6 +20,7 @@ pub mod meeting_suggest;
 pub mod model;
 pub mod platform;
 pub mod privacy;
+pub mod project_stats;
 pub mod report;
 pub mod search;
 #[cfg(feature = "store")]

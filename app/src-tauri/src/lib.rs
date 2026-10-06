@@ -474,6 +474,7 @@ pub fn run() {
             calendar::refresh_calendar,
             calendar::restore_ignored_meetings,
             commands::get_trends,
+            commands::get_project_stats,
             commands::export_search,
             commands::accept_project_suggestion,
             commands::accept_category_suggestion,

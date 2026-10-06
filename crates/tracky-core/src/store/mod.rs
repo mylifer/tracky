@@ -971,6 +971,29 @@ impl Store {
         Ok(crate::export::sessions_csv(&sessions, &tags, &classifier))
     }
 
+    /// `[from, to)` aralığında projenin profili; `day_starts` yerel gün sınırları,
+    /// `utc_offset` bir anın yerel saat farkı (saniye).
+    pub fn project_stats(
+        &self,
+        project: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        day_starts: &[DateTime<Utc>],
+        utc_offset: impl Fn(DateTime<Utc>) -> i32,
+    ) -> Result<crate::project_stats::ProjectStats> {
+        let sessions = self.merged_sessions_between(from, to)?;
+        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        Ok(crate::project_stats::build(
+            &sessions,
+            &classifier,
+            project,
+            from,
+            to,
+            day_starts,
+            utc_offset,
+        ))
+    }
+
     /// Ardışık dönemlerde proje ve kategori süreleri; `bounds` dönem sınırları (n + 1 öğe).
     pub fn trends(&self, bounds: &[DateTime<Utc>]) -> Result<crate::trends::Trends> {
         let (Some(first), Some(last)) = (bounds.first(), bounds.last()) else {

@@ -54,6 +54,7 @@ import { cn } from "./lib/utils";
 import Onboarding from "./Onboarding";
 import TagsPage from "./pages/TagsPage";
 import ClientsPage from "./pages/ClientsPage";
+import ProjectsPage from "./pages/ProjectsPage";
 import Search, { type SearchState } from "./pages/Search";
 import Trends from "./pages/Trends";
 import ClientReport from "./pages/ClientReport";
@@ -172,6 +173,11 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   };
   // Arama görünümden çıkınca kaybolmasın.
   const [search, setSearch] = useState<SearchState>({ query: "", days: 30 });
+  // Projeler sayfasında açık proje (Müşteriler'den bir projeye gidince de); sayfadan çıkınca kapanır.
+  const [openProject, setOpenProject] = useState<string | null>(null);
+  useEffect(() => {
+    if (view !== "projects") setOpenProject(null);
+  }, [view]);
   // Bekleyen öneri sayıları (kenar çubuğunda); görünüm değişince ve saatte bir yenilenir.
   const [suggestionCount, setSuggestionCount] = useState({ projects: 0, categories: 0 });
   const onSuggestions = useCallback(
@@ -581,8 +587,18 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                   }}
                 />
               )}
-              {view === "clients" && <ClientsPage onOpenProjects={() => setView("projects")} />}
-              {view === "projects" && <TagsPage key="project" kind="project" onSuggestions={onSuggestions} />}
+              {view === "clients" && (
+                <ClientsPage
+                  onOpenProjects={() => setView("projects")}
+                  onOpenProject={(id) => {
+                    setView("projects");
+                    setOpenProject(id);
+                  }}
+                />
+              )}
+              {view === "projects" && (
+                <ProjectsPage open={openProject} onOpen={setOpenProject} onSuggestions={onSuggestions} />
+              )}
               {view === "categories" && <TagsPage key="category" kind="category" onSuggestions={onSuggestions} />}
               {view === "settings" && <Settings status={status} onChange={refresh} section={settingsSection} />}
             </div>

@@ -78,6 +78,25 @@ pub async fn get_trends(app: AppHandle, weeks: u32) -> CmdResult<Trends> {
         .map_err(err)
 }
 
+/// Projenin `start` gününden başlayan `days` günlük profili (proje sayfası).
+#[tauri::command]
+pub async fn get_project_stats(
+    app: AppHandle,
+    id: String,
+    start: String,
+    days: u32,
+) -> CmdResult<tracky_core::project_stats::ProjectStats> {
+    let first = NaiveDate::parse_from_str(&start, "%Y-%m-%d").map_err(err)?;
+    let starts: Vec<_> = (0..days.clamp(1, 366))
+        .map(|i| local_midnight(first + Days::new(i.into())))
+        .collect();
+    let to = local_midnight(first + Days::new(starts.len() as u64)).min(Utc::now());
+    let offset = |t: DateTime<Utc>| t.with_timezone(&Local).offset().local_minus_utc();
+    lock(&app.state::<Shared>().store)
+        .project_stats(&id, starts[0], to.max(starts[0]), &starts, offset)
+        .map_err(err)
+}
+
 #[tauri::command]
 pub async fn app_titles_between(
     app: AppHandle,
