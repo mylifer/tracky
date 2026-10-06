@@ -680,6 +680,19 @@ pub fn propose(
             }
             self.spans.push((a, b));
         }
+
+        /// Oturum kaydının türü en çok sürenidir; eşitlikte bilgisayarda çalışma.
+        fn settle_kind(&mut self) {
+            self.kind = [EntryKind::Working, EntryKind::Online, EntryKind::F2F]
+                .into_iter()
+                .max_by_key(|k| {
+                    (
+                        self.kinds.get(k).copied().unwrap_or_default(),
+                        *k == EntryKind::Working,
+                    )
+                })
+                .unwrap_or(self.kind);
+        }
     }
 
     // Proje başına kaydedilmiş süre ve satırların kapladığı aralıklar (ilk aralığın başından
@@ -737,23 +750,16 @@ pub fn propose(
         if let Some(run) = open.get(&key)
             && a - run.end > MERGE_GAP
         {
-            runs.push(open.remove(&key).expect("az önce bulundu"));
+            let mut run = open.remove(&key).expect("az önce bulundu");
+            run.settle_kind();
+            runs.push(run);
         }
         open.entry(key)
             .or_insert_with(|| Run::new(p, a))
             .add(a, b, p, trimmed);
     }
     for run in open.values_mut() {
-        // Eşitlikte bilgisayarda çalışma.
-        run.kind = [EntryKind::Working, EntryKind::Online, EntryKind::F2F]
-            .into_iter()
-            .max_by_key(|k| {
-                (
-                    run.kinds.get(k).copied().unwrap_or_default(),
-                    *k == EntryKind::Working,
-                )
-            })
-            .unwrap_or(run.kind);
+        run.settle_kind();
     }
     runs.extend(open.into_values());
     runs.extend(meetings.into_iter().map(|(_, run)| run));
@@ -924,10 +930,14 @@ pub fn stale_hours(pieces: &[Piece], entry: &TimesheetEntry) -> Option<f64> {
 
 /// Takipte değişen satırın yeni hali: aralıkları projede kalan süreye iner, gerçek süre ve
 /// (yuvarlanmış) saat ondan hesaplanır; başlangıç elle değiştirilmediyse ilk kalan ana kayar.
-/// Projede hiç süre kalmadıysa `None`.
+/// Projede `MIN_ENTRY`'den az süre kaldıysa `None` (birkaç saniye çeyrek saate yuvarlanıp
+/// satır olarak kalmasın; öneriler de bu kadar kısa satır çıkarmaz).
 pub fn refreshed(pieces: &[Piece], entry: &TimesheetEntry) -> Option<TimesheetEntry> {
     let spans = entry.spans();
     let left = still_covered(pieces, &entry.project_id, &spans);
+    if total(&left) < MIN_ENTRY {
+        return None;
+    }
     let first = *left.first()?;
     let worked = total(&left).num_seconds() as f64 / 3600.0;
     let start = match spans.first() {
@@ -1294,6 +1304,19 @@ mod tests {
     }
 
     #[test]
+    fn a_row_closed_by_a_gap_takes_its_longest_kind() {
+        let (classifier, names, config, sheet) = setup();
+        let sessions = [
+            s("us.zoom.xos", "Zoom Meeting", 0, 10, Some("tru")),
+            s("Figma", "Trumore Loyalty — Figma", 10, 120, None),
+            s("Figma", "Trumore Rapor — Figma", 240, 300, None), // uzun boşluk: yeni satır
+        ];
+        let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
+        let kinds: Vec<_> = got.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [EntryKind::Working, EntryKind::Working]);
+    }
+
+    #[test]
     fn only_the_sheets_projects_are_proposed() {
         let (classifier, names, config, mut sheet) = setup();
         let sessions = [
@@ -1438,6 +1461,11 @@ mod tests {
         moved[1].project_id = Some("kum".into());
         let p = pieces(&moved, &[], &classifier, &config, t(-540), t(900));
         assert_eq!(stale_hours(&p, &row), Some(0.0));
+        assert_eq!(refreshed(&p, &row), None);
+        // Birkaç dakika kaldıysa da satır kalmaz (çeyrek saate yuvarlanmasın).
+        let mut few = moved.clone();
+        few[1] = s("Mail", "Rapor", 30, 33, Some("tru"));
+        let p = pieces(&few, &[], &classifier, &config, t(-540), t(900));
         assert_eq!(refreshed(&p, &row), None);
         // Elle eklenen satır takipten bağımsızdır.
         let manual = TimesheetEntry {

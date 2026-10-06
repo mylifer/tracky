@@ -4,6 +4,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tracky_core::search::SearchResult;
+use tracky_core::store::EditScope;
 use tracky_core::suggest::Suggestions;
 use tracky_core::trends::Trends;
 use tracky_core::{
@@ -375,9 +376,10 @@ pub async fn set_range_category(
     start: String,
     end: String,
     category_id: Option<String>,
+    scope: Option<EditScope>,
 ) -> CmdResult<Edited> {
     range_edit(&app, &start, &end, |s, from, to| {
-        s.set_category_between(from, to, category_id.as_deref())
+        s.set_category_in(from, to, category_id.as_deref(), scope.as_ref())
     })
 }
 
@@ -388,9 +390,10 @@ pub async fn set_range_project(
     start: String,
     end: String,
     project_id: Option<String>,
+    scope: Option<EditScope>,
 ) -> CmdResult<Edited> {
     let mut edited = range_edit(&app, &start, &end, |s, from, to| {
-        s.set_project_between(from, to, project_id.as_deref())
+        s.set_project_in(from, to, project_id.as_deref(), scope.as_ref())
     })?;
     if edited.changed > 0 {
         let (from, to) = (parse_time(&start)?, parse_time(&end)?);
@@ -401,8 +404,15 @@ pub async fn set_range_project(
 }
 
 #[tauri::command]
-pub async fn delete_range(app: AppHandle, start: String, end: String) -> CmdResult<Edited> {
-    range_edit(&app, &start, &end, |s, from, to| s.delete_between(from, to))
+pub async fn delete_range(
+    app: AppHandle,
+    start: String,
+    end: String,
+    scope: Option<EditScope>,
+) -> CmdResult<Edited> {
+    range_edit(&app, &start, &end, |s, from, to| {
+        s.delete_in(from, to, scope.as_ref())
+    })
 }
 
 /// Takvim bloğunu `[start, end)` aralığından `[new_start, new_end)` aralığına uzatır ya da
@@ -517,7 +527,7 @@ pub fn default_excluded_urls() -> Vec<String> {
 
 /// Duraklatma durumu ayrı yönetilir (menü çubuğu); buradan değiştirilmez.
 #[tauri::command]
-pub async fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResult<()> {
+pub async fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResult<PrivacySettings> {
     let shared = app.state::<Shared>();
     let saved = {
         let store = lock(&shared.store);
@@ -542,10 +552,12 @@ pub async fn save_privacy(app: AppHandle, settings: PrivacySettings) -> CmdResul
         store.save_privacy_settings(&settings).map_err(err)?;
         settings
     };
+    // Kaydedilen hal döner: geçersiz adres kalıpları ayıklanmış olabilir.
     app.state::<crate::Worker>()
         .tx
-        .send(Command::SetPrivacy(saved))
-        .map_err(err)
+        .send(Command::SetPrivacy(saved.clone()))
+        .map_err(err)?;
+    Ok(saved)
 }
 
 #[tauri::command]

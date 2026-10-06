@@ -221,7 +221,8 @@ export default function ReportView(p: Props) {
   // Seçim menüsü eski günün zamanlarını taşır; gün değişince kapanır.
   useEffect(closeSelection, [p.start, p.mode, closeSelection]);
   const selectRange = useCallback(
-    (start: number, end: number, x: number, y: number) => setSelection({ start, end, x, y }),
+    (start: number, end: number, x: number, y: number, scope?: RangeSelection["scope"]) =>
+      setSelection({ start, end, x, y, scope }),
     [],
   );
   const openDraft = useCallback((start: number, end: number, label?: string, project?: string | null) => {
@@ -478,7 +479,11 @@ export default function ReportView(p: Props) {
                         selection={meetingSel}
                         projects={projects}
                         onAddEntry={openDraft}
-                        onChanged={() => setCalendarRev((r) => r + 1)}
+                        onChanged={() => {
+                          setCalendarRev((r) => r + 1);
+                          // Projeye atanan toplantı zaman çizelgesi satırı olur: sütun yenilensin.
+                          load();
+                        }}
                         onClose={closeSelection}
                       />
                     )}

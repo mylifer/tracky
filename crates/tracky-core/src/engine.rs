@@ -46,6 +46,53 @@ pub struct Engine {
     last_tick: Option<DateTime<Utc>>,
     /// Son gözlemdeki monotonik saat (bkz. [`Engine::tick_with_uptime`]).
     last_uptime: Option<std::time::Duration>,
+    /// Son gözlemdeki, uykuda da ilerleyen saat (bkz. [`Clocks::elapsed`]).
+    last_elapsed: Option<std::time::Duration>,
+}
+
+/// Duvar saatinden bağımsız saatler (süreç başından beri): aradaki boşluğun ne olduğunu ayırır.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Clocks {
+    /// Makine uyurken ilerlemeyen saat (macOS'ta `Instant`): uyku mu, gecikme mi.
+    pub uptime: Option<std::time::Duration>,
+    /// Uykuda da ilerleyen saat: duvar saati bundan çok daha fazla ilerlediyse saat elle ya
+    /// da eşitlemeyle ileri alınmıştır (uyku değil; boşta kaydı üretilmez).
+    pub elapsed: Option<std::time::Duration>,
+}
+
+/// Uykuda da ilerleyen, duvar saatinden bağımsız saat (süreç başından beri). macOS'ta
+/// `CLOCK_MONOTONIC` (uykuda ilerler; `Instant` ise `CLOCK_UPTIME_RAW`, durur), Linux'ta
+/// `CLOCK_BOOTTIME`, Windows'ta `Instant` (QPC uykuda da ilerler).
+pub fn elapsed_clock(started: std::time::Instant) -> Option<std::time::Duration> {
+    #[cfg(unix)]
+    {
+        let _ = started;
+        #[cfg(target_os = "linux")]
+        let id = libc::CLOCK_BOOTTIME;
+        #[cfg(not(target_os = "linux"))]
+        let id = libc::CLOCK_MONOTONIC;
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` geçerli bir timespec; çağrı yalnızca ona yazar.
+        if unsafe { libc::clock_gettime(id, &mut ts) } != 0 {
+            return None;
+        }
+        Some(std::time::Duration::new(
+            u64::try_from(ts.tv_sec).ok()?,
+            u32::try_from(ts.tv_nsec).ok()?,
+        ))
+    }
+    #[cfg(windows)]
+    {
+        Some(started.elapsed())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = started;
+        None
+    }
 }
 
 impl Engine {
@@ -58,6 +105,7 @@ impl Engine {
             away_floor: None,
             last_tick: None,
             last_uptime: None,
+            last_elapsed: None,
         }
     }
 
@@ -80,6 +128,7 @@ impl Engine {
         self.away_floor = Some(now);
         self.last_tick = None;
         self.last_uptime = None;
+        self.last_elapsed = None;
     }
 
     /// Kullanıcının `at` anından beri uzakta olduğunu not eder (daha önceki bir an varsa o kalır).
@@ -114,9 +163,25 @@ impl Engine {
         window: Option<ActiveWindow>,
         idle_seconds: u64,
     ) -> Option<Session> {
-        let gap = self.gap(now, uptime);
+        let clocks = Clocks {
+            uptime,
+            elapsed: None,
+        };
+        self.tick_with_clocks(now, clocks, window, idle_seconds)
+    }
+
+    /// [`Engine::tick_with_uptime`], uykuda da ilerleyen saatle ([`Clocks`]).
+    pub fn tick_with_clocks(
+        &mut self,
+        now: DateTime<Utc>,
+        clocks: Clocks,
+        window: Option<ActiveWindow>,
+        idle_seconds: u64,
+    ) -> Option<Session> {
+        let gap = self.gap(now, clocks);
         self.last_tick = Some(now);
-        self.last_uptime = uptime;
+        self.last_uptime = clocks.uptime;
+        self.last_elapsed = clocks.elapsed;
         let closed = match gap {
             // Makine uyuduysa son görülen andan sonrası sayılmaz; kullanıcı o andan beri
             // uzakta. Açık oturum olmasa da (hariç tutulan uygulama, pencere yok) son
@@ -125,9 +190,10 @@ impl Engine {
                 self.mark_away(last);
                 self.close_at(None)
             }
-            // Saat geri alındı: oturum son görülen anda kapanır (kaydedilmiş süresi korunur),
-            // yenisi `now`'dan başlar. Süren boşluk ileriki bir andan başlamış olabilir: unutulur.
-            Gap::Backwards => {
+            // Saat geri alındı ya da ileri atladı: oturum son görülen anda kapanır (kaydedilmiş
+            // süresi korunur), yenisi `now`'dan başlar. Atlanan süre boşta da sayılmaz; süren
+            // boşluk başka saatle başlamıştır: unutulur.
+            Gap::Backwards | Gap::Jumped => {
                 self.away_since = None;
                 self.away_floor = Some(now);
                 self.close_at(None)
@@ -140,7 +206,7 @@ impl Engine {
     }
 
     /// Son gözlemden `now`'a kadarki aranın türü.
-    fn gap(&self, now: DateTime<Utc>, uptime: Option<std::time::Duration>) -> Gap {
+    fn gap(&self, now: DateTime<Utc>, clocks: Clocks) -> Gap {
         let Some(last) = self.last_tick else {
             return Gap::None;
         };
@@ -151,12 +217,19 @@ impl Engine {
         if wall <= self.config.max_gap {
             return Gap::None;
         }
+        let since = |now: Option<std::time::Duration>, before: Option<std::time::Duration>| {
+            now.zip(before)
+                .and_then(|(n, b)| n.checked_sub(b))
+                .and_then(|d| Duration::from_std(d).ok())
+        };
+        // Uykuda da ilerleyen saat kısa bir ara gösteriyorsa ne uyku ne gecikme: saat atladı.
+        if since(clocks.elapsed, self.last_elapsed).is_some_and(|real| real <= self.config.max_gap)
+        {
+            return Gap::Jumped;
+        }
         // Monotonik saat aradaki sürenin neredeyse tamamında ilerlediyse uyku değil gecikme.
         // Temkinli: gecikme boşta eşiğinden uzunsa yine uyku sayılır.
-        let awake = uptime
-            .zip(self.last_uptime)
-            .and_then(|(up, last_up)| up.checked_sub(last_up))
-            .and_then(|d| Duration::from_std(d).ok());
+        let awake = since(clocks.uptime, self.last_uptime);
         match awake {
             Some(awake)
                 if wall - awake <= self.config.max_gap && awake <= self.config.idle_threshold =>
@@ -180,11 +253,20 @@ impl Engine {
         now: DateTime<Utc>,
         uptime: Option<std::time::Duration>,
     ) -> Option<Session> {
-        let gap = self.gap(now, uptime);
+        let clocks = Clocks {
+            uptime,
+            elapsed: None,
+        };
+        self.flush_with_clocks(now, clocks)
+    }
+
+    /// [`Engine::flush_with_uptime`], uykuda da ilerleyen saatle ([`Clocks`]).
+    pub fn flush_with_clocks(&mut self, now: DateTime<Utc>, clocks: Clocks) -> Option<Session> {
+        let gap = self.gap(now, clocks);
         self.forget_away(now);
         match gap {
             Gap::None => self.close_at(Some(now)),
-            Gap::Slept(_) | Gap::Backwards => self.close_at(None),
+            Gap::Slept(_) | Gap::Backwards | Gap::Jumped => self.close_at(None),
         }
     }
 
@@ -255,6 +337,8 @@ enum Gap {
     Slept(DateTime<Utc>),
     /// Sistem saati geri alındı.
     Backwards,
+    /// Sistem saati ileri alındı (uyku olmadan): aradaki süre yaşanmadı.
+    Jumped,
 }
 
 #[cfg(test)]
@@ -512,6 +596,44 @@ mod tests {
         e.tick(t(at + 61), win("Code", "x"), 0);
         e.tick(t(at + 61 + 10 * 3600), win("Code", "x"), 0);
         assert!(e.take_away().is_none());
+    }
+
+    #[test]
+    fn the_elapsed_clock_is_read_and_moves_forward() {
+        let started = std::time::Instant::now();
+        let a = elapsed_clock(started).expect("saat okunur");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let b = elapsed_clock(started).unwrap();
+        assert!(b >= a + std::time::Duration::from_millis(4), "{a:?} → {b:?}");
+    }
+
+    #[test]
+    fn a_clock_moved_forward_is_neither_sleep_nor_away() {
+        let mut e = recording_away(180);
+        let clocks = |up_s: u64, real_s: u64| Clocks {
+            uptime: up(up_s),
+            elapsed: up(real_s),
+        };
+        e.tick_with_clocks(t(0), clocks(100, 1000), win("Code", "x"), 0);
+        e.tick_with_clocks(t(5), clocks(105, 1005), win("Code", "x"), 0);
+        // Saat bir saat ileri alındı: iki saat de yalnızca 1 sn ilerledi.
+        let closed = e
+            .tick_with_clocks(t(3606), clocks(106, 1006), win("Code", "x"), 0)
+            .unwrap();
+        assert_eq!((closed.started_at, closed.ended_at), (t(0), t(5)));
+        assert_eq!(e.current().unwrap().started_at, t(3606));
+        e.tick_with_clocks(t(3607), clocks(107, 1007), win("Code", "x"), 0);
+        assert!(e.take_away().is_none(), "atlanan saat boşta sayılmaz");
+
+        // Gerçek uyku: uykuda ilerleyen saat de 20 dk ilerledi.
+        e.tick_with_clocks(
+            t(3607 + 1200),
+            clocks(108, 1007 + 1200),
+            win("Code", "x"),
+            0,
+        );
+        let away = e.take_away().expect("uyku boşta sayılır");
+        assert_eq!((away.started_at, away.ended_at), (t(3607), t(3607 + 1200)));
     }
 
     #[test]

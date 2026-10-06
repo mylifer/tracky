@@ -117,12 +117,29 @@ pub fn apply_pending_restore(data_dir: &Path) -> std::io::Result<()> {
         })
         .filter(|(current, _)| current.exists())
         .collect();
-    moves.push((pending, db));
-    if let Err(e) = move_all(&moves) {
-        let _ = std::fs::remove_file(&mark);
-        return Err(e);
+    moves.push((pending.clone(), db));
+    // Yeniden başlatmada eski süreç dosyayı bir an daha tutabilir (Windows'ta açık dosya
+    // taşınamaz): kısa aralıklarla yeniden denenir.
+    let mut tries = 0;
+    loop {
+        match move_all(&moves) {
+            Ok(()) => return Ok(()),
+            Err(_) if tries < 5 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&mark);
+                // Bekleyen geri yükleme kenara alınır: günler sonraki bir açılışta habersizce
+                // uygulanıp aradaki kayıtları kenara taşımasın.
+                let _ = std::fs::rename(
+                    &pending,
+                    dir.join(format!("uygulanamayan-geri-yukleme-{stamp}.db")),
+                );
+                return Err(e);
+            }
+        }
     }
-    Ok(())
 }
 
 /// Geri yüklenen veritabanı açılamadıysa (örn. geçiş hatası): onu kenara alır ve geri

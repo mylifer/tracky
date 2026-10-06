@@ -312,6 +312,11 @@ impl Store {
     /// Bir uygulamayı bir kategoriye atar: mevcut uygulama kurallarını kaldırıp yenisini ekler.
     /// `tag_id: None` uygulamayı kategorisiz bırakır.
     pub fn assign_app_category(&self, app_id: &str, tag_id: Option<&str>) -> Result<()> {
+        // Kategori yoksa (ör. başka cihazda silindi) eski kurallar da silinmeden durulur.
+        if let Some(tag_id) = tag_id {
+            self.require_tag(tag_id, TagKind::Category)?;
+        }
+        let sp = self.savepoint()?;
         let tags = self.tags()?;
         let is_category = |id: &str| {
             tags.iter()
@@ -338,7 +343,7 @@ impl Store {
                 pattern: app_id.to_string(),
             })?;
         }
-        Ok(())
+        sp.commit()
     }
 
     /// Son iki haftanın oturumlarından proje ve kategori önerileri.
@@ -462,6 +467,8 @@ impl Store {
             name: name.to_string(),
             color,
         };
+        // Kural eklenemezse kuralsız proje de kalmasın.
+        let sp = self.savepoint()?;
         self.upsert_tag(&tag, tags.len() as i64)?;
         self.upsert_rule(&Rule {
             id: Uuid::new_v4().to_string(),
@@ -469,6 +476,7 @@ impl Store {
             field: RuleField::Title,
             pattern: name.to_string(),
         })?;
+        sp.commit()?;
         Ok(tag)
     }
 

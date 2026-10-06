@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { PenLine, Plus, Trash2, X } from "lucide-react";
-import { api, type CalendarMeeting, formatDuration, NO_PROJECT, type Tag } from "../api";
+import { api, type CalendarMeeting, type EditScope, formatDuration, NO_PROJECT, type Tag } from "../api";
 import { formatTime, isoDate, parseIsoDate } from "../lib/dates";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -82,7 +82,17 @@ function categoryMessage(categories: Tag[], id: string | null) {
 }
 
 /** Takvimde sürükleyerek seçilen aralık ve menünün açılacağı nokta. */
-export type RangeSelection = { start: number; end: number; x: number; y: number };
+/**
+ * Seçilen aralık. `scope`: uygulama çizelgesindeki bir çubuktan seçildiyse yalnızca o
+ * uygulamanın (ya da pencerenin) kayıtları değişir; `label` menüde adıdır.
+ */
+export type RangeSelection = {
+  start: number;
+  end: number;
+  x: number;
+  y: number;
+  scope?: EditScope & { label: string };
+};
 
 /** İmlecin yanında açılan küçük menü; dışına tıklayınca ya da Esc ile kapanır. */
 function FloatingMenu({
@@ -161,6 +171,8 @@ export function RangeMenu({
   const start = Math.min(selection.start, end);
   const future = selection.start >= Date.now();
   const iso = (t: number) => new Date(t).toISOString();
+  const scoped = selection.scope;
+  const scope = scoped ? { appIds: scoped.appIds, titles: scoped.titles } : null;
   const run = (f: () => Promise<unknown>) =>
     f().then(
       () => {
@@ -177,7 +189,11 @@ export function RangeMenu({
     <FloatingMenu x={selection.x} y={selection.y} label="Seçilen aralık" onClose={onClose}>
       <MenuHeader
         title={`${formatTime(new Date(selection.start))} – ${formatTime(new Date(selection.end))}`}
-        sub={formatDuration((selection.end - selection.start) / 1000)}
+        sub={
+          scoped
+            ? `Yalnızca ${scoped.label} · ${formatDuration((selection.end - selection.start) / 1000)}`
+            : formatDuration((selection.end - selection.start) / 1000)
+        }
         onClose={onClose}
       />
       {future && <p className="text-xs text-muted-foreground">Bu aralık henüz gelmedi; kayıt eklenemez.</p>}
@@ -185,7 +201,7 @@ export function RangeMenu({
         <ProjectAssign
           projects={projects}
           onChange={(id) =>
-            run(() => undoable(api.setRangeProject(iso(start), iso(end), id), projectMessage(projects, id)))
+            run(() => undoable(api.setRangeProject(iso(start), iso(end), id, scope), projectMessage(projects, id)))
           }
         />
       )}
@@ -193,7 +209,7 @@ export function RangeMenu({
         <CategorySelect
           value={null}
           onChange={(id) =>
-            run(() => undoable(api.setRangeCategory(iso(start), iso(end), id), categoryMessage(categories, id)))
+            run(() => undoable(api.setRangeCategory(iso(start), iso(end), id, scope), categoryMessage(categories, id)))
           }
           categories={categories}
           noneLabel="Kurallara göre"
@@ -203,26 +219,41 @@ export function RangeMenu({
         />
       )}
       {!future && (
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            className="flex-1"
-            onClick={() => {
-              onAddEntry(selection.start, selection.end);
-              onClose();
-            }}
-          >
-            <PenLine /> Elle kayıt ekle
-          </Button>
+        <div className="flex justify-end gap-2">
+          {/* Elle kayıt bir uygulamaya ait değildir: yalnızca takvimden seçilen aralıkta. */}
+          {!scoped && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="flex-1"
+              onClick={() => {
+                // Bitiş şimdiye kırpılmış haliyle: gelecek kaydedilemez.
+                onAddEntry(start, end);
+                onClose();
+              }}
+            >
+              <PenLine /> Elle kayıt ekle
+            </Button>
+          )}
           {end > start && (
             <Button
               size="icon-sm"
               variant="ghost"
               className="text-muted-foreground hover:text-destructive"
-              onClick={() => run(() => undoable(api.deleteRange(iso(start), iso(end)), "Aralıktaki kayıtlar silindi"))}
-              aria-label="Aralıktaki kayıtları sil"
-              title="Aralıktaki kayıtları sil (geri alınabilir)"
+              onClick={() =>
+                run(() =>
+                  undoable(
+                    api.deleteRange(iso(start), iso(end), scope),
+                    scoped ? `${scoped.label} kayıtları silindi` : "Aralıktaki kayıtlar silindi",
+                  ),
+                )
+              }
+              aria-label={scoped ? `Aralıktaki ${scoped.label} kayıtlarını sil` : "Aralıktaki kayıtları sil"}
+              title={
+                scoped
+                  ? `Aralıktaki ${scoped.label} kayıtlarını sil (geri alınabilir)`
+                  : "Aralıktaki kayıtları sil (geri alınabilir)"
+              }
             >
               <Trash2 />
             </Button>

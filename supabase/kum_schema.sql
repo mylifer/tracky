@@ -208,10 +208,15 @@ create table if not exists kum.timesheet_entries (
     created_at        timestamptz not null,
     updated_at        timestamptz not null,
     deleted_at        timestamptz,
+    -- 0011: durumun (aktarım, gizlenme, silinme) zamanı ve aktarımdaki danışman adı.
+    state_at          timestamptz,
+    consultant        text,
     server_updated_at timestamptz not null default now(),
     writer            uuid,
     primary key (user_id, id)
 );
+alter table kum.timesheet_entries add column if not exists state_at timestamptz;
+alter table kum.timesheet_entries add column if not exists consultant text;
 create index if not exists timesheet_entries_user_cursor
     on kum.timesheet_entries (user_id, server_updated_at);
 

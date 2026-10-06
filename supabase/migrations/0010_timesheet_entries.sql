@@ -43,3 +43,4 @@ create policy "kendi satırları" on public.timesheet_entries for all to authent
     with check (user_id = (select auth.uid()));
 revoke all on public.timesheet_entries from anon;
 revoke truncate, references, trigger on public.timesheet_entries from authenticated;
+grant select, insert, update, delete on public.timesheet_entries to authenticated;

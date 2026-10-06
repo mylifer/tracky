@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tracky_core::meeting_suggest::{MeetingSuggester, MeetingSuggestion};
-use tracky_core::store::{DayRow, TimesheetContext};
+use tracky_core::store::{DayRow, SavedEntry, TimesheetContext};
 use tracky_core::timesheet::{
     self, FileRow, Meeting, Piece, ProjectMapping, Timesheet, TimesheetConfig, TimesheetEntry,
 };
@@ -275,12 +275,18 @@ fn sheet_row(f: &FileRow) -> tracky_xlsx::SheetRow {
     }
 }
 
-/// Kum'un aktardığı kaydın dosyada beklenen satırı: danışmanı çizelgeninki (aktarımda öyle
-/// yazıldı); ortak tabloda iş arkadaşının aynı içerikli satırı bulunmasın.
-fn kum_row(e: &TimesheetEntry, row: u32, sheet: &Timesheet) -> FileRow {
+/// Kum'un aktardığı kaydın dosyada beklenen satırı: danışmanı satırın yazıldığı ad (bilinmiyorsa
+/// çizelgeninki; ayarlarda ad sonradan değişse de satır bulunur); ortak tabloda iş arkadaşının
+/// aynı içerikli satırı bulunmasın.
+fn kum_row(saved: &SavedEntry, row: u32, sheet: &Timesheet) -> FileRow {
     FileRow {
-        consultant: sheet.consultant.trim().to_string(),
-        ..FileRow::of(e, row)
+        consultant: saved
+            .consultant
+            .as_deref()
+            .unwrap_or(&sheet.consultant)
+            .trim()
+            .to_string(),
+        ..FileRow::of(&saved.entry, row)
     }
 }
 
@@ -656,10 +662,10 @@ pub async fn save_timesheet_entry(
     if entry.details.trim().is_empty() {
         return Err("Açıklama boş olamaz: satır firmanın dosyasında.".into());
     }
-    let expect = kum_row(&saved.entry, sheet_row.unwrap_or(0), &sheet);
+    let expect = kum_row(&saved, sheet_row.unwrap_or(0), &sheet);
     target.update(&sheet.consultant, &expect, &entry).await?;
     lock(&app.state::<Shared>().store)
-        .save_exported_entry(&saved.id, &entry, false)
+        .save_exported_entry(&saved.id, &entry, false, Some(&sheet.consultant))
         .map_err(err)?;
     Ok(saved.id)
 }
@@ -687,7 +693,7 @@ pub async fn dismiss_timesheet_entry(
     let (saved, sheet, target) =
         exported_entry(&lock(&app.state::<Shared>().store), id.as_deref())?
             .ok_or("Satır değişti; sayfa yenilendi, tekrar dene.")?;
-    let expect = kum_row(&saved.entry, sheet_row.unwrap_or(0), &sheet);
+    let expect = kum_row(&saved, sheet_row.unwrap_or(0), &sheet);
     if let Err(e) = target.remove(&expect, Some(&saved.id)).await {
         // Satır dosyadan elle silinmişse kaldırılacak bir şey yok: Kum'da da çekilir (yoksa
         // silme hep "satır değişmiş" hatası verirdi).
@@ -737,8 +743,6 @@ pub async fn sheet_rows(
     let last = first + Days::new(u64::from(days.clamp(1, 62)) - 1);
     let (sheet, target) = FileTarget::load(&lock(&app.state::<Shared>().store), &timesheet_id)?;
     let mut rows = target.list(first, last).await?;
-    // Ortak tabloda başka danışmanların satırları gösterilmez.
-    rows.retain(|r| mine(&sheet.consultant, r));
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
     let exported: Vec<tracky_core::store::SavedEntry> = store
@@ -747,6 +751,15 @@ pub async fn sheet_rows(
         .into_iter()
         .filter(|s| s.exported_at.is_some() && s.timesheet_id.as_deref() == Some(sheet.id.as_str()))
         .collect();
+    // Ortak tabloda başka danışmanların satırları gösterilmez; Kum'un eski danışman adıyla
+    // yazdığı satırlar (ad sonradan değişti) bizimdir.
+    rows.retain(|r| {
+        mine(&sheet.consultant, r)
+            || exported
+                .iter()
+                .filter_map(|s| s.consultant.as_deref())
+                .any(|c| mine(c, r))
+    });
     let entries: Vec<&TimesheetEntry> = exported.iter().map(|s| &s.entry).collect();
     let links = timesheet::link_file_rows(&rows, &entries);
     // Aktarım sürerken Kum'daki kayıtlara dokunulmaz (bir sonraki okumada eşitlenir).
@@ -759,7 +772,7 @@ pub async fn sheet_rows(
         }
         if let Some(fresh) = row.apply(entries[j]) {
             store
-                .save_exported_entry(&exported[j].id, &fresh, false)
+                .save_exported_entry(&exported[j].id, &fresh, false, Some(&row.consultant))
                 .map_err(err)?;
             synced += 1;
         }
@@ -988,12 +1001,12 @@ pub async fn refresh_timesheet_entries(app: AppHandle, ids: Vec<String>) -> CmdR
         return Ok(removed);
     }
     for (saved, sheet, target, fresh) in remote {
-        let expect = kum_row(&saved.entry, 0, &sheet);
+        let expect = kum_row(&saved, 0, &sheet);
         match fresh {
             Some(fresh) => {
                 target.update(&sheet.consultant, &expect, &fresh).await?;
                 lock(&app.state::<Shared>().store)
-                    .save_exported_entry(&saved.id, &fresh, true)
+                    .save_exported_entry(&saved.id, &fresh, true, Some(&sheet.consultant))
                     .map_err(err)?;
             }
             None => {
@@ -1379,7 +1392,12 @@ pub async fn export_timesheet(
         let mut entries: Vec<(Option<String>, TimesheetEntry)> = Vec::new();
         for r in rows {
             let Some(id) = r.id else {
-                entries.push((None, r.entry));
+                // Az önce kaydedilen (ör. açıklaması yazılıp hemen gönderilen) canlı satır:
+                // yazılan hali gönderilir, eski öneri onu ezmez.
+                match store.saved_twin(&r.entry).map_err(err)? {
+                    Some(saved) => entries.push((Some(saved.id), saved.entry)),
+                    None => entries.push((None, r.entry)),
+                }
                 continue;
             };
             let saved = store
@@ -1533,7 +1551,7 @@ pub async fn export_timesheet(
         }
     };
     lock(&app.state::<Shared>().store)
-        .mark_timesheet_exported(&ids, Utc::now(), &sheet.id)
+        .mark_timesheet_exported(&ids, Utc::now(), &sheet.id, &sheet.consultant)
         .map_err(err)?;
     *lock(&LAST_EXPORT) = Some(LastExport { ids, target });
     Ok(exported)

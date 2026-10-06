@@ -32,8 +32,8 @@ fn month_days(month: &str) -> CmdResult<Vec<NaiveDate>> {
         .collect())
 }
 
-/// Ayın günleri, yerel gün sınırları (`days.len() + 1` öğe) ve takvim toplantıları (zaman
-/// çizelgesi satırları için). Depo kilitlenmeden önce okunur.
+/// Ayın günleri, yerel gün sınırları (`days.len() + 1` öğe) ve şimdiye kadarki takvim
+/// toplantıları (zaman çizelgesi satırları için). Depo kilitlenmeden önce okunur.
 struct Month {
     days: Vec<NaiveDate>,
     starts: Vec<DateTime<Utc>>,
@@ -45,7 +45,13 @@ fn month(app: &AppHandle, month: &str) -> CmdResult<Month> {
     let mut starts: Vec<_> = days.iter().map(|d| local_midnight(*d)).collect();
     let last = *days.last().ok_or("geçersiz ay")?;
     starts.push(local_midnight(last + Days::new(1)));
-    let meetings = crate::calendar::meetings(app, starts[0], starts[days.len()]);
+    // Henüz başlamamış toplantılar yapılmış iş sayılmaz (ayın kalanındaki tekrarlar).
+    let until = starts[days.len()].min(Utc::now());
+    let meetings = if until > starts[0] {
+        crate::calendar::meetings(app, starts[0], until)
+    } else {
+        Vec::new()
+    };
     Ok(Month {
         days,
         starts,

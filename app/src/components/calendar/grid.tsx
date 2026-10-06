@@ -110,8 +110,15 @@ export function Column({
   const pending = useRef<{ a: number; y0: number } | null>(null);
   // Sürükleme bitince oluşan tıklama bloğun kartını açmasın.
   const swallowClick = useRef(false);
+  // Sütunun dışına sürüklense de seçim görünen saatlerde kalır (önceki/sonraki güne taşmaz).
   const offsetAt = (el: HTMLElement, clientY: number) =>
-    range.first * HOUR_MS + ((clientY - el.getBoundingClientRect().top) / range.px) * HOUR_MS;
+    Math.min(
+      Math.max(
+        range.first * HOUR_MS + ((clientY - el.getBoundingClientRect().top) / range.px) * HOUR_MS,
+        range.first * HOUR_MS,
+      ),
+      range.last * HOUR_MS,
+    );
   const snap = (ms: number) => Math.round(ms / SNAP_MS) * SNAP_MS;
   const interactive = !!(onEmpty || onRange);
   const ghost =
@@ -136,7 +143,10 @@ export function Column({
       }}
       onPointerMove={(e) => {
         const p = pending.current;
-        if (p && Math.abs(e.clientY - p.y0) >= DRAG_MIN_PX) {
+        // Düğme sütunun dışında bırakıldıysa basış bitmiştir: fareyle gezinmek seçim başlatmasın.
+        if (p && e.buttons === 0) {
+          pending.current = null;
+        } else if (p && Math.abs(e.clientY - p.y0) >= DRAG_MIN_PX) {
           pending.current = null;
           e.currentTarget.setPointerCapture(e.pointerId);
           setDrag({ a: p.a, b: snap(offsetAt(e.currentTarget, e.clientY)), y0: p.y0 });

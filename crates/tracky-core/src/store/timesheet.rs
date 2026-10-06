@@ -49,6 +49,8 @@ pub struct SavedEntry {
     pub timesheet_id: Option<String>,
     /// Gizlendi (silindi): gösterilmez, aktarılmaz; aralıkları yeniden önerilmez.
     pub dismissed: bool,
+    /// Aktarılmış satırın dosyaya yazıldığı danışman adı (bilinmiyorsa çizelgeninki geçerli).
+    pub consultant: Option<String>,
 }
 
 /// Günün bir zaman çizelgesindeki satırı: kaydedilmiş ya da takipten gelen (canlı) öneri.
@@ -175,12 +177,30 @@ struct LegacyConfig {
 }
 
 const COLUMNS: &str = "id, date, start, hours, kind, details, party, project_id, division,
-    exported_at, actual_hours, coverage, timesheet_id, dismissed_at";
+    exported_at, actual_hours, coverage, timesheet_id, dismissed_at, consultant";
 
 /// Satırın değiştiğini işaretler (eşitlemede gönderilsin): şimdiki an (ms), aynı milisaniyede
 /// ikinci değişiklik de öncekinden yeni sayılsın diye en az bir fazlası.
 const TOUCH: &str = "updated_at = MAX(updated_at + 1,
     CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))";
+
+/// Satırın durumunun (aktarım, gizlenme, silinme, danışman) değiştiğini işaretler: eşitlemede
+/// durum içerikten ayrı birleşir ([`crate::sync`]). `TOUCH` ile birlikte kullanılır.
+const STATE: &str = "state_at = MAX(COALESCE(state_at, 0) + 1,
+    CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))";
+
+/// Takipten gelen satırın kimliği işinden türetilir (proje ve ilk aralığın başı): aynı öneri
+/// iki bilgisayarda kaydedilirse tek satır olur. Elle eklenen satırınki rastgele.
+fn new_entry_id(e: &TimesheetEntry) -> String {
+    match e.coverage.as_deref().and_then(<[_]>::first) {
+        Some(_) => Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("kum:timesheet:{}", row_key(None, e)).as_bytes(),
+        )
+        .to_string(),
+        None => Uuid::new_v4().to_string(),
+    }
+}
 
 impl Store {
     pub fn timesheet_config(&self) -> Result<TimesheetConfig> {
@@ -272,7 +292,7 @@ impl Store {
             }
             self.conn.execute(
                 &format!(
-                    "UPDATE timesheet_entries SET timesheet_id = ?1, {TOUCH}
+                    "UPDATE timesheet_entries SET timesheet_id = ?1, {TOUCH}, {STATE}
                      WHERE exported_at IS NOT NULL AND timesheet_id IS NULL"
                 ),
                 [&sheet.id],
@@ -420,11 +440,11 @@ impl Store {
         meetings: &[Meeting],
     ) -> Result<TimesheetPieces> {
         let day = |t: DateTime<Utc>| t.with_timezone(&chrono::Local).date_naive();
-        let dismissed: Vec<SavedEntry> = self
+        let (dismissed, kept): (Vec<SavedEntry>, Vec<SavedEntry>) = self
             .saved_rows(day(from), day(to))?
             .into_iter()
-            .filter(|s| s.dismissed && s.entry.kind != EntryKind::Working)
-            .collect();
+            .filter(|s| s.entry.kind != EntryKind::Working)
+            .partition(|s| s.dismissed);
         let mut skipped = HashSet::new();
         let known: Vec<(Meeting, String)> = meetings
             .iter()
@@ -435,10 +455,14 @@ impl Store {
                 },
             )
             .filter(|(m, p)| {
-                let rows: Vec<&SavedEntry> = dismissed
-                    .iter()
-                    .filter(|s| s.entry.project_id == *p && meeting_row(m, &s.entry))
-                    .collect();
+                let of_meeting =
+                    |s: &&SavedEntry| s.entry.project_id == *p && meeting_row(m, &s.entry);
+                // Toplantının bir parçası çizelgede duruyorsa (ör. uzayan toplantının artığı
+                // silindi) toplantı yapılmıştır.
+                if kept.iter().any(|s| of_meeting(&s)) {
+                    return true;
+                }
+                let rows: Vec<&SavedEntry> = dismissed.iter().filter(of_meeting).collect();
                 skipped.extend(rows.iter().map(|s| s.id.clone()));
                 rows.is_empty()
             })
@@ -606,6 +630,7 @@ impl Store {
                     r.get::<_, Option<String>>(11)?,
                     r.get::<_, Option<String>>(12)?,
                     r.get::<_, Option<i64>>(13)?,
+                    r.get::<_, Option<String>>(14)?,
                 ),
             ))
         })?;
@@ -613,7 +638,7 @@ impl Store {
             let (
                 (id, date, start, hours, kind),
                 (details, party, project_id, division),
-                (exported, actual, coverage, timesheet_id, dismissed),
+                (exported, actual, coverage, timesheet_id, dismissed, consultant),
             ) = row?;
             let bad = |what: &str| StoreError::Invalid(format!("zaman çizelgesi {what}: {id}"));
             Ok(SavedEntry {
@@ -636,6 +661,7 @@ impl Store {
                 exported_at: exported.map(from_ms),
                 timesheet_id,
                 dismissed: dismissed.is_some(),
+                consultant,
                 id,
             })
         })
@@ -652,7 +678,11 @@ impl Store {
         }
         let tx = self.savepoint()?;
         let existing = match id {
-            Some(id) => self.timesheet_entry(id)?,
+            // Başka cihazda silinmiş (ya da birleşmiş) satır eski sayfadan düzenlenince geri
+            // canlanmasın: silme diğer cihaza geri yayılır, iş iki kez sayılırdı.
+            Some(id) => Some(self.timesheet_entry(id)?.ok_or_else(|| {
+                StoreError::Invalid("Satır değişti; sayfa yenilendi, tekrar dene.".into())
+            })?),
             None => None,
         };
         let id = match existing {
@@ -673,7 +703,7 @@ impl Store {
                         same
                     }
                     None => {
-                        let id = id.map_or_else(|| Uuid::new_v4().to_string(), str::to_string);
+                        let id = id.map_or_else(|| new_entry_id(entry), str::to_string);
                         self.insert_entry(
                             &id,
                             &TimesheetEntry {
@@ -688,6 +718,24 @@ impl Store {
         };
         tx.commit()?;
         Ok(id)
+    }
+
+    /// Canlı öneriyle aynı aralıkları kapsayan kaydedilmiş (aktarılmamış, gizlenmemiş) satır:
+    /// arayüz satırı kaydetmiş ama listesi henüz yenilenmemişse öneri aslında bu satırdır.
+    pub fn saved_twin(&self, entry: &TimesheetEntry) -> Result<Option<SavedEntry>> {
+        let Some(coverage) = entry.coverage.as_deref().filter(|c| !c.is_empty()) else {
+            return Ok(None);
+        };
+        let spans = timesheet::from_coverage(coverage);
+        Ok(self
+            .saved_rows(entry.date, entry.date)?
+            .into_iter()
+            .find(|s| {
+                s.entry.project_id == entry.project_id
+                    && s.exported_at.is_none()
+                    && !s.dismissed
+                    && s.entry.spans() == spans
+            }))
     }
 
     /// Takipten gelen satır kaydedilirken: aynı aralıklar zaten kaydedildiyse o satırın kimliği;
@@ -729,7 +777,7 @@ impl Store {
         };
         let n = self.conn.execute(
             &format!(
-                "UPDATE timesheet_entries SET dismissed_at = ?2, {TOUCH}
+                "UPDATE timesheet_entries SET dismissed_at = ?2, {TOUCH}, {STATE}
                  WHERE id = ?1 AND exported_at IS NULL AND deleted_at IS NULL"
             ),
             params![id, ms(Utc::now())],
@@ -782,7 +830,7 @@ impl Store {
         for id in ids {
             self.conn.execute(
                 &format!(
-                    "UPDATE timesheet_entries SET dismissed_at = NULL, {TOUCH}
+                    "UPDATE timesheet_entries SET dismissed_at = NULL, {TOUCH}, {STATE}
                      WHERE id = ?1 AND dismissed_at IS NOT NULL AND deleted_at IS NULL"
                 ),
                 [id],
@@ -916,11 +964,13 @@ impl Store {
     /// Aktarılmış satırı dosyadaki satırıyla birlikte değiştirir (dosyaya yazıldıktan sonra):
     /// düzenlenebilir alanlar, `coverage` ise aralıkları da (takipte değişen satır güncellenince).
     /// Satır aktarılmamışsa ya da gizlenmişse hata.
+    /// `consultant`: satır dosyaya bu danışman adıyla yazıldı (ya da dosyada öyle okundu).
     pub fn save_exported_entry(
         &self,
         id: &str,
         entry: &TimesheetEntry,
         coverage: bool,
+        consultant: Option<&str>,
     ) -> Result<()> {
         if !(entry.hours > 0.0 && entry.hours <= 24.0) {
             return Err(StoreError::Invalid("saat 0 ile 24 arasında olmalı".into()));
@@ -934,6 +984,16 @@ impl Store {
         if coverage {
             self.set_coverage(id, coverage_json(entry)?)?;
         }
+        if let Some(c) = consultant.map(str::trim).filter(|c| !c.is_empty())
+            && saved.consultant.as_deref() != Some(c)
+        {
+            self.conn.execute(
+                &format!(
+                    "UPDATE timesheet_entries SET consultant = ?2, {TOUCH}, {STATE} WHERE id = ?1"
+                ),
+                params![id, c],
+            )?;
+        }
         tx.commit()
     }
 
@@ -946,7 +1006,7 @@ impl Store {
             self.conn.execute(
                 &format!(
                     "UPDATE timesheet_entries SET exported_at = NULL, timesheet_id = NULL,
-                        dismissed_at = ?2, {TOUCH} WHERE id = ?1"
+                        consultant = NULL, dismissed_at = ?2, {TOUCH}, {STATE} WHERE id = ?1"
                 ),
                 params![id, ms(Utc::now())],
             )?;
@@ -956,21 +1016,24 @@ impl Store {
         tx.commit()
     }
 
-    /// Aktarılan kayıtları `sheet_id` çizelgesine aktarılmış işaretler.
+    /// Aktarılan kayıtları `sheet_id` çizelgesine `consultant` danışman adıyla aktarılmış
+    /// işaretler.
     pub fn mark_timesheet_exported(
         &self,
         ids: &[String],
         at: DateTime<Utc>,
         sheet_id: &str,
+        consultant: &str,
     ) -> Result<()> {
         let tx = self.savepoint()?;
         for id in ids {
             self.conn.execute(
                 &format!(
-                    "UPDATE timesheet_entries SET exported_at = ?2, timesheet_id = ?3, {TOUCH}
+                    "UPDATE timesheet_entries SET exported_at = ?2, timesheet_id = ?3,
+                        consultant = NULLIF(TRIM(?4), ''), {TOUCH}, {STATE}
                      WHERE id = ?1"
                 ),
-                params![id, ms(at), sheet_id],
+                params![id, ms(at), sheet_id, consultant],
             )?;
         }
         tx.commit()?;
@@ -983,7 +1046,8 @@ impl Store {
         for id in ids {
             self.conn.execute(
                 &format!(
-                    "UPDATE timesheet_entries SET exported_at = NULL, timesheet_id = NULL, {TOUCH}
+                    "UPDATE timesheet_entries SET exported_at = NULL, timesheet_id = NULL,
+                        consultant = NULL, {TOUCH}, {STATE}
                      WHERE id = ?1"
                 ),
                 params![id],
@@ -1024,15 +1088,16 @@ impl Store {
         self.conn.execute(
             "INSERT INTO timesheet_entries
                 (id, date, start, hours, kind, details, party, project_id, division, created_at,
-                 actual_hours, coverage, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?10)
+                 actual_hours, coverage, updated_at, state_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?10, ?10)
              ON CONFLICT (id) DO UPDATE SET date = excluded.date, start = excluded.start,
                 hours = excluded.hours, kind = excluded.kind, details = excluded.details,
                 party = excluded.party, project_id = excluded.project_id,
                 division = excluded.division, actual_hours = excluded.actual_hours,
                 coverage = excluded.coverage, exported_at = NULL, timesheet_id = NULL,
-                dismissed_at = NULL, deleted_at = NULL,
-                updated_at = MAX(timesheet_entries.updated_at + 1, excluded.updated_at)",
+                dismissed_at = NULL, deleted_at = NULL, consultant = NULL,
+                updated_at = MAX(timesheet_entries.updated_at + 1, excluded.updated_at),
+                state_at = MAX(COALESCE(timesheet_entries.state_at, 0) + 1, excluded.state_at)",
             params![
                 id,
                 e.date.to_string(),
@@ -1063,7 +1128,7 @@ impl Store {
         };
         Ok(self.conn.execute(
             &format!(
-                "UPDATE timesheet_entries SET deleted_at = ?2, {TOUCH}
+                "UPDATE timesheet_entries SET deleted_at = ?2, {TOUCH}, {STATE}
                  WHERE id = ?1 AND deleted_at IS NULL{only}"
             ),
             params![id, ms(Utc::now())],
@@ -1362,6 +1427,50 @@ mod tests {
     }
 
     #[test]
+    fn deleting_the_rest_of_a_longer_meeting_keeps_the_saved_part() {
+        let store = Store::open_in_memory().unwrap();
+        project(&store, "togg", "Togg");
+        let togg = sheet("togg", &["togg"]);
+        let meeting = |to: i64| Meeting {
+            uid: "plan".into(),
+            start: t(0),
+            end: t(to),
+            subject: "Haftalık plan".into(),
+            online: true,
+            ..Meeting::default()
+        };
+        store.assign_meeting("plan", Some("togg")).unwrap();
+        let day_rows = |store: &Store, m: &Meeting| {
+            let ctx = store.timesheet_context().unwrap();
+            let pieces = store
+                .timesheet_pieces(&ctx, t(-540), t(900), std::slice::from_ref(m))
+                .unwrap();
+            store
+                .timesheet_day(&ctx, &togg, day(), &pieces)
+                .unwrap()
+                .rows
+        };
+        // Bir saatlik toplantı kaydedildi.
+        let short = meeting(60);
+        let r = day_rows(&store, &short);
+        let saved = store.save_timesheet_entry(None, &r[0].entry).unwrap();
+        // Toplantı uzadı: artığı ayrı satır olarak gelir ve silinir.
+        let long = meeting(90);
+        let r = day_rows(&store, &long);
+        let rest = r.iter().find(|r| r.id.is_none()).expect("artık önerilir");
+        store.dismiss_timesheet_entry(None, &rest.entry).unwrap();
+        // Kaydedilen saat yerinde kalır, eskimez; toplantı "yapılmadı" sayılmaz.
+        let r = day_rows(&store, &long);
+        let kept: Vec<_> = r.iter().filter_map(|r| r.id.clone()).collect();
+        assert_eq!(kept, [saved]);
+        assert!(r.iter().all(|r| r.stale.is_none()), "{r:?}");
+        assert!(
+            r.iter().all(|r| r.id.is_some()),
+            "silinen artık geri gelmez: {r:?}"
+        );
+    }
+
+    #[test]
     fn merging_live_and_saved_rows_and_undoing_it() {
         let store = Store::open_in_memory().unwrap();
         project(&store, "togg", "Togg");
@@ -1455,7 +1564,7 @@ mod tests {
         let (r, _) = rows(&store, &togg);
         let id = store.save_timesheet_entry(None, &r[0].entry).unwrap();
         store
-            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &togg.id)
+            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &togg.id, "")
             .unwrap();
         assert!(store.save_timesheet_entry(Some(&id), &r[0].entry).is_err());
         assert!(
@@ -1491,9 +1600,13 @@ mod tests {
         let (r, _) = rows(&store, &togg);
         let id = store.save_timesheet_entry(None, &r[0].entry).unwrap();
         // Aktarılmamış satır bu yoldan değişmez.
-        assert!(store.save_exported_entry(&id, &r[0].entry, false).is_err());
+        assert!(
+            store
+                .save_exported_entry(&id, &r[0].entry, false, None)
+                .is_err()
+        );
         store
-            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &togg.id)
+            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &togg.id, "")
             .unwrap();
         let edited = TimesheetEntry {
             details: "Loyalty ekranları".into(),
@@ -1501,7 +1614,9 @@ mod tests {
             coverage: Some(Vec::new()),
             ..r[0].entry.clone()
         };
-        store.save_exported_entry(&id, &edited, false).unwrap();
+        store
+            .save_exported_entry(&id, &edited, false, None)
+            .unwrap();
         let saved = store.timesheet_entry(&id).unwrap().unwrap();
         assert!(saved.exported_at.is_some());
         assert_eq!(
@@ -1520,7 +1635,8 @@ mod tests {
                         hours: 0.0,
                         ..edited.clone()
                     },
-                    false
+                    false,
+                    None
                 )
                 .is_err()
         );
@@ -1544,7 +1660,7 @@ mod tests {
             (Some(id.as_str()), false)
         );
         store
-            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &togg.id)
+            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &togg.id, "")
             .unwrap();
         store.withdraw_exported_entry(&id, false).unwrap();
         assert!(store.timesheet_entry(&id).unwrap().is_none());
@@ -1618,7 +1734,7 @@ mod tests {
         };
         store.insert_entry("eski", &old).unwrap();
         store
-            .mark_timesheet_exported(&["eski".into()], Utc::now(), &togg.id)
+            .mark_timesheet_exported(&["eski".into()], Utc::now(), &togg.id, "")
             .unwrap();
         let (r, _) = rows(&store, &togg);
         assert_eq!(
@@ -1682,7 +1798,7 @@ mod tests {
         store.insert_entry("b", &row("kum-eski", "tracky")).unwrap();
         store.insert_entry("c", &row("togg", "Togg")).unwrap();
         store
-            .mark_timesheet_exported(&["a".into(), "b".into()], Utc::now(), "")
+            .mark_timesheet_exported(&["a".into(), "b".into()], Utc::now(), "", "")
             .unwrap();
         store
             .conn

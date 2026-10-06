@@ -237,6 +237,21 @@ UPDATE timesheet_entries SET updated_at = created_at;
 CREATE INDEX timesheet_entries_unsynced ON timesheet_entries (updated_at)
     WHERE synced_at IS NULL OR synced_at < updated_at;
 "#,
+    r#"
+-- Satırın durumu (aktarıldı, gizlendi, silindi) içerikten ayrı zamanla eşitlenir (state_at;
+-- supabase/migrations/0011): eşitlenmemiş başka cihazdaki eski kopyanın düzenlenmesi aktarımı
+-- ya da silmeyi geri almasın. consultant: aktarılan satırın dosyaya yazıldığı danışman adı;
+-- ayarlarda ad değişse de satır dosyada bulunur (şimdiki adla doldurulur).
+ALTER TABLE timesheet_entries ADD COLUMN state_at INTEGER;
+ALTER TABLE timesheet_entries ADD COLUMN consultant TEXT;
+UPDATE timesheet_entries SET state_at = updated_at;
+UPDATE timesheet_entries SET consultant = (
+    SELECT NULLIF(TRIM(json_extract(t.value, '$.consultant')), '')
+    FROM settings s, json_each(s.value, '$.timesheets') t
+    WHERE s.key = 'timesheet' AND json_valid(s.value)
+      AND json_extract(t.value, '$.id') = timesheet_entries.timesheet_id)
+WHERE exported_at IS NOT NULL;
+"#,
 ];
 
 /// Yedek dosyasının içeriği (geri yüklemeden önce göstermek için).
@@ -251,6 +266,44 @@ pub struct BackupInfo {
 /// en uzun oturumdan kısadır), yalnızca indeksin alt sınırıdır.
 const OVERLAPS: &str = "started_at < ?2 AND ended_at > ?1
     AND started_at >= ?1 - (SELECT max_duration FROM session_stats)";
+
+/// Aralık düzenlemesinin yalnızca bazı uygulamalara (ve isteğe bağlı başlıklarına) uygulanması:
+/// uygulama çizelgesinde bir uygulamanın çubuğuna tıklanınca aynı dilimdeki öteki uygulamalar
+/// değişmesin.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditScope {
+    pub app_ids: Vec<String>,
+    /// Doluysa yalnızca bu pencere başlıkları.
+    pub titles: Option<Vec<String>>,
+}
+
+/// `scope`'un SQL parametreleri (JSON dizileri; kapsam yoksa NULL): [`in_scope`] için.
+fn scope_params(scope: Option<&EditScope>) -> Result<(Option<String>, Option<String>)> {
+    let Some(scope) = scope else {
+        return Ok((None, None));
+    };
+    if scope.app_ids.is_empty() {
+        return Err(StoreError::Invalid("uygulama seçilmedi".into()));
+    }
+    Ok((
+        Some(serde_json::to_string(&scope.app_ids)?),
+        scope
+            .titles
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
+    ))
+}
+
+/// `?n` (uygulamalar) ve `?n+1` (başlıklar) parametreleriyle kapsam koşulu.
+fn in_scope(n: usize) -> String {
+    format!(
+        "(?{n} IS NULL OR app_id IN (SELECT value FROM json_each(?{n})))
+         AND (?{m} IS NULL OR title IN (SELECT value FROM json_each(?{m})))",
+        m = n + 1
+    )
+}
 
 /// Başka cihazın oturumu, bitişi bu kadar yakın olduğu sürece "sürüyor" sayılır. Cihazlar
 /// 5 dakikada bir eşitlediği için buradaki kopya o cihazın gerçek durumundan ~10 dakika
@@ -612,19 +665,33 @@ impl Store {
         to: DateTime<Utc>,
         category_id: Option<&str>,
     ) -> Result<usize> {
+        self.set_category_in(from, to, category_id, None)
+    }
+
+    /// [`Self::set_category_between`]; `scope` verilirse yalnızca o uygulamaların (ve
+    /// başlıkların) oturumları.
+    pub fn set_category_in(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        category_id: Option<&str>,
+        scope: Option<&EditScope>,
+    ) -> Result<usize> {
         if let Some(id) = category_id {
             self.require_tag(id, TagKind::Category)?;
         }
         self.ensure_no_foreign_live(from, to)?;
+        let (apps, titles) = scope_params(scope)?;
         let tx = self.savepoint()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
             &format!(
                 "UPDATE sessions SET category_id = ?3, updated_at = MAX(?4, updated_at + 1)
                  WHERE deleted_at IS NULL AND {OVERLAPS}
-                   AND category_id IS NOT ?3"
+                   AND category_id IS NOT ?3 AND {scope}",
+                scope = in_scope(5)
             ),
-            params![ms(from), ms(to), category_id, ms(Utc::now())],
+            params![ms(from), ms(to), category_id, ms(Utc::now()), apps, titles],
         )?;
         tx.commit()?;
         Ok(n)
@@ -639,19 +706,33 @@ impl Store {
         to: DateTime<Utc>,
         project_id: Option<&str>,
     ) -> Result<usize> {
+        self.set_project_in(from, to, project_id, None)
+    }
+
+    /// [`Self::set_project_between`]; `scope` verilirse yalnızca o uygulamaların (ve
+    /// başlıkların) oturumları.
+    pub fn set_project_in(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        project_id: Option<&str>,
+        scope: Option<&EditScope>,
+    ) -> Result<usize> {
         if let Some(id) = project_id.filter(|id| *id != crate::classify::NO_PROJECT) {
             self.require_tag(id, TagKind::Project)?;
         }
         self.ensure_no_foreign_live(from, to)?;
+        let (apps, titles) = scope_params(scope)?;
         let tx = self.savepoint()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
             &format!(
                 "UPDATE sessions SET project_id = ?3, updated_at = MAX(?4, updated_at + 1)
                  WHERE deleted_at IS NULL AND {OVERLAPS}
-                   AND project_id IS NOT ?3"
+                   AND project_id IS NOT ?3 AND {scope}",
+                scope = in_scope(5)
             ),
-            params![ms(from), ms(to), project_id, ms(Utc::now())],
+            params![ms(from), ms(to), project_id, ms(Utc::now()), apps, titles],
         )?;
         // Raporda bilerek atanan süre, projenin silinmiş satırında kalsa da yeniden önerilir.
         if let Some(id) = project_id.filter(|id| *id != crate::classify::NO_PROJECT) {
@@ -664,15 +745,28 @@ impl Store {
     /// `[from, to)` içindeki süreyi yumuşak siler; sınırı aşan oturumların dışarıda
     /// kalan kısmı korunur. Silinen satır sayısı.
     pub fn delete_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
+        self.delete_in(from, to, None)
+    }
+
+    /// [`Self::delete_between`]; `scope` verilirse yalnızca o uygulamaların (ve başlıkların)
+    /// oturumları.
+    pub fn delete_in(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        scope: Option<&EditScope>,
+    ) -> Result<usize> {
         self.ensure_no_foreign_live(from, to)?;
+        let (apps, titles) = scope_params(scope)?;
         let tx = self.savepoint()?;
         self.split_at(from, to)?;
         let n = self.conn.execute(
             &format!(
                 "UPDATE sessions SET deleted_at = ?3, updated_at = MAX(?3, updated_at + 1)
-                 WHERE deleted_at IS NULL AND {OVERLAPS}"
+                 WHERE deleted_at IS NULL AND {OVERLAPS} AND {scope}",
+                scope = in_scope(4)
             ),
-            params![ms(from), ms(to), ms(Utc::now())],
+            params![ms(from), ms(to), ms(Utc::now()), apps, titles],
         )?;
         tx.commit()?;
         Ok(n)
@@ -1736,7 +1830,7 @@ mod tests {
         // Aktarılan kayıt korunur: değiştirilemez, gün yeniden önerilince silinmez ve işi
         // ikinci kez önerilmez (dosyaya iki kez yazılırdı).
         store
-            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &sheet.id)
+            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), &sheet.id, "")
             .unwrap();
         assert!(store.save_timesheet_entry(Some(&id), &edited).is_err());
         assert_eq!(store.reset_timesheet_day(&sheet, day).unwrap(), 1);
@@ -2144,6 +2238,63 @@ mod tests {
         assert!(
             store
                 .resize_block(t(300), t(3000), t(3000), t(300), "Togg", None, p)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn scoped_range_edits_touch_only_the_chosen_app_or_window() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_session(&session("A", None, 0, 600)).unwrap();
+        store.upsert_session(&session("B", None, 0, 600)).unwrap();
+        store
+            .upsert_session(&Session {
+                title: "u".into(),
+                ..session("A", None, 600, 900)
+            })
+            .unwrap();
+        let project = store.accept_project_suggestion("Togg").unwrap();
+        let only_a = EditScope {
+            app_ids: vec!["com.test.A".into()],
+            titles: None,
+        };
+        // A'nın iki penceresi projeye geçer, aynı dilimdeki B değişmez.
+        assert_eq!(
+            store
+                .set_project_in(t(0), t(900), Some(&project.id), Some(&only_a))
+                .unwrap(),
+            2
+        );
+        let projects = |store: &Store| {
+            let mut v: Vec<(String, String, Option<String>)> = store
+                .sessions_between(t(0), t(3600))
+                .unwrap()
+                .into_iter()
+                .map(|s| (s.app_name, s.title, s.project_id))
+                .collect();
+            v.sort();
+            v
+        };
+        let p = Some(project.id.clone());
+        assert_eq!(
+            projects(&store),
+            [
+                ("A".into(), "t".into(), p.clone()),
+                ("A".into(), "u".into(), p.clone()),
+                ("B".into(), "t".into(), None),
+            ]
+        );
+        // Yalnızca bir pencere silinir.
+        let window = EditScope {
+            app_ids: vec!["com.test.A".into()],
+            titles: Some(vec!["u".into()]),
+        };
+        assert_eq!(store.delete_in(t(0), t(900), Some(&window)).unwrap(), 1);
+        assert_eq!(projects(&store).len(), 2);
+        // Boş kapsam reddedilir (hiçbir şeye dokunmaz değil, hata).
+        assert!(
+            store
+                .delete_in(t(0), t(900), Some(&EditScope::default()))
                 .is_err()
         );
     }

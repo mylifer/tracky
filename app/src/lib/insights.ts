@@ -80,9 +80,10 @@ function shiftDays(t: Date, n: number): Date {
   return r;
 }
 
-/** Değişim oranı; önceki dönem boşsa `null` ("yeni"). */
+/** Değişim oranı; önceki dönem boşsa `null` ("yeni"), iki dönem de boşsa 0. */
 export function change(cur: number, prev: number): number | null {
-  return prev > 0 ? (cur - prev) / prev : null;
+  if (prev > 0) return (cur - prev) / prev;
+  return cur > 0 ? null : 0;
 }
 
 /** `ids` için haftalık serilerin toplamı. */

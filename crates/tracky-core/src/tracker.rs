@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 
 use uuid::Uuid;
 
-use crate::engine::{Engine, EngineConfig};
+use crate::engine::{Clocks, Engine, EngineConfig, elapsed_clock};
 use crate::model::{ActiveWindow, Session};
 use crate::platform::ActivityProvider;
 use crate::privacy::PrivacySettings;
@@ -71,6 +71,14 @@ impl<P: ActivityProvider> Tracker<P> {
         }
     }
 
+    /// Saatler ([`Clocks`]): makine uyurken duran ve uykuda da ilerleyen.
+    fn clocks(&self) -> Clocks {
+        Clocks {
+            uptime: self.uptime(),
+            elapsed: elapsed_clock(self.started),
+        }
+    }
+
     pub fn privacy(&self) -> &PrivacySettings {
         &self.privacy
     }
@@ -124,10 +132,9 @@ impl<P: ActivityProvider> Tracker<P> {
             self.engine.forget_away(now);
         }
 
-        let uptime = self.uptime();
         let closed = self
             .engine
-            .tick_with_uptime(now, uptime, obs.window, obs.idle);
+            .tick_with_clocks(now, self.clocks(), obs.window, obs.idle);
         self.settle(store, before, closed, &mut outcome);
         outcome.changed = self.engine.current().map(|s| s.id) != before;
         if let Some(away) = self.engine.take_away() {
@@ -153,8 +160,7 @@ impl<P: ActivityProvider> Tracker<P> {
     pub fn shutdown(&mut self, store: &Store, now: DateTime<Utc>) -> Option<String> {
         let mut outcome = TickOutcome::default();
         let before = self.engine.current().map(|s| s.id);
-        let uptime = self.uptime();
-        let closed = self.engine.flush_with_uptime(now, uptime);
+        let closed = self.engine.flush_with_clocks(now, self.clocks());
         self.settle(store, before, closed, &mut outcome);
         outcome.error
     }

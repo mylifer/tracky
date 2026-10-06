@@ -36,6 +36,7 @@ describe("toplamlar", () => {
   it("önceki dönem boşsa değişim yok", () => {
     expect(change(15, 10)).toBe(0.5);
     expect(change(5, 0)).toBeNull();
+    expect(change(0, 0)).toBe(0);
   });
 
   it("haftalık serileri toplar, eksik proje sıfır sayılır", () => {

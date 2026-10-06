@@ -797,7 +797,9 @@ pub fn update(
     row: &Row,
 ) -> Result<u32> {
     let mut sheet = Sheet::open(token, id)?;
-    if row.date != expect.date {
+    // Satır taşınabilir (yeni gün ya da gün içinde sırası bozan saat): Day formülü taşınmadan
+    // önce okunmalı; sonradan okunan formüller satırların eski yerlerine göredir.
+    if row.date != expect.date || expect.start != Some(row.start) {
         sheet.load_formulas(token, id)?;
     }
     let r = sheet.plan_update(consultant, expect, row)?;

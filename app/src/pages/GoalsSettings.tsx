@@ -54,13 +54,13 @@ export default function GoalsSettings() {
   if (!goals) return <ErrorText>{error}</ErrorText>;
 
   function save(next: Goals) {
-    // Kaydedilemezse ekranda kaydedilmemiş değer kalmasın.
-    const prev = goals;
+    // Kaydedilemezse ekranda kaydedilmemiş değer kalmasın: kayıtlı hal yeniden okunur (önceki
+    // değere dönmek arada başarıyla kaydedilen sonraki değişikliği ekrandan silerdi).
     setGoals(next);
     setError(null);
     api.saveGoals(next).catch((e) => {
-      setGoals(prev);
       setError(friendlyError(e));
+      api.goals().then(setGoals, () => {});
     });
   }
 

@@ -110,6 +110,7 @@ export function WeekCalendar({
                     top={t}
                     height={height}
                     hourPx={range.px}
+                    dayStart={dayStart}
                   />
                 ),
               )}

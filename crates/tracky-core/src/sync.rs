@@ -19,7 +19,7 @@
 use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, SecondsFormat, TimeZone, Utc};
-use rusqlite::{params_from_iter, types::Value as SqlValue};
+use rusqlite::{OptionalExtension, params_from_iter, types::Value as SqlValue};
 use serde_json::{Map, Value};
 
 use crate::store::Store;
@@ -204,8 +204,11 @@ const TABLES: &[Table] = &[
             ("created_at", Col::Time),
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
+            ("state_at", Col::OptTime),
+            ("consultant", Col::OptText),
         ],
-        optional: &[],
+        // 0011: durum zamanı ve danışman adı.
+        optional: &["state_at", "consultant"],
         key: "id",
         only: None,
     },
@@ -257,6 +260,9 @@ pub struct SyncSummary {
     /// Sunucu şeması eski (0007 çalıştırılmamış): proje arşivi ve bütçeler gönderilemedi;
     /// bunları taşıyan satırlar şema güncellenince yeniden gönderilir.
     pub outdated_schema: bool,
+    /// Sunucuda zaman çizelgesinin 0011 sütunları yok: satırların durumu ve danışmanı
+    /// eşitlenmedi (satırlar bütün olarak eşitlenir); şema güncellenince yeniden gönderilir.
+    pub timesheet_outdated: bool,
     /// Sunucuda ayarlar tablosu yok (0008 çalıştırılmamış): ayarlar eşitlenmedi.
     pub settings_unavailable: bool,
     /// Sunucuda zaman çizelgesi tablosu yok (0010 çalıştırılmamış): satırlar eşitlenmedi;
@@ -313,7 +319,11 @@ pub fn run(
             table,
             user_id,
             &mut writer,
-            &mut summary.outdated_schema,
+            if table.name == "timesheet_entries" {
+                &mut summary.timesheet_outdated
+            } else {
+                &mut summary.outdated_schema
+            },
         ) {
             Ok(n) => summary.pushed += n,
             Err(e) if missing_table(table, &e) => summary.mark_unavailable(table),
@@ -454,7 +464,9 @@ fn push_table(
         }
         result.map_err(|e| {
             // 0.2 ile eklenen sütun sunucuda yoksa kullanıcıya ne yapacağını söyle.
-            if e.contains("category_id") {
+            if table.name != "sessions" {
+                SyncError::Remote(e)
+            } else if e.contains("category_id") {
                 SyncError::Remote(format!(
                     "Supabase şeması güncel değil: supabase/migrations/0002_session_category.sql \
                      dosyasını SQL Editor'da çalıştırın ({e})"
@@ -674,6 +686,7 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
         let id = id.to_string();
         keep_local_fields(store, &id, &mut obj)?;
     }
+    let merge = table.name == "timesheet_entries" && obj.contains_key("state_at");
     // Eski sunucunun hiç göndermediği isteğe bağlı sütunlar yazılmaz: yerel değer korunur.
     let cols: Vec<&(&str, Col)> = table
         .cols
@@ -704,9 +717,12 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
         }
         values.push(sql);
     }
+    let names: Vec<&str> = cols.iter().map(|c| table.local(c.0)).collect();
+    if merge && let Some(n) = merge_timesheet_row(store, &names, &values)? {
+        return Ok(n);
+    }
     values.push(SqlValue::Integer(updated)); // synced_at
 
-    let names: Vec<&str> = cols.iter().map(|c| table.local(c.0)).collect();
     let placeholders: Vec<String> = (1..=names.len() + 1).map(|i| format!("?{i}")).collect();
     let updates: Vec<String> = names
         .iter()
@@ -725,6 +741,128 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
         up = updates.join(", "),
     );
     Ok(store.conn().execute(&sql, params_from_iter(values))?)
+}
+
+/// Zaman çizelgesi satırının durum alanları: içerikten ayrı, `state_at`'e göre birleşir.
+const TIMESHEET_STATE: &[&str] = &[
+    "timesheet_id",
+    "exported_at",
+    "dismissed_at",
+    "deleted_at",
+    "consultant",
+    "state_at",
+];
+
+/// Uzaktan gelen zaman çizelgesi satırını yereldekiyle alan alan birleştirir; yerelde satır
+/// yoksa `None` (olduğu gibi eklenir). Bütün satırda "son yazan kazanır" olsaydı, eşitlenmemiş
+/// eski kopyayı düzenleyen cihaz aktarımı ya da silmeyi geri alırdı (satır ikinci kez gönderilir,
+/// birleşen satır geri gelir):
+/// - durum (aktarım, gizlenme, silinme, danışman) daha yeni `state_at`'li taraftan gelir
+///   (zamanı bilinmeyen eski satırda `updated_at`; eşitlikte daha yeni `updated_at`);
+/// - içerik daha yeni `updated_at`'li taraftan; ama durumu daha yeni olan taraf satırı
+///   aktarmış ya da silmişse içerik de ondan (öteki taraf bunu bilmeden düzenledi).
+///
+/// Sonuç gelen satırdan farklıysa satır kirli kalır ve birleşmiş hali geri gönderilir; böylece
+/// sunucu ve öteki cihaz da aynı sonuca varır.
+fn merge_timesheet_row(
+    store: &Store,
+    names: &[&str],
+    incoming: &[SqlValue],
+) -> Result<Option<usize>, SyncError> {
+    let at = |name: &str| {
+        names
+            .iter()
+            .position(|n| *n == name)
+            .expect("zaman çizelgesi sütunu")
+    };
+    let local: Option<Vec<SqlValue>> = store
+        .conn()
+        .query_row(
+            &format!(
+                "SELECT {} FROM timesheet_entries WHERE id = ?1",
+                names.join(", ")
+            ),
+            [&incoming[at("id")]],
+            |r| (0..names.len()).map(|i| r.get::<_, SqlValue>(i)).collect(),
+        )
+        .optional()?;
+    let Some(local) = local else {
+        return Ok(None);
+    };
+    let int = |row: &[SqlValue], name: &str| match row[at(name)] {
+        SqlValue::Integer(v) => Some(v),
+        _ => None,
+    };
+    let (iu, lu) = (
+        int(incoming, "updated_at").unwrap_or(0),
+        int(&local, "updated_at").unwrap_or(0),
+    );
+    let (is, ls) = (
+        int(incoming, "state_at").unwrap_or(iu),
+        int(&local, "state_at").unwrap_or(lu),
+    );
+    let state_in = (is, iu) > (ls, lu);
+    let frozen = |row: &[SqlValue]| {
+        row[at("exported_at")] != SqlValue::Null || row[at("deleted_at")] != SqlValue::Null
+    };
+    let content_in = match is.cmp(&ls) {
+        std::cmp::Ordering::Greater if frozen(incoming) => true,
+        std::cmp::Ordering::Less if frozen(&local) => false,
+        _ => iu > lu,
+    };
+    let merged: Vec<SqlValue> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let from_incoming = match *name {
+                "id" | "created_at" | "updated_at" => false,
+                n if TIMESHEET_STATE.contains(&n) => state_in,
+                _ => content_in,
+            };
+            if from_incoming {
+                incoming[i].clone()
+            } else {
+                local[i].clone()
+            }
+        })
+        .collect();
+    let same = |row: &[SqlValue]| {
+        names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| !matches!(**n, "created_at" | "updated_at"))
+            .all(|(i, _)| merged[i] == row[i])
+    };
+    let (updated, synced) = if same(incoming) && iu >= lu {
+        // Gelen satır olduğu gibi geçerli: eşitlenmiş sayılır.
+        (iu, Some(iu))
+    } else if same(&local) && iu <= lu {
+        return Ok(Some(0));
+    } else {
+        // Birleşen hal iki taraftan da yeni: gönderilmek üzere kirli kalır.
+        (iu.max(lu) + 1, None)
+    };
+    let sets: Vec<String> = names
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, n)| !matches!(**n, "created_at" | "updated_at"))
+        .map(|(i, n)| format!("{n} = ?{}", i + 1))
+        .collect();
+    let mut values = merged;
+    values.push(SqlValue::Integer(updated));
+    values.push(synced.map_or(SqlValue::Null, SqlValue::Integer));
+    let (u, s) = (values.len() - 1, values.len());
+    store.conn().execute(
+        &format!(
+            "UPDATE timesheet_entries SET {}, updated_at = ?{u},
+                synced_at = COALESCE(?{s}, synced_at)
+             WHERE id = ?1",
+            sets.join(", ")
+        ),
+        params_from_iter(values),
+    )?;
+    Ok(Some(1))
 }
 
 /// Uzaktan gelen gizlilik ayarına bu cihazın kendi alanlarını (duraklatma) yazar.
@@ -1641,7 +1779,7 @@ mod tests {
         // A gönderir ve bir satırı siler; B'de satır gönderilmiş görünür, silinen kaybolur.
         std::thread::sleep(std::time::Duration::from_millis(5));
         lock(&a)
-            .mark_timesheet_exported(std::slice::from_ref(&kept), Utc::now(), "sheet")
+            .mark_timesheet_exported(std::slice::from_ref(&kept), Utc::now(), "sheet", "")
             .unwrap();
         lock(&a).delete_timesheet_entry(&gone).unwrap();
         run(&a, &mut remote, "u1").unwrap();
@@ -1668,6 +1806,149 @@ mod tests {
 
         // Değişiklik yoksa bir şey gönderilmez.
         assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 0);
+    }
+
+    /// İki cihaz eşitlenir; `id`'li satırı ikisinde de döndürür.
+    fn in_both(a: &Mutex<Store>, b: &Mutex<Store>, remote: &mut FakeRemote, id: &str) {
+        run(a, remote, "u1").unwrap();
+        run(b, remote, "u1").unwrap();
+        assert!(lock(a).timesheet_entry(id).unwrap().is_some());
+        assert!(lock(b).timesheet_entry(id).unwrap().is_some());
+    }
+
+    fn pause() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    #[test]
+    fn a_stale_edit_on_another_device_does_not_undo_an_export() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let id = lock(&a)
+            .save_timesheet_entry(None, &timesheet_row("Giriş ekranı"))
+            .unwrap();
+        in_both(&a, &b, &mut remote, &id);
+
+        // A aktarır; eşitlenmemiş B eski kopyayı düzenler ve önce o eşitler.
+        pause();
+        lock(&a)
+            .mark_timesheet_exported(std::slice::from_ref(&id), Utc::now(), "sheet", "Kaan")
+            .unwrap();
+        pause();
+        lock(&b)
+            .save_timesheet_entry(Some(&id), &timesheet_row("Eski kopyada düzenlendi"))
+            .unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        // Satır iki cihazda da aktarılmış kalır ve dosyadaki haliyle durur (yeniden gönderilmez).
+        for store in [&a, &b] {
+            let row = lock(store).timesheet_entry(&id).unwrap().unwrap();
+            assert!(row.exported_at.is_some());
+            assert_eq!(row.timesheet_id.as_deref(), Some("sheet"));
+            assert_eq!(row.consultant.as_deref(), Some("Kaan"));
+            assert_eq!(row.entry.details, "Giriş ekranı");
+        }
+        assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 0);
+        assert_eq!(run(&b, &mut remote, "u1").unwrap().pushed, 0);
+    }
+
+    #[test]
+    fn a_stale_edit_does_not_bring_back_merged_rows() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
+        let first = timesheet_row("Bir");
+        let second = crate::timesheet::TimesheetEntry {
+            start: chrono::NaiveTime::from_hms_opt(11, 0, 0).unwrap(),
+            coverage: Some(vec![[1_772_442_000_000, 1_772_445_600_000]]),
+            ..timesheet_row("İki")
+        };
+        let ids: Vec<String> = [&first, &second]
+            .iter()
+            .map(|e| lock(&a).save_timesheet_entry(None, e).unwrap())
+            .collect();
+        in_both(&a, &b, &mut remote, &ids[0]);
+        pause();
+        let rows: Vec<_> = ids
+            .iter()
+            .zip([&first, &second])
+            .map(|(id, e)| (Some(id.clone()), e.clone()))
+            .collect();
+        let (merged, _) = lock(&a).merge_timesheet_entries(&rows).unwrap();
+        pause();
+        lock(&b)
+            .save_timesheet_entry(Some(&ids[0]), &timesheet_row("Bir, düzenlendi"))
+            .unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        for store in [&a, &b] {
+            let live: Vec<String> = lock(store)
+                .timesheet_entries(day, day)
+                .unwrap()
+                .into_iter()
+                .map(|s| s.id)
+                .collect();
+            assert_eq!(live, std::slice::from_ref(&merged));
+        }
+    }
+
+    #[test]
+    fn the_same_suggestion_saved_on_two_devices_is_one_row() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
+        let on_a = lock(&a)
+            .save_timesheet_entry(None, &timesheet_row("A'da yazıldı"))
+            .unwrap();
+        pause();
+        let on_b = lock(&b)
+            .save_timesheet_entry(None, &timesheet_row("B'de yazıldı"))
+            .unwrap();
+        assert_eq!(on_a, on_b, "aynı işin satırı aynı kimliği alır");
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        for store in [&a, &b] {
+            let rows = lock(store).timesheet_entries(day, day).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].entry.details, "B'de yazıldı");
+        }
+    }
+
+    #[test]
+    fn deleting_on_one_device_and_editing_on_the_other_keeps_both() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let id = lock(&a)
+            .save_timesheet_entry(None, &timesheet_row("Giriş ekranı"))
+            .unwrap();
+        in_both(&a, &b, &mut remote, &id);
+        // A gizler, B (bilmeden) açıklamayı düzenler: satır gizli kalır, açıklama B'nin.
+        pause();
+        let row = timesheet_row("Giriş ekranı");
+        lock(&a).dismiss_timesheet_entry(Some(&id), &row).unwrap();
+        pause();
+        lock(&b)
+            .save_timesheet_entry(Some(&id), &timesheet_row("Giriş ekranı testleri"))
+            .unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        for store in [&a, &b] {
+            let row = lock(store).timesheet_entry(&id).unwrap().unwrap();
+            assert!(row.dismissed);
+            assert_eq!(row.entry.details, "Giriş ekranı testleri");
+        }
     }
 
     #[test]

@@ -13,6 +13,10 @@ thiserror = "2.0.21"
 url = "2.5.8"
 uuid = { version = "1.26.1", features = ["v4", "v5", "serde"] }
 
+[target.'cfg(unix)'.dependencies]
+# Uykuda da ilerleyen saat (CLOCK_MONOTONIC / CLOCK_BOOTTIME): saat atlaması uykudan ayrılır.
+libc = "0.2"
+
 [features]
 default = ["store"]
 # SQLite depolama; platform katmanı yalnızca model tiplerine ihtiyaç duyduğu için kapatabilir.

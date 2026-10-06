@@ -225,6 +225,7 @@ export function DayCalendar({
                 top={t}
                 height={height}
                 hourPx={range.px}
+                dayStart={+from}
               />
             ),
           )}

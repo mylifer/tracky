@@ -67,10 +67,26 @@ impl UndoLog {
         id
     }
 
-    fn take(&self, id: u64) -> Option<Vec<UndoOp>> {
+    /// Kaydı çıkarır. Aynı süreye dokunan daha yeni bir düzenleme duruyorsa çıkarılmaz
+    /// (`Err`): önce o geri alınmalı (bkz. [`EditSnapshot::touches`]).
+    fn take(&self, id: u64) -> Result<Option<Vec<UndoOp>>, ()> {
         let mut log = lock(&self.0);
-        let i = log.list.iter().position(|(n, _)| *n == id)?;
-        Some(log.list.remove(i).1)
+        let Some(i) = log.list.iter().position(|(n, _)| *n == id) else {
+            return Ok(None);
+        };
+        fn snaps(ops: &[UndoOp]) -> impl Iterator<Item = &EditSnapshot> {
+            ops.iter().filter_map(|op| match op {
+                UndoOp::Sessions(s) => Some(s),
+                _ => None,
+            })
+        }
+        let blocked = log.list[i + 1..].iter().any(|(_, later)| {
+            snaps(later).any(|later| snaps(&log.list[i].1).any(|s| s.touches(later)))
+        });
+        if blocked {
+            return Err(());
+        }
+        Ok(Some(log.list.remove(i).1))
     }
 
     /// Geri alma başarısız olduysa (hiçbiri uygulanmadı) işlemleri aynı numarayla yerine koyar;
@@ -141,7 +157,10 @@ fn apply(store: &Store, op: &UndoOp) -> tracky_core::store::Result<()> {
 #[tauri::command]
 pub async fn undo(app: AppHandle, id: u64) -> CmdResult<()> {
     let log = app.state::<UndoLog>();
-    let ops = log.take(id).ok_or("Bu değişiklik artık geri alınamıyor.")?;
+    let ops = log
+        .take(id)
+        .map_err(|()| "Bu aralıkta daha sonra yapılan bir değişiklik var; önce onu geri al.")?
+        .ok_or("Bu değişiklik artık geri alınamıyor.")?;
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
     undo_ops(&store, &ops).map_err(|e| {
@@ -405,10 +424,31 @@ mod tests {
         let log = UndoLog::default();
         let (older, newer) = (log.push(Vec::new()), log.push(Vec::new()));
         let failed = log.push(Vec::new());
-        let taken = log.take(failed).unwrap();
+        let taken = log.take(failed).unwrap().unwrap();
         log.put_back(failed, taken);
-        assert!(log.take(failed).is_some());
-        assert!(log.take(older).is_some() && log.take(newer).is_some());
+        assert!(matches!(log.take(failed), Ok(Some(_))));
+        assert!(matches!(log.take(older), Ok(Some(_))));
+        assert!(matches!(log.take(newer), Ok(Some(_))));
+        assert!(matches!(log.take(newer), Ok(None)));
+
+        // Aynı süreye dokunan düzenlemeler sondan başa geri alınır.
+        let at = |min: i64| chrono::DateTime::<Utc>::UNIX_EPOCH + chrono::Duration::minutes(min);
+        let wide = store.snapshot_range(at(0), at(60)).unwrap();
+        let inner = store.snapshot_range(at(15), at(30)).unwrap();
+        let apart = store.snapshot_range(at(120), at(180)).unwrap();
+        let older = log.push(vec![UndoOp::Sessions(wide)]);
+        let newer = log.push(vec![UndoOp::Sessions(inner)]);
+        let other = log.push(vec![UndoOp::Sessions(apart)]);
+        assert!(
+            log.take(older).is_err(),
+            "yenisi dururken eskisi geri alınmaz"
+        );
+        assert!(
+            matches!(log.take(other), Ok(Some(_))),
+            "başka aralık engellemez"
+        );
+        assert!(matches!(log.take(newer), Ok(Some(_))));
+        assert!(matches!(log.take(older), Ok(Some(_))));
     }
 
     #[test]

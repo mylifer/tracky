@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { ChevronRight, PenLine } from "lucide-react";
-import { formatDuration, NO_PROJECT, type Tag, type WindowSpan } from "../api";
+import { type EditScope, formatDuration, NO_PROJECT, type Tag, type WindowSpan } from "../api";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
 import { tagColor } from "../lib/tags";
 import { detailRows, onlyOther, type MinorBond } from "../lib/minorWindows";
@@ -220,7 +220,8 @@ export default function AppTimeline({
   zoom?: number;
   onZoom?: (zoom: number) => void;
   /** Çubuğa tıklanınca o pencerenin aralığı (atama menüsü için) ve tıklanan nokta. */
-  onSelectSpan?: (start: number, end: number, x: number, y: number) => void;
+  /** Çubuğa tıklanınca: aralık ve yalnızca o şeridin uygulamaları (ya da pencereleri). */
+  onSelectSpan?: (start: number, end: number, x: number, y: number, scope: EditScope & { label: string }) => void;
 }) {
   const dates = useMemo(() => Array.from({ length: days + 1 }, (_, i) => addDays(from, i)), [from, days]);
   const starts = useMemo(() => dates.map(Number), [dates]);
@@ -301,8 +302,17 @@ export default function AppTimeline({
 
   // Çubuklar dilim ızgarasına oturur: birkaç saniyelik pencereler 1 px'lik şeritler olmasın.
   const slotMin = slotMinutes(days, zoom);
-  const bars = (lane: Lane, appName: string, muted = false) =>
-    slotBars(lane.spans, starts, slotMin).map((bar) => {
+  /**
+   * Şeridin çubukları. `byTitle`: pencere şeridi, çubuk yalnızca o pencerelerin kayıtlarına
+   * dokunur; yoksa şeridin uygulamalarının (aynı dilimdeki öteki uygulamalar değişmez).
+   */
+  const bars = (lane: Lane, appName: string, muted = false, byTitle = false) => {
+    const scope = {
+      appIds: [...new Set(lane.spans.map((w) => w.appId))],
+      titles: byTitle ? [...new Set(lane.spans.map((w) => w.title))] : null,
+      label: byTitle ? `${appName} · ${lane.label}` : lane.label,
+    };
+    return slotBars(lane.spans, starts, slotMin).map((bar) => {
       if (bar.b <= startMs || bar.a >= startMs + spanMs) return null;
       const a = x(bar.day, bar.a);
       const b = x(bar.day, bar.b);
@@ -338,11 +348,12 @@ export default function AppTimeline({
             // Klavyeyle (Enter/Boşluk) basılınca imleç konumu yok: menü çubuğun yanında açılır.
             const r = e.currentTarget.getBoundingClientRect();
             const [px, py] = e.detail === 0 ? [r.left + r.width / 2, r.bottom] : [e.clientX, e.clientY];
-            onSelectSpan(bar.start, bar.end, px, py);
+            onSelectSpan(bar.start, bar.end, px, py, scope);
           }}
         />
       );
     });
+  };
 
   const grid = (
     <>
@@ -461,7 +472,7 @@ export default function AppTimeline({
                       </span>
                       <span className="relative block h-6 overflow-hidden">
                         {grid}
-                        {bars(t, app.label, true)}
+                        {bars(t, app.label, true, true)}
                       </span>
                     </li>
                   ))}

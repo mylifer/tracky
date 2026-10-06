@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArchiveRestore, ChevronRight, FolderKanban, Plus, Search, Settings2 } from "lucide-react";
 import { api, formatDuration, type Suggestions, type Tag, type UsageTotal } from "../api";
 import { SuggestionsCard } from "../components/SuggestionsCard";
@@ -78,9 +78,11 @@ export default function ProjectsPage({
   };
 
   const project = open && data ? data.projects.find((p) => p.id === open) : undefined;
+  // Listeden açılırken eldeki veri: yeni eklenen proje onda yok, yenisi gelene kadar beklenir.
+  const openedWith = useRef<Insights | null>(null);
   // Silinen proje: listeye dön.
   useEffect(() => {
-    if (open && data && !project) onOpen(null);
+    if (open && data && !project && data !== openedWith.current) onOpen(null);
   }, [open, data, project, onOpen]);
 
   if (project && data)
@@ -115,6 +117,7 @@ export default function ProjectsPage({
         onError={setError}
         run={run}
         onOpen={(id, t) => {
+          openedWith.current = data;
           setTab(t);
           onOpen(id);
         }}

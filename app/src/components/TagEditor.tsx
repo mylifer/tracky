@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Check, ChevronDown, Plus, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronDown, Plus, Trash2, X } from "lucide-react";
 import {
   api,
   formatDuration,
@@ -243,13 +243,30 @@ export function TagEditor({
           {budget && <BudgetMeter usage={budget} dayHours={dayHours} color={tagColor(tag)} className="max-w-xs" />}
         </div>
       )}
-      {(text.primary === "title" ? (["title", "domain", "app"] as const) : (["app", "domain", "title"] as const)).map(
-        (field) => (
-          <RuleList key={field} tag={tag} field={field} rules={rules} apps={apps} run={run} allTags={allTags} />
-        ),
+      {/* Arşivdeki projenin kuralları sınıflandırmaya girmez ve listede gelmez. */}
+      {tag.archived ? (
+        <p className="text-xs text-muted-foreground">
+          Arşivdeki projenin kuralları çalışmaz; arşivden çıkarınca geri gelir.
+        </p>
+      ) : (
+        (text.primary === "title" ? (["title", "domain", "app"] as const) : (["app", "domain", "title"] as const)).map(
+          (field) => (
+            <RuleList key={field} tag={tag} field={field} rules={rules} apps={apps} run={run} allTags={allTags} />
+          ),
+        )
       )}
       <div className="flex justify-end gap-1">
-        {tag.kind === "project" && (
+        {tag.kind === "project" && tag.archived && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={run(() => undoable(api.unarchiveProject(tag.id), `“${tag.name}” arşivden çıkarıldı`))}
+          >
+            <ArchiveRestore /> Arşivden çıkar
+          </Button>
+        )}
+        {tag.kind === "project" && !tag.archived && (
           <Button
             variant="ghost"
             size="sm"

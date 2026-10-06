@@ -278,6 +278,8 @@ export default function Timesheet({
     setCalendar(s);
     load();
   });
+  // Başka cihazdan gelen satırlar (kaydedilen, silinen, gönderilen) hemen görünsün.
+  useTauriEvent(api.onSync, load);
   // Ekrandan kalkan (gönderilen, silinen, birleşen) satırlar seçimden çıkar.
   useEffect(() => {
     setSelected((s) => {
@@ -296,10 +298,18 @@ export default function Timesheet({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Süren kayıtlar (satırdan çıkınca kaydedilen düzenleme): gönderim onları bekler.
+  const inFlight = useRef(new Set<Promise<unknown>>());
   const run = (f: () => Promise<unknown>) => async () => {
     try {
       setError(null);
-      await f();
+      const p = f();
+      inFlight.current.add(p);
+      try {
+        await p;
+      } finally {
+        inFlight.current.delete(p);
+      }
       await load();
     } catch (e) {
       setError(friendlyError(e));
@@ -325,6 +335,8 @@ export default function Timesheet({
     setExporting(true);
     setError(null);
     try {
+      // Gönder'e basınca satırdan çıkılır ve düzenleme kaydedilir: yazılan hali gitsin.
+      await Promise.allSettled([...inFlight.current]);
       exported(await api.exportTimesheet(sheet.id, rows.map(toRef)));
       setSelected(new Set());
       after?.();

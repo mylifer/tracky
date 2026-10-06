@@ -93,6 +93,9 @@ export type Segment = {
   title: string;
   categoryId: string | null;
 };
+/** Aralık düzenlemesi yalnızca bu uygulamalara (ve doluysa bu pencere başlıklarına) uygulanır. */
+export type EditScope = { appIds: string[]; titles: string[] | null };
+
 export type WindowSpan = {
   start: string;
   end: string;
@@ -625,9 +628,10 @@ export const api = {
     invoke<void>("accept_category_suggestion", { field: s.field, pattern: s.pattern, categoryId: s.categoryId }),
   dismissSuggestion: (key: string) => invoke<void>("dismiss_suggestion", { key }),
   /** Aralıktaki oturumlara elle kategori; `null` kurallara döndürür. */
-  setRangeCategory: (start: string, end: string, categoryId: string | null) =>
-    invoke<Edited>("set_range_category", { start, end, categoryId }),
-  deleteRange: (start: string, end: string) => invoke<Edited>("delete_range", { start, end }),
+  setRangeCategory: (start: string, end: string, categoryId: string | null, scope: EditScope | null = null) =>
+    invoke<Edited>("set_range_category", { start, end, categoryId, scope }),
+  deleteRange: (start: string, end: string, scope: EditScope | null = null) =>
+    invoke<Edited>("delete_range", { start, end, scope }),
   addManualEntry: (label: string, start: string, end: string, categoryId: string | null, projectId: string | null) =>
     invoke<Edited>("add_manual_entry", { label, start, end, categoryId, projectId }),
   /** Takvim bloğunu yeni aralığa uzatır ya da kısaltır (kısalan kısım silinir). */
@@ -641,10 +645,10 @@ export const api = {
     projectId: string | null,
   ) => invoke<Edited>("resize_block", { start, end, newStart, newEnd, label, categoryId, projectId }),
   /** Aralıktaki oturumlara elle proje; `null` kurallara döndürür. */
-  setRangeProject: (start: string, end: string, projectId: string | null) =>
-    invoke<Edited>("set_range_project", { start, end, projectId }),
+  setRangeProject: (start: string, end: string, projectId: string | null, scope: EditScope | null = null) =>
+    invoke<Edited>("set_range_project", { start, end, projectId, scope }),
   privacy: () => invoke<PrivacySettings>("get_privacy"),
-  savePrivacy: (settings: PrivacySettings) => invoke<void>("save_privacy", { settings }),
+  savePrivacy: (settings: PrivacySettings) => invoke<PrivacySettings>("save_privacy", { settings }),
   defaultExcludedUrls: () => invoke<string[]>("default_excluded_urls"),
   goals: () => invoke<Goals>("get_goals"),
   saveGoals: (goals: Goals) => invoke<void>("save_goals", { goals }),

@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Coffee } from "lucide-react";
 import type { IdleSpan, Tag, WindowSpan, WorkBlock } from "../../api";
 import { api, formatDuration } from "../../api";
 import { friendlyError, toast, undoable } from "../../lib/feedback";
-import { formatTime } from "../../lib/dates";
+import { formatTime, fromWallMs, wallMs } from "../../lib/dates";
 import { UNASSIGNED, UNCATEGORIZED, tagColor } from "../../lib/tags";
 import { cn } from "../../lib/utils";
 import { AppIconStack } from "../AppIcon";
@@ -34,6 +34,7 @@ export function Block({
   top,
   height,
   hourPx,
+  dayStart,
   narrow = false,
   lens = "category",
   windows,
@@ -44,6 +45,8 @@ export function Block({
   height: number;
   /** Bir saatin yüksekliği: kenar sürüklenirken piksel süreye çevrilir. */
   hourPx: number;
+  /** Bloğun gününün başı: sürükleme ızgara gibi duvar saatiyle hesaplanır (yaz saati günleri). */
+  dayStart: number;
   windows?: WindowSpan[];
   /** Dar sütun (hafta): tek satırlık blokta süre yer kaplamasın, başlık okunsun. */
   narrow?: boolean;
@@ -51,6 +54,20 @@ export function Block({
 }) {
   const edit = useEdit();
   const [resize, setResize] = useState<Resize | null>(null);
+  // Kaydedilirken yeni sürükleme başlamasın: blok sınırları yenilenene kadar eskidir.
+  const [busy, setBusy] = useState(false);
+  const resizing = resize !== null;
+  // Esc sürüklemeyi bırakır; blok değişmez.
+  useEffect(() => {
+    if (!resizing) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setResize(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [resizing]);
   const { color: blockColor, title, apps } = blockTitle(b, tags, lens);
   const color = blockColor ?? "var(--c0)";
   const full = height >= FULL_LABEL_PX;
@@ -69,6 +86,7 @@ export function Block({
       b.topApps[0]?.appName ||
       "Çalışma";
     const iso = (t: number) => new Date(t).toISOString();
+    setBusy(true);
     try {
       await undoable(
         api.resizeBlock(b.start, b.end, iso(newStart), iso(newEnd), name, b.categoryId, b.projectId),
@@ -77,11 +95,14 @@ export function Block({
       edit.onChanged();
     } catch (e) {
       toast(friendlyError(e), { tone: "error" });
+    } finally {
+      setBusy(false);
     }
   }
 
   const handle = (edge: Resize["edge"]) =>
-    edit && (
+    edit &&
+    !busy && (
       <span
         className={cn(
           "group/h absolute inset-x-0.5 z-[5] flex h-1.5 cursor-ns-resize justify-center",
@@ -100,9 +121,20 @@ export function Block({
           setResize({ edge, y0: e.clientY, from, at: from });
         }}
         onPointerMove={(e) => {
-          if (!resize || Math.abs(e.clientY - resize.y0) < DRAG_MIN_PX) return;
-          const raw = resize.from + ((e.clientY - resize.y0) / hourPx) * HOUR_MS;
-          const at = Math.round(raw / SNAP_MS) * SNAP_MS;
+          if (!resize) return;
+          // Başladığı yere dönen sürükleme bloğu değiştirmez.
+          if (Math.abs(e.clientY - resize.y0) < DRAG_MIN_PX) {
+            if (resize.at !== resize.from) setResize({ ...resize, at: resize.from });
+            return;
+          }
+          const raw = fromWallMs(
+            wallMs(resize.from, dayStart) + ((e.clientY - resize.y0) / hourPx) * HOUR_MS,
+            dayStart,
+          );
+          const snap = (t: number) => Math.round(t / SNAP_MS) * SNAP_MS;
+          const snapped = snap(raw);
+          // Kenarın kendi dilimine oturması değişiklik sayılmaz (kenar dilim sınırında değil).
+          const at = snapped === snap(resize.from) ? resize.from : snapped;
           setResize({
             ...resize,
             at:
@@ -124,7 +156,8 @@ export function Block({
     );
 
   const [newStart, newEnd] = !resize ? [start, end] : resize.edge === "start" ? [resize.at, end] : [start, resize.at];
-  const ghostTop = top + ((newStart - start) / HOUR_MS) * hourPx;
+  const wall = (t: number) => wallMs(t, dayStart);
+  const ghostTop = top + ((wall(newStart) - wall(start)) / HOUR_MS) * hourPx;
   return (
     <>
       <Popover>
@@ -176,7 +209,7 @@ export function Block({
           className="pointer-events-none absolute inset-x-0.5 z-20 grid place-items-center rounded-[5px] border-2 border-dashed text-[11px] font-medium tabular"
           style={{
             top: ghostTop,
-            height: Math.max(14, ((newEnd - newStart) / HOUR_MS) * hourPx - 2),
+            height: Math.max(14, ((wall(newEnd) - wall(newStart)) / HOUR_MS) * hourPx - 2),
             borderColor: color,
             background: `color-mix(in srgb, ${color} 18%, transparent)`,
           }}

@@ -40,6 +40,27 @@ pub struct EditSnapshot {
     extent: Option<(i64, i64)>,
 }
 
+impl EditSnapshot {
+    /// Görüntünün kapsadığı zaman aralığı (ms); satırsız ve aralıksızsa `None`.
+    fn span(&self) -> Option<(i64, i64)> {
+        self.extent.or_else(|| {
+            let a = self.rows.iter().map(|r| r.started_at).min()?;
+            let b = self.rows.iter().map(|r| r.ended_at).max()?;
+            Some((a, b))
+        })
+    }
+
+    /// İki düzenleme aynı süreye dokunuyor mu. Geri alma sondan başa olmalı: eski düzenleme
+    /// önce geri alınırsa yenisinin geri alınması, eskinin geri getirdiği satırları kendi
+    /// eklediği satır sanıp silerdi.
+    pub fn touches(&self, other: &EditSnapshot) -> bool {
+        match (self.span(), other.span()) {
+            (Some((a, b)), Some((c, d))) => a < d && c < b,
+            _ => false,
+        }
+    }
+}
+
 impl Store {
     /// `[from, to)` ile kesişen oturumların durumu (aralığa atama, silme, elle kayıt öncesi).
     pub fn snapshot_range(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<EditSnapshot> {

@@ -63,8 +63,8 @@ export default function Settings({
   async function save(next: PrivacySettings) {
     try {
       setError(null);
-      await api.savePrivacy(next);
-      setPrivacy(next);
+      // Arka uç geçersiz adres kalıplarını ayıklar: ekranda kaydedilen hal görünsün.
+      setPrivacy(await api.savePrivacy(next));
     } catch (e) {
       setError(friendlyError(e));
     }
