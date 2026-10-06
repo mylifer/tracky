@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Loader2, Send } from "lucide-react";
 import {
   api,
@@ -14,7 +14,7 @@ import { HATCH } from "./Calendar";
 import { ProjectSelect } from "./ProjectSelect";
 import Toolbar from "./Toolbar";
 import { Button } from "./ui/button";
-import { isoDate, parseIsoDate, today } from "../lib/dates";
+import { parseIsoDate } from "../lib/dates";
 import { friendlyError, toast, undoable, useChanged } from "../lib/feedback";
 import { tagColor, tagInk, UNASSIGNED } from "../lib/tags";
 import { blocked, isStale, needsDetails, started } from "../lib/timesheet";
@@ -22,9 +22,12 @@ import { useTauriEvent } from "../lib/useTauriEvent";
 import { cn } from "../lib/utils";
 import { exportNotice, KINDS, num, toRef } from "../pages/timesheet/shared";
 
-/** Şeridin yüksekliği tabloya uyar: satır başına yaklaşık bu kadar (piksel), en az `STRIP_MIN`. */
-const ROW_PX = 39;
-const STRIP_MIN = 320;
+/** Bloğun yüksekliği süreyle uzar (dakika başına), kısa işte de okunur, uzun işte sayfayı kaplamaz. */
+const PX_PER_MIN = 0.8;
+const BLOCK_MIN = 32;
+const BLOCK_MAX = 120;
+/** Bundan kısa boşluk satırlar arasında gösterilmez. */
+const GAP_MIN = 10 * 60_000;
 /** Düz metin hücreleri düzenlenebilir alanların yazısıyla aynı hizada başlasın (kenar + iç boşluk). */
 const PLAIN = "pl-[15px]";
 const hm = new Intl.DateTimeFormat("tr-TR", { hour: "2-digit", minute: "2-digit" });
@@ -49,15 +52,14 @@ type Line =
   | { kind: "meeting"; key: string; from: number; to: number; meeting: UnassignedMeeting };
 
 /**
- * Gün raporunun Çizelge görünümü: solda günün blokları dikey şeritte, sağda her bloğun karşılığı
- * olan zaman çizelgesi satırı. Satırlar yerinde düzenlenir, projesiz bloklar burada atanır, gün
- * tek düğmeyle gönderilir. Üzerine gelinen blok ile satır birbirini vurgular.
+ * Gün raporunun Çizelge görünümü: her satırın başında süresi kadar uzayan bloğu, yanında zaman
+ * çizelgesi satırı (blok = satır, aynı hizada). Satırlar arasındaki boşluklar ayraçla görünür.
+ * Satırlar yerinde düzenlenir, projesiz bloklar burada atanır, gün tek düğmeyle gönderilir.
  */
 export default function DaySheet({ day, title, report, tags, projects, controls, onChanged }: Props) {
   const [sheets, setSheets] = useState<{ id: string; projects: Set<string>; day: TimesheetDay | null }[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [hover, setHover] = useState<[number, number] | null>(null);
 
   const seq = useRef(0);
   const load = useCallback(async () => {
@@ -102,7 +104,6 @@ export default function DaySheet({ day, title, report, tags, projects, controls,
     }
   };
 
-  const dayStart = +parseIsoDate(day);
   const now = Date.now();
   const lines = useMemo<Line[]>(() => {
     const out: Line[] = [];
@@ -183,13 +184,20 @@ export default function DaySheet({ day, title, report, tags, projects, controls,
     }
   }
 
-  const overlaps = (l: { from: number; to: number }) => !!hover && l.from < hover[1] && l.to > hover[0];
   const stats =
     entries.length === 0
       ? formatDuration(report.totalSeconds)
       : allSent
         ? `${formatDuration(report.totalSeconds)} · gönderildi`
         : `${formatDuration(report.totalSeconds)} · ${ready.length} satır hazır${missing ? `, ${missing} eksik` : ""}`;
+  // Satırlar arasındaki boşluk (mola, toplantı dışı): başlangıca göre sıralı satırların o ana
+  // kadarki en geç bitişinden sonraki ilk başlangıca kadar.
+  const gaps = new Map<string, number>();
+  let reached = 0;
+  for (const l of lines) {
+    if (reached && l.from - reached >= GAP_MIN) gaps.set(l.key, l.from - reached);
+    reached = Math.max(reached, l.to);
+  }
 
   return (
     <>
@@ -212,93 +220,116 @@ export default function DaySheet({ day, title, report, tags, projects, controls,
       </Toolbar>
       <div className="@container flex-1 overflow-y-auto px-5 pb-6">
         {error && <p className="pb-3 text-xs text-destructive selectable">{error}</p>}
-        <div className="grid items-start gap-4 @[640px]:grid-cols-[150px_minmax(0,1fr)]">
-          <Strip
-            report={report}
-            tags={tags}
-            dayStart={dayStart}
-            now={now}
-            hover={hover}
-            onHover={setHover}
-            height={Math.max(STRIP_MIN, 36 + lines.length * ROW_PX)}
-          />
-          <div className="min-w-0 overflow-x-auto">
-            {!sheets ? (
-              <div className="skeleton h-40 rounded-xl" aria-busy />
-            ) : lines.length === 0 ? (
-              <p className="py-6 text-center text-xs text-muted-foreground">Bu gün için satır yok.</p>
-            ) : (
-              <table className="w-full min-w-[620px] border-collapse text-xs">
-                <thead>
-                  <tr className="text-left text-[11px] text-muted-foreground">
-                    {["Başlangıç", "Saat", "Tür", "Proje", "Açıklama"].map((h) => (
-                      <th key={h} className="border-b px-2 py-1.5 font-medium">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="tabular">
-                  {lines.map((l) => (
-                    <Row
-                      key={l.key}
-                      line={l}
-                      tags={tags}
-                      projects={projects}
-                      running={running(l)}
-                      lit={overlaps(l)}
-                      onHover={(on) => setHover(on ? [l.from, l.to] : null)}
-                      run={run}
-                    />
+        <div className="overflow-x-auto">
+          {!sheets ? (
+            <div className="skeleton h-40 rounded-xl" aria-busy />
+          ) : lines.length === 0 ? (
+            <p className="py-6 text-center text-xs text-muted-foreground">Bu gün için satır yok.</p>
+          ) : (
+            <table className="w-full min-w-[760px] border-collapse text-xs">
+              <thead>
+                <tr className="text-left text-[11px] text-muted-foreground">
+                  {["Blok", "Başlangıç", "Saat", "Tür", "Proje", "Açıklama"].map((h) => (
+                    <th key={h} className={cn("border-b px-2 py-1.5 font-medium", h === "Blok" && "pl-0")}>
+                      {h}
+                    </th>
                   ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+                </tr>
+              </thead>
+              <tbody className="tabular">
+                {lines.map((l) => (
+                  <Fragment key={l.key}>
+                    {gaps.has(l.key) && <GapRow ms={gaps.get(l.key)!} />}
+                    <Row line={l} tags={tags} projects={projects} running={running(l)} run={run} />
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
     </>
   );
 }
 
+/** Satırlar arasındaki boşluk: ince, kesikli bir ayraç. */
+function GapRow({ ms }: { ms: number }) {
+  return (
+    <tr aria-hidden>
+      <td colSpan={6} className="py-1 pr-2">
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          <span className="w-[132px] border-t border-dashed" />
+          <span className="whitespace-nowrap">{formatDuration(Math.round(ms / 1000))} boşluk</span>
+          <span className="flex-1 border-t border-dashed" />
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Satırın bloğu: süreye göre uzayan, proje renginde kutu. Satırın yüksekliğini o belirler; diğer
+ * hücreler ortasına hizalanır.
+ */
+function BlockCell({ line: l, tag, faded }: { line: Line; tag: Tag | undefined; faded?: boolean }) {
+  const minutes = (l.to - l.from) / 60_000;
+  const height = Math.round(Math.min(BLOCK_MAX, Math.max(BLOCK_MIN, minutes * PX_PER_MIN)));
+  const name =
+    l.kind === "meeting" ? l.meeting.subject || "Toplantı" : tag ? tag.name : l.kind === "unassigned" ? "Projesiz" : "";
+  return (
+    <td className="w-[140px] py-[3px] pr-2 align-top">
+      <div
+        className={cn(
+          "flex h-full flex-col justify-center overflow-hidden rounded-md px-2 text-[10.5px] leading-tight",
+          !tag && "border border-dashed border-muted-foreground/50 text-muted-foreground",
+          faded && "opacity-45",
+        )}
+        style={{ height, background: tag ? tagColor(tag) : HATCH, color: tag ? tagInk(tag) : undefined }}
+        title={`${hm.format(new Date(l.from))}–${hm.format(new Date(l.to))} · ${name}`}
+      >
+        <span className="truncate font-semibold">{name}</span>
+        {height >= 40 && (
+          <span className="truncate opacity-80">
+            {hm.format(new Date(l.from))}–{hm.format(new Date(l.to))}
+          </span>
+        )}
+      </div>
+    </td>
+  );
+}
+
+const TD = "border-b px-2 align-middle";
+
 function Row({
   line: l,
   tags,
   projects,
   running,
-  lit,
-  onHover,
   run,
 }: {
   line: Line;
   tags: Map<string, Tag>;
   projects: Tag[];
   running: boolean;
-  lit: boolean;
-  onHover: (on: boolean) => void;
   run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
-  const td = "border-b px-2 py-1.5 align-middle";
   const start = hm.format(new Date(l.from));
   const hours = num.format((l.to - l.from) / 3600_000);
-  const rowProps = {
-    onMouseEnter: () => onHover(true),
-    onMouseLeave: () => onHover(false),
-  };
-  if (l.kind === "entry") return <EntryLine {...rowProps} line={l} tags={tags} running={running} lit={lit} run={run} />;
+  if (l.kind === "entry") return <EntryLine line={l} tags={tags} running={running} run={run} />;
   if (l.kind === "off") {
     const tag = tags.get(l.projectId);
     return (
-      <tr {...rowProps} className={cn("text-muted-foreground/70", lit && "bg-accent")}>
-        <td className={td}>{start}</td>
-        <td className={cn(td, PLAIN)}>{hours}</td>
-        <td className={td}>
+      <tr className="text-muted-foreground/80">
+        <BlockCell line={l} tag={tag} faded />
+        <td className={TD}>{start}</td>
+        <td className={cn(TD, PLAIN)}>{hours}</td>
+        <td className={TD}>
           <Chip kind="Working" />
         </td>
-        <td className={td}>
+        <td className={TD}>
           <ProjectName tag={tag} />
         </td>
-        <td className={cn(td, PLAIN)}>{tag ? "Zaman çizelgesine bağlı değil · gönderilmez" : l.app}</td>
+        <td className={cn(TD, PLAIN)}>{tag ? "Zaman çizelgesine bağlı değil · gönderilmez" : l.app}</td>
       </tr>
     );
   }
@@ -315,13 +346,14 @@ function Row({
   const suggestion = l.kind === "meeting" ? l.meeting.suggestion : null;
   const suggested = suggestion ? tags.get(suggestion.projectId) : undefined;
   return (
-    <tr {...rowProps} className={cn("bg-amber-500/10", lit && "bg-amber-500/20")}>
-      <td className={td}>{start}</td>
-      <td className={cn(td, PLAIN)}>{hours}</td>
-      <td className={td}>
+    <tr className="bg-amber-500/10">
+      <BlockCell line={l} tag={undefined} />
+      <td className={TD}>{start}</td>
+      <td className={cn(TD, PLAIN)}>{hours}</td>
+      <td className={TD}>
         {l.kind === "meeting" ? <Chip kind={l.meeting.online ? "Online" : "F2F"} /> : <Chip kind={null} />}
       </td>
-      <td className={td}>
+      <td className={TD}>
         <div className="flex items-center gap-1.5">
           <ProjectSelect
             value=""
@@ -342,7 +374,7 @@ function Row({
           )}
         </div>
       </td>
-      <td className={cn(td, PLAIN, "text-muted-foreground")}>
+      <td className={cn(TD, PLAIN, "text-muted-foreground")}>
         {l.kind === "meeting" ? l.meeting.subject || "(konusuz)" : l.app || UNASSIGNED}
       </td>
     </tr>
@@ -354,18 +386,12 @@ function EntryLine({
   line,
   tags,
   running,
-  lit,
   run,
-  onMouseEnter,
-  onMouseLeave,
 }: {
   line: Extract<Line, { kind: "entry" }>;
   tags: Map<string, Tag>;
   running: boolean;
-  lit: boolean;
   run: (work: () => Promise<unknown>) => Promise<void>;
-  onMouseEnter: () => void;
-  onMouseLeave: () => void;
 }) {
   const e = line.entry;
   const [hours, setHours] = useState(num.format(e.hours));
@@ -382,22 +408,22 @@ function EntryLine({
     if (!(h > 0)) return setHours(num.format(e.hours));
     save({ hours: Math.round(h * 4) / 4 });
   };
-  const td = "border-b px-2 py-1 align-middle";
   const field =
     "h-7 w-full rounded-md border border-transparent bg-transparent px-1.5 outline-none hover:border-input focus:border-input focus:bg-background focus-visible:ring-2 focus-visible:ring-ring/40";
   const tag = tags.get(e.projectId);
   if (e.exported)
     return (
-      <tr onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave} className={cn(lit && "bg-accent")}>
-        <td className={cn(td, "py-1.5")}>{e.start.slice(0, 5)}</td>
-        <td className={cn(td, PLAIN, "py-1.5")}>{num.format(e.hours)}</td>
-        <td className={td}>
+      <tr>
+        <BlockCell line={line} tag={tag} />
+        <td className={TD}>{e.start.slice(0, 5)}</td>
+        <td className={cn(TD, PLAIN)}>{num.format(e.hours)}</td>
+        <td className={TD}>
           <Chip kind={e.kind} />
         </td>
-        <td className={td}>
+        <td className={TD}>
           <ProjectName tag={tag} />
         </td>
-        <td className={cn(td, PLAIN, "text-muted-foreground")}>
+        <td className={cn(TD, PLAIN, "text-muted-foreground")}>
           <span className="flex items-center gap-1.5">
             <span className="min-w-0 flex-1 truncate">{e.details}</span>
             <Check className="size-3.5 shrink-0 text-success" aria-label="Gönderildi" />
@@ -407,13 +433,10 @@ function EntryLine({
     );
   const empty = needsDetails({ ...e, details });
   return (
-    <tr
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      className={cn(isStale(e) && "bg-amber-500/5", lit && "bg-accent")}
-    >
-      <td className={cn(td, "w-16 py-1.5")}>{e.start.slice(0, 5)}</td>
-      <td className={cn(td, "w-20")}>
+    <tr className={cn(isStale(e) && "bg-amber-500/5")}>
+      <BlockCell line={line} tag={tag} />
+      <td className={cn(TD, "w-16")}>{e.start.slice(0, 5)}</td>
+      <td className={cn(TD, "w-20")}>
         {running ? (
           <span className="pl-[7px] text-muted-foreground">sürüyor</span>
         ) : (
@@ -428,7 +451,7 @@ function EntryLine({
           />
         )}
       </td>
-      <td className={cn(td, "w-24")}>
+      <td className={cn(TD, "w-24")}>
         <select
           className={cn(
             chipClass(e.kind),
@@ -445,10 +468,10 @@ function EntryLine({
           ))}
         </select>
       </td>
-      <td className={cn(td, "w-40")}>
+      <td className={cn(TD, "w-40")}>
         <ProjectName tag={tag} />
       </td>
-      <td className={td}>
+      <td className={TD}>
         <input
           className={cn(field, empty && "border-amber-500/40 bg-amber-500/5")}
           value={details}
@@ -485,85 +508,5 @@ function ProjectName({ tag }: { tag: Tag | undefined }) {
       <i className="size-2 shrink-0 rounded-sm" style={{ background: tag ? tagColor(tag) : HATCH }} />
       <span className="truncate">{tag?.name ?? UNASSIGNED}</span>
     </span>
-  );
-}
-
-/** Günün blokları dikey şeritte, proje renginde ve adıyla; atanmamış bloklar taralı. */
-function Strip({
-  report,
-  tags,
-  dayStart,
-  now,
-  hover,
-  onHover,
-  height,
-}: {
-  report: Report;
-  tags: Map<string, Tag>;
-  dayStart: number;
-  now: number;
-  hover: [number, number] | null;
-  onHover: (r: [number, number] | null) => void;
-  height: number;
-}) {
-  const hour = 3600_000;
-  const blocks = report.work.blocks.map((b) => ({ b, from: +new Date(b.start), to: +new Date(b.end) }));
-  const isToday = isoDate(today()) === isoDate(new Date(dayStart));
-  // Şimdi, son bloğa yakınsa (süren iş) şeride girer; akşam uzun bir boşluk şeridi ezmesin.
-  const lastEnd = blocks.length ? Math.max(...blocks.map((x) => x.to)) : 0;
-  const ends = [...blocks.map((x) => x.to), ...(isToday && now - lastEnd < 2 * hour ? [now] : [])];
-  const first = blocks.length ? Math.min(...blocks.map((x) => x.from)) : dayStart + 9 * hour;
-  const from = dayStart + Math.floor((first - dayStart) / hour) * hour;
-  const to = Math.min(
-    dayStart + 24 * hour,
-    Math.max(from + 4 * hour, dayStart + Math.ceil((Math.max(first, ...ends) - dayStart) / hour) * hour),
-  );
-  const hourPx = height / ((to - from) / hour);
-  const px = (t: number) => ((t - from) / hour) * hourPx;
-  // Sık saatlerde etiketler üst üste binmesin.
-  const every = hourPx >= 18 ? 1 : hourPx >= 9 ? 2 : 3;
-  const ticks: number[] = [];
-  for (let t = from; t <= to; t += every * hour) ticks.push(t);
-  return (
-    <div className="relative mt-2 ml-9 border-l" style={{ height }} aria-label="Günün blokları">
-      {ticks.map((t) => (
-        <span
-          key={t}
-          className="absolute -left-9 -translate-y-1/2 text-[10px] text-muted-foreground tabular"
-          style={{ top: px(t) }}
-        >
-          {hm.format(new Date(t))}
-        </span>
-      ))}
-      {blocks.map(({ b, from: s, to: e }) => {
-        const tag = b.projectId ? tags.get(b.projectId) : undefined;
-        const lit = !!hover && s < hover[1] && e > hover[0];
-        const h = Math.max(3, px(e) - px(s) - 2);
-        return (
-          <div
-            key={b.start}
-            onMouseEnter={() => onHover([s, e])}
-            onMouseLeave={() => onHover(null)}
-            title={`${hm.format(new Date(s))}–${hm.format(new Date(e))} · ${tag?.name ?? UNASSIGNED}`}
-            className={cn(
-              "absolute right-0 left-1.5 overflow-hidden rounded-md px-1.5 py-0.5 text-[10px] leading-tight font-semibold transition-shadow",
-              !tag && "border border-dashed border-muted-foreground/50 text-muted-foreground",
-              lit && "ring-2 ring-ring",
-            )}
-            style={{
-              top: px(s) + 1,
-              height: h,
-              background: tag ? tagColor(tag) : HATCH,
-              color: tag ? tagInk(tag) : undefined,
-            }}
-          >
-            {h >= 14 && <span className="block truncate">{tag?.name ?? "Projesiz"}</span>}
-          </div>
-        );
-      })}
-      {isToday && now > from && now < to && (
-        <span className="absolute -left-1 right-0 h-0.5 rounded-full bg-destructive" style={{ top: px(now) }} />
-      )}
-    </div>
   );
 }
