@@ -545,7 +545,6 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
               setDay(iso);
               setView("day");
             }}
-            onOpenSettings={openSettings}
             onReview={() =>
               openReview(
                 view === "day"

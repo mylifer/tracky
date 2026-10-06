@@ -32,7 +32,7 @@ import {
 } from "./SessionEdit";
 import Summary from "./Summary";
 import Toolbar from "./Toolbar";
-import Timesheet from "../pages/Timesheet";
+import DaySheet from "./DaySheet";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
@@ -67,8 +67,6 @@ type Props = {
   onSelectDay: (iso: string) => void;
   /** Projeye atanmamış süreyi gözden geçir. */
   onReview: () => void;
-  /** Ayarlar'ı bu bölümle aç (Çizelge görünümünden). */
-  onOpenSettings: (section: string) => void;
 };
 
 export default function ReportView(p: Props) {
@@ -247,7 +245,7 @@ export default function ReportView(p: Props) {
 
   // Yakınlaştırma: takvimde saat yüksekliği, uygulama çizelgesinde gösterilen saat aralığı.
   const appsView = p.mode !== "month" && calendarView === "apps" && !!report && report.totalSeconds > 0;
-  // Çizelge görünümü: gün takviminin yanında günün zaman çizelgesi satırları. Çizelgesi olmayan
+  // Çizelge görünümü: günün blokları ve zaman çizelgesi satırları (DaySheet). Çizelgesi olmayan
   // kullanıcıda takvime düşer; satırlar yüklenene kadar var sayılır (görünüm sıçramasın).
   const hasSheet = entriesOf === null || entriesOf.list !== null;
   const sheetView = p.mode === "day" && calendarView === "sheet" && hasSheet;
@@ -350,6 +348,56 @@ export default function ReportView(p: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [zoomable]);
 
+  // Takvim / Uygulamalar / Çizelge seçicisi (Çizelge'de üst çubukta durur).
+  const viewTabs = (
+    <Tabs value={shownView} onValueChange={(v) => setCalendarView(v as CalendarView)}>
+      <TabsList className="h-7" aria-label="Takvim görünümü">
+        <TabsTrigger value="calendar" className="px-2.5 text-xs">
+          Takvim
+        </TabsTrigger>
+        <TabsTrigger value="apps" className="px-2.5 text-xs">
+          Uygulamalar
+        </TabsTrigger>
+        {p.mode === "day" && hasSheet && (
+          <TabsTrigger value="sheet" className="px-2.5 text-xs" title="Günün blokları ve zaman çizelgesi satırları">
+            Çizelge
+          </TabsTrigger>
+        )}
+      </TabsList>
+    </Tabs>
+  );
+  const nav = (
+    <div className="flex items-center gap-1">
+      <Button variant="ghost" size="icon-sm" onClick={p.onPrev} aria-label="Önceki" title="Önceki (←)">
+        <ChevronLeft />
+      </Button>
+      <Button variant="outline" size="sm" onClick={p.onToday ?? undefined} disabled={!p.onToday} title="Bugüne dön (T)">
+        {mode.current}
+      </Button>
+      <Button variant="ghost" size="icon-sm" onClick={p.onNext} aria-label="Sonraki" title="Sonraki (→)">
+        <ChevronRight />
+      </Button>
+    </div>
+  );
+
+  if (sheetView && report)
+    return (
+      <DaySheet
+        day={p.start}
+        title={p.title}
+        report={report}
+        tags={tags}
+        projects={projects}
+        controls={
+          <>
+            {viewTabs}
+            {nav}
+          </>
+        }
+        onChanged={load}
+      />
+    );
+
   return (
     <>
       <Toolbar title={p.title}>
@@ -362,23 +410,7 @@ export default function ReportView(p: Props) {
             ))}
           </TabsList>
         </Tabs>
-        <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon-sm" onClick={p.onPrev} aria-label="Önceki" title="Önceki (←)">
-            <ChevronLeft />
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={p.onToday ?? undefined}
-            disabled={!p.onToday}
-            title="Bugüne dön (T)"
-          >
-            {mode.current}
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={p.onNext} aria-label="Sonraki" title="Sonraki (→)">
-            <ChevronRight />
-          </Button>
-        </div>
+        {nav}
       </Toolbar>
 
       <div ref={scroller} className="@container flex-1 overflow-y-auto px-5 pb-6">
@@ -390,14 +422,7 @@ export default function ReportView(p: Props) {
           </div>
         )}
         {report && (
-          <div
-            className={cn(
-              "grid gap-4",
-              sheetView
-                ? "items-start @[900px]:grid-cols-[300px_minmax(0,1fr)]"
-                : "@[880px]:grid-cols-[minmax(0,1fr)_292px]",
-            )}
-          >
+          <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
             <div className="min-w-0 space-y-4">
               <Card className="gap-3 py-3" style={{ ["--cal-head" as string]: `${headHeight}px` }}>
                 {(order.length > 0 || p.mode !== "month") && (
@@ -431,27 +456,7 @@ export default function ReportView(p: Props) {
                         </Tabs>
                       </div>
                     )}
-                    {p.mode !== "month" && (report.totalSeconds > 0 || sheetView) && (
-                      <Tabs value={shownView} onValueChange={(v) => setCalendarView(v as CalendarView)}>
-                        <TabsList className="h-7" aria-label="Takvim görünümü">
-                          <TabsTrigger value="calendar" className="px-2.5 text-xs">
-                            Takvim
-                          </TabsTrigger>
-                          <TabsTrigger value="apps" className="px-2.5 text-xs">
-                            Uygulamalar
-                          </TabsTrigger>
-                          {p.mode === "day" && hasSheet && (
-                            <TabsTrigger
-                              value="sheet"
-                              className="px-2.5 text-xs"
-                              title="Takvim ve günün zaman çizelgesi satırları yan yana"
-                            >
-                              Çizelge
-                            </TabsTrigger>
-                          )}
-                        </TabsList>
-                      </Tabs>
-                    )}
+                    {p.mode !== "month" && report.totalSeconds > 0 && viewTabs}
                     {zoomable && (
                       <ZoomControl
                         zoom={zoom}
@@ -508,7 +513,7 @@ export default function ReportView(p: Props) {
                           tags={tags}
                           meetings={meetings}
                           // Çizelge görünümünde satırlar yanda; takvimde ayrıca sütun olmaz.
-                          entries={sheetView ? null : entries}
+                          entries={entries}
                           onMeeting={(meeting, x, y) => setMeetingSel({ meeting, x, y })}
                           onEmpty={openDraft}
                           onRange={selectRange}
@@ -559,7 +564,7 @@ export default function ReportView(p: Props) {
                   </div>
                 </CardContent>
               </Card>
-              {report.apps.length > 0 && !sheetView && (
+              {report.apps.length > 0 && (
                 <Card className="gap-2">
                   <CardHeader>
                     <CardTitle>Uygulamalar ve pencereler</CardTitle>
@@ -577,31 +582,19 @@ export default function ReportView(p: Props) {
                 </Card>
               )}
             </div>
-            {sheetView ? (
-              <div className="min-w-0">
-                <Timesheet
-                  day={p.start}
-                  onChanged={load}
-                  onOpenDay={() => setCalendarView("calendar")}
-                  onReviewDay={p.onReview}
-                  onOpenSettings={p.onOpenSettings}
-                />
-              </div>
-            ) : (
-              <Summary
-                report={report}
-                previous={previous}
-                tags={tags}
-                days={days}
-                dailyHours={dailyHours}
-                limits={p.mode === "day" ? limits : []}
-                projectGoals={p.mode === "week" ? projectGoals : []}
-                unassigned={review}
-                mode={p.mode}
-                title={isLive ? mode.current : mode.summary}
-                onReview={p.onReview}
-              />
-            )}
+            <Summary
+              report={report}
+              previous={previous}
+              tags={tags}
+              days={days}
+              dailyHours={dailyHours}
+              limits={p.mode === "day" ? limits : []}
+              projectGoals={p.mode === "week" ? projectGoals : []}
+              unassigned={review}
+              mode={p.mode}
+              title={isLive ? mode.current : mode.summary}
+              onReview={p.onReview}
+            />
           </div>
         )}
       </div>
