@@ -59,8 +59,13 @@ export function subMarks(px: number, forLabels: boolean): number[] {
 export function HourRail({ range }: { range: Range }) {
   const marks = subMarks(range.px, true);
   return (
-    // Yakınlaştırmada kaydırma bu ızgaranın üst kenarına göre sabitlenir.
-    <div data-zoom-grid className="relative" style={{ height: (range.last - range.first) * range.px }}>
+    // Yakınlaştırmada kaydırma bu ızgaranın üst kenarına göre sabitlenir; "Sığdır" saat sayısını buradan okur.
+    <div
+      data-zoom-grid
+      data-hours={range.last - range.first}
+      className="relative"
+      style={{ height: (range.last - range.first) * range.px }}
+    >
       {hours(range).map((h) => (
         <span key={h}>
           <span

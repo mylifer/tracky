@@ -3,15 +3,18 @@ import { useEffect, useRef } from "react";
 /** Yakınlaştırma katsayısı sınırları ve düğmelerin adımları. */
 export const ZOOM_MIN = 1;
 export const ZOOM_MAX = 8;
-const STEPS = [1, 1.5, 2, 3, 4, 6, 8];
+/** Gün/hafta takvimi %100'ün altına da uzaklaşır: bütün saatler tek ekrana sığsın. */
+export const CAL_ZOOM_MIN = 0.25;
+const STEPS = [0.25, 0.35, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
 
-export const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+export const clampZoom = (z: number, min = ZOOM_MIN) => Math.min(ZOOM_MAX, Math.max(min, z));
 
-/** Düğme ve klavye için bir sonraki / önceki adım. */
-export function stepZoom(z: number, dir: 1 | -1): number {
+/** Düğme ve klavye için bir sonraki / önceki adım (`min`in altına inmez). */
+export function stepZoom(z: number, dir: 1 | -1, min = ZOOM_MIN): number {
+  const steps = STEPS.filter((s) => s >= min);
   return dir > 0
-    ? (STEPS.find((s) => s > z + 0.01) ?? ZOOM_MAX)
-    : ([...STEPS].reverse().find((s) => s < z - 0.01) ?? ZOOM_MIN);
+    ? (steps.find((s) => s > z + 0.01) ?? ZOOM_MAX)
+    : ([...steps].reverse().find((s) => s < z - 0.01) ?? min);
 }
 
 /** Safari/WKWebView'in kıstırma olayı (lib.dom'da yok). */

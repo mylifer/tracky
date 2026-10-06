@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampZoom, stepZoom, ZOOM_MAX, ZOOM_MIN } from "./zoom";
+import { CAL_ZOOM_MIN, clampZoom, stepZoom, ZOOM_MAX, ZOOM_MIN } from "./zoom";
 
 describe("yakınlaştırma adımları", () => {
   it("bir sonraki ve önceki adıma gider", () => {
@@ -15,5 +15,14 @@ describe("yakınlaştırma adımları", () => {
     expect(stepZoom(ZOOM_MIN, -1)).toBe(ZOOM_MIN);
     expect(clampZoom(0.2)).toBe(ZOOM_MIN);
     expect(clampZoom(40)).toBe(ZOOM_MAX);
+  });
+
+  it("takvim %100'ün altına uzaklaşır", () => {
+    expect(stepZoom(1, -1, CAL_ZOOM_MIN)).toBe(0.75);
+    expect(stepZoom(0.6, -1, CAL_ZOOM_MIN)).toBe(0.5);
+    expect(stepZoom(0.6, 1, CAL_ZOOM_MIN)).toBe(0.75);
+    expect(stepZoom(CAL_ZOOM_MIN, -1, CAL_ZOOM_MIN)).toBe(CAL_ZOOM_MIN);
+    expect(clampZoom(0.1, CAL_ZOOM_MIN)).toBe(CAL_ZOOM_MIN);
+    expect(clampZoom(0.4, CAL_ZOOM_MIN)).toBe(0.4);
   });
 });

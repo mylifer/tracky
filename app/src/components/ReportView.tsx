@@ -15,7 +15,8 @@ import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from ".
 import { tagColor, tagMap, UNASSIGNED } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { friendlyError, useChanged } from "../lib/feedback";
-import { clampZoom, stepZoom, useZoomGestures } from "../lib/zoom";
+import { cn } from "../lib/utils";
+import { CAL_ZOOM_MIN, clampZoom, stepZoom, useZoomGestures } from "../lib/zoom";
 import { AppList, Dot, Legend } from "./Breakdown";
 import AppTimeline from "./AppTimeline";
 import { type ColorLens, DayCalendar, HATCH, HOUR_PX, WeekCalendar } from "./Calendar";
@@ -248,6 +249,9 @@ export default function ReportView(p: Props) {
   const zoomable = p.mode !== "month" && !!report && (report.totalSeconds > 0 || report.idle.length > 0);
   const [calZoom, setCalZoom] = useState(1);
   const [appZoom, setAppZoom] = useState(1);
+  // "Sığdır": takvimin bütün saatleri pencereye sığar; açıkken gün değişince ve pencere boyu değişince
+  // ölçek yeniden hesaplanır, elle yakınlaştırınca kapanır.
+  const [calFit, setCalFit] = useCalendarFit();
   const scroller = useRef<HTMLDivElement>(null);
   const [calendarArea, setCalendarArea] = useState<HTMLDivElement | null>(null);
   // Takvim yakınlaşırken imlecin altındaki saat yerinde kalsın: imlecin saat ızgarasındaki
@@ -261,8 +265,19 @@ export default function ReportView(p: Props) {
       const y = clientY ?? box.top + box.height / 2;
       anchor.current = Math.max(0, y - grid.getBoundingClientRect().top);
     }
-    setCalZoom((z) => clampZoom(next(z)));
+    setCalFit(false);
+    setCalZoom((z) => clampZoom(next(z), CAL_ZOOM_MIN));
   }
+  const fitCalendar = useCallback(() => {
+    const grid = calendarArea?.querySelector<HTMLElement>("[data-zoom-grid]");
+    const box = scroller.current;
+    const hours = Number(grid?.dataset.hours);
+    if (!grid || !box || !hours) return;
+    // Izgaranın kaydırılan içerikteki yeri: üstündeki kart ve sütun başlıkları da ekranda kalsın.
+    const offset = grid.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+    const z = clampZoom((box.clientHeight - offset - FIT_BOTTOM_PX) / (hours * HOUR_PX), CAL_ZOOM_MIN);
+    setCalZoom((cur) => (Math.abs(cur - z) < 0.005 ? cur : z));
+  }, [calendarArea]);
   useLayoutEffect(() => {
     if (anchor.current !== null && scroller.current) {
       scroller.current.scrollTop += anchor.current * (calZoom / rendered.current - 1);
@@ -284,12 +299,31 @@ export default function ReportView(p: Props) {
     ro.observe(head);
     return () => ro.disconnect();
   }, [head]);
+  const fitting = calFit && zoomable && !appsView;
+  useLayoutEffect(() => {
+    if (fitting) fitCalendar();
+  }, [fitting, fitCalendar, report, meetings, entries, p.mode, headHeight]);
+  useEffect(() => {
+    const box = scroller.current;
+    if (!fitting || !box) return;
+    const ro = new ResizeObserver(() => fitCalendar());
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [fitting, fitCalendar]);
   const setZoom = (next: (z: number) => number) =>
     appsView ? setAppZoom((z) => clampZoom(next(z))) : zoomCalendar(next);
+  const fitZoom = () => {
+    if (appsView) return setAppZoom(1);
+    setCalFit(true);
+    fitCalendar();
+    if (scroller.current) scroller.current.scrollTop = 0;
+  };
 
   // Klavye: +/− yakınlaştır, 0 sıfırla (⌘ ile ya da tek başına).
   const zoomKeys = useRef(setZoom);
   zoomKeys.current = setZoom;
+  const fitKey = useRef(fitZoom);
+  fitKey.current = fitZoom;
   useEffect(() => {
     if (!zoomable) return;
     function onKey(e: KeyboardEvent) {
@@ -300,7 +334,8 @@ export default function ReportView(p: Props) {
       const dir = e.key === "+" || e.key === "=" ? 1 : e.key === "-" ? -1 : e.key === "0" ? 0 : null;
       if (dir === null) return;
       e.preventDefault();
-      zoomKeys.current((z) => (dir === 0 ? 1 : stepZoom(z, dir)));
+      if (dir === 0) fitKey.current();
+      else zoomKeys.current((z) => stepZoom(z, dir, CAL_ZOOM_MIN));
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -392,7 +427,15 @@ export default function ReportView(p: Props) {
                         </TabsList>
                       </Tabs>
                     )}
-                    {zoomable && <ZoomControl zoom={zoom} onZoom={setZoom} />}
+                    {zoomable && (
+                      <ZoomControl
+                        zoom={zoom}
+                        min={appsView ? 1 : CAL_ZOOM_MIN}
+                        fit={fitting}
+                        onZoom={setZoom}
+                        onFit={fitZoom}
+                      />
+                    )}
                     {p.mode !== "month" && (
                       <ManualEntry
                         day={p.mode === "day" ? p.start : manualDay}
@@ -545,25 +588,46 @@ function Empty({ future }: { future: boolean }) {
   );
 }
 
-/** −  %100  + : yakınlaştırma düğmeleri; ortadaki değer sıfırlar. */
-function ZoomControl({ zoom, onZoom }: { zoom: number; onZoom: (next: (z: number) => number) => void }) {
+/** −  %100  + : yakınlaştırma düğmeleri; ortadaki değer sığdırır (takvimin bütün saatleri ekranda). */
+function ZoomControl({
+  zoom,
+  min,
+  fit,
+  onZoom,
+  onFit,
+}: {
+  zoom: number;
+  min: number;
+  /** Sığdır açık: ölçek pencereye göre kendiliğinden ayarlanıyor. */
+  fit: boolean;
+  onZoom: (next: (z: number) => number) => void;
+  onFit: () => void;
+}) {
   return (
     <div className="flex h-7 items-center rounded-md border" role="group" aria-label="Yakınlaştırma">
       <Button
         variant="ghost"
         size="icon-sm"
         className="size-6.5"
-        onClick={() => onZoom((z) => stepZoom(z, -1))}
-        disabled={zoom <= 1}
+        onClick={() => onZoom((z) => stepZoom(z, -1, min))}
+        disabled={zoom <= min + 0.001}
         aria-label="Uzaklaştır"
         title="Uzaklaştır (−)"
       >
         <ZoomOut />
       </Button>
       <button
-        className="w-10 text-center text-[11px] text-muted-foreground tabular hover:text-foreground"
-        onClick={() => onZoom(() => 1)}
-        title="Sığdır (0) · ⌘ + kaydırma ya da iki parmakla da yakınlaşır"
+        className={cn(
+          "w-10 text-center text-[11px] tabular hover:text-foreground",
+          fit ? "font-medium text-primary" : "text-muted-foreground",
+        )}
+        onClick={onFit}
+        aria-pressed={fit}
+        title={
+          fit
+            ? "Sığdırıldı: bütün saatler ekranda · yakınlaştırınca kapanır"
+            : "Sığdır (0): bütün saatler ekrana sığsın · ⌘ + kaydırma ya da iki parmakla da yakınlaşır"
+        }
       >
         %{Math.round(zoom * 100)}
       </button>
@@ -571,7 +635,7 @@ function ZoomControl({ zoom, onZoom }: { zoom: number; onZoom: (next: (z: number
         variant="ghost"
         size="icon-sm"
         className="size-6.5"
-        onClick={() => onZoom((z) => stepZoom(z, 1))}
+        onClick={() => onZoom((z) => stepZoom(z, 1, min))}
         disabled={zoom >= 8}
         aria-label="Yakınlaştır"
         title="Yakınlaştır (+)"
@@ -580,6 +644,32 @@ function ZoomControl({ zoom, onZoom }: { zoom: number; onZoom: (next: (z: number
       </Button>
     </div>
   );
+}
+
+/** Sığdırırken takvimin altında bırakılan pay: kartın ve sayfanın alt boşluğu. */
+const FIT_BOTTOM_PX = 40;
+const FIT_KEY = "kum.calendarFit";
+
+/** Takvim "Sığdır"da mı; tercih bu cihazda hatırlanır. */
+function useCalendarFit(): [boolean, (v: boolean) => void] {
+  const [fit, setFit] = useState(() => {
+    try {
+      return localStorage.getItem(FIT_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  return [
+    fit,
+    (v) => {
+      setFit(v);
+      try {
+        localStorage.setItem(FIT_KEY, v ? "1" : "0");
+      } catch {
+        /* depolama kapalıysa yalnızca bu oturumda */
+      }
+    },
+  ];
 }
 
 type CalendarView = "calendar" | "apps";
