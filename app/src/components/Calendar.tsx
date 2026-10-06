@@ -545,12 +545,16 @@ function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens) {
   };
 }
 
-/** Takvim.app tarzı etkinlik bloğu; tıklayınca ayrıntı açılır. */
+/** Bloğun sürüklenen kenarı ve sürüklemenin durumu (zaman damgaları ms). */
+type Resize = { edge: "start" | "end"; y0: number; from: number; at: number };
+
+/** Takvim.app tarzı etkinlik bloğu; tıklayınca ayrıntı açılır, kenarlarından uzatılır. */
 function Block({
   b,
   tags,
   top,
   height,
+  hourPx,
   narrow = false,
   lens = "category",
   windows,
@@ -559,56 +563,150 @@ function Block({
   tags: Map<string, Tag>;
   top: number;
   height: number;
+  /** Bir saatin yüksekliği: kenar sürüklenirken piksel süreye çevrilir. */
+  hourPx: number;
   windows?: WindowSpan[];
   /** Dar sütun (hafta): tek satırlık blokta süre yer kaplamasın, başlık okunsun. */
   narrow?: boolean;
   lens?: ColorLens;
 }) {
+  const edit = useEdit();
+  const [resize, setResize] = useState<Resize | null>(null);
   const { color: blockColor, title, apps } = blockTitle(b, tags, lens);
   const color = blockColor ?? "var(--c0)";
   const full = height >= FULL_LABEL_PX;
   const label = height >= LABEL_MIN_PX;
   const summary = `${title} · ${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))} · ${formatDuration(b.activeSeconds)}`;
+  const start = +new Date(b.start);
+  const end = +new Date(b.end);
+
+  /** Bloğu yeni aralığa getirir: zaman çizelgesine bu aralık gider. */
+  async function commit(newStart: number, newEnd: number) {
+    if (!edit) return;
+    // Elle eklenecek boşlukların adı: projesi, yoksa kategorisi ya da uygulaması.
+    const name =
+      (b.projectId && tags.get(b.projectId)?.name) ||
+      (b.categoryId && tags.get(b.categoryId)?.name) ||
+      b.topApps[0]?.appName ||
+      "Çalışma";
+    const iso = (t: number) => new Date(t).toISOString();
+    try {
+      await undoable(
+        api.resizeBlock(b.start, b.end, iso(newStart), iso(newEnd), name, b.categoryId, b.projectId),
+        `Blok ${formatTime(new Date(newStart))}–${formatTime(new Date(newEnd))} oldu`,
+      );
+      edit.onChanged();
+    } catch (e) {
+      toast(friendlyError(e), { tone: "error" });
+    }
+  }
+
+  const handle = (edge: Resize["edge"]) =>
+    edit && (
+      <span
+        className={cn(
+          "group/h absolute inset-x-0.5 z-[5] flex h-1.5 cursor-ns-resize justify-center",
+          edge === "end" && "items-end",
+        )}
+        style={{ top: edge === "start" ? top : top + height - 6 }}
+        title="Sürükle: bloğu uzat ya da kısalt (zaman çizelgesine yeni aralık gider)"
+        aria-hidden
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          // Sütunun aralık seçimi başlamasın.
+          e.stopPropagation();
+          e.preventDefault();
+          e.currentTarget.setPointerCapture(e.pointerId);
+          const from = edge === "start" ? start : end;
+          setResize({ edge, y0: e.clientY, from, at: from });
+        }}
+        onPointerMove={(e) => {
+          if (!resize || Math.abs(e.clientY - resize.y0) < DRAG_MIN_PX) return;
+          const raw = resize.from + ((e.clientY - resize.y0) / hourPx) * HOUR_MS;
+          const at = Math.round(raw / SNAP_MS) * SNAP_MS;
+          setResize({
+            ...resize,
+            at:
+              resize.edge === "start"
+                ? Math.min(at, end - SNAP_MS)
+                : Math.min(Math.max(at, start + SNAP_MS), Date.now()),
+          });
+        }}
+        onPointerUp={() => {
+          if (!resize) return;
+          setResize(null);
+          if (resize.at === resize.from) return;
+          void (resize.edge === "start" ? commit(resize.at, end) : commit(start, resize.at));
+        }}
+        onPointerCancel={() => setResize(null)}
+      >
+        <i className="mx-auto h-[3px] w-6 rounded-full bg-foreground/40 opacity-0 transition-opacity group-hover/h:opacity-100" />
+      </span>
+    );
+
+  const [newStart, newEnd] = !resize ? [start, end] : resize.edge === "start" ? [resize.at, end] : [start, resize.at];
+  const ghostTop = top + ((newStart - start) / HOUR_MS) * hourPx;
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          className="absolute inset-x-0.5 overflow-hidden rounded-[5px] border-l-[3px] px-1.5 text-left transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:ring-2 data-[state=open]:ring-[var(--cat)] dark:hover:brightness-125"
-          style={{
-            top,
-            height,
-            ["--cat" as string]: color,
-            borderLeftColor: color,
-            background: blockColor ? `color-mix(in srgb, ${color} 22%, var(--card))` : `${HATCH}, var(--card)`,
-          }}
-          title={summary}
-          aria-label={summary}
-        >
-          {label && (
-            <span className={cn("flex h-full flex-col", full ? "py-1" : "justify-center")}>
-              <span className="flex min-w-0 items-center gap-1.5">
-                <AppIconStack apps={b.topApps} size={full ? 14 : 12} max={narrow ? 1 : 3} />
-                <span className="truncate text-[11px] leading-tight font-semibold">{title}</span>
-                {!full && !narrow && (
-                  <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular">
-                    {formatDuration(b.activeSeconds)}
+    <>
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            className={cn(
+              "absolute inset-x-0.5 overflow-hidden rounded-[5px] border-l-[3px] px-1.5 text-left transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:ring-2 data-[state=open]:ring-[var(--cat)] dark:hover:brightness-125",
+              resize && "opacity-50",
+            )}
+            style={{
+              top,
+              height,
+              ["--cat" as string]: color,
+              borderLeftColor: color,
+              background: blockColor ? `color-mix(in srgb, ${color} 22%, var(--card))` : `${HATCH}, var(--card)`,
+            }}
+            title={summary}
+            aria-label={summary}
+          >
+            {label && (
+              <span className={cn("flex h-full flex-col", full ? "py-1" : "justify-center")}>
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <AppIconStack apps={b.topApps} size={full ? 14 : 12} max={narrow ? 1 : 3} />
+                  <span className="truncate text-[11px] leading-tight font-semibold">{title}</span>
+                  {!full && !narrow && (
+                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular">
+                      {formatDuration(b.activeSeconds)}
+                    </span>
+                  )}
+                </span>
+                {full && (
+                  <span className="truncate text-[10px] leading-tight text-muted-foreground tabular">
+                    {formatDuration(b.activeSeconds)} · {formatTime(new Date(b.start))}–{formatTime(new Date(b.end))}
+                    {apps && ` · ${apps}`}
                   </span>
                 )}
               </span>
-              {full && (
-                <span className="truncate text-[10px] leading-tight text-muted-foreground tabular">
-                  {formatDuration(b.activeSeconds)} · {formatTime(new Date(b.start))}–{formatTime(new Date(b.end))}
-                  {apps && ` · ${apps}`}
-                </span>
-              )}
-            </span>
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent side="right" align="start" className={windows ? "w-96" : "w-72"}>
-        <BlockDetails block={b} tags={tags} windows={windows} />
-      </PopoverContent>
-    </Popover>
+            )}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="right" align="start" className={windows ? "w-96" : "w-72"}>
+          <BlockDetails block={b} tags={tags} windows={windows} />
+        </PopoverContent>
+      </Popover>
+      {handle("start")}
+      {handle("end")}
+      {resize && resize.at !== resize.from && (
+        <span
+          className="pointer-events-none absolute inset-x-0.5 z-20 grid place-items-center rounded-[5px] border-2 border-dashed text-[11px] font-medium tabular"
+          style={{
+            top: ghostTop,
+            height: Math.max(14, ((newEnd - newStart) / HOUR_MS) * hourPx - 2),
+            borderColor: color,
+            background: `color-mix(in srgb, ${color} 18%, transparent)`,
+          }}
+        >
+          {formatTime(new Date(newStart))} – {formatTime(new Date(newEnd))} ·{" "}
+          {formatDuration((newEnd - newStart) / 1000)}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -840,7 +938,16 @@ export function DayCalendar({
             span ? (
               <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
             ) : (
-              <Block key={block.start} b={block} tags={tags} lens={lens} windows={windows} top={t} height={height} />
+              <Block
+                key={block.start}
+                b={block}
+                tags={tags}
+                lens={lens}
+                windows={windows}
+                top={t}
+                height={height}
+                hourPx={range.px}
+              />
             ),
           )}
           <Preview range={preview} top={top} />
@@ -1078,6 +1185,7 @@ export function WeekCalendar({
                     windows={windows}
                     top={t}
                     height={height}
+                    hourPx={range.px}
                   />
                 ),
               )}

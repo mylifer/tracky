@@ -9,7 +9,7 @@ mod timesheet;
 use std::collections::HashMap;
 use std::path::Path;
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
@@ -657,6 +657,85 @@ impl Store {
             params![ms(from), ms(to), ms(Utc::now())],
         )?;
         tx.commit()?;
+        Ok(n)
+    }
+
+    /// Takvim bloğunu `[from, to)` aralığından `[new_from, new_to)` aralığına uzatır ya da
+    /// kısaltır. Bloğun dışında kalan kısım silinir; bloğa katılan kısımdaki kayıtlar bloğun
+    /// kategorisini ve projesini alır, kaydı olmayan boşluklar (bilgisayar başında
+    /// olunmayan süre) aynı kategori ve projede `label` adlı elle kayıtla dolar: zaman
+    /// çizelgesine bloğun yeni aralığı gider. Değişen satır sayısı.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resize_block(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        new_from: DateTime<Utc>,
+        new_to: DateTime<Utc>,
+        label: &str,
+        category_id: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<usize> {
+        if new_to <= new_from {
+            return Err(StoreError::Invalid(
+                "bitiş başlangıçtan sonra olmalı".into(),
+            ));
+        }
+        if new_to > Utc::now() {
+            return Err(StoreError::Invalid(
+                "blok henüz gelmemiş bir zamana uzatılamaz".into(),
+            ));
+        }
+        let tx = self.savepoint()?;
+        let mut n = 0;
+        for (a, b) in [(from, new_from.min(to)), (new_to.max(from), to)] {
+            if b > a {
+                n += self.delete_between(a, b)?;
+            }
+        }
+        for (a, b) in [(new_from, from.min(new_to)), (to.max(new_from), new_to)] {
+            if b > a {
+                n += self.join_block(a, b, label, category_id, project_id)?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// [`Self::resize_block`]'ta bloğa katılan `[from, to)` aralığı.
+    fn join_block(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        label: &str,
+        category_id: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<usize> {
+        let mut n = 0;
+        if category_id.is_some() {
+            n += self.set_category_between(from, to, category_id)?;
+        }
+        if project_id.is_some() {
+            n += self.set_project_between(from, to, project_id)?;
+        }
+        // Atamadan sonra hâlâ çalışma sayılmayan (kaydı olmayan ya da boşta) kısımlar.
+        let mut busy: Vec<_> = self
+            .sessions_between(from, to)?
+            .into_iter()
+            .filter(Session::counts_as_work)
+            .map(|s| (s.started_at.max(from), s.ended_at.min(to)))
+            .collect();
+        busy.sort();
+        busy.push((to, to));
+        let manual_project = project_id.filter(|p| *p != crate::classify::NO_PROJECT);
+        let mut at = from;
+        for (a, b) in busy {
+            if a - at >= Duration::minutes(1) {
+                self.add_manual_session(label, at, a, category_id, manual_project)?;
+                n += 1;
+            }
+            at = at.max(b);
+        }
         Ok(n)
     }
 
@@ -1944,6 +2023,85 @@ mod tests {
         assert!(
             store
                 .set_category_between(t(0), t(10), Some("yok"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn resize_block_trims_joins_and_fills_gaps() {
+        let store = Store::open_in_memory().unwrap();
+        let cat = store.tags().unwrap()[0].id.clone();
+        let project = store.accept_project_suggestion("Togg").unwrap();
+        // Blok 600–1800; önünde başka iş, arkasında boşta süre ve kaydı olmayan boşluk.
+        store.upsert_session(&session("B", None, 0, 600)).unwrap();
+        store
+            .upsert_session(&session("A", None, 600, 1800))
+            .unwrap();
+        store
+            .upsert_session(&Session::idle(t(1800), t(2400)))
+            .unwrap();
+        let p = Some(project.id.as_str());
+        store.set_project_between(t(600), t(1800), p).unwrap();
+        store
+            .set_category_between(t(600), t(1800), Some(&cat))
+            .unwrap();
+
+        // Sonu 3000'e uzar, başı 900'e kısalır.
+        store
+            .resize_block(t(600), t(1800), t(900), t(3000), "Togg", Some(&cat), p)
+            .unwrap();
+        let all = store.sessions_between(t(0), t(3600)).unwrap();
+        let work: Vec<_> = all.iter().filter(|s| s.counts_as_work()).collect();
+        // Kısalan kısım silindi, önceki iş yerinde.
+        assert!(
+            !all.iter()
+                .any(|s| s.started_at < t(900) && s.ended_at > t(600))
+        );
+        assert!(
+            work.iter()
+                .any(|s| s.app_name == "B" && s.ended_at == t(600))
+        );
+        // Uzayan kısım: boşta süre atanınca çalışma olur, kaydı olmayan boşluk elle kayıtla
+        // dolar; hepsi projede ve kategoride.
+        let joined: Vec<_> = work.iter().filter(|s| s.started_at >= t(1800)).collect();
+        assert_eq!(joined.len(), 2);
+        assert!(joined[0].is_idle() && joined[0].ended_at == t(2400));
+        assert!(joined[1].is_manual());
+        assert_eq!(
+            (joined[1].started_at, joined[1].ended_at),
+            (t(2400), t(3000))
+        );
+        let block: i64 = work
+            .iter()
+            .filter(|s| s.started_at >= t(900))
+            .inspect(|s| {
+                assert_eq!(s.project_id.as_deref(), p);
+                assert_eq!(s.category_id.as_deref(), Some(&*cat));
+            })
+            .map(|s| (s.ended_at - s.started_at).num_seconds())
+            .sum();
+        assert_eq!(block, 2100);
+
+        // Başı başka işin üstüne uzayınca o iş bloğa katılır.
+        store
+            .resize_block(t(900), t(3000), t(300), t(3000), "Togg", Some(&cat), p)
+            .unwrap();
+        let b = store.sessions_between(t(300), t(600)).unwrap();
+        assert!(
+            b.iter()
+                .all(|s| s.app_name == "B" && s.project_id.as_deref() == p)
+        );
+
+        // Gelecek ve ters aralık reddedilir.
+        let later = Utc::now() + chrono::Duration::hours(1);
+        assert!(
+            store
+                .resize_block(t(300), t(3000), t(300), later, "Togg", None, p)
+                .is_err()
+        );
+        assert!(
+            store
+                .resize_block(t(300), t(3000), t(3000), t(300), "Togg", None, p)
                 .is_err()
         );
     }

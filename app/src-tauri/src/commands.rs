@@ -386,6 +386,41 @@ pub async fn delete_range(app: AppHandle, start: String, end: String) -> CmdResu
     range_edit(&app, &start, &end, |s, from, to| s.delete_between(from, to))
 }
 
+/// Takvim bloğunu `[start, end)` aralığından `[new_start, new_end)` aralığına uzatır ya da
+/// kısaltır (bkz. [`tracky_core::Store::resize_block`]). Geri alınabilir.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn resize_block(
+    app: AppHandle,
+    start: String,
+    end: String,
+    new_start: String,
+    new_end: String,
+    label: String,
+    category_id: Option<String>,
+    project_id: Option<String>,
+) -> CmdResult<Edited> {
+    let (from, to) = (parse_time(&start)?, parse_time(&end)?);
+    let (new_from, new_to) = (parse_time(&new_start)?, parse_time(&new_end)?);
+    let union = |t: DateTime<Utc>| t.to_rfc3339();
+    range_edit(
+        &app,
+        &union(from.min(new_from)),
+        &union(to.max(new_to)),
+        |s, _, _| {
+            s.resize_block(
+                from,
+                to,
+                new_from,
+                new_to,
+                &label,
+                category_id.as_deref(),
+                project_id.as_deref(),
+            )
+        },
+    )
+}
+
 #[tauri::command]
 pub async fn add_manual_entry(
     app: AppHandle,

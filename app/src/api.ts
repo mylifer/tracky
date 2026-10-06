@@ -611,6 +611,16 @@ export const api = {
   deleteRange: (start: string, end: string) => invoke<Edited>("delete_range", { start, end }),
   addManualEntry: (label: string, start: string, end: string, categoryId: string | null, projectId: string | null) =>
     invoke<Edited>("add_manual_entry", { label, start, end, categoryId, projectId }),
+  /** Takvim bloğunu yeni aralığa uzatır ya da kısaltır (kısalan kısım silinir). */
+  resizeBlock: (
+    start: string,
+    end: string,
+    newStart: string,
+    newEnd: string,
+    label: string,
+    categoryId: string | null,
+    projectId: string | null,
+  ) => invoke<Edited>("resize_block", { start, end, newStart, newEnd, label, categoryId, projectId }),
   /** Aralıktaki oturumlara elle proje; `null` kurallara döndürür. */
   setRangeProject: (start: string, end: string, projectId: string | null) =>
     invoke<Edited>("set_range_project", { start, end, projectId }),

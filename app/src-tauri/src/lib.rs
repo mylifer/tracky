@@ -481,6 +481,7 @@ pub fn run() {
             commands::set_range_category,
             commands::delete_range,
             commands::add_manual_entry,
+            commands::resize_block,
             commands::get_privacy,
             commands::save_privacy,
             commands::default_excluded_urls,
