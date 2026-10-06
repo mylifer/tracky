@@ -5,9 +5,12 @@
 //! yalnızca kendisine bağlanan projelerin işini alır: Togg'un tablosuna yalnızca Togg'a bağlı
 //! projelerin süresi yazılır. Bir proje en çok bir zaman çizelgesine bağlanır.
 //!
-//! Yalnızca bir projeye düşen süre iş sayılır. Aynı projede ve aynı türdeki ardışık
-//! oturumlar, aradaki boşluk `MERGE_GAP`'i geçmedikçe tek kayıt olur; kaydın gerçek süresi
-//! boşluklar değil, oturumların toplam süresidir. Firmaya giden saat bu sürenin çeyrek saate
+//! Takvimdeki blok zaman çizelgesindeki satırdır: raporda (gün, hafta, ay) yapılan atama ve
+//! düzenlemeler doğrudan satırlara yansır. Yalnızca bir projeye düşen süre iş sayılır; projesi
+//! olan bloğun içindeki atanmamış süre de o projenindir. Aynı projedeki ardışık oturumlar
+//! (bilgisayarda, uzakta ya da görüşmede), aradaki boşluk `MERGE_GAP`'i geçmedikçe tek kayıt
+//! olur; türü en çok süreninkidir. Kaydın gerçek süresi boşluklar değil, oturumların toplam
+//! süresidir. Firmaya giden saat bu sürenin çeyrek saate
 //! yuvarlanmışıdır ([`round_quarter`]); gerçek süre kayıtta ayrıca saklanır.
 //!
 //! Takvimden gelen ve bir projeye düşen toplantılar kendi kaydı olur (konusu açıklama,
@@ -515,6 +518,10 @@ pub struct Piece {
 /// oturumlar, `day_start`–`day_end` (yerel gün) sınırına kırpılmış. Üst üste binen
 /// toplantılarda ortak süre ilkine yazılır; toplantı süresince takip edilen iş toplantının
 /// kaydında sayılır (aynı saat iki kez yazılmasın).
+///
+/// Takvimdeki blok zaman çizelgesindeki satırdır: projesi olan bloğun ([`crate::blocks`])
+/// içindeki atanmamış süre de o projenin işidir (takvimde bloğun süresine girer). Başka projeye
+/// ya da projesize atanmış süre bloğun projesine geçmez.
 pub fn pieces(
     sessions: &[Session],
     meetings: &[(Meeting, String)],
@@ -548,27 +555,70 @@ pub fn pieces(
             meeting: Some(i),
         }));
     }
-    for s in sessions {
-        let Some(project) = classifier.classify(s).project else {
-            continue;
-        };
+    let classes: Vec<_> = sessions.iter().map(|s| classifier.classify(s)).collect();
+    let blocks = day_blocks(sessions, &classes, day_start, day_end);
+    for (s, class) in sessions.iter().zip(&classes) {
         let (a, b) = (s.started_at.max(day_start), s.ended_at.min(day_end));
         if b <= a {
             continue;
         }
+        // Projesi olan süre kendi projesinin; atanmamış süre içinde geçtiği bloğun projesinin.
+        let owned: Vec<(DateTime<Utc>, DateTime<Utc>, String)> = match &class.project {
+            Some(p) => vec![(a, b, p.clone())],
+            None if s.project_id.as_deref() == Some(crate::classify::NO_PROJECT) => continue,
+            None => blocks
+                .iter()
+                .filter_map(|(c, d, p)| {
+                    let (x, y) = (a.max(*c), b.min(*d));
+                    (y > x).then(|| (x, y, p.clone()))
+                })
+                .collect(),
+        };
         let kind = kind_of(s, config);
         let title = clean_title(&s.title, &s.app_name);
-        let parts = covered.iter().fold(vec![(a, b)], |p, &c| subtract(p, c));
-        out.extend(parts.into_iter().map(|(start, end)| Piece {
-            project: project.clone(),
-            kind,
-            start,
-            end,
-            title: title.clone(),
-            meeting: None,
-        }));
+        for (a, b, project) in owned {
+            let parts = covered.iter().fold(vec![(a, b)], |p, &c| subtract(p, c));
+            out.extend(parts.into_iter().map(|(start, end)| Piece {
+                project: project.clone(),
+                kind,
+                start,
+                end,
+                title: title.clone(),
+                meeting: None,
+            }));
+        }
     }
     out
+}
+
+/// Günün takvim blokları (raporla aynı hesap) ve projeleri; projesi olmayan bloklar atlanır.
+fn day_blocks(
+    sessions: &[Session],
+    classes: &[crate::classify::Classification],
+    day_start: DateTime<Utc>,
+    day_end: DateTime<Utc>,
+) -> Vec<(DateTime<Utc>, DateTime<Utc>, String)> {
+    let mut items: Vec<crate::blocks::Activity> = sessions
+        .iter()
+        .zip(classes)
+        .filter_map(|(s, class)| {
+            let (a, b) = (s.started_at.max(day_start), s.ended_at.min(day_end));
+            (b > a).then(|| crate::blocks::Activity {
+                start: a,
+                end: b,
+                app_id: &s.app_id,
+                app_name: &s.app_name,
+                category: class.category.as_deref(),
+                project: class.project.as_deref(),
+            })
+        })
+        .collect();
+    items.sort_by_key(|i| i.start);
+    crate::blocks::analyze(&items)
+        .blocks
+        .into_iter()
+        .filter_map(|b| Some((b.start, b.end, b.project_id?)))
+        .collect()
 }
 
 /// Parçalardan `sheet`'e bağlı projelerin iş kaydı önerileri; başlangıca göre sıralı.
@@ -588,6 +638,8 @@ pub fn propose(
     struct Run {
         project: String,
         kind: EntryKind,
+        /// Türlere göre süre: oturum kaydının türü en çok sürenidir.
+        kinds: HashMap<EntryKind, Duration>,
         meeting: bool,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
@@ -602,6 +654,7 @@ pub fn propose(
             Self {
                 project: p.project.clone(),
                 kind: p.kind,
+                kinds: HashMap::new(),
                 meeting: p.meeting.is_some(),
                 start: at,
                 end: at,
@@ -612,14 +665,19 @@ pub fn propose(
             }
         }
 
-        fn add(&mut self, a: DateTime<Utc>, b: DateTime<Utc>, title: &str, trimmed: bool) {
+        fn add(&mut self, a: DateTime<Utc>, b: DateTime<Utc>, p: &Piece, trimmed: bool) {
+            *self.kinds.entry(p.kind).or_insert(Duration::zero()) += b - a;
             self.trimmed |= trimmed;
             self.end = self.end.max(b);
             self.worked += b - a;
-            *self
-                .titles
-                .entry(title.to_string())
-                .or_insert(Duration::zero()) += b - a;
+            // Toplantı uygulamasının başlığı ("Zoom Meeting") açıklama değildir; takvimden gelen
+            // toplantının konusu ise açıklamadır.
+            if p.kind != EntryKind::Online || p.meeting.is_some() {
+                *self
+                    .titles
+                    .entry(p.title.clone())
+                    .or_insert(Duration::zero()) += b - a;
+            }
             self.spans.push((a, b));
         }
     }
@@ -657,24 +715,25 @@ pub fn propose(
         .collect();
     parts.sort_by_key(|(a, _, _, _)| *a);
 
-    // Her toplantı kendi kaydı; oturumlarda her (proje, tür) için açık kayıt, araya başka iş
-    // girse de boşluk kısaysa sürer.
+    // Her toplantı kendi kaydı; oturumlarda her proje için açık kayıt, araya başka iş girse de
+    // boşluk kısaysa sürer. Takvimdeki blok gibi bilgisayarda, uzakta ve görüşmede geçen süre
+    // aynı kayıttadır.
     let mut meetings: Vec<(usize, Run)> = Vec::new();
-    let mut open: HashMap<(String, EntryKind), Run> = HashMap::new();
+    let mut open: HashMap<String, Run> = HashMap::new();
     let mut runs: Vec<Run> = Vec::new();
     for (a, b, p, trimmed) in parts {
         if let Some(i) = p.meeting {
             match meetings.iter_mut().find(|(j, _)| *j == i) {
-                Some((_, run)) => run.add(a, b, &p.title, trimmed),
+                Some((_, run)) => run.add(a, b, p, trimmed),
                 None => {
                     let mut run = Run::new(p, a);
-                    run.add(a, b, &p.title, trimmed);
+                    run.add(a, b, p, trimmed);
                     meetings.push((i, run));
                 }
             }
             continue;
         }
-        let key = (p.project.clone(), p.kind);
+        let key = p.project.clone();
         if let Some(run) = open.get(&key)
             && a - run.end > MERGE_GAP
         {
@@ -682,7 +741,19 @@ pub fn propose(
         }
         open.entry(key)
             .or_insert_with(|| Run::new(p, a))
-            .add(a, b, &p.title, trimmed);
+            .add(a, b, p, trimmed);
+    }
+    for run in open.values_mut() {
+        // Eşitlikte bilgisayarda çalışma.
+        run.kind = [EntryKind::Working, EntryKind::Online, EntryKind::F2F]
+            .into_iter()
+            .max_by_key(|k| {
+                (
+                    run.kinds.get(k).copied().unwrap_or_default(),
+                    *k == EntryKind::Working,
+                )
+            })
+            .unwrap_or(run.kind);
     }
     runs.extend(open.into_values());
     runs.extend(meetings.into_iter().map(|(_, run)| run));
@@ -722,13 +793,7 @@ pub fn propose(
                 .and_then(|m| m.party.clone())
                 .filter(|p| !p.trim().is_empty())
                 .unwrap_or_else(|| sheet.default_party.clone());
-            let details = if r.kind == EntryKind::Online && !r.meeting {
-                // Toplantı uygulamasının başlığı ("Zoom Meeting") açıklama değildir;
-                // takvimden gelen toplantının konusu ise açıklamadır.
-                String::new()
-            } else {
-                describe(r.titles)
-            };
+            let details = describe(r.titles);
             // Hazır açıklama yalnızca boş kalan açıklamayı doldurur: başlıklardan çıkan metin
             // (iş anahtarı, belge adı) projenin genel metninden daha bilgilendiricidir; boş
             // satır ise aktarılamaz. Doldurulan metin elle değiştirilebilir.
@@ -1075,7 +1140,7 @@ fn dominant<K: PartialEq>(rows: &[&TimesheetEntry], key: impl Fn(&TimesheetEntry
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classify::{Rule, RuleField, Tag, TagKind};
+    use crate::classify::{NO_PROJECT, Rule, RuleField, Tag, TagKind};
     use uuid::Uuid;
 
     fn t(min: i64) -> DateTime<Utc> {
@@ -1173,16 +1238,17 @@ mod tests {
     }
 
     #[test]
-    fn groups_by_project_and_kind_with_short_gaps() {
+    fn a_calendar_block_is_one_row() {
         let (classifier, names, config, sheet) = setup();
         let sessions = [
             s("Figma", "Trumore Loyalty UI/UX — Figma", 0, 50, None),
-            s("Slack", "#genel", 50, 55, None), // projesiz: kayda girmez
-            s("Figma", "Trumore Loyalty UI/UX — Figma", 55, 90, None), // 5 dk boşluk: aynı kayıt
-            s("us.zoom.xos", "Zoom Meeting", 90, 120, Some("tru")), // toplantı: ayrı kayıt
-            s("Figma", "Trumore Pitchdeck — Figma", 150, 170, None), // 60 dk boşluk: yeni kayıt
-            s("Slack", "sync", 170, 173, Some("sync")), // 3 dk: çok kısa
-            s("Code", "kum — main.rs", 180, 240, None), // başka çizelgenin projesi
+            s("Slack", "#genel", 50, 55, None), // atanmamış: bloğun projesine girer
+            s("Figma", "Trumore Loyalty UI/UX — Figma", 55, 80, None),
+            s("Slack", "#kişisel", 80, 90, Some(NO_PROJECT)), // projesiz: girmez
+            s("us.zoom.xos", "Zoom Meeting", 90, 120, Some("tru")), // görüşme: aynı satır
+            s("Figma", "Trumore Pitchdeck — Figma", 150, 170, None), // 30 dk boşluk: yeni blok
+            s("Slack", "sync", 170, 173, Some("sync")),       // 3 dk: çok kısa
+            s("Code", "kum — main.rs", 180, 240, None),       // başka çizelgenin projesi
         ];
         let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
         let rows: Vec<_> = got
@@ -1203,17 +1269,9 @@ mod tests {
             [
                 (
                     "09:00".to_string(),
-                    85,
+                    110,
                     EntryKind::Working,
                     "Trumore Loyalty UI/UX",
-                    "Trumore",
-                    "ADBA"
-                ),
-                (
-                    "10:30".to_string(),
-                    30,
-                    EntryKind::Online,
-                    "",
                     "Trumore",
                     "ADBA"
                 ),
@@ -1227,11 +1285,11 @@ mod tests {
                 ),
             ]
         );
-        // Kaydın aralıkları boşluklar olmadan saklanır.
+        // Kaydın aralıkları projesiz süre olmadan saklanır.
         assert_eq!(
             got[0].spans(),
-            vec![(t(0), t(50)), (t(55), t(90))],
-            "aradaki projesiz 5 dk kayda girmez"
+            vec![(t(0), t(80)), (t(90), t(120))],
+            "aradaki projesiz 10 dk kayda girmez"
         );
     }
 
@@ -1302,7 +1360,7 @@ mod tests {
         let (classifier, names, config, sheet) = setup();
         let sessions = [
             s("Figma", "Trumore Loyalty — Figma", 0, 20, None),
-            s("Slack", "#genel", 20, 30, None), // projesiz
+            s("Slack", "#genel", 20, 30, Some(NO_PROJECT)),
             s("Figma", "Trumore Loyalty — Figma", 30, 60, None),
         ];
         let p = pieces(&sessions, &[], &classifier, &config, t(-540), t(900));
@@ -1570,10 +1628,10 @@ mod tests {
         let sessions = [
             // Başlıktan açıklama çıkar: hazır metin kullanılmaz.
             s("Figma", "Trumore Pitchdeck — Figma", 0, 30, None),
-            // Toplantı uygulaması: açıklama boş kalır, hazır metin girer.
-            s("us.zoom.xos", "Zoom Meeting", 30, 60, Some("tru")),
             // Hazır metni olmayan projenin boş açıklaması boş kalır.
             s("us.zoom.xos", "Zoom Meeting", 60, 90, Some("sync")),
+            // Toplantı uygulaması: açıklama boş kalır, hazır metin girer.
+            s("us.zoom.xos", "Zoom Meeting", 120, 150, Some("tru")),
         ];
         let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
         let details: Vec<(&str, &str)> = got
@@ -1584,8 +1642,8 @@ mod tests {
             details,
             [
                 ("tru", "Trumore Pitchdeck"),
-                ("tru", "Trumore danışmanlık"),
-                ("sync", "")
+                ("sync", ""),
+                ("tru", "Trumore danışmanlık")
             ]
         );
     }

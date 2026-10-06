@@ -1482,8 +1482,10 @@ mod tests {
                 .is_err()
         );
 
-        // Aktarılmış satır da takipte değişir.
-        store.set_project_between(t(0), t(30), None).unwrap();
+        // Aktarılmış satır da takipte değişir (iş raporda projesize alındı).
+        store
+            .set_project_between(t(0), t(30), Some(crate::classify::NO_PROJECT))
+            .unwrap();
         let (r, _) = rows(&store, &togg);
         assert_eq!(r[0].stale, Some(0.5));
 
