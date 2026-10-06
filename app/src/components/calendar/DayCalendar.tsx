@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import { CalendarDays, Shapes, Video } from "lucide-react";
-import type { CalendarMeeting, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../../api";
+import { CalendarDays, FileSpreadsheet, Shapes, Video } from "lucide-react";
+import type { CalendarMeeting, EntryView, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../../api";
 import { formatDuration } from "../../api";
 import { addDays, formatTime, fromWallMs } from "../../lib/dates";
 import { UNCATEGORIZED, tagColor } from "../../lib/tags";
@@ -20,6 +20,7 @@ import {
 } from "./grid";
 import { Block, IdleBlock } from "./Block";
 import { categoryBuckets } from "./buckets";
+import { sheetLines, sheetLinesWidth, TimesheetLines } from "./TimesheetLines";
 
 /** Tıklanan anı çevreleyen boşluk: 2 saate kadarsa tamamı, değilse tıklanan çeyrekten 1 saat. */
 export function gapAround(
@@ -98,7 +99,10 @@ export function placeSessions(
   });
 }
 
-/** Gün takvimi: Oturumlar · Toplantılar (takvim bağlıysa) · Kategori şeridi. */
+/**
+ * Gün takvimi: Oturumlar · Zaman çizelgesi satırları (çizelge kuruluysa) · Toplantılar (takvim
+ * bağlıysa) · Kategori şeridi.
+ */
 export function DayCalendar({
   from,
   blocks,
@@ -107,6 +111,7 @@ export function DayCalendar({
   windows,
   tags,
   meetings = null,
+  entries = null,
   onMeeting,
   onEmpty,
   onRange,
@@ -124,6 +129,8 @@ export function DayCalendar({
   tags: Map<string, Tag>;
   /** Takvim toplantıları; `null`: takvim bağlı değil (sütun gösterilmez). */
   meetings?: CalendarMeeting[] | null;
+  /** Günün zaman çizelgesi satırları (bütün çizelgeler); `null`: çizelge yok (sütun gösterilmez). */
+  entries?: EntryView[] | null;
   /** Toplantıya tıklanınca (projeye atama menüsü) ve tıklanan nokta. */
   onMeeting?: (m: CalendarMeeting, x: number, y: number) => void;
   onEmpty?: (start: number, end: number) => void;
@@ -146,34 +153,50 @@ export function DayCalendar({
       return end > start ? [{ m, start: new Date(start).toISOString(), end: new Date(end).toISOString() }] : [];
     });
   }, [meetings, from]);
-  const range = useMemo(
-    () => hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans], hourPx),
-    [from, blocks, idle, segments, meetingSpans, hourPx],
-  );
+  const lines = useMemo(() => (entries ? sheetLines(entries, from) : []), [entries, from]);
+  const range = useMemo(() => {
+    const lineSpans = lines.map((l) => ({
+      start: new Date(l.start).toISOString(),
+      end: new Date(l.end).toISOString(),
+    }));
+    return hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans, ...lineSpans], hourPx);
+  }, [from, blocks, idle, segments, meetingSpans, lines, hourPx]);
   const top = topFn(+from, range);
   // 5 dk'lık dilim ancak rahat tıklanacak kadar yüksekse; yoksa 15 dk.
   const step = range.px >= 240 ? 5 : 15;
   const buckets = useMemo(() => categoryBuckets(segments, +from, step), [segments, from, step]);
   const showMeetings = meetings !== null;
-  const grid = cn(
-    "grid gap-x-2",
-    showMeetings ? "grid-cols-[40px_minmax(0,1fr)_minmax(0,0.6fr)_14px]" : "grid-cols-[40px_minmax(0,1fr)_14px]",
-  );
-  const strip = showMeetings ? "col-start-4" : "col-start-3";
+  const showSheet = entries !== null;
+  // Sütunlar: saatler, oturumlar, [çizelge], [toplantılar], kategori şeridi.
+  const columns = [
+    "40px",
+    "minmax(0,1fr)",
+    ...(showSheet ? [`${sheetLinesWidth(lines)}px`] : []),
+    ...(showMeetings ? ["minmax(0,0.6fr)"] : []),
+    "14px",
+  ];
+  const grid = { gridTemplateColumns: columns.join(" ") };
+  const strip = columns.length;
 
   return (
     <div>
       <div
-        className={cn(grid, "sticky top-(--cal-head) z-20 bg-card pb-2 text-[11px] font-medium text-muted-foreground")}
+        className="sticky top-(--cal-head) z-20 grid gap-x-2 bg-card pb-2 text-[11px] font-medium text-muted-foreground"
+        style={grid}
       >
         <span />
         <span>Oturumlar</span>
+        {showSheet && (
+          <span className="flex justify-center" title="Zaman çizelgesi satırları">
+            <FileSpreadsheet className="size-3" />
+          </span>
+        )}
         {showMeetings && <span>Toplantılar</span>}
         <span title="Kategori: her aralıkta en çok süren">
           <Shapes className="size-3" />
         </span>
       </div>
-      <div className={cn(grid, "pt-1.5")}>
+      <div className="grid gap-x-2 pt-1.5" style={grid}>
         <div className="col-start-1 row-start-1">
           <HourRail range={range} />
         </div>
@@ -208,8 +231,16 @@ export function DayCalendar({
           <Preview range={preview} top={top} />
           <NowLine day={from} range={range} />
         </Column>
+        {showSheet && (
+          <div
+            className="relative col-start-3 row-start-1 rounded-sm bg-muted/40"
+            style={{ height: (range.last - range.first) * range.px }}
+          >
+            <TimesheetLines lines={lines} tags={tags} top={top} />
+          </div>
+        )}
         {showMeetings && (
-          <Column range={range} className="col-start-3 row-start-1">
+          <Column range={range} className={cn("row-start-1", showSheet ? "col-start-4" : "col-start-3")}>
             {meetingSpans.map(({ m, ...span }, i) => (
               <MeetingBlock
                 key={`${m.uid}-${m.start}-${i}`}
@@ -222,7 +253,10 @@ export function DayCalendar({
             <NowLine day={from} range={range} />
           </Column>
         )}
-        <div className={cn("relative row-start-1", strip)} style={{ height: (range.last - range.first) * range.px }}>
+        <div
+          className="relative row-start-1"
+          style={{ gridColumnStart: strip, height: (range.last - range.first) * range.px }}
+        >
           {buckets.map((b) => {
             const t = top(b.start);
             const tag = b.categoryId ? tags.get(b.categoryId) : undefined;

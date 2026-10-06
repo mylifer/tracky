@@ -5,6 +5,7 @@ import {
   type Bucket,
   type CalendarMeeting,
   type CategoryLimit,
+  type EntryView,
   formatDuration,
   type ProjectGoal,
   type Report,
@@ -35,6 +36,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
 export type Mode = "day" | "week" | "month";
+
+/** Günün bütün zaman çizelgelerindeki satırları; projesi olan çizelge yoksa `null`. */
+async function dayEntries(day: string): Promise<EntryView[] | null> {
+  const sheets = (await api.timesheetConfig()).timesheets.filter((t) => t.projects.length > 0);
+  if (sheets.length === 0) return null;
+  const days = await Promise.all(sheets.map((t) => api.timesheetDays(t.id, day, 1)));
+  return days.flatMap(([d]) => d?.entries ?? []);
+}
 
 /** Süren dönemde raporun canlı yenilenme aralığı. */
 const LIVE_REFRESH_MS = 15_000;
@@ -84,6 +93,10 @@ export default function ReportView(p: Props) {
     );
   }, []);
 
+  // Gün takviminde zaman çizelgesi satırları; `null`: çizelge yok (sütun gizlenir). Hangi günün
+  // satırları olduğu da tutulur (toplantılardaki gibi).
+  const [entriesOf, setEntriesOf] = useState<{ start: string; list: EntryView[] | null } | null>(null);
+
   // Her yükleme bir sıra numarası alır; geç gelen eski yanıt (başka dönem) ekranı ezmez.
   const seq = useRef(0);
   const load = useCallback(() => {
@@ -118,6 +131,13 @@ export default function ReportView(p: Props) {
       (u) => n === seq.current && setReview({ seconds: u.totalSeconds, idle: u.idleSeconds }),
       () => n === seq.current && setReview(null),
     );
+    if (mode === "day") {
+      const day = p.start;
+      dayEntries(day).then(
+        (list) => n === seq.current && setEntriesOf({ start: day, list }),
+        () => n === seq.current && setEntriesOf(null),
+      );
+    }
   }, [p.start, p.mode, days, timeline]);
 
   useEffect(load, [load]);
@@ -154,6 +174,7 @@ export default function ReportView(p: Props) {
   }, [calendarOn, calendarRev, p.mode, p.start]);
   // `null`: takvim bağlı değil (sütun gizlenir); başka günün listesi gelene kadar boş sütun.
   const meetings = meetingsOf && (meetingsOf.start === p.start ? meetingsOf.list : []);
+  const entries = entriesOf && (entriesOf.start === p.start ? entriesOf.list : []);
 
   const from = parseIsoDate(p.start);
   const end = addDays(from, days);
@@ -417,6 +438,7 @@ export default function ReportView(p: Props) {
                           windows={report.windows}
                           tags={tags}
                           meetings={meetings}
+                          entries={entries}
                           onMeeting={(meeting, x, y) => setMeetingSel({ meeting, x, y })}
                           onEmpty={openDraft}
                           onRange={selectRange}
