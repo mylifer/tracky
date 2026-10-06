@@ -115,6 +115,9 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       yeniden kurar. Kaydedilen satırın işi raporda başka projeye alınırsa satır "takipte değişti" olur ve
       güncellenmeden gönderilmez. Toplu gönderim henüz başlamamış işi (ileri tarihli toplantı) göndermez; müşteri
       raporunun zaman çizelgesi kaynağı sayfadaki satırlardır
+- [x] 51. Zaman çizelgesi eşitlemesi: kaydedilen, birleştirilen, gönderilen ve silinen satırlar diğer bilgisayara
+      da gider (silme yumuşak, son yazan kazanır); aktarılmış satır orada bir daha gönderilmez. Sunucuda
+      `supabase/migrations/0010` yoksa eşitlemenin geri kalanı sürer
 
 ## Yapı
 

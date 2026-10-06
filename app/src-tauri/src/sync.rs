@@ -208,6 +208,10 @@ fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) {
                     m += ". Ayarlar eşitlenmedi: Supabase'de \
                           supabase/migrations/0008_settings.sql dosyasını çalıştır";
                 }
+                if summary.timesheet_unavailable {
+                    m += ". Zaman çizelgesi satırları eşitlenmedi: Supabase'de \
+                          supabase/migrations/0010_timesheet_entries.sql dosyasını çalıştır";
+                }
                 if summary.outdated_schema {
                     m += ". Proje arşivi ve bütçeler eşitlenmedi: Supabase'de \
                           supabase/migrations/0007_archive_budget.sql dosyasını çalıştır";

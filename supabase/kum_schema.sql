@@ -1,5 +1,5 @@
 -- Kum'u başka bir uygulamanın Supabase projesinde, ayrı "kum" şemasında kurar (ücretsiz plandaki
--- proje sınırına takılmamak için). 0001–0009 göçlerinin "kum" şemasına uyarlanmış hâlidir;
+-- proje sınırına takılmamak için). 0001–0010 göçlerinin "kum" şemasına uyarlanmış hâlidir;
 -- SQL Editor'da bir kez çalıştırın, tekrar çalıştırmak zararsızdır. Ardından Project Settings →
 -- Data API → Exposed schemas listesine "kum" ekleyin ve Kum'da Ayarlar → Senkronizasyon →
 -- Şema alanına "kum" yazın. Diğer uygulamanın tablolarına ve ayarlarına dokunmaz.
@@ -184,6 +184,43 @@ create trigger kum_lww before insert or update on kum.settings
 alter table kum.settings enable row level security;
 drop policy if exists "kendi satırları" on kum.settings;
 create policy "kendi satırları" on kum.settings for all to authenticated
+    using (user_id = (select auth.uid()))
+    with check (user_id = (select auth.uid()));
+
+-- ===== 0010_timesheet_entries.sql =====
+-- Zaman çizelgesi satırları (tarih ve başlangıç cihazın yerel saatinde, metin).
+create table if not exists kum.timesheet_entries (
+    id                text not null,
+    user_id           uuid not null default auth.uid() references auth.users (id) on delete cascade,
+    date              text not null,
+    start             text not null,
+    hours             double precision not null check (hours > 0),
+    kind              text not null check (kind in ('Working', 'Online', 'F2F')),
+    details           text not null,
+    party             text not null,
+    project_id        text not null,
+    division          text not null,
+    actual_hours      double precision,
+    coverage          text,
+    timesheet_id      text,
+    exported_at       timestamptz,
+    dismissed_at      timestamptz,
+    created_at        timestamptz not null,
+    updated_at        timestamptz not null,
+    deleted_at        timestamptz,
+    server_updated_at timestamptz not null default now(),
+    writer            uuid,
+    primary key (user_id, id)
+);
+create index if not exists timesheet_entries_user_cursor
+    on kum.timesheet_entries (user_id, server_updated_at);
+
+drop trigger if exists kum_lww on kum.timesheet_entries;
+create trigger kum_lww before insert or update on kum.timesheet_entries
+    for each row execute function kum.kum_lww();
+alter table kum.timesheet_entries enable row level security;
+drop policy if exists "kendi satırları" on kum.timesheet_entries;
+create policy "kendi satırları" on kum.timesheet_entries for all to authenticated
     using (user_id = (select auth.uid()))
     with check (user_id = (select auth.uid()));
 

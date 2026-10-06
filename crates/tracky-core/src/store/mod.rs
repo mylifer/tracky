@@ -226,6 +226,17 @@ ALTER TABLE timesheet_entries ADD COLUMN dismissed_at INTEGER;
 ALTER TABLE settings ADD COLUMN deleted_at INTEGER;
 ALTER TABLE settings ADD COLUMN synced_at INTEGER;
 "#,
+    r#"
+-- Zaman çizelgesi satırları da eşitlenir (supabase/migrations/0010): ikinci bilgisayarda da
+-- kaydedilen, gönderilen ve silinen satırlar görünür, aynı iş iki kez gönderilmez. Silme
+-- yumuşaktır (deleted_at); eski satırlar ilk eşitlemede gönderilir.
+ALTER TABLE timesheet_entries ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE timesheet_entries ADD COLUMN deleted_at INTEGER;
+ALTER TABLE timesheet_entries ADD COLUMN synced_at INTEGER;
+UPDATE timesheet_entries SET updated_at = created_at;
+CREATE INDEX timesheet_entries_unsynced ON timesheet_entries (updated_at)
+    WHERE synced_at IS NULL OR synced_at < updated_at;
+"#,
 ];
 
 /// Yedek dosyasının içeriği (geri yüklemeden önce göstermek için).
@@ -402,7 +413,14 @@ impl Store {
         self.conn
             .execute("DELETE FROM settings WHERE key LIKE 'sync_cursor:%'", [])?;
         let now = ms(Utc::now());
-        for table in ["sessions", "tags", "rules", "clients", "settings"] {
+        for table in [
+            "sessions",
+            "tags",
+            "rules",
+            "clients",
+            "settings",
+            "timesheet_entries",
+        ] {
             self.conn.execute(
                 &format!(
                     "UPDATE {table} SET updated_at = MAX(updated_at + 1, ?1), synced_at = NULL"
@@ -908,6 +926,7 @@ impl Store {
              UPDATE tags SET synced_at = NULL;
              UPDATE rules SET synced_at = NULL;
              UPDATE clients SET synced_at = NULL;
+             UPDATE timesheet_entries SET synced_at = NULL;
              UPDATE settings SET synced_at = NULL, updated_at = 0 WHERE key IN ({});",
             keys.join(", ")
         ))?;

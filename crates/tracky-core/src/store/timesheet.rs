@@ -177,6 +177,11 @@ struct LegacyConfig {
 const COLUMNS: &str = "id, date, start, hours, kind, details, party, project_id, division,
     exported_at, actual_hours, coverage, timesheet_id, dismissed_at";
 
+/// Satırın değiştiğini işaretler (eşitlemede gönderilsin): şimdiki an (ms), aynı milisaniyede
+/// ikinci değişiklik de öncekinden yeni sayılsın diye en az bir fazlası.
+const TOUCH: &str = "updated_at = MAX(updated_at + 1,
+    CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))";
+
 impl Store {
     pub fn timesheet_config(&self) -> Result<TimesheetConfig> {
         Ok(self.setting(TIMESHEET_KEY)?.unwrap_or_default())
@@ -266,8 +271,10 @@ impl Store {
                 }
             }
             self.conn.execute(
-                "UPDATE timesheet_entries SET timesheet_id = ?1
-                 WHERE exported_at IS NOT NULL AND timesheet_id IS NULL",
+                &format!(
+                    "UPDATE timesheet_entries SET timesheet_id = ?1, {TOUCH}
+                     WHERE exported_at IS NOT NULL AND timesheet_id IS NULL"
+                ),
                 [&sheet.id],
             )?;
             if let [only] = &sheet.projects[..] {
@@ -284,7 +291,10 @@ impl Store {
                         .any(|d| d.eq_ignore_ascii_case(division.trim()));
                     if known {
                         self.conn.execute(
-                            "UPDATE timesheet_entries SET project_id = ?2 WHERE id = ?1",
+                            &format!(
+                                "UPDATE timesheet_entries SET project_id = ?2, {TOUCH}
+                                 WHERE id = ?1"
+                            ),
                             params![id, only.project_id],
                         )?;
                     }
@@ -572,7 +582,8 @@ impl Store {
 
     fn query_entries(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<SavedEntry>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {COLUMNS} FROM timesheet_entries WHERE {filter} ORDER BY date, start"
+            "SELECT {COLUMNS} FROM timesheet_entries WHERE deleted_at IS NULL AND ({filter})
+             ORDER BY date, start"
         ))?;
         let rows = stmt.query_map(args, |r| {
             Ok((
@@ -717,7 +728,10 @@ impl Store {
             None => self.save_timesheet_entry(None, entry)?,
         };
         let n = self.conn.execute(
-            "UPDATE timesheet_entries SET dismissed_at = ?2 WHERE id = ?1 AND exported_at IS NULL",
+            &format!(
+                "UPDATE timesheet_entries SET dismissed_at = ?2, {TOUCH}
+                 WHERE id = ?1 AND exported_at IS NULL AND deleted_at IS NULL"
+            ),
             params![id, ms(Utc::now())],
         )?;
         if n == 0 {
@@ -753,14 +767,10 @@ impl Store {
                 continue;
             }
             n += if left.is_empty() {
-                self.conn
-                    .execute("DELETE FROM timesheet_entries WHERE id = ?1", [&s.id])?
+                self.remove_entry(&s.id, false)?
             } else {
                 let coverage = serde_json::to_string(&timesheet::to_coverage(&left))?;
-                self.conn.execute(
-                    "UPDATE timesheet_entries SET coverage = ?2 WHERE id = ?1",
-                    params![s.id, coverage],
-                )?
+                self.set_coverage(&s.id, Some(coverage))?
             };
         }
         Ok(n)
@@ -771,7 +781,10 @@ impl Store {
         let tx = self.savepoint()?;
         for id in ids {
             self.conn.execute(
-                "UPDATE timesheet_entries SET dismissed_at = NULL WHERE id = ?1",
+                &format!(
+                    "UPDATE timesheet_entries SET dismissed_at = NULL, {TOUCH}
+                     WHERE id = ?1 AND dismissed_at IS NOT NULL AND deleted_at IS NULL"
+                ),
                 [id],
             )?;
         }
@@ -792,10 +805,7 @@ impl Store {
 
     /// Satırı tamamen siler (aktarılmamışsa). Canlı öneriyi gizlemek bunu geri alır: öneri yeniden gelir.
     pub fn delete_timesheet_entry(&self, id: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM timesheet_entries WHERE id = ?1 AND exported_at IS NULL",
-            [id],
-        )?;
+        self.remove_entry(id, true)?;
         Ok(())
     }
 
@@ -831,8 +841,7 @@ impl Store {
         }
         let merged = timesheet::merge(&entries).map_err(|e| StoreError::Invalid(e.to_string()))?;
         for (id, _) in &removed {
-            self.conn
-                .execute("DELETE FROM timesheet_entries WHERE id = ?1", [id])?;
+            self.remove_entry(id, false)?;
         }
         let coverage = merged.coverage.clone().unwrap_or_default();
         if self.claim_spans(&merged, &coverage)?.is_some() {
@@ -853,10 +862,7 @@ impl Store {
         removed: &[(String, TimesheetEntry)],
     ) -> Result<()> {
         let tx = self.savepoint()?;
-        let n = self.conn.execute(
-            "DELETE FROM timesheet_entries WHERE id = ?1 AND exported_at IS NULL",
-            [merged],
-        )?;
+        let n = self.remove_entry(merged, true)?;
         if n == 0 {
             return Err(StoreError::Invalid(
                 "Birleşen satır aktarılmış ya da silinmiş; geri alınamaz.".into(),
@@ -882,10 +888,7 @@ impl Store {
             Some(fresh) => {
                 let tx = self.savepoint()?;
                 self.update_entry(id, &fresh)?;
-                self.conn.execute(
-                    "UPDATE timesheet_entries SET coverage = ?2 WHERE id = ?1",
-                    params![id, coverage_json(&fresh)?],
-                )?;
+                self.set_coverage(id, coverage_json(&fresh)?)?;
                 tx.commit()?;
                 Ok(true)
             }
@@ -903,9 +906,7 @@ impl Store {
         let mut n = 0;
         for s in self.saved_rows(date, date)? {
             if s.exported_at.is_none() && sheet.includes(&s.entry.project_id) {
-                n += self
-                    .conn
-                    .execute("DELETE FROM timesheet_entries WHERE id = ?1", [&s.id])?;
+                n += self.remove_entry(&s.id, false)?;
             }
         }
         tx.commit()?;
@@ -931,10 +932,7 @@ impl Store {
         let tx = self.savepoint()?;
         self.update_entry(&saved.id, entry)?;
         if coverage {
-            self.conn.execute(
-                "UPDATE timesheet_entries SET coverage = ?2 WHERE id = ?1",
-                params![id, coverage_json(entry)?],
-            )?;
+            self.set_coverage(id, coverage_json(entry)?)?;
         }
         tx.commit()
     }
@@ -946,13 +944,14 @@ impl Store {
         let tx = self.savepoint()?;
         if dismiss {
             self.conn.execute(
-                "UPDATE timesheet_entries SET exported_at = NULL, timesheet_id = NULL,
-                    dismissed_at = ?2 WHERE id = ?1",
+                &format!(
+                    "UPDATE timesheet_entries SET exported_at = NULL, timesheet_id = NULL,
+                        dismissed_at = ?2, {TOUCH} WHERE id = ?1"
+                ),
                 params![id, ms(Utc::now())],
             )?;
         } else {
-            self.conn
-                .execute("DELETE FROM timesheet_entries WHERE id = ?1", [id])?;
+            self.remove_entry(id, false)?;
         }
         tx.commit()
     }
@@ -967,7 +966,10 @@ impl Store {
         let tx = self.savepoint()?;
         for id in ids {
             self.conn.execute(
-                "UPDATE timesheet_entries SET exported_at = ?2, timesheet_id = ?3 WHERE id = ?1",
+                &format!(
+                    "UPDATE timesheet_entries SET exported_at = ?2, timesheet_id = ?3, {TOUCH}
+                     WHERE id = ?1"
+                ),
                 params![id, ms(at), sheet_id],
             )?;
         }
@@ -980,7 +982,10 @@ impl Store {
         let tx = self.savepoint()?;
         for id in ids {
             self.conn.execute(
-                "UPDATE timesheet_entries SET exported_at = NULL, timesheet_id = NULL WHERE id = ?1",
+                &format!(
+                    "UPDATE timesheet_entries SET exported_at = NULL, timesheet_id = NULL, {TOUCH}
+                     WHERE id = ?1"
+                ),
                 params![id],
             )?;
         }
@@ -991,9 +996,12 @@ impl Store {
     /// Satırın düzenlenebilir alanlarını yazar (aralıkları, aktarım ve gizlenme durumu değişmez).
     fn update_entry(&self, id: &str, e: &TimesheetEntry) -> Result<()> {
         self.conn.execute(
-            "UPDATE timesheet_entries SET date = ?2, start = ?3, hours = ?4, kind = ?5,
-                details = ?6, party = ?7, project_id = ?8, division = ?9, actual_hours = ?10
-             WHERE id = ?1",
+            &format!(
+                "UPDATE timesheet_entries SET date = ?2, start = ?3, hours = ?4, kind = ?5,
+                    details = ?6, party = ?7, project_id = ?8, division = ?9, actual_hours = ?10,
+                    {TOUCH}
+                 WHERE id = ?1"
+            ),
             params![
                 id,
                 e.date.to_string(),
@@ -1010,12 +1018,21 @@ impl Store {
         Ok(())
     }
 
+    /// Yeni satır yazar. Aynı kimlikte silinmiş satır varsa (birleştirme geri alınınca) o satır
+    /// yeniden canlanır: aktarılmamış, gizlenmemiş, yeni değerlerle.
     fn insert_entry(&self, id: &str, e: &TimesheetEntry) -> Result<()> {
         self.conn.execute(
             "INSERT INTO timesheet_entries
                 (id, date, start, hours, kind, details, party, project_id, division, created_at,
-                 actual_hours, coverage)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 actual_hours, coverage, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?10)
+             ON CONFLICT (id) DO UPDATE SET date = excluded.date, start = excluded.start,
+                hours = excluded.hours, kind = excluded.kind, details = excluded.details,
+                party = excluded.party, project_id = excluded.project_id,
+                division = excluded.division, actual_hours = excluded.actual_hours,
+                coverage = excluded.coverage, exported_at = NULL, timesheet_id = NULL,
+                dismissed_at = NULL, deleted_at = NULL,
+                updated_at = MAX(timesheet_entries.updated_at + 1, excluded.updated_at)",
             params![
                 id,
                 e.date.to_string(),
@@ -1032,6 +1049,32 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+}
+
+impl Store {
+    /// Satırı siler (`unexported`: yalnızca aktarılmamışsa). Silme yumuşaktır (`deleted_at`):
+    /// diğer cihazlara da ulaşır; okumalar silinen satırı görmez. Silinen satır sayısı.
+    fn remove_entry(&self, id: &str, unexported: bool) -> Result<usize> {
+        let only = if unexported {
+            " AND exported_at IS NULL"
+        } else {
+            ""
+        };
+        Ok(self.conn.execute(
+            &format!(
+                "UPDATE timesheet_entries SET deleted_at = ?2, {TOUCH}
+                 WHERE id = ?1 AND deleted_at IS NULL{only}"
+            ),
+            params![id, ms(Utc::now())],
+        )?)
+    }
+
+    fn set_coverage(&self, id: &str, coverage: Option<String>) -> Result<usize> {
+        Ok(self.conn.execute(
+            &format!("UPDATE timesheet_entries SET coverage = ?2, {TOUCH} WHERE id = ?1"),
+            params![id, coverage],
+        )?)
     }
 }
 

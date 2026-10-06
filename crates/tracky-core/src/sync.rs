@@ -48,6 +48,7 @@ enum Col {
     Int,
     Time,
     OptTime,
+    Real,
     OptReal,
 }
 
@@ -180,7 +181,38 @@ const TABLES: &[Table] = &[
         key: "key",
         only: Some(SYNCED_SETTINGS),
     },
+    // Zaman çizelgesi satırları: kaydedilen, gönderilen ve silinen satırlar diğer cihazda da
+    // aynı olur; aktarılmış satır orada bir daha gönderilmez. Projeye yabancı anahtarla bağlı
+    // değildir. Sunucuda tablo yoksa (0010 öncesi) eşitlemenin geri kalanı sürer.
+    Table {
+        name: "timesheet_entries",
+        cols: &[
+            ("id", Col::Text),
+            ("date", Col::Text),
+            ("start", Col::Text),
+            ("hours", Col::Real),
+            ("kind", Col::Text),
+            ("details", Col::Text),
+            ("party", Col::Text),
+            ("project_id", Col::Text),
+            ("division", Col::Text),
+            ("actual_hours", Col::OptReal),
+            ("coverage", Col::OptText),
+            ("timesheet_id", Col::OptText),
+            ("exported_at", Col::OptTime),
+            ("dismissed_at", Col::OptTime),
+            ("created_at", Col::Time),
+            ("updated_at", Col::Time),
+            ("deleted_at", Col::OptTime),
+        ],
+        optional: &[],
+        key: "id",
+        only: None,
+    },
 ];
+
+/// Sonradan eklenen tablolar: sunucuda yoksa yalnızca onlar eşitlenmez, gerisi sürer.
+const LATE_TABLES: &[&str] = &["settings", "timesheet_entries"];
 
 impl Table {
     /// Sunucudaki sütunun yereldeki adı.
@@ -227,6 +259,9 @@ pub struct SyncSummary {
     pub outdated_schema: bool,
     /// Sunucuda ayarlar tablosu yok (0008 çalıştırılmamış): ayarlar eşitlenmedi.
     pub settings_unavailable: bool,
+    /// Sunucuda zaman çizelgesi tablosu yok (0010 çalıştırılmamış): satırlar eşitlenmedi;
+    /// tablo eklenince bekleyenler gönderilir.
+    pub timesheet_unavailable: bool,
     /// Başka cihazdan ayar geldi: uygulama çalışan durumunu (gizlilik, hedefler, görünüm)
     /// yeniden okumalı.
     pub settings_pulled: bool,
@@ -242,6 +277,15 @@ pub enum SyncError {
     Sqlite(#[from] rusqlite::Error),
     #[error("geçersiz uzak satır: {0}")]
     Invalid(String),
+}
+
+impl SyncSummary {
+    fn mark_unavailable(&mut self, table: &Table) {
+        match table.name {
+            "settings" => self.settings_unavailable = true,
+            _ => self.timesheet_unavailable = true,
+        }
+    }
 }
 
 /// Tüm tabloları gönderir ve çeker. `user_id` gönderilen satırlara eklenir.
@@ -272,7 +316,7 @@ pub fn run(
             &mut summary.outdated_schema,
         ) {
             Ok(n) => summary.pushed += n,
-            Err(e) if missing_table(table, &e) => summary.settings_unavailable = true,
+            Err(e) if missing_table(table, &e) => summary.mark_unavailable(table),
             Err(e) => {
                 tags_failed |= table.name == "tags";
                 first_error.get_or_insert(e);
@@ -297,7 +341,7 @@ pub fn run(
                 summary.skipped += skipped;
                 summary.settings_pulled |= table.name == "settings" && n > 0;
             }
-            Err(e) if missing_table(table, &e) => summary.settings_unavailable = true,
+            Err(e) if missing_table(table, &e) => summary.mark_unavailable(table),
             Err(e) => {
                 first_error.get_or_insert(e);
             }
@@ -332,13 +376,13 @@ fn is_foreign_key_error(e: &SyncError) -> bool {
     )
 }
 
-/// Sunucuda sonradan eklenen ayarlar tablosu (0008) yok mu? Bu durumda yalnızca ayarlar
+/// Sunucuda sonradan eklenen bir tablo ([`LATE_TABLES`]) yok mu? Bu durumda yalnızca o tablo
 /// eşitlenmez; diğer tablolar hata vermeden sürer.
 fn missing_table(table: &Table, e: &SyncError) -> bool {
     let SyncError::Remote(e) = e else {
         return false;
     };
-    table.name == "settings"
+    LATE_TABLES.contains(&table.name)
         && e.contains(table.name)
         && (e.contains("Could not find the table") || e.contains("does not exist"))
 }
@@ -559,6 +603,9 @@ fn unsynced(store: &Store, table: &Table, limit: usize) -> Result<Vec<Pending>, 
                     .get::<_, Option<String>>(i)?
                     .map_or(Value::Null, Value::String),
                 Col::Int => Value::from(r.get::<_, i64>(i)?),
+                Col::Real => {
+                    serde_json::Number::from_f64(r.get(i)?).map_or(Value::Null, Value::Number)
+                }
                 Col::Time => Value::String(iso(r.get(i)?)),
                 Col::OptTime => r
                     .get::<_, Option<i64>>(i)?
@@ -644,6 +691,7 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
             (Col::OptText | Col::OptTime | Col::OptReal, Value::Null) => SqlValue::Null,
             (Col::OptReal, Value::Number(n)) => SqlValue::Real(n.as_f64().ok_or_else(bad)?),
             (Col::Int, Value::Number(n)) => SqlValue::Integer(n.as_i64().ok_or_else(bad)?),
+            (Col::Real, Value::Number(n)) => SqlValue::Real(n.as_f64().ok_or_else(bad)?),
             (Col::Time | Col::OptTime, Value::String(s)) => {
                 SqlValue::Integer(parse_time(s).map_err(|_| bad())?.timestamp_millis())
             }
@@ -786,18 +834,34 @@ mod tests {
         missing: Vec<&'static str>,
         /// Sunucuda ayarlar tablosu yok (0008 öncesi şema).
         no_settings: bool,
+        /// Sunucuda zaman çizelgesi tablosu yok (0010 öncesi şema).
+        no_timesheet: bool,
     }
 
     const NO_SETTINGS: &str = "Could not find the table 'public.settings' in the schema cache";
+
+    impl FakeRemote {
+        /// Sunucuda olmayan tablonun PostgREST hatası.
+        fn missing_table(&self, table: &str) -> Result<(), String> {
+            if self.no_settings && table == "settings" {
+                return Err(NO_SETTINGS.into());
+            }
+            if self.no_timesheet && table == "timesheet_entries" {
+                return Err(
+                    "Could not find the table 'public.timesheet_entries' in the schema cache"
+                        .into(),
+                );
+            }
+            Ok(())
+        }
+    }
 
     const NO_WRITER: &str = "Could not find the 'writer' column in the schema cache";
 
     impl Remote for FakeRemote {
         fn push(&mut self, table: &str, rows: &[Value]) -> Result<(), String> {
             self.pushes += 1;
-            if self.no_settings && table == "settings" {
-                return Err(NO_SETTINGS.into());
-            }
+            self.missing_table(table)?;
             if self.legacy && rows.iter().any(|r| r.get(WRITER).is_some()) {
                 return Err(NO_WRITER.into());
             }
@@ -838,9 +902,7 @@ mod tests {
             if self.legacy && skip_writer.is_some() {
                 return Err(NO_WRITER.into());
             }
-            if self.no_settings && table == "settings" {
-                return Err(NO_SETTINGS.into());
-            }
+            self.missing_table(table)?;
             let since = since.map(|s| parse_time(s).unwrap());
             let mut rows: Vec<Value> = self
                 .rows
@@ -864,9 +926,7 @@ mod tests {
         }
 
         fn latest(&mut self, table: &str, since: Option<&str>) -> Result<Option<String>, String> {
-            if self.no_settings && table == "settings" {
-                return Err(NO_SETTINGS.into());
-            }
+            self.missing_table(table)?;
             let since = since.map(|s| parse_time(s).unwrap());
             Ok(self
                 .rows
@@ -1535,6 +1595,143 @@ mod tests {
             lock(&a).setting::<Value>("goals").unwrap().unwrap()["dailyHours"],
             6
         );
+    }
+
+    fn timesheet_row(details: &str) -> crate::timesheet::TimesheetEntry {
+        crate::timesheet::TimesheetEntry {
+            date: chrono::NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
+            start: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            hours: 1.25,
+            actual_hours: Some(1.2),
+            kind: crate::timesheet::EntryKind::Working,
+            details: details.into(),
+            party: "Ekip".into(),
+            project_id: "p1".into(),
+            division: "Yazılım".into(),
+            coverage: Some(vec![[1_772_434_800_000, 1_772_439_120_000]]),
+        }
+    }
+
+    #[test]
+    fn timesheet_rows_follow_the_user_to_the_other_device() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
+
+        let kept = lock(&a)
+            .save_timesheet_entry(None, &timesheet_row("Giriş ekranı"))
+            .unwrap();
+        let gone = lock(&a)
+            .save_timesheet_entry(
+                None,
+                &crate::timesheet::TimesheetEntry {
+                    coverage: Some(Vec::new()),
+                    ..timesheet_row("Elle")
+                },
+            )
+            .unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        let got = lock(&b).timesheet_entries(day, day).unwrap();
+        assert_eq!(got.len(), 2);
+        let row = got.iter().find(|s| s.id == kept).unwrap();
+        assert_eq!(row.entry, timesheet_row("Giriş ekranı"));
+
+        // A gönderir ve bir satırı siler; B'de satır gönderilmiş görünür, silinen kaybolur.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        lock(&a)
+            .mark_timesheet_exported(std::slice::from_ref(&kept), Utc::now(), "sheet")
+            .unwrap();
+        lock(&a).delete_timesheet_entry(&gone).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        let got = lock(&b).timesheet_entries(day, day).unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].exported_at.is_some());
+        assert_eq!(got[0].timesheet_id.as_deref(), Some("sheet"));
+
+        // B'de açıklama düzenlenir; aktarılmış satır değiştirilemediği için önce geri alınır.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        lock(&b)
+            .unmark_timesheet_exported(std::slice::from_ref(&kept))
+            .unwrap();
+        lock(&b)
+            .save_timesheet_entry(Some(&kept), &timesheet_row("Giriş ekranı testleri"))
+            .unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        let got = lock(&a).timesheet_entries(day, day).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].entry.details, "Giriş ekranı testleri");
+        assert!(got[0].exported_at.is_none());
+
+        // Değişiklik yoksa bir şey gönderilmez.
+        assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 0);
+    }
+
+    #[test]
+    fn undoing_a_merge_brings_the_rows_back_on_the_other_device() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
+        let first = timesheet_row("Bir");
+        let second = crate::timesheet::TimesheetEntry {
+            start: chrono::NaiveTime::from_hms_opt(11, 0, 0).unwrap(),
+            coverage: Some(vec![[1_772_442_000_000, 1_772_445_600_000]]),
+            ..timesheet_row("İki")
+        };
+        let ids: Vec<String> = [&first, &second]
+            .iter()
+            .map(|e| lock(&a).save_timesheet_entry(None, e).unwrap())
+            .collect();
+        let rows: Vec<_> = ids
+            .iter()
+            .zip([&first, &second])
+            .map(|(id, e)| (Some(id.clone()), e.clone()))
+            .collect();
+        let (merged, removed) = lock(&a).merge_timesheet_entries(&rows).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        assert_eq!(lock(&b).timesheet_entries(day, day).unwrap().len(), 1);
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        lock(&a)
+            .unmerge_timesheet_entries(&merged, &removed)
+            .unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        let mut got: Vec<String> = lock(&b)
+            .timesheet_entries(day, day)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        got.sort();
+        let mut want = ids.clone();
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn server_without_timesheet_table_still_syncs_the_rest() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote {
+            no_timesheet: true,
+            ..Default::default()
+        };
+        lock(&a)
+            .save_timesheet_entry(None, &timesheet_row("Bekler"))
+            .unwrap();
+        lock(&a).upsert_session(&session("Code", 60)).unwrap();
+        let summary = run(&a, &mut remote, "u1").unwrap();
+        assert!(summary.timesheet_unavailable);
+        assert_eq!(remote.rows["sessions"].len(), 1);
+
+        remote.no_timesheet = false;
+        run(&a, &mut remote, "u1").unwrap();
+        assert_eq!(remote.rows["timesheet_entries"].len(), 1);
     }
 
     #[test]
