@@ -47,7 +47,23 @@ describe("çizelge dilimleri", () => {
     expect(slotMinutes(7, 8)).toBe(15);
   });
 
-  it("üçte biri dolan dilim dolu, art arda dilimler tek çubuk; az dolan boş", () => {
+  it("aynı pencerede süren iş saat sınırlarında bölünmez", () => {
+    // 09:00–12:00 arası 5 dakikada bir 1 dk: her saat yalnızca 12 dk dolu ama iş kesintisiz.
+    const spans = Array.from({ length: 36 }, (_, i) => w(at(9, i * 5), at(9, i * 5 + 1), "deck"));
+    const bars = slotBars(spans as never, starts, 60);
+    expect(bars.map((b) => [b.start, b.end])).toEqual([[day + 9 * H, day + 12 * H]]);
+    expect(bars[0].ms).toBe(36 * MIN);
+  });
+
+  it("uzun boşluk işi böler", () => {
+    const bars = slotBars([w(at(9), at(9, 50)), w(at(13), at(13, 40))] as never, starts, 60);
+    expect(bars.map((b) => [b.start, b.end])).toEqual([
+      [day + 9 * H, day + 10 * H],
+      [day + 13 * H, day + 14 * H],
+    ]);
+  });
+
+  it("kısa iş gösterilmez, ızgarada değen çubuklar tek çubuk", () => {
     const bars = slotBars(
       [
         w(at(9, 2), at(9, 14), "kod"),

@@ -133,40 +133,63 @@ export function slotMinutes(days: number, zoom: number): number {
   return SLOT_STEPS.find((m) => m >= want - 1e-9) ?? SLOT_STEPS[SLOT_STEPS.length - 1];
 }
 
+/** Şeridin aralıkları arasında bundan kısa boşluk işi bölmez (takvimdeki mola sınırı). */
+const RUN_GAP_MS = 5 * MIN_MS;
+
 /**
  * Pencereleri `slotMin` dakikalık dilimlere toplar; dilimin en az üçte biri doluysa dilim
- * dolu sayılır, değilse boş kalır. Art arda dolu dilimler tek çubuk olur.
+ * dolu sayılır. Aralarında `RUN_GAP_MS`'ten kısa boşluk olan aralıklar tek iş sayılır: en az
+ * üçte bir dilim süren işin kapladığı dilimler az dolu olsa da doludur, iş saat saat bölünmez.
+ * Art arda dolu dilimler tek çubuk olur.
  */
 export function slotBars(spans: WindowSpan[], starts: number[], slotMin: number): SlotBar[] {
   const step = slotMin * MIN_MS;
   type Acc = { ms: number; cats: Map<string | null, number>; titles: Map<string, number> };
   const slots = new Map<string, Acc>();
-  for (const w of spans) {
-    for (const p of pieces(w, starts)) {
-      for (let i = Math.floor(p.a / step); i * step < p.b; i++) {
-        const ms = Math.min(p.b, (i + 1) * step) - Math.max(p.a, i * step);
-        if (ms <= 0) continue;
-        const key = `${p.day}:${i}`;
-        const acc = slots.get(key) ?? { ms: 0, cats: new Map(), titles: new Map() };
-        acc.ms += ms;
-        acc.cats.set(w.categoryId, (acc.cats.get(w.categoryId) ?? 0) + ms);
-        acc.titles.set(w.title, (acc.titles.get(w.title) ?? 0) + ms);
-        slots.set(key, acc);
-      }
+  const parts = spans.flatMap((w) => pieces(w, starts).map((p) => ({ ...p, w })));
+  for (const { day, a, b, w } of parts) {
+    for (let i = Math.floor(a / step); i * step < b; i++) {
+      const ms = Math.min(b, (i + 1) * step) - Math.max(a, i * step);
+      if (ms <= 0) continue;
+      const key = `${day}:${i}`;
+      const acc = slots.get(key) ?? { ms: 0, cats: new Map(), titles: new Map() };
+      acc.ms += ms;
+      acc.cats.set(w.categoryId, (acc.cats.get(w.categoryId) ?? 0) + ms);
+      acc.titles.set(w.title, (acc.titles.get(w.title) ?? 0) + ms);
+      slots.set(key, acc);
     }
   }
-  const filled = [...slots.entries()]
-    .filter(([, acc]) => acc.ms >= step / 3)
-    .map(([key, acc]) => {
+  const filled = new Set([...slots.entries()].filter(([, acc]) => acc.ms >= step / 3).map(([key]) => key));
+  // Kesintisiz işler: kapladıkları dilimler de dolu.
+  parts.sort((x, y) => x.day - y.day || x.a - y.a);
+  let run: { day: number; a: number; b: number; ms: number } | null = null;
+  const fill = () => {
+    if (!run || run.ms < step / 3) return;
+    for (let i = Math.floor(run.a / step); i * step < run.b; i++) filled.add(`${run.day}:${i}`);
+  };
+  for (const { day, a, b } of parts) {
+    if (b <= a) continue;
+    if (run && run.day === day && a - run.b < RUN_GAP_MS) {
+      run.b = Math.max(run.b, b);
+      run.ms += b - a;
+    } else {
+      fill();
+      run = { day, a, b, ms: b - a };
+    }
+  }
+  fill();
+
+  const ordered = [...filled]
+    .map((key) => {
       const [day, i] = key.split(":").map(Number);
-      return { day, i, acc };
+      return { day, i, acc: slots.get(key) };
     })
     .sort((x, y) => x.day - y.day || x.i - y.i);
   const out: SlotBar[] = [];
-  let run: { day: number; i0: number; i1: number; acc: Acc } | null = null;
+  let bar: { day: number; i0: number; i1: number; acc: Acc } | null = null;
   const flush = () => {
-    if (!run) return;
-    const { day, i0, i1, acc } = run;
+    if (!bar) return;
+    const { day, i0, i1, acc } = bar;
     const top = (m: Map<string | null, number>) => [...m.entries()].sort((x, y) => y[1] - x[1]);
     out.push({
       day,
@@ -179,16 +202,16 @@ export function slotBars(spans: WindowSpan[], starts: number[], slotMin: number)
       titles: (top(acc.titles) as [string, number][]).slice(0, 3).map(([title, ms]) => ({ title, ms })),
     });
   };
-  for (const { day, i, acc } of filled) {
-    if (run && run.day === day && run.i1 === i - 1) {
-      run.i1 = i;
-      run.acc.ms += acc.ms;
-      for (const [k, v] of acc.cats) run.acc.cats.set(k, (run.acc.cats.get(k) ?? 0) + v);
-      for (const [k, v] of acc.titles) run.acc.titles.set(k, (run.acc.titles.get(k) ?? 0) + v);
-    } else {
+  for (const { day, i, acc } of ordered) {
+    if (!(bar && bar.day === day && bar.i1 === i - 1)) {
       flush();
-      run = { day, i0: i, i1: i, acc: { ms: acc.ms, cats: new Map(acc.cats), titles: new Map(acc.titles) } };
+      bar = { day, i0: i, i1: i, acc: { ms: 0, cats: new Map(), titles: new Map() } };
     }
+    bar.i1 = i;
+    if (!acc) continue;
+    bar.acc.ms += acc.ms;
+    for (const [k, v] of acc.cats) bar.acc.cats.set(k, (bar.acc.cats.get(k) ?? 0) + v);
+    for (const [k, v] of acc.titles) bar.acc.titles.set(k, (bar.acc.titles.get(k) ?? 0) + v);
   }
   flush();
   return out;
