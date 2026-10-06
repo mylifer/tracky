@@ -11,6 +11,15 @@ use crate::classify::Classifier;
 use crate::model::Session;
 use crate::report::Bucket;
 
+/// Kırpılmış oturum dilimi: (başlangıç, bitiş, oturum, kategori, proje).
+type Span<'a> = (
+    DateTime<Utc>,
+    DateTime<Utc>,
+    &'a Session,
+    Option<String>,
+    Option<String>,
+);
+
 /// Listelenen en çok uygulama / başlık sayısı.
 const TOP: usize = 8;
 
@@ -69,13 +78,7 @@ pub fn build(
     let mut categories: HashMap<Option<String>, i64> = HashMap::new();
     let mut total = 0;
     // Blok analizi tüm etkinliklerle yapılır (araya giren başka işler bloğu böler).
-    let mut spans: Vec<(
-        DateTime<Utc>,
-        DateTime<Utc>,
-        &Session,
-        Option<String>,
-        Option<String>,
-    )> = Vec::new();
+    let mut spans: Vec<Span> = Vec::new();
 
     for s in sessions {
         let (start, end) = (s.started_at.max(from), s.ended_at.min(to));
