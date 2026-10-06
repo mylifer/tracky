@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   CalendarDays,
   Check,
@@ -80,19 +80,29 @@ import { DayCard } from "./timesheet/DayCard";
  * atanan iş yeni satır olarak eklenir. Satırlar seçilip birleştirilir ya da gönderilir.
  */
 export default function Timesheet({
+  day,
+  onChanged,
   onOpenDay,
   onReviewDay,
   onOpenSettings,
 }: {
+  /**
+   * Gün raporuna gömülü: yalnızca bu gün, üst çubuk ve kısayollar olmadan (dönemi rapor seçer).
+   */
+  day?: string;
+  /** Satırlar değişince (gömülüyken takvim de yenilensin). */
+  onChanged?: () => void;
   onOpenDay: (iso: string) => void;
   /** Günün projeye atanmamış süresini Gözden geçir'de aç. */
   onReviewDay: (iso: string) => void;
   /** Ayarlar'ı bu bölümle aç (Bağlantılar ya da Zaman çizelgeleri). */
   onOpenSettings: (section: string) => void;
 }) {
-  const [mode, setModeState] = useState<Mode>(savedMode);
+  const [modeState, setModeState] = useState<Mode>(savedMode);
+  const mode: Mode = day ? "day" : modeState;
   // Görünümdeki herhangi bir gün; görünüm değişince aynı gün etrafında açılır.
-  const [anchor, setAnchor] = useState(() => isoDate(today()));
+  const [anchorState, setAnchor] = useState(() => isoDate(today()));
+  const anchor = day ?? anchorState;
   const setMode = (m: Mode) => {
     setModeState(m);
     try {
@@ -311,6 +321,7 @@ export default function Timesheet({
         inFlight.current.delete(p);
       }
       await load();
+      onChanged?.();
     } catch (e) {
       setError(friendlyError(e));
     }
@@ -345,13 +356,14 @@ export default function Timesheet({
     } finally {
       setExporting(false);
       await load();
+      onChanged?.();
       void loadFile(true);
     }
   };
 
   if (!config)
     return (
-      <Page title="Zaman çizelgesi">
+      <Frame embedded={!!day} title="Zaman çizelgesi">
         {error ? (
           <div className="px-5">
             <ErrorText>{error}</ErrorText>
@@ -363,13 +375,13 @@ export default function Timesheet({
             ))}
           </div>
         )}
-      </Page>
+      </Frame>
     );
   if (!sheet)
     return (
-      <Page title="Zaman çizelgesi">
+      <Frame embedded={!!day} title="Zaman çizelgesi">
         <Setup onDone={load} />
-      </Page>
+      </Frame>
     );
   const target = sheet.sheetUrl
     ? "Google Sheets"
@@ -423,17 +435,20 @@ export default function Timesheet({
     setAnchor(isoDate(mode === "day" ? addDays(a, n) : mode === "week" ? addDays(a, 7 * n) : addMonths(a, n)));
   };
   const modeInfo = MODES.find((m) => m.id === mode)!;
-  keys.current = (e) => {
-    if (e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey) return;
-    const el = e.target as HTMLElement | null;
-    if (el?.closest("input, textarea, select, [contenteditable], [role=dialog], [role=listbox], [role=menu]")) return;
-    if (e.key === "ArrowLeft") step(-1);
-    else if (e.key === "ArrowRight" && start < current) step(1);
-    else if (e.key === "t" || e.key === "T") setAnchor(isoDate(today()));
-    else if (e.key === "Escape" && selected.size > 0) setSelected(new Set());
-    else return;
-    e.preventDefault();
-  };
+  keys.current = day
+    ? null
+    : (e) => {
+        if (e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey) return;
+        const el = e.target as HTMLElement | null;
+        if (el?.closest("input, textarea, select, [contenteditable], [role=dialog], [role=listbox], [role=menu]"))
+          return;
+        if (e.key === "ArrowLeft") step(-1);
+        else if (e.key === "ArrowRight" && start < current) step(1);
+        else if (e.key === "t" || e.key === "T") setAnchor(isoDate(today()));
+        else if (e.key === "Escape" && selected.size > 0) setSelected(new Set());
+        else return;
+        e.preventDefault();
+      };
   // Panoda açılan gün: seçilen, yoksa bugün (dönemdeyse), yoksa satırı olan ilk gün.
   const todayIso = isoDate(today());
   const shown =
@@ -551,13 +566,21 @@ export default function Timesheet({
   );
 
   return (
-    <Page title={rangeTitle(mode, rangeStart)} controls={controls}>
-      <div className="mx-auto grid w-full max-w-[1400px] items-start gap-4 px-5 pt-1 pb-10 @[1060px]:grid-cols-[minmax(0,1fr)_256px]">
+    <Frame embedded={!!day} title={rangeTitle(mode, rangeStart)} controls={controls}>
+      <div
+        className={cn(
+          "mx-auto grid w-full max-w-[1400px] items-start gap-4 @[1060px]:grid-cols-[minmax(0,1fr)_256px]",
+          !day && "px-5 pt-1 pb-10",
+        )}
+      >
         {/* Dönemin özeti, durumu ve kaynakları. Dar pencerede satırlar ezilmesin diye panel üstte
             yan yana üç bölüm olur. */}
         <aside
           aria-label="Dönem özeti"
-          className="grid gap-px overflow-hidden rounded-xl border bg-border shadow-xs @[640px]:grid-cols-3 @[1060px]:sticky @[1060px]:top-1 @[1060px]:order-last @[1060px]:grid-cols-1"
+          className={cn(
+            "grid gap-px overflow-hidden rounded-xl border bg-border shadow-xs @[1060px]:sticky @[1060px]:top-1 @[1060px]:order-last @[1060px]:grid-cols-1",
+            day ? "@[560px]:grid-cols-2" : "@[640px]:grid-cols-3",
+          )}
         >
           <section className={RAIL}>
             <div className="-mr-1.5 flex items-center gap-1.5">
@@ -712,8 +735,8 @@ export default function Timesheet({
             )}
           </section>
 
-          {/* Kayıtların nereden gelip nereye gittiği; tıklayınca Ayarlar. */}
-          <section className={RAIL}>
+          {/* Kayıtların nereden gelip nereye gittiği; tıklayınca Ayarlar. Gömülüyken yer kaplamasın. */}
+          <section className={cn(RAIL, day && "hidden")}>
             <h2 className={RAIL_TITLE}>Kaynaklar</h2>
             <ul className="space-y-2.5 text-xs">
               <li>
@@ -894,6 +917,26 @@ export default function Timesheet({
           )}
         </div>
       </div>
+    </Frame>
+  );
+}
+
+/** Sayfa (üst çubukla) ya da gömülüyken yalnızca içerik. */
+function Frame({
+  embedded,
+  title,
+  controls,
+  children,
+}: {
+  embedded: boolean;
+  title: string;
+  controls?: ReactNode;
+  children: ReactNode;
+}) {
+  if (embedded) return <div className="@container">{children}</div>;
+  return (
+    <Page title={title} controls={controls}>
+      {children}
     </Page>
   );
 }

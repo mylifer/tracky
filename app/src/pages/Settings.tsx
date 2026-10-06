@@ -13,6 +13,7 @@ import { AI_SECTION, CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections }
 import UpdateSettings from "./UpdateSettings";
 import BackupSettings from "./BackupSettings";
 import { friendlyError } from "../lib/feedback";
+import { saveStartView, savedStartView, type StartView } from "../lib/startView";
 
 /** Sayfanın başındaki içindekiler: bölümler sayfadaki sırasıyla. */
 const SECTIONS = [
@@ -45,6 +46,7 @@ export default function Settings({
   section?: string | null;
 }) {
   const [privacy, setPrivacy] = useState<PrivacySettings | null>(null);
+  const [startView, setStartView] = useState<StartView>(savedStartView);
   const [apps, setApps] = useState<UsageTotal[]>([]);
   const [diag, setDiag] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +112,23 @@ export default function Settings({
           checked={status.autostart}
           onChange={toggleAutostart}
         />
+        <SettingRow label="Açılış sayfası" hint="Kum açılınca gösterilen sayfa.">
+          <Select
+            value={startView}
+            onValueChange={(v) => {
+              setStartView(v as StartView);
+              saveStartView(v as StartView);
+            }}
+          >
+            <SelectTrigger size="sm" className="w-32" aria-label="Açılış sayfası">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="day">Gün</SelectItem>
+              <SelectItem value="home">Bugün</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingRow>
         <SettingRow label="Görünüm" hint="Sistem seçiliyken bilgisayarın açık/koyu ayarını izler.">
           <Select
             value={status.theme}

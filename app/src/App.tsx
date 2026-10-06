@@ -23,6 +23,7 @@ import {
   Download,
   Command as CommandIcon,
   ReceiptText,
+  House,
 } from "lucide-react";
 import { api, formatDuration, type AppStatus, type Suggestions, type Tag, type TrackingStatus } from "./api";
 import { UpdateCard } from "./components/UpdateCard";
@@ -61,11 +62,14 @@ import ClientReport from "./pages/ClientReport";
 import Timesheet from "./pages/Timesheet";
 import Review, { type ReviewRange } from "./pages/Review";
 import Settings from "./pages/Settings";
+import Today from "./pages/Today";
+import { savedStartView } from "./lib/startView";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
 type Mode = "day" | "week" | "month";
 type View =
   | Mode
+  | "home"
   | "review"
   | "timesheet"
   | "trends"
@@ -83,6 +87,7 @@ const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
 ];
 
 const TITLES: Partial<Record<View, string>> = {
+  home: "Bugün",
   review: "Gözden geçir",
   timesheet: "Zaman çizelgesi",
   trends: "Eğilimler",
@@ -155,7 +160,7 @@ function Splash() {
 }
 
 function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) {
-  const [view, setView] = useState<View>("day");
+  const [view, setView] = useState<View>(savedStartView);
   // Gözden geçir bir aralıkla açılabilir (raporda bakılan dönem); kenar çubuğundan açılınca kendi dönemi.
   const [reviewRange, setReviewRange] = useState<ReviewRange | null>(null);
   const openReview = (range: ReviewRange | null = null) => {
@@ -301,6 +306,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
         return setView("week");
       case "settings":
         return openSettings();
+      case "home":
       case "review":
       case "timesheet":
       case "search":
@@ -385,6 +391,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
         (e) => toast(friendlyError(e), { tone: "error" }),
       );
     return [
+      go("home", "Bugün", <House />, undefined, "anasayfa özet sırada yapılacaklar"),
       go("day", "Gün", <CalendarDays />, `${MOD}1`, "bugün rapor takvim"),
       go("week", "Hafta", <CalendarRange />, `${MOD}2`, "haftalık rapor"),
       go("month", "Ay", <CalendarIcon />, `${MOD}3`, "aylık rapor"),
@@ -452,6 +459,9 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
         </button>
         <nav className="flex flex-1 flex-col gap-5 overflow-y-auto px-2.5 pt-1">
           <NavSection title="İş">
+            <NavItem icon={<House />} active={view === "home"} onClick={() => setView("home")}>
+              Bugün
+            </NavItem>
             <NavItem
               icon={<Inbox />}
               active={view === "review"}
@@ -535,6 +545,7 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
               setDay(iso);
               setView("day");
             }}
+            onOpenSettings={openSettings}
             onReview={() =>
               openReview(
                 view === "day"
@@ -544,6 +555,18 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
                     : { start: month, days: daysInMonth(parseIsoDate(month)) },
               )
             }
+          />
+        ) : view === "home" ? (
+          // Bugün üst çubuğu kendisi çizer.
+          <Today
+            tracking={tracking}
+            onTogglePause={togglePause}
+            onOpenDay={(iso) => {
+              setDay(iso);
+              setView("day");
+            }}
+            onReview={openReview}
+            onNavigate={setView}
           />
         ) : view === "timesheet" ? (
           // Zaman çizelgesi üst çubuğu kendisi çizer (dönem ve görünüm denetimleriyle).

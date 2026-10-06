@@ -116,7 +116,7 @@ export default function Summary({
 }
 
 /** Hedefe ulaşma halkası: kum gradyanı, hedef dolunca yeşil. */
-function GoalRing({ ratio, target }: { ratio: number; target: number }) {
+export function GoalRing({ ratio, target }: { ratio: number; target: number }) {
   const r = 26;
   const c = 2 * Math.PI * r;
   const done = ratio >= 1;

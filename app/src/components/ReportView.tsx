@@ -32,6 +32,7 @@ import {
 } from "./SessionEdit";
 import Summary from "./Summary";
 import Toolbar from "./Toolbar";
+import Timesheet from "../pages/Timesheet";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
@@ -66,6 +67,8 @@ type Props = {
   onSelectDay: (iso: string) => void;
   /** Projeye atanmamış süreyi gözden geçir. */
   onReview: () => void;
+  /** Ayarlar'ı bu bölümle aç (Çizelge görünümünden). */
+  onOpenSettings: (section: string) => void;
 };
 
 export default function ReportView(p: Props) {
@@ -244,6 +247,12 @@ export default function ReportView(p: Props) {
 
   // Yakınlaştırma: takvimde saat yüksekliği, uygulama çizelgesinde gösterilen saat aralığı.
   const appsView = p.mode !== "month" && calendarView === "apps" && !!report && report.totalSeconds > 0;
+  // Çizelge görünümü: gün takviminin yanında günün zaman çizelgesi satırları. Çizelgesi olmayan
+  // kullanıcıda takvime düşer; satırlar yüklenene kadar var sayılır (görünüm sıçramasın).
+  const hasSheet = entriesOf === null || entriesOf.list !== null;
+  const sheetView = p.mode === "day" && calendarView === "sheet" && hasSheet;
+  // Seçicide görünen değer: hafta görünümünde çizelge yok, takvim seçili görünür.
+  const shownView: CalendarView = calendarView === "sheet" && !sheetView ? "calendar" : calendarView;
   // Proje merceği yalnızca gün/hafta takviminde; ay ve uygulama çizelgesi kategori renginde kalır.
   const projectLens = lens === "project" && p.mode !== "month" && !appsView;
   const zoomable = p.mode !== "month" && !!report && (report.totalSeconds > 0 || report.idle.length > 0);
@@ -381,7 +390,14 @@ export default function ReportView(p: Props) {
           </div>
         )}
         {report && (
-          <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
+          <div
+            className={cn(
+              "grid gap-4",
+              sheetView
+                ? "items-start @[900px]:grid-cols-[300px_minmax(0,1fr)]"
+                : "@[880px]:grid-cols-[minmax(0,1fr)_292px]",
+            )}
+          >
             <div className="min-w-0 space-y-4">
               <Card className="gap-3 py-3" style={{ ["--cal-head" as string]: `${headHeight}px` }}>
                 {(order.length > 0 || p.mode !== "month") && (
@@ -415,8 +431,8 @@ export default function ReportView(p: Props) {
                         </Tabs>
                       </div>
                     )}
-                    {p.mode !== "month" && report.totalSeconds > 0 && (
-                      <Tabs value={calendarView} onValueChange={(v) => setCalendarView(v as CalendarView)}>
+                    {p.mode !== "month" && (report.totalSeconds > 0 || sheetView) && (
+                      <Tabs value={shownView} onValueChange={(v) => setCalendarView(v as CalendarView)}>
                         <TabsList className="h-7" aria-label="Takvim görünümü">
                           <TabsTrigger value="calendar" className="px-2.5 text-xs">
                             Takvim
@@ -424,6 +440,15 @@ export default function ReportView(p: Props) {
                           <TabsTrigger value="apps" className="px-2.5 text-xs">
                             Uygulamalar
                           </TabsTrigger>
+                          {p.mode === "day" && hasSheet && (
+                            <TabsTrigger
+                              value="sheet"
+                              className="px-2.5 text-xs"
+                              title="Takvim ve günün zaman çizelgesi satırları yan yana"
+                            >
+                              Çizelge
+                            </TabsTrigger>
+                          )}
                         </TabsList>
                       </Tabs>
                     )}
@@ -482,7 +507,8 @@ export default function ReportView(p: Props) {
                           windows={report.windows}
                           tags={tags}
                           meetings={meetings}
-                          entries={entries}
+                          // Çizelge görünümünde satırlar yanda; takvimde ayrıca sütun olmaz.
+                          entries={sheetView ? null : entries}
                           onMeeting={(meeting, x, y) => setMeetingSel({ meeting, x, y })}
                           onEmpty={openDraft}
                           onRange={selectRange}
@@ -533,7 +559,7 @@ export default function ReportView(p: Props) {
                   </div>
                 </CardContent>
               </Card>
-              {report.apps.length > 0 && (
+              {report.apps.length > 0 && !sheetView && (
                 <Card className="gap-2">
                   <CardHeader>
                     <CardTitle>Uygulamalar ve pencereler</CardTitle>
@@ -551,19 +577,31 @@ export default function ReportView(p: Props) {
                 </Card>
               )}
             </div>
-            <Summary
-              report={report}
-              previous={previous}
-              tags={tags}
-              days={days}
-              dailyHours={dailyHours}
-              limits={p.mode === "day" ? limits : []}
-              projectGoals={p.mode === "week" ? projectGoals : []}
-              unassigned={review}
-              mode={p.mode}
-              title={isLive ? mode.current : mode.summary}
-              onReview={p.onReview}
-            />
+            {sheetView ? (
+              <div className="min-w-0">
+                <Timesheet
+                  day={p.start}
+                  onChanged={load}
+                  onOpenDay={() => setCalendarView("calendar")}
+                  onReviewDay={p.onReview}
+                  onOpenSettings={p.onOpenSettings}
+                />
+              </div>
+            ) : (
+              <Summary
+                report={report}
+                previous={previous}
+                tags={tags}
+                days={days}
+                dailyHours={dailyHours}
+                limits={p.mode === "day" ? limits : []}
+                projectGoals={p.mode === "week" ? projectGoals : []}
+                unassigned={review}
+                mode={p.mode}
+                title={isLive ? mode.current : mode.summary}
+                onReview={p.onReview}
+              />
+            )}
           </div>
         )}
       </div>
@@ -672,15 +710,19 @@ function useCalendarFit(): [boolean, (v: boolean) => void] {
   ];
 }
 
-type CalendarView = "calendar" | "apps";
+type CalendarView = "calendar" | "apps" | "sheet";
 // Anahtar eski adıyla kalır: kayıtlı tercih korunsun.
 const CALENDAR_VIEW_KEY = "kum.dayView";
 
-/** Gün ve hafta görünümünde takvim mi uygulama çizelgesi mi; tercih bu cihazda hatırlanır. */
+/**
+ * Gün ve hafta görünümünde takvim, uygulama çizelgesi ya da (yalnızca gün) takvimle zaman
+ * çizelgesi; tercih bu cihazda hatırlanır.
+ */
 function useCalendarView(): [CalendarView, (v: CalendarView) => void] {
   const [view, setView] = useState<CalendarView>(() => {
     try {
-      return localStorage.getItem(CALENDAR_VIEW_KEY) === "apps" ? "apps" : "calendar";
+      const v = localStorage.getItem(CALENDAR_VIEW_KEY);
+      return v === "apps" || v === "sheet" ? v : "calendar";
     } catch {
       return "calendar";
     }
