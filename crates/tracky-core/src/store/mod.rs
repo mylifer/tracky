@@ -800,7 +800,9 @@ impl Store {
     /// kısaltır. Bloğun dışında kalan kısım silinir; bloğa katılan kısımdaki kayıtlar bloğun
     /// kategorisini ve projesini alır, kaydı olmayan boşluklar (bilgisayar başında
     /// olunmayan süre) aynı kategori ve projede `label` adlı elle kayıtla dolar: zaman
-    /// çizelgesine bloğun yeni aralığı gider. Değişen satır sayısı.
+    /// çizelgesine bloğun yeni aralığı gider. Projesi olmayan blok projeli işin üstüne
+    /// uzarsa o işin projesini alır: iki blok tek blok (tek çizelge satırı) olur. Değişen
+    /// satır sayısı.
     #[allow(clippy::too_many_arguments)]
     pub fn resize_block(
         &self,
@@ -822,6 +824,12 @@ impl Store {
                 "blok henüz gelmemiş bir zamana uzatılamaz".into(),
             ));
         }
+        let joined = [(new_from, from.min(new_to)), (to.max(new_from), new_to)];
+        let adopted = match project_id {
+            Some(_) => None,
+            None => self.joined_project(&joined)?,
+        };
+        let project_id = project_id.or(adopted.as_deref());
         let tx = self.savepoint()?;
         let mut n = 0;
         for (a, b) in [(from, new_from.min(to)), (new_to.max(from), to)] {
@@ -829,13 +837,40 @@ impl Store {
                 n += self.delete_between(a, b)?;
             }
         }
-        for (a, b) in [(new_from, from.min(new_to)), (to.max(new_from), new_to)] {
+        for (a, b) in joined {
             if b > a {
                 n += self.join_block(a, b, label, category_id, project_id)?;
             }
         }
+        // Bloğun kendi kısmı da katıldığı işin projesine geçer.
+        let (a, b) = (from.max(new_from), to.min(new_to));
+        if adopted.is_some() && b > a {
+            n += self.set_project_between(a, b, project_id)?;
+        }
         tx.commit()?;
         Ok(n)
+    }
+
+    /// [`Self::resize_block`]'ta projesi olmayan bloğa katılan aralıklarda en çok süren proje
+    /// ("Projesiz" sayılmaz).
+    fn joined_project(&self, ranges: &[(DateTime<Utc>, DateTime<Utc>)]) -> Result<Option<String>> {
+        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let mut by_project: HashMap<String, i64> = HashMap::new();
+        for &(from, to) in ranges.iter().filter(|(a, b)| b > a) {
+            for s in self.sessions_between(from, to)? {
+                if !s.counts_as_work() {
+                    continue;
+                }
+                let ms = (s.ended_at.min(to) - s.started_at.max(from)).num_milliseconds();
+                if let (Some(p), true) = (classifier.classify(&s).project, ms > 0) {
+                    *by_project.entry(p).or_default() += ms;
+                }
+            }
+        }
+        Ok(by_project
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+            .map(|(p, _)| p))
     }
 
     /// [`Self::resize_block`]'ta bloğa katılan `[from, to)` aralığı.
@@ -2198,6 +2233,28 @@ mod tests {
                 .set_category_between(t(0), t(10), Some("yok"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn unassigned_block_adopts_project_it_grows_over() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.accept_project_suggestion("Togg").unwrap();
+        let p = Some(project.id.as_str());
+        store.upsert_session(&session("A", None, 0, 600)).unwrap();
+        store
+            .upsert_session(&session("B", None, 600, 1200))
+            .unwrap();
+        store.set_project_between(t(0), t(600), p).unwrap();
+
+        // Projesiz B bloğunun başı projeli A'nın üstüne uzar: ikisi de Togg olur.
+        store
+            .resize_block(t(600), t(1200), t(0), t(1200), "B", None, None)
+            .unwrap();
+        let all = store.sessions_between(t(0), t(1200)).unwrap();
+        assert!(all.iter().all(|s| s.project_id.as_deref() == p));
+        let report = store.report(t(0), t(1200), &[t(0)], true).unwrap();
+        assert_eq!(report.work.blocks.len(), 1);
+        assert_eq!(report.work.blocks[0].project_id.as_deref(), p);
     }
 
     #[test]
