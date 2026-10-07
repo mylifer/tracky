@@ -519,6 +519,7 @@ pub fn run() {
             }
             if let WindowEvent::Focused(true) = event {
                 let app = window.app_handle();
+                sync::on_focus(app);
                 let pending = lock(&app.state::<PendingNav>().0).take();
                 if let Some((target, at)) = pending
                     && at.elapsed() < PENDING_NAV_FOR

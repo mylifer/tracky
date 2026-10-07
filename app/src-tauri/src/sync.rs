@@ -26,9 +26,26 @@ const OWNER_KEY: &str = "sync_owner";
 const CURSOR_VERSION_KEY: &str = "sync_cursor_version";
 /// Arka planda bu aralıkla eşitlenir.
 const INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// Başarısız eşitlemeden sonra bu kadar beklenip yeniden denenir.
+const RETRY: Duration = Duration::from_secs(60);
+/// Açılışta takip kendini toparlasın diye ilk eşitlemeden önceki gecikme.
+const FIRST: Duration = Duration::from_secs(20);
+/// Döngü en geç bu aralıkla uyanıp duvar saatine bakar. Yalnızca `recv_timeout`'a
+/// güvenilmez: monoton saat uykuda (ve bazı Windows durumlarında) ilerlemeyebilir,
+/// sıradaki eşitleme saatlerce gecikirdi.
+const TICK: Duration = Duration::from_secs(30);
+/// Pencere odaklanınca son denemeden bu kadar geçtiyse eşitlenir.
+const FOCUS_AFTER: Duration = Duration::from_secs(60);
+/// Bu kadar süredir eşitlenemiyorsa menü çubuğunda uyarı gösterilir.
+const WARN_AFTER: Duration = Duration::from_secs(15 * 60);
+/// Eşitleme günlüğü (veri klasöründe); bu boyutu aşınca `.1` uzantısına taşınır.
+const LOG_FILE: &str = "sync.log";
+const LOG_MAX_BYTES: u64 = 512 * 1024;
 
 pub enum SyncCommand {
     Now,
+    /// Pencere odaklandı: son deneme yeterince eskiyse eşitle.
+    Focus,
     Shutdown,
 }
 
@@ -38,6 +55,8 @@ pub struct SyncWorker {
     /// Bir eşitleme sürerken tutulur: hesap değişince imleç sıfırlama, süren
     /// eşitlemenin (eski hesabın) imleçleri yazmasını bekler.
     pub gate: Mutex<()>,
+    /// Kesintisiz başarısızlıkların başladığı an (başarılı eşitlemede sıfırlanır).
+    pub failing_since: Mutex<Option<DateTime<Utc>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -189,9 +208,15 @@ fn migration_hint(message: String) -> String {
     }
 }
 
-fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) {
+/// Sonucu kaydeder ve bildirir; başarısız olduysa `false` (yakında yeniden denenir).
+fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) -> bool {
     let last = match result {
-        Ok(None) => return,
+        // Giriş yok: denenecek bir şey yok, hata da sayılmaz.
+        Ok(None) => {
+            *lock(&app.state::<SyncWorker>().failing_since) = None;
+            update_tray(app);
+            return true;
+        }
         Ok(Some(summary)) => LastSync {
             at: Utc::now(),
             ok: true,
@@ -234,28 +259,109 @@ fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) {
     if last.summary.is_some_and(|s| s.settings_pulled) {
         crate::reload_synced_settings(app);
     }
-    *lock(&app.state::<SyncWorker>().last) = Some(last);
+    let ok = last.ok;
+    log_line(
+        app,
+        &format!("{} {}", if ok { "tamam" } else { "HATA" }, last.message),
+    );
+    {
+        let worker = app.state::<SyncWorker>();
+        let mut failing = lock(&worker.failing_since);
+        *failing = if ok {
+            None
+        } else {
+            Some(failing.unwrap_or(last.at))
+        };
+        *lock(&worker.last) = Some(last);
+    }
+    update_tray(app);
     let _ = app.emit("sync", status(app));
+    ok
 }
 
-/// Arka plan döngüsü: aralıkla ya da istekle eşitler.
+/// Arka plan döngüsü: aralıkla, istekle ya da pencere odaklanınca eşitler. Sıradaki
+/// eşitlemenin zamanı duvar saatiyle tutulur ve döngü en geç [`TICK`]'te bir ona bakar.
 pub fn run(app: AppHandle, rx: Receiver<SyncCommand>) {
-    // Açılışta takip kendini toparlasın diye kısa bir gecikme.
-    let mut wait = Duration::from_secs(20);
+    log_line(
+        &app,
+        &format!("başladı (sürüm {})", env!("CARGO_PKG_VERSION")),
+    );
+    let mut due = after(FIRST);
+    let mut last_attempt: Option<DateTime<Utc>> = None;
     loop {
-        match rx.recv_timeout(wait) {
+        let wait = (due - Utc::now()).to_std().unwrap_or_default().min(TICK);
+        let go = match rx.recv_timeout(wait) {
             Ok(SyncCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
-            Ok(SyncCommand::Now) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(SyncCommand::Now) => true,
+            Ok(SyncCommand::Focus) => {
+                // Açılıştaki ilk eşitleme ([`FIRST`]) öne çekilmez.
+                last_attempt.is_some_and(|t| elapsed(t) >= FOCUS_AFTER)
+            }
+            Err(RecvTimeoutError::Timeout) => Utc::now() >= due,
+        };
+        if !go {
+            continue;
         }
-        {
+        let ok = {
             let worker = app.state::<SyncWorker>();
             let _gate = lock(&worker.gate);
-            record(&app, sync_once(&app));
-        }
-        wait = INTERVAL;
+            record(&app, sync_once(&app))
+        };
+        last_attempt = Some(Utc::now());
+        due = after(if ok { INTERVAL } else { RETRY });
     }
     // Kapanışta beklemeyiz (ağ yavaşsa uygulama kapanmaz gibi görünür);
     // kalan değişiklikler bir sonraki açılışta gönderilir.
+}
+
+fn after(d: Duration) -> DateTime<Utc> {
+    Utc::now() + chrono::Duration::from_std(d).unwrap_or_default()
+}
+
+/// Duvar saatiyle geçen süre (saat geri alındıysa sıfır).
+fn elapsed(since: DateTime<Utc>) -> Duration {
+    (Utc::now() - since).to_std().unwrap_or_default()
+}
+
+/// Eşitleme günlüğüne zaman damgalı bir satır ekler; dosya büyüyünce bir öncekini
+/// `.1` olarak saklar. Günlük yazılamazsa eşitleme etkilenmez.
+fn log_line(app: &AppHandle, line: &str) {
+    use std::io::Write;
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let path = dir.join(LOG_FILE);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
+        let _ = std::fs::rename(&path, dir.join(format!("{LOG_FILE}.1")));
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "{now} {line}");
+    }
+}
+
+/// Menü çubuğundaki eşitleme öğesini son duruma göre yazar.
+fn update_tray(app: &AppHandle) {
+    let worker = app.state::<SyncWorker>();
+    let last = lock(&worker.last).clone();
+    let failing = *lock(&worker.failing_since);
+    let text = match (last, failing) {
+        (_, Some(since)) if elapsed(since) >= WARN_AFTER => {
+            let since = since.with_timezone(&chrono::Local).format("%H:%M");
+            format!("⚠︎ {since}'den beri eşitlenemiyor — Şimdi Eşitle")
+        }
+        (Some(last), _) if last.ok => format!(
+            "Şimdi Eşitle (son: {})",
+            last.at.with_timezone(&chrono::Local).format("%H:%M")
+        ),
+        _ => "Şimdi Eşitle".to_string(),
+    };
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || crate::tray::set_sync(&handle, &text));
 }
 
 #[tauri::command]
@@ -371,6 +477,11 @@ pub fn sync_now(app: AppHandle) {
     let _ = lock(&app.state::<SyncWorker>().tx).send(SyncCommand::Now);
 }
 
+/// Pencere odaklandı: son deneme eskiyse eşitlenir (açıp bakınca veri güncel olsun).
+pub fn on_focus(app: &AppHandle) {
+    let _ = lock(&app.state::<SyncWorker>().tx).send(SyncCommand::Focus);
+}
+
 /// Kapanışta döngüyü durdurur.
 pub fn shutdown(app: &AppHandle) {
     let _ = lock(&app.state::<SyncWorker>().tx).send(SyncCommand::Shutdown);
@@ -383,6 +494,7 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
         tx: Mutex::new(tx),
         last: Mutex::new(None),
         gate: Mutex::new(()),
+        failing_since: Mutex::new(None),
     });
     let handle = app.handle().clone();
     std::thread::Builder::new()

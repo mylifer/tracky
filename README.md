@@ -118,6 +118,9 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 51. Zaman çizelgesi eşitlemesi: kaydedilen, birleştirilen, gönderilen ve silinen satırlar diğer bilgisayara
       da gider (silme yumuşak, son yazan kazanır); aktarılmış satır orada bir daha gönderilmez. Sunucuda
       `supabase/migrations/0010` yoksa eşitlemenin geri kalanı sürer
+- [x] 52. Eşitleme döngüsü duvar saatine bakar (30 sn'de bir); hata olunca 1 dakikada yeniden dener, pencere
+      odaklanınca (son denemeden 1 dk geçtiyse) eşitler. Menüde "Şimdi Eşitle (son: SS:DD)"; 15 dakikadan uzun
+      süredir eşitlenemiyorsa uyarı. Her deneme veri klasöründeki `sync.log`'a yazılır
 
 ## Yapı
 

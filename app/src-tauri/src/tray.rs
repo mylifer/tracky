@@ -27,6 +27,7 @@ pub struct Items {
     pause_for: Submenu<Wry>,
     pub autostart: CheckMenuItem<Wry>,
     update: MenuItem<Wry>,
+    sync: MenuItem<Wry>,
 }
 
 pub struct TrayItems(pub Mutex<Option<Items>>);
@@ -72,6 +73,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         autostart,
         None::<&str>,
     )?;
+    let sync = MenuItem::with_id(app, "sync", "Şimdi Eşitle", true, None::<&str>)?;
     let update = MenuItem::with_id(app, "update", "Kum güncel", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Kum'dan Çık", true, None::<&str>)?;
     let menu = Menu::with_items(
@@ -87,6 +89,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
             &timesheet,
             &PredefinedMenuItem::separator(app)?,
             &autostart_item,
+            &sync,
             &update,
             &quit,
         ],
@@ -111,6 +114,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         pause_for,
         autostart: autostart_item,
         update,
+        sync,
     });
     Ok(())
 }
@@ -145,6 +149,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                     }
                 });
         }
+        "sync" => crate::sync::sync_now(app.clone()),
         "quit" => app.exit(0),
         "pause_15" | "pause_60" | "pause_tomorrow" => {
             let minutes = match event.id().as_ref() {
@@ -185,6 +190,13 @@ pub fn update(app: &AppHandle, status: &Status) {
     } else {
         "Duraklat"
     });
+}
+
+/// Eşitleme menü öğesi: son eşitleme ya da uzun süren başarısızlık uyarısı.
+pub fn set_sync(app: &AppHandle, text: &str) {
+    if let Some(items) = items(app) {
+        let _ = items.sync.set_text(text);
+    }
 }
 
 /// Güncelleme menü öğesi: hazırsa tıklanabilir.
