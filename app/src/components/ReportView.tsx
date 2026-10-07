@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Hourglass, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, Hourglass, Monitor, ZoomIn, ZoomOut } from "lucide-react";
 import {
   api,
   type Bucket,
   type CalendarMeeting,
   type CategoryLimit,
+  type DeviceTotal,
   type EntryView,
   formatDuration,
   type ProjectGoal,
@@ -78,6 +79,8 @@ export default function ReportView(p: Props) {
   const [loaded, setLoaded] = useState<{ mode: Props["mode"]; report: Report } | null>(null);
   const report = loaded?.mode === p.mode ? loaded.report : null;
   const [previous, setPrevious] = useState<Report | null>(null);
+  // Bilgisayar filtresi; `null`: tüm bilgisayarlar.
+  const [device, setDevice] = useState<string | null>(null);
   // Gözden geçir'in önerdiği atanmamış süre (15 dakikadan kısa parçalar sayılmaz).
   const [review, setReview] = useState<{ seconds: number; idle: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +107,7 @@ export default function ReportView(p: Props) {
   const load = useCallback(() => {
     const n = ++seq.current;
     const mode = p.mode;
-    api.report(p.start, days, timeline).then(
+    api.report(p.start, days, timeline, undefined, device).then(
       (r) => {
         if (n !== seq.current) return;
         setLoaded({ mode, report: r });
@@ -125,7 +128,7 @@ export default function ReportView(p: Props) {
     const elapsed = Date.now() - +start;
     const live = elapsed > 0 && elapsed < +addDays(start, days) - +start;
     const until = live ? new Date(+prevStart + elapsed).toISOString() : undefined;
-    api.report(isoDate(prevStart), fullPrev, false, until).then(
+    api.report(isoDate(prevStart), fullPrev, false, until, device).then(
       (r) => n === seq.current && setPrevious(r),
       () => n === seq.current && setPrevious(null),
     );
@@ -140,9 +143,13 @@ export default function ReportView(p: Props) {
         () => n === seq.current && setEntriesOf(null),
       );
     }
-  }, [p.start, p.mode, days, timeline]);
+  }, [p.start, p.mode, days, timeline, device]);
 
   useEffect(load, [load]);
+  // Seçili bilgisayarın bu aralıkta süresi yoksa (ya da tek bilgisayar kaldıysa) filtre kalkar.
+  useEffect(() => {
+    if (report && device && !report.devices.some((d) => d.id === device)) setDevice(null);
+  }, [report, device]);
   useTauriEvent(api.onSync, load);
   useChanged(load);
 
@@ -424,6 +431,9 @@ export default function ReportView(p: Props) {
         {report && (
           <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
             <div className="min-w-0 space-y-4">
+              {report.devices.length > 1 && (
+                <DeviceFilter devices={report.devices} value={device} onChange={setDevice} />
+              )}
               <Card className="gap-3 py-3" style={{ ["--cal-head" as string]: `${headHeight}px` }}>
                 {(order.length > 0 || p.mode !== "month") && (
                   // Yakınlaşınca uzun takvimde başlık ve düğmeler görünür kalsın.
@@ -603,6 +613,57 @@ export default function ReportView(p: Props) {
 }
 
 /** Kayıt yokken takvimin üstünde: ne olacağını ve elle eklemenin yolunu söyler. */
+/**
+ * Bilgisayar filtresi: seçilince rapor yalnızca o bilgisayarın kaydettiği süreyi gösterir.
+ * Yalnızca aralıkta birden çok bilgisayar varsa görünür.
+ */
+function DeviceFilter({
+  devices,
+  value,
+  onChange,
+}: {
+  devices: DeviceTotal[];
+  value: string | null;
+  onChange: (id: string | null) => void;
+}) {
+  const selected = devices.find((d) => d.id === value);
+  const chip = (on: boolean) =>
+    cn(
+      "inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-ring",
+      on ? "border-foreground bg-foreground text-background" : "bg-card hover:bg-accent",
+    );
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Bilgisayar">
+        <button className={chip(value === null)} aria-pressed={value === null} onClick={() => onChange(null)}>
+          Tümü
+        </button>
+        {devices.map((d) => (
+          <button
+            key={d.id}
+            className={chip(value === d.id)}
+            aria-pressed={value === d.id}
+            title={d.current ? "Bu bilgisayar" : undefined}
+            onClick={() => onChange(value === d.id ? null : d.id)}
+          >
+            <Monitor className="size-3.5" aria-hidden />
+            {d.name}
+            <span className={cn("tabular", value === d.id ? "opacity-70" : "text-muted-foreground")}>
+              {formatDuration(d.seconds)}
+            </span>
+          </button>
+        ))}
+      </div>
+      {selected && (
+        <p className="text-[11px] text-muted-foreground">
+          Yalnızca {selected.name} kayıtları gösteriliyor. Zaman çizelgesi ve takvimde yapılan düzenlemeler tüm
+          bilgisayarları kapsar.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Empty({ future }: { future: boolean }) {
   return (
     <div className="mx-1 mb-3 flex items-center gap-3 rounded-lg bg-muted/60 px-3 py-2.5">

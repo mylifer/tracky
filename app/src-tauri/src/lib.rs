@@ -324,6 +324,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("geri yükleme sonrası eşitleme durumu sıfırlanamadı: {e}");
     }
 
+    // Takvimde süreler hangi bilgisayardan geldiğiyle gösterilsin: bu bilgisayarın adı.
+    if let Err(e) = store.register_device(&commands::computer_name(), std::env::consts::OS) {
+        eprintln!("bilgisayar adı kaydedilemedi: {e}");
+    }
+
     if store.setting::<bool>(AUTOSTART_INIT_KEY)?.is_none() {
         if let Err(e) = app.autolaunch().enable() {
             eprintln!("otomatik başlatma açılamadı: {e}");
@@ -401,6 +406,8 @@ pub fn run() {
             diagnose,
             set_theme,
             commands::get_report,
+            commands::list_devices,
+            commands::rename_device,
             icons::app_icon,
             icons::site_icon,
             commands::app_titles_between,

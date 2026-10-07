@@ -77,7 +77,14 @@ export type WorkBlock = {
   projectId: string | null;
   switches: number;
   topApps: { appId: string; appName: string; seconds: number }[];
+  /** Bloktaki süre bilgisayar başına; yalnızca aralıkta birden çok bilgisayar varsa. */
+  devices?: BlockDevice[];
 };
+export type BlockDevice = { id: string; name: string; seconds: number };
+/** Aralıkta çalışılan bilgisayar (`Report.devices`). */
+export type DeviceTotal = { id: string; name: string; os: string; seconds: number; current: boolean };
+/** Kayıtlı bilgisayar (Ayarlar → Eşitleme). */
+export type KnownDevice = { id: string; name: string; os: string; current: boolean };
 /** Çalışma blokları ve molalar. */
 export type WorkStats = {
   activeSeconds: number;
@@ -124,6 +131,8 @@ export type Report = {
   idleSeconds: number;
   /** Atanmamış boşta aralıklar (takvimde "Boşta"). */
   idle: IdleSpan[];
+  /** Aralıkta çalışılan bilgisayarlar (filtresiz); yalnızca birden çok bilgisayar varsa dolu. */
+  devices: DeviceTotal[];
 };
 export type IdleSpan = { start: string; end: string };
 
@@ -478,8 +487,11 @@ export const api = {
   pauseFor: (minutes: number | null) => invoke<void>("pause_for", { minutes }),
   completeOnboarding: () => invoke<void>("complete_onboarding"),
   /** `until` verilirse rapor o anda kesilir (süren dönemin kıyası için). */
-  report: (start: string, days: number, timeline: boolean, until?: string) =>
-    invoke<Report>("get_report", { start, days, timeline, until: until ?? null }),
+  /** `device` verilirse yalnızca o bilgisayarın kaydettiği süre. */
+  report: (start: string, days: number, timeline: boolean, until?: string, device?: string | null) =>
+    invoke<Report>("get_report", { start, days, timeline, until: until ?? null, device: device ?? null }),
+  listDevices: () => invoke<KnownDevice[]>("list_devices"),
+  renameDevice: (id: string, name: string) => invoke<KnownDevice[]>("rename_device", { id, name }),
   /** Uygulamanın simgesi (`data:` adresi); bu bilgisayarda yoksa `null`. */
   appIcon: (appId: string) => invoke<string | null>("app_icon", { appId }),
   /** Sitenin simgesi (favicon, `data:` adresi); bulunamazsa `null`. */

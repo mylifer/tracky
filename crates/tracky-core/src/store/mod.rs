@@ -2,6 +2,7 @@
 //! (etiketler, kurallar, müşteriler, öneriler) `taxonomy`, zaman çizelgesi `timesheet`
 //! alt modülündedir.
 
+mod devices;
 mod edits;
 mod taxonomy;
 mod timesheet;
@@ -18,6 +19,7 @@ use crate::model::{IDLE_APP_ID, MANUAL_APP_ID, Session};
 use crate::privacy::PrivacySettings;
 use crate::report::{self, Report};
 
+pub use devices::{BlockDevice, DEVICE_KEY_PREFIX, DeviceTotal, KnownDevice};
 pub use edits::EditSnapshot;
 pub use taxonomy::TagExtras;
 pub use timesheet::{
@@ -612,9 +614,22 @@ impl Store {
 
     /// `[from, to)` ile kesişen oturumlar (ham, cihazlar üst üste binebilir), başlangıca göre sıralı.
     pub fn sessions_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Session>> {
+        Ok(self
+            .sessions_with_devices_between(from, to)?
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect())
+    }
+
+    /// [`Self::sessions_between`], her oturumun bilgisayarıyla.
+    fn sessions_with_devices_between(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<(Session, String)>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, app_id, app_name, title, url, domain, started_at, ended_at, category_id,
-                    project_id
+                    project_id, device_id
              FROM sessions
              WHERE deleted_at IS NULL AND {OVERLAPS}
              ORDER BY started_at"
@@ -634,12 +649,13 @@ impl Store {
                     category_id: r.get(8)?,
                     project_id: r.get(9)?,
                 },
+                r.get::<_, String>(10)?,
             ))
         })?;
         rows.map(|row| {
-            let (id, mut s) = row?;
+            let (id, mut s, device) = row?;
             s.id = Uuid::parse_str(&id).map_err(|e| StoreError::Invalid(e.to_string()))?;
-            Ok(s)
+            Ok((s, device))
         })
         .collect()
     }
@@ -1029,8 +1045,10 @@ impl Store {
              UPDATE rules SET synced_at = NULL;
              UPDATE clients SET synced_at = NULL;
              UPDATE timesheet_entries SET synced_at = NULL;
-             UPDATE settings SET synced_at = NULL, updated_at = 0 WHERE key IN ({});",
-            keys.join(", ")
+             UPDATE settings SET synced_at = NULL, updated_at = 0
+             WHERE key IN ({}) OR key LIKE '{}%';",
+            keys.join(", "),
+            devices::DEVICE_KEY_PREFIX
         ))?;
         tx.commit()
     }
@@ -1124,11 +1142,22 @@ impl Store {
         day_starts: &[DateTime<Utc>],
         with_timeline: bool,
     ) -> Result<Report> {
-        let sessions = self.merged_sessions_with_idle_between(from, to)?;
+        self.report_for_device(from, to, day_starts, with_timeline, None)
+    }
+
+    /// Birleştirilmiş oturumlardan rapor.
+    fn build_report(
+        &self,
+        sessions: &[Session],
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        day_starts: &[DateTime<Utc>],
+        with_timeline: bool,
+    ) -> Result<Report> {
         let tags = self.tags()?;
         let classifier = Classifier::new(&tags, &self.rules()?);
         Ok(report::build(
-            &sessions,
+            sessions,
             &tags,
             &classifier,
             from,

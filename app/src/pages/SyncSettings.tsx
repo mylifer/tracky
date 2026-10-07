@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { api, type SyncStatus } from "../api";
-import { ErrorText, SettingRow, SettingsGroup } from "../components/settings";
+import { Monitor } from "lucide-react";
+import { api, type KnownDevice, type SyncStatus } from "../api";
+import { ErrorText, SettingBlock, SettingRow, SettingsGroup } from "../components/settings";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { formatTime } from "../lib/dates";
 import { useTauriEvent } from "../lib/useTauriEvent";
-import { friendlyError } from "../lib/feedback";
+import { friendlyError, toast } from "../lib/feedback";
 
 /** Supabase bağlantısı, giriş ve eşitleme durumu. */
 export default function SyncSettings() {
@@ -166,9 +167,65 @@ export default function SyncSettings() {
             <div className="flex-1" />
             <ErrorText>{error ?? (status.last && !status.last.ok ? status.last.message : null)}</ErrorText>
           </div>
+          <Devices />
         </>
       )}
     </SettingsGroup>
+  );
+}
+
+/** Bilgisayar adları: takvimde bloğun hangi bilgisayardan geldiği ve filtre bu adlarla görünür. */
+function Devices() {
+  const [devices, setDevices] = useState<KnownDevice[] | null>(null);
+  useEffect(() => {
+    api.listDevices().then(setDevices, () => {});
+  }, []);
+  useTauriEvent(api.onSync, () => {
+    api.listDevices().then(setDevices, () => {});
+  });
+  if (!devices || devices.length === 0) return null;
+
+  async function rename(d: KnownDevice, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === d.name) return;
+    try {
+      setDevices(await api.renameDevice(d.id, trimmed));
+      toast(`Bilgisayar adı “${trimmed}” oldu`);
+    } catch (e) {
+      toast(friendlyError(e), { tone: "error" });
+    }
+  }
+
+  return (
+    <SettingBlock
+      label="Bilgisayarlar"
+      hint="Takvimde bloğun hangi bilgisayardan geldiği ve bilgisayar filtresi bu adlarla görünür. Ad diğer bilgisayarlara da eşitlenir."
+    >
+      <ul className="max-w-md space-y-1.5">
+        {devices.map((d) => (
+          <li key={`${d.id}:${d.name}`} className="flex items-center gap-2">
+            <Monitor className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <Input
+              id={`device-${d.id}`}
+              className="h-8"
+              defaultValue={d.name}
+              aria-label="Bilgisayar adı"
+              onBlur={(e) => void rename(d, e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") {
+                  e.currentTarget.value = d.name;
+                  e.currentTarget.blur();
+                }
+              }}
+            />
+            <span className="w-28 shrink-0 text-xs text-muted-foreground">
+              {d.current ? "Bu bilgisayar" : d.os === "windows" ? "Windows" : d.os === "macos" ? "Mac" : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </SettingBlock>
   );
 }
 

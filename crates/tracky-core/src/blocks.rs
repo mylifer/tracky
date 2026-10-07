@@ -53,6 +53,19 @@ pub struct WorkBlock {
     pub switches: u32,
     /// En çok kullanılan uygulamalar (en fazla 3).
     pub top_apps: Vec<BlockApp>,
+    /// Bloktaki süre bilgisayar başına (yalnızca aralıkta birden çok bilgisayar varsa dolu;
+    /// `Store::report_for_device`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<BlockDevice>,
+}
+
+/// Bir takvim bloğundaki süre, bilgisayar başına.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockDevice {
+    pub id: String,
+    pub name: String,
+    pub seconds: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -246,6 +259,7 @@ impl Builder {
             project_id,
             switches: self.switches,
             top_apps: apps,
+            devices: Vec::new(),
         }
     }
 }

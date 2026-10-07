@@ -91,6 +91,21 @@ pub struct Report {
     pub idle_seconds: i64,
     /// Atanmamış boşta aralıklar (yalnızca zaman çizelgesi istenince).
     pub idle: Vec<IdleSpan>,
+    /// Aralıkta çalışılan bilgisayarlar, süreye göre (filtre uygulanmamış; yalnızca birden
+    /// çok bilgisayar varsa dolu, `Store::report_for_device`).
+    pub devices: Vec<DeviceTotal>,
+}
+
+/// Aralıkta bir bilgisayarın çalışma süresi.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceTotal {
+    pub id: String,
+    pub name: String,
+    pub os: String,
+    pub seconds: i64,
+    /// Bu bilgisayar mı?
+    pub current: bool,
 }
 
 /// Kırpılmış oturum dilimi: (başlangıç, bitiş, oturum, kategori, proje).
@@ -262,6 +277,7 @@ pub fn build(
         },
         idle_seconds: idle_ms / 1000,
         idle,
+        devices: Vec::new(),
     }
 }
 

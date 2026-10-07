@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { Briefcase, ChevronDown, FolderInput } from "lucide-react";
-import type { Tag, WindowSpan, WorkBlock } from "../../api";
+import { Briefcase, ChevronDown, FolderInput, Monitor } from "lucide-react";
+import type { BlockDevice, Tag, WindowSpan, WorkBlock } from "../../api";
 import { api, formatDuration, NO_PROJECT } from "../../api";
 import { blockWindows, type BlockApp, type BlockWindow } from "../../lib/blockWindows";
 import { detailRows, onlyOther, type DetailRow } from "../../lib/minorWindows";
@@ -58,6 +58,7 @@ export function BlockDetails({
           {block.switches > 0 && ` · ${block.switches} uygulama geçişi`}
         </p>
       </div>
+      {block.devices && block.devices.length > 0 && <BlockDevices devices={block.devices} />}
       {apps && apps.length > 0 ? (
         <BlockApps block={block} apps={apps} tags={tags} color={color} />
       ) : (
@@ -93,6 +94,50 @@ export function BlockDetails({
           onChanged={edit.onChanged}
         />
       )}
+    </div>
+  );
+}
+
+/** Bilgisayar başına renk: aynı bilgisayar her blokta aynı renkte görünsün. */
+function deviceColor(id: string) {
+  let h = 0;
+  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return `var(--c${(h % 8) + 1})`;
+}
+
+/** Bloğun hangi bilgisayardan geldiği; birden çok bilgisayar varsa dağılımıyla. */
+function BlockDevices({ devices }: { devices: BlockDevice[] }) {
+  const total = devices.reduce((n, d) => n + d.seconds, 0);
+  if (devices.length === 1)
+    return (
+      <div className="flex items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1.5 text-xs">
+        <Monitor className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="text-muted-foreground">Bilgisayar</span>
+        <span className="ml-auto truncate font-medium">{devices[0].name}</span>
+      </div>
+    );
+  return (
+    <div className="space-y-1.5 rounded-md bg-muted/60 px-2.5 py-2 text-xs">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Monitor className="size-3.5 shrink-0" aria-hidden />
+        Bilgisayarlar
+      </div>
+      <div className="flex h-1.5 gap-0.5 overflow-hidden rounded-full" aria-hidden>
+        {devices.map((d) => (
+          <span key={d.id} style={{ flex: d.seconds, background: deviceColor(d.id) }} />
+        ))}
+      </div>
+      <ul className="space-y-0.5">
+        {devices.map((d) => (
+          <li key={d.id} className="flex items-center gap-2">
+            <i className="size-2 shrink-0 rounded-full" style={{ background: deviceColor(d.id) }} aria-hidden />
+            <span className="min-w-0 flex-1 truncate">{d.name}</span>
+            <span className="text-muted-foreground tabular">
+              %{total ? Math.round((d.seconds / total) * 100) : 0} · {formatDuration(d.seconds)}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

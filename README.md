@@ -124,6 +124,9 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 53. Oturumun ataması (kategori, proje) ve silinmesi içerikten ayrı zamanla (`state_at`) eşitlenir: başka
       bilgisayarda süren oturumu takip uzatırken, bu arada yapılan atamayı ya da silmeyi geri almaz.
       `supabase/migrations/0012` yoksa oturumlar eskisi gibi bütün olarak eşitlenir
+- [x] 54. Hangi bilgisayar: blok ayrıntısında bloğun bilgisayarı (birden çoksa payıyla), ipucunda adı; raporun
+      üstünde bilgisayar filtresi (Tümü / her bilgisayar ve süresi). Yalnızca aralıkta birden çok bilgisayar varsa
+      görünür. Adlar sistemden gelir (`device:<kimlik>` ayarı, eşitlenir), Ayarlar → Senkronizasyon'da değiştirilir
 
 ## Yapı
 

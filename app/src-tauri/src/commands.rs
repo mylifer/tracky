@@ -4,7 +4,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tracky_core::search::SearchResult;
-use tracky_core::store::EditScope;
+use tracky_core::store::{EditScope, KnownDevice};
 use tracky_core::suggest::Suggestions;
 use tracky_core::trends::Trends;
 use tracky_core::{
@@ -30,6 +30,7 @@ pub async fn get_report(
     days: u32,
     timeline: bool,
     until: Option<String>,
+    device: Option<String>,
 ) -> CmdResult<Report> {
     let first = NaiveDate::parse_from_str(&start, "%Y-%m-%d").map_err(err)?;
     let days = days.clamp(1, 366);
@@ -41,8 +42,47 @@ pub async fn get_report(
         to = to.min(parse_time(&until)?.max(starts[0]));
     }
     lock(&app.state::<Shared>().store)
-        .report(starts[0], to, &starts, timeline)
+        .report_for_device(starts[0], to, &starts, timeline, device.as_deref())
         .map_err(err)
+}
+
+/// Bilinen bilgisayarlar (bu bilgisayar önce).
+#[tauri::command]
+pub async fn list_devices(app: AppHandle) -> CmdResult<Vec<KnownDevice>> {
+    lock(&app.state::<Shared>().store)
+        .known_devices()
+        .map_err(err)
+}
+
+/// Bir bilgisayarın adını değiştirir; ad diğer bilgisayarlara da eşitlenir.
+#[tauri::command]
+pub async fn rename_device(
+    app: AppHandle,
+    id: String,
+    name: String,
+) -> CmdResult<Vec<KnownDevice>> {
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    store.rename_device(&id, &name).map_err(err)?;
+    store.known_devices().map_err(err)
+}
+
+/// Bu bilgisayarın sistemdeki adı (macOS'ta "Bilgisayar Adı", Windows'ta COMPUTERNAME).
+pub(crate) fn computer_name() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/sbin/scutil")
+            .args(["--get", "ComputerName"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::env::var("COMPUTERNAME").unwrap_or_default()
+    }
 }
 
 /// `start` gününden başlayan `days` günde başlığında ya da uygulama adında `query` geçen süre.

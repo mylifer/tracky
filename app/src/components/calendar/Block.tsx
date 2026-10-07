@@ -72,7 +72,8 @@ export function Block({
   const color = blockColor ?? "var(--c0)";
   const full = height >= FULL_LABEL_PX;
   const label = height >= LABEL_MIN_PX;
-  const summary = `${title} · ${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))} · ${formatDuration(b.activeSeconds)}`;
+  const devices = b.devices?.map((d) => d.name).join(" + ");
+  const summary = `${title} · ${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))} · ${formatDuration(b.activeSeconds)}${devices ? ` · ${devices}` : ""}`;
   const start = +new Date(b.start);
   const end = +new Date(b.end);
 

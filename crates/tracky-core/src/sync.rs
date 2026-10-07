@@ -64,6 +64,8 @@ struct Table {
     key: &'static str,
     /// Doluysa yalnızca bu kimlikteki satırlar gönderilir ve uygulanır.
     only: Option<&'static [&'static str]>,
+    /// `only`'ye ek olarak bu önekle başlayan kimlikler de eşitlenir.
+    prefix: Option<&'static str>,
 }
 
 /// Cihazlar arasında taşınan ayarlar (settings tablosunun anahtarları). Yeni Mac'te giriş
@@ -112,6 +114,7 @@ const TABLES: &[Table] = &[
         optional: &["budget_days"],
         key: "id",
         only: None,
+        prefix: None,
     },
     Table {
         name: "tags",
@@ -130,6 +133,7 @@ const TABLES: &[Table] = &[
         optional: &["archived_at", "budget_days"],
         key: "id",
         only: None,
+        prefix: None,
     },
     Table {
         name: "rules",
@@ -145,6 +149,7 @@ const TABLES: &[Table] = &[
         optional: &[],
         key: "id",
         only: None,
+        prefix: None,
     },
     Table {
         name: "sessions",
@@ -168,6 +173,7 @@ const TABLES: &[Table] = &[
         optional: &["state_at"],
         key: "id",
         only: None,
+        prefix: None,
     },
     // Kendi başına durur (başka tabloya başvurmaz); sunucuda tablo yoksa (0008 öncesi)
     // eşitlemenin geri kalanı sürer.
@@ -182,6 +188,8 @@ const TABLES: &[Table] = &[
         optional: &[],
         key: "key",
         only: Some(SYNCED_SETTINGS),
+        // Bilgisayar adları (`device:<kimlik>`); her bilgisayar kendi satırını yazar.
+        prefix: Some(crate::store::DEVICE_KEY_PREFIX),
     },
     // Zaman çizelgesi satırları: kaydedilen, gönderilen ve silinen satırlar diğer cihazda da
     // aynı olur; aktarılmış satır orada bir daha gönderilmez. Projeye yabancı anahtarla bağlı
@@ -213,6 +221,7 @@ const TABLES: &[Table] = &[
         optional: &["state_at", "consultant"],
         key: "id",
         only: None,
+        prefix: None,
     },
 ];
 
@@ -229,12 +238,16 @@ impl Table {
     fn filter(&self) -> String {
         self.only.map_or_else(String::new, |ids| {
             let ids: Vec<String> = ids.iter().map(|id| format!("'{id}'")).collect();
-            format!(" AND {} IN ({})", self.key, ids.join(", "))
+            let prefix = self
+                .prefix
+                .map_or_else(String::new, |p| format!(" OR {} LIKE '{p}%'", self.key));
+            format!(" AND ({} IN ({}){prefix})", self.key, ids.join(", "))
         })
     }
 
     fn allows(&self, id: &str) -> bool {
         self.only.is_none_or(|ids| ids.contains(&id))
+            || self.prefix.is_some_and(|p| id.starts_with(p))
     }
 }
 
@@ -1474,6 +1487,34 @@ mod tests {
                     .unwrap()
                     .is_empty()
             );
+        }
+    }
+
+    #[test]
+    fn computer_names_reach_the_other_device() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        lock(&a).register_device("Mac Studio", "macos").unwrap();
+        lock(&b).register_device("Ofis PC", "windows").unwrap();
+        for _ in 0..2 {
+            run(&a, &mut remote, "u1").unwrap();
+            run(&b, &mut remote, "u1").unwrap();
+        }
+        let a_id = lock(&a).device_id().to_string();
+        // B, A'yı yeniden adlandırır; ad A'ya da gider.
+        lock(&b).rename_device(&a_id, "Ev Mac'i").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        for store in [&a, &b] {
+            let mut names: Vec<String> = lock(store)
+                .known_devices()
+                .unwrap()
+                .into_iter()
+                .map(|d| d.name)
+                .collect();
+            names.sort();
+            assert_eq!(names, vec!["Ev Mac'i".to_string(), "Ofis PC".to_string()]);
         }
     }
 
