@@ -431,9 +431,10 @@ export default function ReportView(p: Props) {
         </div>
       </Toolbar>
 
+      {/* Kaydırma çubuğunun yeri hep ayrılır: kısa içerikte (Çizelge) araç satırı sağa kaymasın. */}
       <div
         ref={scroller}
-        className="@container flex-1 overflow-y-auto px-5 pb-6"
+        className="@container flex-1 overflow-y-auto px-5 pb-6 [scrollbar-gutter:stable]"
         style={{ ["--bar-h" as string]: `${barHeight}px` }}
       >
         {/* Araç satırı: solda bilgisayar filtresi, sağda hep aynı sırada renk, yakınlaştırma, kayıt. */}
