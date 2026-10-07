@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Loader2, Send } from "lucide-react";
 import {
   api,
@@ -12,7 +12,6 @@ import {
 } from "../api";
 import { HATCH } from "./Calendar";
 import { ProjectSelect } from "./ProjectSelect";
-import Toolbar from "./Toolbar";
 import { Button } from "./ui/button";
 import { parseIsoDate } from "../lib/dates";
 import { friendlyError, toast, undoable, useChanged } from "../lib/feedback";
@@ -34,12 +33,9 @@ const hm = new Intl.DateTimeFormat("tr-TR", { hour: "2-digit", minute: "2-digit"
 
 type Props = {
   day: string;
-  title: string;
   report: Report;
   tags: Map<string, Tag>;
   projects: Tag[];
-  /** Üst çubuğun sağındaki görünüm seçici ve gezinti. */
-  controls: ReactNode;
   /** Atama ya da satır değişince takvim de yenilensin. */
   onChanged: () => void;
 };
@@ -56,7 +52,7 @@ type Line =
  * çizelgesi satırı (blok = satır, aynı hizada). Satırlar arasındaki boşluklar ayraçla görünür.
  * Satırlar yerinde düzenlenir, projesiz bloklar burada atanır, gün tek düğmeyle gönderilir.
  */
-export default function DaySheet({ day, title, report, tags, projects, controls, onChanged }: Props) {
+export default function DaySheet({ day, report, tags, projects, onChanged }: Props) {
   const [sheets, setSheets] = useState<{ id: string; projects: Set<string>; day: TimesheetDay | null }[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -201,8 +197,10 @@ export default function DaySheet({ day, title, report, tags, projects, controls,
 
   return (
     <>
-      <Toolbar title={title}>
-        <span className="hidden text-xs whitespace-nowrap text-muted-foreground tabular xl:inline">{stats}</span>
+      {error && <p className="pb-3 text-xs text-destructive selectable">{error}</p>}
+      {/* Takvimde lejantın durduğu yer: günün özeti ve gönderme. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pb-3">
+        <span className="text-xs whitespace-nowrap text-muted-foreground tabular">{stats}</span>
         <Button
           size="sm"
           disabled={sending || ready.length === 0}
@@ -216,37 +214,33 @@ export default function DaySheet({ day, title, report, tags, projects, controls,
           {sending ? <Loader2 className="animate-spin" /> : <Send />}
           Günü kapat ve gönder
         </Button>
-        {controls}
-      </Toolbar>
-      <div className="@container flex-1 overflow-y-auto px-5 pb-6">
-        {error && <p className="pb-3 text-xs text-destructive selectable">{error}</p>}
-        <div className="overflow-x-auto">
-          {!sheets ? (
-            <div className="skeleton h-40 rounded-xl" aria-busy />
-          ) : lines.length === 0 ? (
-            <p className="py-6 text-center text-xs text-muted-foreground">Bu gün için satır yok.</p>
-          ) : (
-            <table className="w-full min-w-[760px] border-collapse text-xs">
-              <thead>
-                <tr className="text-left text-[11px] text-muted-foreground">
-                  {["Blok", "Başlangıç", "Saat", "Tür", "Proje", "Açıklama"].map((h) => (
-                    <th key={h} className={cn("border-b px-2 py-1.5 font-medium", h === "Blok" && "pl-0")}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="tabular">
-                {lines.map((l) => (
-                  <Fragment key={l.key}>
-                    {gaps.has(l.key) && <GapRow ms={gaps.get(l.key)!} />}
-                    <Row line={l} tags={tags} projects={projects} running={running(l)} run={run} />
-                  </Fragment>
+      </div>
+      <div className="overflow-x-auto">
+        {!sheets ? (
+          <div className="skeleton h-40 rounded-xl" aria-busy />
+        ) : lines.length === 0 ? (
+          <p className="py-6 text-center text-xs text-muted-foreground">Bu gün için satır yok.</p>
+        ) : (
+          <table className="w-full min-w-[760px] border-collapse text-xs">
+            <thead>
+              <tr className="text-left text-[11px] text-muted-foreground">
+                {["Blok", "Başlangıç", "Saat", "Tür", "Proje", "Açıklama"].map((h) => (
+                  <th key={h} className={cn("border-b px-2 py-1.5 font-medium", h === "Blok" && "pl-0")}>
+                    {h}
+                  </th>
                 ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+              </tr>
+            </thead>
+            <tbody className="tabular">
+              {lines.map((l) => (
+                <Fragment key={l.key}>
+                  {gaps.has(l.key) && <GapRow ms={gaps.get(l.key)!} />}
+                  <Row line={l} tags={tags} projects={projects} running={running(l)} run={run} />
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </>
   );

@@ -256,11 +256,12 @@ export default function ReportView(p: Props) {
   // kullanıcıda takvime düşer; satırlar yüklenene kadar var sayılır (görünüm sıçramasın).
   const hasSheet = entriesOf === null || entriesOf.list !== null;
   const sheetView = p.mode === "day" && calendarView === "sheet" && hasSheet;
-  // Seçicide görünen değer: hafta görünümünde çizelge yok, takvim seçili görünür.
-  const shownView: CalendarView = calendarView === "sheet" && !sheetView ? "calendar" : calendarView;
+  // Seçicide görünen değer: hafta görünümünde çizelge, ayda ikisi de yok; takvim seçili görünür.
+  const shownView: CalendarView =
+    p.mode === "month" || (calendarView === "sheet" && !sheetView) ? "calendar" : calendarView;
   // Proje merceği yalnızca gün/hafta takviminde; ay ve uygulama çizelgesi kategori renginde kalır.
   const projectLens = lens === "project" && p.mode !== "month" && !appsView;
-  const zoomable = p.mode !== "month" && !!report && (report.totalSeconds > 0 || report.idle.length > 0);
+  const zoomable = p.mode !== "month" && !sheetView && !!report && (report.totalSeconds > 0 || report.idle.length > 0);
   const [calZoom, setCalZoom] = useState(1);
   const [appZoom, setAppZoom] = useState(1);
   // "Sığdır": takvimin bütün saatleri pencereye sığar; açıkken gün değişince ve pencere boyu değişince
@@ -304,19 +305,16 @@ export default function ReportView(p: Props) {
     if (zoomable && !appsView) zoomCalendar((z) => z * factor, y);
   });
   const zoom = appsView ? appZoom : calZoom;
-  // Yapışkan kart başlığının yüksekliği: takvim sütun başlıkları onun altına yapışır.
+  // Yapışkan araç satırının ve kart başlığının yüksekliği: kart başlığı araç satırının, takvim
+  // sütun başlıkları ikisinin altına yapışır.
+  const [bar, setBar] = useState<HTMLDivElement | null>(null);
+  const barHeight = useHeight(bar);
   const [head, setHead] = useState<HTMLDivElement | null>(null);
-  const [headHeight, setHeadHeight] = useState(0);
-  useEffect(() => {
-    if (!head) return;
-    const ro = new ResizeObserver(() => setHeadHeight(head.offsetHeight));
-    ro.observe(head);
-    return () => ro.disconnect();
-  }, [head]);
+  const headHeight = useHeight(head);
   const fitting = calFit && zoomable && !appsView;
   useLayoutEffect(() => {
     if (fitting) fitCalendar();
-  }, [fitting, fitCalendar, report, meetings, entries, p.mode, headHeight]);
+  }, [fitting, fitCalendar, report, meetings, entries, p.mode, headHeight, barHeight]);
   useEffect(() => {
     const box = scroller.current;
     if (!fitting || !box) return;
@@ -355,72 +353,134 @@ export default function ReportView(p: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [zoomable]);
 
-  // Takvim / Uygulamalar / Çizelge seçicisi (Çizelge'de üst çubukta durur).
-  const viewTabs = (
-    <Tabs value={shownView} onValueChange={(v) => setCalendarView(v as CalendarView)}>
-      <TabsList className="h-7" aria-label="Takvim görünümü">
-        <TabsTrigger value="calendar" className="px-2.5 text-xs">
-          Takvim
-        </TabsTrigger>
-        <TabsTrigger value="apps" className="px-2.5 text-xs">
-          Uygulamalar
-        </TabsTrigger>
-        {p.mode === "day" && hasSheet && (
-          <TabsTrigger value="sheet" className="px-2.5 text-xs" title="Günün blokları ve zaman çizelgesi satırları">
-            Çizelge
-          </TabsTrigger>
-        )}
-      </TabsList>
-    </Tabs>
-  );
-  const nav = (
-    <div className="flex items-center gap-1">
-      <Button variant="ghost" size="icon-sm" onClick={p.onPrev} aria-label="Önceki" title="Önceki (←)">
-        <ChevronLeft />
-      </Button>
-      <Button variant="outline" size="sm" onClick={p.onToday ?? undefined} disabled={!p.onToday} title="Bugüne dön (T)">
-        {mode.current}
-      </Button>
-      <Button variant="ghost" size="icon-sm" onClick={p.onNext} aria-label="Sonraki" title="Sonraki (→)">
-        <ChevronRight />
-      </Button>
-    </div>
-  );
-
-  if (sheetView && report)
-    return (
-      <DaySheet
-        day={p.start}
-        title={p.title}
-        report={report}
-        tags={tags}
-        projects={projects}
-        controls={
-          <>
-            {viewTabs}
-            {nav}
-          </>
-        }
-        onChanged={load}
-      />
-    );
+  // Üst çubuk ve araç satırı her görünümde aynıdır: o görünümde anlamı olmayan düğme gizlenmez,
+  // soluk kalır (düğmelerin yeri kaymasın).
+  const lensOff =
+    p.mode === "month"
+      ? "Ay görünümünde bloklar kategori renginde"
+      : sheetView
+        ? "Çizelgede bloklar proje renginde"
+        : appsView
+          ? "Uygulamalar kategori renginde gösterilir"
+          : null;
+  const zoomOff = zoomable
+    ? null
+    : p.mode === "month"
+      ? "Ay görünümünde yakınlaştırma yok"
+      : sheetView
+        ? "Çizelgede yakınlaştırma yok"
+        : "Bu aralıkta kayıt yok";
 
   return (
     <>
       <Toolbar title={p.title}>
+        <Tabs value={shownView} onValueChange={(v) => setCalendarView(v as CalendarView)}>
+          <TabsList className="h-7" aria-label="Takvim görünümü">
+            <TabsTrigger value="calendar" className="px-2.5 text-xs">
+              Takvim
+            </TabsTrigger>
+            <TabsTrigger
+              value="apps"
+              className="px-2.5 text-xs"
+              disabled={p.mode === "month"}
+              title={p.mode === "month" ? "Ay görünümünde uygulama çizelgesi yok" : undefined}
+            >
+              Uygulamalar
+            </TabsTrigger>
+            {hasSheet && (
+              <TabsTrigger
+                value="sheet"
+                className="px-2.5 text-xs"
+                disabled={p.mode !== "day"}
+                title={
+                  p.mode === "day" ? "Günün blokları ve zaman çizelgesi satırları" : "Çizelge yalnızca gün görünümünde"
+                }
+              >
+                Çizelge
+              </TabsTrigger>
+            )}
+          </TabsList>
+        </Tabs>
         <Tabs value={p.mode} onValueChange={(v) => p.onMode(v as Mode)}>
-          <TabsList aria-label="Görünüm">
+          <TabsList className="h-7" aria-label="Görünüm">
             {MODES.map((m, i) => (
-              <TabsTrigger key={m.id} value={m.id} className="px-3.5" title={`${m.label} (${i + 1})`}>
+              <TabsTrigger key={m.id} value={m.id} className="px-2.5 text-xs" title={`${m.label} (${i + 1})`}>
                 {m.label}
               </TabsTrigger>
             ))}
           </TabsList>
         </Tabs>
-        {nav}
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="icon-sm" onClick={p.onPrev} aria-label="Önceki" title="Önceki (←)">
+            <ChevronLeft />
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            // "Bugün" / "Bu hafta" / "Bu ay" aynı genişlikte: görünüm değişince düğmeler kaymasın.
+            className="min-w-19"
+            onClick={p.onToday ?? undefined}
+            disabled={!p.onToday}
+            title="Bugüne dön (T)"
+          >
+            {mode.current}
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={p.onNext} aria-label="Sonraki" title="Sonraki (→)">
+            <ChevronRight />
+          </Button>
+        </div>
       </Toolbar>
 
-      <div ref={scroller} className="@container flex-1 overflow-y-auto px-5 pb-6">
+      <div
+        ref={scroller}
+        className="@container flex-1 overflow-y-auto px-5 pb-6"
+        style={{ ["--bar-h" as string]: `${barHeight}px` }}
+      >
+        {/* Araç satırı: solda bilgisayar filtresi, sağda hep aynı sırada renk, yakınlaştırma, kayıt. */}
+        <div
+          ref={setBar}
+          className="sticky top-0 z-40 -mx-5 flex flex-wrap items-start gap-x-3 gap-y-2 bg-background px-5 pb-3"
+        >
+          {report && report.devices.length > 1 && (
+            <DeviceFilter devices={report.devices} value={device} onChange={setDevice} />
+          )}
+          <div className="ml-auto flex items-center gap-3">
+            <div className="flex items-center gap-1.5" title={lensOff ?? undefined}>
+              <span className={cn("text-[11px] text-muted-foreground", lensOff && "opacity-50")} aria-hidden>
+                Renk
+              </span>
+              <Tabs value={lens} onValueChange={(v) => setLens(v as ColorLens)}>
+                <TabsList className="h-7" aria-label="Blokların rengi">
+                  <TabsTrigger value="category" className="px-2.5 text-xs" disabled={!!lensOff}>
+                    Kategori
+                  </TabsTrigger>
+                  <TabsTrigger value="project" className="px-2.5 text-xs" disabled={!!lensOff}>
+                    Proje
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+            <ZoomControl
+              zoom={zoom}
+              min={appsView ? 1 : CAL_ZOOM_MIN}
+              fit={fitting}
+              onZoom={setZoom}
+              onFit={fitZoom}
+              off={zoomOff}
+            />
+            <span title={p.mode === "month" ? "Ay görünümünde bir güne tıkla" : undefined}>
+              <ManualEntry
+                day={p.mode === "day" ? p.start : manualDay}
+                categories={categories}
+                projects={projects}
+                onChanged={load}
+                draft={draft}
+                onClose={() => setPreview(null)}
+                disabled={p.mode === "month"}
+              />
+            </span>
+          </div>
+        </div>
         {error && <p className="pb-3 text-xs text-destructive selectable">{error}</p>}
         {!report && !error && (
           <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]" aria-busy>
@@ -428,63 +488,20 @@ export default function ReportView(p: Props) {
             <div className="skeleton hidden h-[420px] rounded-xl @[880px]:block" />
           </div>
         )}
-        {report && (
+        {report && sheetView && (
+          <DaySheet day={p.start} report={report} tags={tags} projects={projects} onChanged={load} />
+        )}
+        {report && !sheetView && (
           <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
             <div className="min-w-0 space-y-4">
-              {report.devices.length > 1 && (
-                <DeviceFilter devices={report.devices} value={device} onChange={setDevice} />
-              )}
-              <Card className="gap-3 py-3" style={{ ["--cal-head" as string]: `${headHeight}px` }}>
-                {(order.length > 0 || p.mode !== "month") && (
-                  // Yakınlaşınca uzun takvimde başlık ve düğmeler görünür kalsın.
-                  <CardContent
-                    ref={setHead}
-                    className="sticky top-0 z-30 -mt-3 flex flex-wrap items-start gap-x-3 gap-y-2 rounded-t-xl bg-card pt-3 pb-1"
-                  >
-                    {/* Dar pencerede lejant ezilmesin; düğmeler alt satıra geçsin. */}
-                    <div className="min-w-48 flex-1">
-                      {projectLens ? (
-                        <ProjectLegend buckets={report.projects} tags={tags} />
-                      ) : (
-                        <Legend order={order} tags={tags} />
-                      )}
-                    </div>
-                    {p.mode !== "month" && !appsView && report.totalSeconds > 0 && (
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[11px] text-muted-foreground" aria-hidden>
-                          Renk
-                        </span>
-                        <Tabs value={lens} onValueChange={(v) => setLens(v as ColorLens)}>
-                          <TabsList className="h-7" aria-label="Blokların rengi">
-                            <TabsTrigger value="category" className="px-2.5 text-xs">
-                              Kategori
-                            </TabsTrigger>
-                            <TabsTrigger value="project" className="px-2.5 text-xs">
-                              Proje
-                            </TabsTrigger>
-                          </TabsList>
-                        </Tabs>
-                      </div>
-                    )}
-                    {p.mode !== "month" && report.totalSeconds > 0 && viewTabs}
-                    {zoomable && (
-                      <ZoomControl
-                        zoom={zoom}
-                        min={appsView ? 1 : CAL_ZOOM_MIN}
-                        fit={fitting}
-                        onZoom={setZoom}
-                        onFit={fitZoom}
-                      />
-                    )}
-                    {p.mode !== "month" && (
-                      <ManualEntry
-                        day={p.mode === "day" ? p.start : manualDay}
-                        categories={categories}
-                        projects={projects}
-                        onChanged={load}
-                        draft={draft}
-                        onClose={() => setPreview(null)}
-                      />
+              <Card className="gap-3 py-3" style={{ ["--cal-head" as string]: `${barHeight + headHeight}px` }}>
+                {(order.length > 0 || projectLens) && (
+                  // Yakınlaşınca uzun takvimde lejant araç satırının altında görünür kalsın.
+                  <CardContent ref={setHead} className="sticky top-(--bar-h) z-30 -mt-3 rounded-t-xl bg-card pt-3 pb-1">
+                    {projectLens ? (
+                      <ProjectLegend buckets={report.projects} tags={tags} />
+                    ) : (
+                      <Legend order={order} tags={tags} />
                     )}
                   </CardContent>
                 )}
@@ -687,6 +704,7 @@ function ZoomControl({
   fit,
   onZoom,
   onFit,
+  off,
 }: {
   zoom: number;
   min: number;
@@ -694,15 +712,22 @@ function ZoomControl({
   fit: boolean;
   onZoom: (next: (z: number) => number) => void;
   onFit: () => void;
+  /** Yakınlaştırma bu görünümde yoksa nedeni; düğmeler yerinde soluk kalır. */
+  off: string | null;
 }) {
   return (
-    <div className="flex h-7 items-center rounded-md border" role="group" aria-label="Yakınlaştırma">
+    <div
+      className="flex h-7 items-center rounded-md border"
+      role="group"
+      aria-label="Yakınlaştırma"
+      title={off ?? undefined}
+    >
       <Button
         variant="ghost"
         size="icon-sm"
         className="size-6.5"
         onClick={() => onZoom((z) => stepZoom(z, -1, min))}
-        disabled={zoom <= min + 0.001}
+        disabled={!!off || zoom <= min + 0.001}
         aria-label="Uzaklaştır"
         title="Uzaklaştır (−)"
       >
@@ -710,15 +735,18 @@ function ZoomControl({
       </Button>
       <button
         className={cn(
-          "w-10 text-center text-[11px] tabular hover:text-foreground",
-          fit ? "font-medium text-primary" : "text-muted-foreground",
+          "w-10 text-center text-[11px] tabular hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
+          fit && !off ? "font-medium text-primary" : "text-muted-foreground",
         )}
         onClick={onFit}
+        disabled={!!off}
         aria-pressed={fit}
         title={
-          fit
-            ? "Sığdırıldı: bütün saatler ekranda · yakınlaştırınca kapanır"
-            : "Sığdır (0): bütün saatler ekrana sığsın · ⌘ + kaydırma ya da iki parmakla da yakınlaşır"
+          off
+            ? undefined
+            : fit
+              ? "Sığdırıldı: bütün saatler ekranda · yakınlaştırınca kapanır"
+              : "Sığdır (0): bütün saatler ekrana sığsın · ⌘ + kaydırma ya da iki parmakla da yakınlaşır"
         }
       >
         %{Math.round(zoom * 100)}
@@ -728,7 +756,7 @@ function ZoomControl({
         size="icon-sm"
         className="size-6.5"
         onClick={() => onZoom((z) => stepZoom(z, 1, min))}
-        disabled={zoom >= 8}
+        disabled={!!off || zoom >= 8}
         aria-label="Yakınlaştır"
         title="Yakınlaştır (+)"
       >
@@ -845,4 +873,16 @@ function useColorLens(): [ColorLens, (v: ColorLens) => void] {
       }
     },
   ];
+}
+
+/** Öğenin yüksekliği (değiştikçe güncellenir); öğe yokken 0. */
+function useHeight(el: HTMLElement | null) {
+  const [height, setHeight] = useState(0);
+  useEffect(() => {
+    if (!el) return setHeight(0);
+    const ro = new ResizeObserver(() => setHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [el]);
+  return height;
 }

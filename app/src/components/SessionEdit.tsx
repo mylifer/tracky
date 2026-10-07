@@ -441,6 +441,7 @@ export function ManualEntry({
   onChanged,
   draft,
   onClose,
+  disabled,
 }: {
   /** Varsayılan tarih (YYYY-MM-DD). */
   day: string;
@@ -450,6 +451,8 @@ export function ManualEntry({
   draft?: EntryDraft | null;
   /** Form kapanınca (takvimdeki önizlemeyi kaldırmak için). */
   onClose?: () => void;
+  /** Düğme yerinde kalır ama basılamaz (ör. ay görünümü). */
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState("");
@@ -516,7 +519,7 @@ export function ManualEntry({
       }}
     >
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-xs text-muted-foreground">
+        <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-xs text-muted-foreground" disabled={disabled}>
           <Plus className="size-3.5" /> Kayıt ekle
         </Button>
       </PopoverTrigger>
