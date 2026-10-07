@@ -604,7 +604,10 @@ mod tests {
         let a = elapsed_clock(started).expect("saat okunur");
         std::thread::sleep(std::time::Duration::from_millis(5));
         let b = elapsed_clock(started).unwrap();
-        assert!(b >= a + std::time::Duration::from_millis(4), "{a:?} → {b:?}");
+        assert!(
+            b >= a + std::time::Duration::from_millis(4),
+            "{a:?} → {b:?}"
+        );
     }
 
     #[test]
