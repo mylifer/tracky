@@ -2,7 +2,9 @@
 //!
 //! - **Blok:** aynı kategoride kesintisiz çalışma. `BREAK_GAP`'ten uzun boşluk ya da en
 //!   az `SWITCH_MIN` süren başka kategori yeni blok başlatır; daha kısa araya girmeler
-//!   (bir mesaja bakmak gibi) bloğun içinde kalır.
+//!   (bir mesaja bakmak gibi) bloğun içinde kalır. Aynı projeye atanmış iş kategorisi
+//!   değişse de, arada `timesheet::MERGE_GAP`'i geçmeyen boşluk olsa da tek bloktur:
+//!   zaman çizelgesindeki satır gibi.
 //! - **Mola:** iki blok arasındaki `BREAK_GAP`–`LONG_GAP` arası boşluk (gece gibi
 //!   daha uzun boşluklar mola sayılmaz).
 //! - **Bağlam değişimi:** mola vermeden bir uygulamadan başka uygulamaya geçiş.
@@ -95,7 +97,9 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
         };
         let last_end = pending.last().map_or(b.end, |p| p.end.max(b.end));
         let gap = item.start - last_end;
-        if gap >= BREAK_GAP {
+        // Bloğun projesine atanmış iş kategorisi farklı olsa da bloğu sürdürür.
+        let same_project = item.project.is_some() && item.project == b.project.as_deref();
+        if gap >= BREAK_GAP && !(same_project && gap <= crate::timesheet::MERGE_GAP) {
             for p in pending.drain(..) {
                 b.add(p);
             }
@@ -106,7 +110,7 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
             current = Some(Builder::new(item));
             continue;
         }
-        if item.category == b.category.as_deref() {
+        if item.category == b.category.as_deref() || same_project {
             for p in pending.drain(..) {
                 b.add(p);
             }
@@ -172,6 +176,8 @@ fn per_hour_x10(switches: u32, active_seconds: i64) -> u32 {
 struct Builder {
     /// Bloğun kategorisi (ilk dilimden; başka kategoriden açılırsa baskın olan).
     category: Option<String>,
+    /// Bloğa en son eklenen projeli dilimin projesi.
+    project: Option<String>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     active: i64,
@@ -187,6 +193,7 @@ impl Builder {
     fn new(item: &Activity) -> Self {
         let mut b = Self {
             category: item.category.map(str::to_string),
+            project: None,
             start: item.start,
             end: item.start,
             active: 0,
@@ -213,6 +220,7 @@ impl Builder {
             .entry(item.category.map(str::to_string))
             .or_default() += secs;
         if let Some(p) = item.project {
+            self.project = Some(p.to_string());
             *self.projects.entry(p.to_string()).or_default() += secs;
         }
         self.apps
@@ -321,6 +329,36 @@ mod tests {
         let s = analyze(&items);
         let projects: Vec<_> = s.blocks.iter().map(|b| b.project_id.as_deref()).collect();
         assert_eq!(projects, [Some("kum"), None]);
+    }
+
+    #[test]
+    fn same_project_joins_categories_and_short_gaps() {
+        let p = |mut x: Activity<'static>, project| {
+            x.project = project;
+            x
+        };
+        let items = [
+            p(a("Code", Some("dev"), 0, 20), Some("kum")),
+            p(a("Slack", Some("comm"), 20, 40), Some("kum")), // başka kategori, aynı proje
+            p(a("Code", Some("dev"), 50, 60), Some("kum")),   // 10 dk boşluk: aynı blok
+            p(a("Code", Some("dev"), 80, 90), Some("kum")),   // 20 dk boşluk: yeni blok
+            p(a("Slack", Some("comm"), 90, 100), None),       // projesiz başka kategori: yeni blok
+        ];
+        let s = analyze(&items);
+        let spans: Vec<_> = s
+            .blocks
+            .iter()
+            .map(|b| (b.start, b.end, b.project_id.as_deref()))
+            .collect();
+        assert_eq!(
+            spans,
+            [
+                (t(0), t(60), Some("kum")),
+                (t(80), t(90), Some("kum")),
+                (t(90), t(100), None),
+            ]
+        );
+        assert_eq!(s.blocks[0].active_seconds, 50 * 60);
     }
 
     #[test]
