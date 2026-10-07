@@ -47,13 +47,73 @@ type Line =
   | { kind: "off"; key: string; from: number; to: number; projectId: string; app: string }
   | { kind: "meeting"; key: string; from: number; to: number; meeting: UnassignedMeeting };
 
+type Sheet = { id: string; projects: Set<string>; day: TimesheetDay | null };
+
+/** Projesi olan çizelgeler ve günün satırları. */
+async function fetchSheets(day: string): Promise<Sheet[]> {
+  const config = await api.timesheetConfig();
+  const list = config.timesheets.filter((t) => t.projects.length > 0);
+  const days = await Promise.all(list.map((t) => api.timesheetDays(t.id, day, 1)));
+  return list.map((t, i) => ({
+    id: t.id,
+    projects: new Set(t.projects.map((m) => m.projectId)),
+    day: days[i][0] ?? null,
+  }));
+}
+
+/**
+ * Tablonun satırları, başlangıca göre sıralı. Projesi belli olmayan toplantılar her çizelgenin
+ * gününde aynı listedir: bir kez gösterilir.
+ */
+export function buildLines(sheets: Sheet[] | null, report: Report): Line[] {
+  const out: Line[] = [];
+  const sheetProjects = new Set<string>();
+  const meetings = new Set<string>();
+  for (const s of sheets ?? []) {
+    for (const id of s.projects) sheetProjects.add(id);
+    for (const e of s.day?.entries ?? []) {
+      const [h, m, sec] = e.start.split(":").map(Number);
+      // Yerel saatten: yaz saatine geçilen günde gece yarısından geçen süre saatle aynı değil.
+      const d = parseIsoDate(e.date);
+      const from = +new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, sec || 0);
+      out.push({ kind: "entry", key: `e-${e.key}`, from, to: from + e.hours * 3600_000, sheetId: s.id, entry: e });
+    }
+    for (const m of s.day?.meetings ?? []) {
+      const key = `m-${m.uid}-${m.start}`;
+      if (meetings.has(key)) continue;
+      meetings.add(key);
+      out.push({ kind: "meeting", key, from: +new Date(m.start), to: +new Date(m.end), meeting: m });
+    }
+  }
+  for (const b of report.work.blocks) {
+    const from = +new Date(b.start);
+    const to = +new Date(b.end);
+    const app = b.topApps[0]?.appName ?? "";
+    if (!b.projectId) out.push({ kind: "unassigned", key: `u-${b.start}`, from, to, app });
+    else if (sheets && !sheetProjects.has(b.projectId))
+      out.push({ kind: "off", key: `o-${b.start}`, from, to, projectId: b.projectId, app });
+  }
+  return out.sort((a, b) => a.from - b.from);
+}
+
+type EntryRow = Extract<Line, { kind: "entry" }>;
+
+/** Süren iş (bitişi şimdiden sonra) henüz gönderilmez. */
+const isRunning = (l: Line, now: number) => l.from <= now && l.to > now;
+
+/** Gönderilmeye hazır satırlar: aktarılmamış, başlamış, bitmiş ve eksiği olmayan. */
+function readyOf(entries: EntryRow[], now: number) {
+  const date = new Date(now);
+  return entries.filter((l) => !l.entry.exported && started(l.entry, date) && !isRunning(l, now) && !blocked(l.entry));
+}
+
 /**
  * Gün raporunun Çizelge görünümü: her satırın başında süresi kadar uzayan bloğu, yanında zaman
  * çizelgesi satırı (blok = satır, aynı hizada). Satırlar arasındaki boşluklar ayraçla görünür.
  * Satırlar yerinde düzenlenir, projesiz bloklar burada atanır, gün tek düğmeyle gönderilir.
  */
 export default function DaySheet({ day, report, tags, projects, onChanged }: Props) {
-  const [sheets, setSheets] = useState<{ id: string; projects: Set<string>; day: TimesheetDay | null }[] | null>(null);
+  const [sheets, setSheets] = useState<Sheet[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
@@ -61,17 +121,9 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
   const load = useCallback(async () => {
     const n = ++seq.current;
     try {
-      const config = await api.timesheetConfig();
-      const list = config.timesheets.filter((t) => t.projects.length > 0);
-      const days = await Promise.all(list.map((t) => api.timesheetDays(t.id, day, 1)));
+      const list = await fetchSheets(day);
       if (n !== seq.current) return;
-      setSheets(
-        list.map((t, i) => ({
-          id: t.id,
-          projects: new Set(t.projects.map((m) => m.projectId)),
-          day: days[i][0] ?? null,
-        })),
-      );
+      setSheets(list);
       setError(null);
     } catch (e) {
       if (n === seq.current) setError(friendlyError(e));
@@ -101,44 +153,11 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
   };
 
   const now = Date.now();
-  const lines = useMemo<Line[]>(() => {
-    const out: Line[] = [];
-    const sheetProjects = new Set<string>();
-    for (const s of sheets ?? []) {
-      for (const id of s.projects) sheetProjects.add(id);
-      for (const e of s.day?.entries ?? []) {
-        const [h, m, sec] = e.start.split(":").map(Number);
-        const from = +parseIsoDate(e.date) + ((h * 60 + m) * 60 + (sec || 0)) * 1000;
-        out.push({ kind: "entry", key: `e-${e.key}`, from, to: from + e.hours * 3600_000, sheetId: s.id, entry: e });
-      }
-      for (const m of s.day?.meetings ?? []) {
-        out.push({
-          kind: "meeting",
-          key: `m-${m.uid}-${m.start}`,
-          from: +new Date(m.start),
-          to: +new Date(m.end),
-          meeting: m,
-        });
-      }
-    }
-    for (const b of report.work.blocks) {
-      const from = +new Date(b.start);
-      const to = +new Date(b.end);
-      const app = b.topApps[0]?.appName ?? "";
-      if (!b.projectId) out.push({ kind: "unassigned", key: `u-${b.start}`, from, to, app });
-      else if (sheets && !sheetProjects.has(b.projectId))
-        out.push({ kind: "off", key: `o-${b.start}`, from, to, projectId: b.projectId, app });
-    }
-    return out.sort((a, b) => a.from - b.from);
-  }, [sheets, report]);
+  const lines = useMemo(() => buildLines(sheets, report), [sheets, report]);
 
   const entries = lines.flatMap((l) => (l.kind === "entry" ? [l] : []));
-  const nowDate = new Date(now);
-  // Süren iş (bitişi şimdiden sonra) henüz gönderilmez.
-  const running = (l: Line) => l.from <= now && l.to > now;
-  const ready = entries.filter(
-    (l) => !l.entry.exported && started(l.entry, nowDate) && !running(l) && !blocked(l.entry),
-  );
+  const running = (l: Line) => isRunning(l, now);
+  const ready = readyOf(entries, now);
   const missing =
     entries.filter((l) => blocked(l.entry)).length +
     lines.filter((l) => l.kind === "unassigned" || l.kind === "meeting").length;
@@ -149,10 +168,15 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
     setSending(true);
     setError(null);
     try {
-      // Düğmeye basınca alandan çıkılır ve düzenleme kaydedilir: yazılan hali gitsin.
+      // Düğmeye basınca alandan çıkılır ve düzenleme kaydedilir: yazılan hali gitsin. Hazır satırlar
+      // kayıttan sonra yeniden okunur (az önce açıklaması yazılan satır da gider).
       await Promise.allSettled([...inFlight.current]);
+      const fresh = await fetchSheets(day);
+      setSheets(fresh);
+      const freshEntries = buildLines(fresh, report).flatMap((l) => (l.kind === "entry" ? [l] : []));
       const bySheet = new Map<string, EntryView[]>();
-      for (const l of ready) bySheet.set(l.sheetId, [...(bySheet.get(l.sheetId) ?? []), l.entry]);
+      for (const l of readyOf(freshEntries, Date.now()))
+        bySheet.set(l.sheetId, [...(bySheet.get(l.sheetId) ?? []), l.entry]);
       for (const [id, rows] of bySheet) {
         const r = await api.exportTimesheet(id, rows.map(toRef));
         toast(exportNotice(r), {

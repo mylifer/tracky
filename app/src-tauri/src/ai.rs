@@ -31,8 +31,10 @@ const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
 /// Sunucu tarafı yedek model (ret durumunda); `"fallbacks": "default"` ile birlikte.
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
-const MAX_TOKENS: u32 = 4000;
-const TIMEOUT: Duration = Duration::from_secs(60);
+/// Opus 5'te düşünme varsayılan açıktır ve düşünme jetonları da bu sınıra sayılır: kalabalık
+/// günde yanıt yarıda kalmasın. Akışsız istekte zaman aşımına düşmeyecek kadar.
+const MAX_TOKENS: u32 = 16_000;
+const TIMEOUT: Duration = Duration::from_secs(120);
 /// Ayar anahtarı: `{ enabled, apiKey }`. `apiKey` eşitlenmez (bkz. `tracky_core::sync`).
 const SETTINGS_KEY: &str = "ai_details";
 /// Üslup örnekleri için geriye bakılan gün.
@@ -326,7 +328,7 @@ fn post(key: &str, body: &Value) -> CmdResult<(u16, String)> {
         .send(body.to_string())
         .map_err(|e| match e {
             ureq::Error::Timeout(_) => {
-                "Anthropic 60 saniyede yanıt vermedi; biraz sonra tekrar dene.".to_string()
+                "Anthropic 2 dakikada yanıt vermedi; biraz sonra tekrar dene.".to_string()
             }
             e => format!("Anthropic'e bağlanılamadı ({e}). İnternet bağlantını kontrol et."),
         })?;
@@ -433,7 +435,7 @@ mod tests {
     fn request_has_the_expected_shape() {
         let body = request_body("yönergeler", "satırlar");
         assert_eq!(body["model"], "claude-opus-5");
-        assert_eq!(body["max_tokens"], 4000);
+        assert_eq!(body["max_tokens"], 16_000);
         assert_eq!(body["fallbacks"], "default");
         assert_eq!(body["system"], "yönergeler");
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);

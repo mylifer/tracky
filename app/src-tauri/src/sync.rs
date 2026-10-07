@@ -289,6 +289,8 @@ pub fn run(app: AppHandle, rx: Receiver<SyncCommand>) {
     let mut due = after(FIRST);
     let mut last_attempt: Option<DateTime<Utc>> = None;
     loop {
+        // Saat geri alındıysa sıradaki eşitleme geri alınan süre kadar ötelenmesin.
+        due = due.min(after(INTERVAL));
         let wait = (due - Utc::now()).to_std().unwrap_or_default().min(TICK);
         let go = match rx.recv_timeout(wait) {
             Ok(SyncCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
