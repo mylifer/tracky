@@ -121,6 +121,9 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 52. Eşitleme döngüsü duvar saatine bakar (30 sn'de bir); hata olunca 1 dakikada yeniden dener, pencere
       odaklanınca (son denemeden 1 dk geçtiyse) eşitler. Menüde "Şimdi Eşitle (son: SS:DD)"; 15 dakikadan uzun
       süredir eşitlenemiyorsa uyarı. Her deneme veri klasöründeki `sync.log`'a yazılır
+- [x] 53. Oturumun ataması (kategori, proje) ve silinmesi içerikten ayrı zamanla (`state_at`) eşitlenir: başka
+      bilgisayarda süren oturumu takip uzatırken, bu arada yapılan atamayı ya da silmeyi geri almaz.
+      `supabase/migrations/0012` yoksa oturumlar eskisi gibi bütün olarak eşitlenir
 
 ## Yapı
 

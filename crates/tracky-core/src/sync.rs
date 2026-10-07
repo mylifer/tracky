@@ -162,8 +162,10 @@ const TABLES: &[Table] = &[
             ("project_id", Col::OptText),
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
+            ("state_at", Col::OptTime),
         ],
-        optional: &[],
+        // 0012: atama ve silinmenin zamanı.
+        optional: &["state_at"],
         key: "id",
         only: None,
     },
@@ -686,7 +688,12 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
         let id = id.to_string();
         keep_local_fields(store, &id, &mut obj)?;
     }
-    let merge = table.name == "timesheet_entries" && obj.contains_key("state_at");
+    let merge = match table.name {
+        "timesheet_entries" => Some(&TIMESHEET_MERGE),
+        "sessions" => Some(&SESSION_MERGE),
+        _ => None,
+    }
+    .filter(|_| obj.contains_key("state_at"));
     // Eski sunucunun hiç göndermediği isteğe bağlı sütunlar yazılmaz: yerel değer korunur.
     let cols: Vec<&(&str, Col)> = table
         .cols
@@ -718,7 +725,9 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
         values.push(sql);
     }
     let names: Vec<&str> = cols.iter().map(|c| table.local(c.0)).collect();
-    if merge && let Some(n) = merge_timesheet_row(store, &names, &values)? {
+    if let Some(merge) = merge
+        && let Some(n) = merge_row(store, table.name, merge, &names, &values)?
+    {
         return Ok(n);
     }
     values.push(SqlValue::Integer(updated)); // synced_at
@@ -743,45 +752,63 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
     Ok(store.conn().execute(&sql, params_from_iter(values))?)
 }
 
-/// Zaman çizelgesi satırının durum alanları: içerikten ayrı, `state_at`'e göre birleşir.
-const TIMESHEET_STATE: &[&str] = &[
-    "timesheet_id",
-    "exported_at",
-    "dismissed_at",
-    "deleted_at",
-    "consultant",
-    "state_at",
-];
+/// Durumu içerikten ayrı, `state_at`'e göre birleşen satırlar ([`merge_row`]).
+struct Merge {
+    /// Durum alanları (`state_at` dahil); geri kalan içeriktir.
+    state: &'static [&'static str],
+    /// Bunlardan biri doluysa satır donmuştur: durumu daha yeni taraf onu böyle bıraktıysa
+    /// içerik de o taraftan gelir (öteki taraf bunu bilmeden düzenledi).
+    frozen: &'static [&'static str],
+    /// Durum zamanı boş satırda yerine geçen: zaman çizelgesinde `updated_at` (sütundan önceki
+    /// satırlar); oturumda hiçbir şey (hiç düzenlenmemiş satır en eski sayılır, süren oturumu
+    /// uzatan takip başka cihazdaki atamayı ezmesin).
+    fallback_to_updated: bool,
+}
 
-/// Uzaktan gelen zaman çizelgesi satırını yereldekiyle alan alan birleştirir; yerelde satır
-/// yoksa `None` (olduğu gibi eklenir). Bütün satırda "son yazan kazanır" olsaydı, eşitlenmemiş
-/// eski kopyayı düzenleyen cihaz aktarımı ya da silmeyi geri alırdı (satır ikinci kez gönderilir,
-/// birleşen satır geri gelir):
-/// - durum (aktarım, gizlenme, silinme, danışman) daha yeni `state_at`'li taraftan gelir
-///   (zamanı bilinmeyen eski satırda `updated_at`; eşitlikte daha yeni `updated_at`);
+/// Zaman çizelgesi satırının durumu: aktarım, gizlenme, silinme, danışman.
+const TIMESHEET_MERGE: Merge = Merge {
+    state: &[
+        "timesheet_id",
+        "exported_at",
+        "dismissed_at",
+        "deleted_at",
+        "consultant",
+        "state_at",
+    ],
+    frozen: &["exported_at", "deleted_at"],
+    fallback_to_updated: true,
+};
+
+/// Oturumun durumu: elle atama ve silinme. İçerik (saatler, başlık) son yazandan gelir; süren
+/// oturumu takip eden cihaz onu uzatmaya devam eder.
+const SESSION_MERGE: Merge = Merge {
+    state: &["category_id", "project_id", "deleted_at", "state_at"],
+    frozen: &[],
+    fallback_to_updated: false,
+};
+
+/// Uzaktan gelen satırı yereldekiyle alan alan birleştirir; yerelde satır yoksa `None`
+/// (olduğu gibi eklenir). Bütün satırda "son yazan kazanır" olsaydı, eşitlenmemiş eski kopyayı
+/// düzenleyen cihaz aktarımı ya da silmeyi, süren oturumu uzatan cihaz da öteki cihazdaki
+/// atamayı ya da silmeyi geri alırdı:
+/// - durum daha yeni `state_at`'li taraftan gelir (eşitlikte daha yeni `updated_at`);
 /// - içerik daha yeni `updated_at`'li taraftan; ama durumu daha yeni olan taraf satırı
-///   aktarmış ya da silmişse içerik de ondan (öteki taraf bunu bilmeden düzenledi).
+///   dondurmuşsa ([`Merge::frozen`]) içerik de ondan.
 ///
 /// Sonuç gelen satırdan farklıysa satır kirli kalır ve birleşmiş hali geri gönderilir; böylece
 /// sunucu ve öteki cihaz da aynı sonuca varır.
-fn merge_timesheet_row(
+fn merge_row(
     store: &Store,
+    table: &str,
+    merge: &Merge,
     names: &[&str],
     incoming: &[SqlValue],
 ) -> Result<Option<usize>, SyncError> {
-    let at = |name: &str| {
-        names
-            .iter()
-            .position(|n| *n == name)
-            .expect("zaman çizelgesi sütunu")
-    };
+    let at = |name: &str| names.iter().position(|n| *n == name).expect("tablo sütunu");
     let local: Option<Vec<SqlValue>> = store
         .conn()
         .query_row(
-            &format!(
-                "SELECT {} FROM timesheet_entries WHERE id = ?1",
-                names.join(", ")
-            ),
+            &format!("SELECT {} FROM {table} WHERE id = ?1", names.join(", ")),
             [&incoming[at("id")]],
             |r| (0..names.len()).map(|i| r.get::<_, SqlValue>(i)).collect(),
         )
@@ -797,14 +824,16 @@ fn merge_timesheet_row(
         int(incoming, "updated_at").unwrap_or(0),
         int(&local, "updated_at").unwrap_or(0),
     );
-    let (is, ls) = (
-        int(incoming, "state_at").unwrap_or(iu),
-        int(&local, "state_at").unwrap_or(lu),
-    );
-    let state_in = (is, iu) > (ls, lu);
-    let frozen = |row: &[SqlValue]| {
-        row[at("exported_at")] != SqlValue::Null || row[at("deleted_at")] != SqlValue::Null
+    let state_at = |row: &[SqlValue], updated| {
+        int(row, "state_at").unwrap_or(if merge.fallback_to_updated {
+            updated
+        } else {
+            0
+        })
     };
+    let (is, ls) = (state_at(incoming, iu), state_at(&local, lu));
+    let state_in = (is, iu) > (ls, lu);
+    let frozen = |row: &[SqlValue]| merge.frozen.iter().any(|c| row[at(c)] != SqlValue::Null);
     let content_in = match is.cmp(&ls) {
         std::cmp::Ordering::Greater if frozen(incoming) => true,
         std::cmp::Ordering::Less if frozen(&local) => false,
@@ -816,7 +845,7 @@ fn merge_timesheet_row(
         .map(|(i, name)| {
             let from_incoming = match *name {
                 "id" | "created_at" | "updated_at" => false,
-                n if TIMESHEET_STATE.contains(&n) => state_in,
+                n if merge.state.contains(&n) => state_in,
                 _ => content_in,
             };
             if from_incoming {
@@ -855,7 +884,7 @@ fn merge_timesheet_row(
     let (u, s) = (values.len() - 1, values.len());
     store.conn().execute(
         &format!(
-            "UPDATE timesheet_entries SET {}, updated_at = ?{u},
+            "UPDATE {table} SET {}, updated_at = ?{u},
                 synced_at = COALESCE(?{s}, synced_at)
              WHERE id = ?1",
             sets.join(", ")
@@ -1380,6 +1409,72 @@ mod tests {
         run(&b, &mut remote, "u1").unwrap();
         let got = lock(&b).sessions_between(s.started_at, s.ended_at).unwrap();
         assert_eq!(got[0].project_id.as_deref(), Some(project.id.as_str()));
+    }
+
+    /// Süren oturumu uzatan cihaz, öteki cihazdaki proje atamasını ve silmeyi ezmez: eşitleme
+    /// gecikince (öteki cihaz oturumu bitmiş sanıp düzenler) satırın tamamı son yazanla
+    /// eşitlenseydi atama ya da silme sessizce geri alınırdı.
+    #[test]
+    fn extending_a_live_session_keeps_the_other_devices_assignment() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let mut s = session("Figma", 600);
+        lock(&a).upsert_session(&s).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        let project = lock(&b).accept_project_suggestion("Trumore").unwrap();
+        pause();
+        lock(&b)
+            .set_project_between(s.started_at, s.ended_at, Some(&project.id))
+            .unwrap();
+        // A'nın takibi aynı oturumu uzatmaya devam eder (B'nin atamasından sonra).
+        pause();
+        s.ended_at += Duration::seconds(60);
+        lock(&a).upsert_session(&s).unwrap();
+        // A'nın gönderdiği uzamış satır sunucudakini ezer; B birleştirip geri gönderir.
+        for _ in 0..3 {
+            run(&b, &mut remote, "u1").unwrap();
+            run(&a, &mut remote, "u1").unwrap();
+        }
+        for store in [&a, &b] {
+            let got = lock(store)
+                .sessions_between(s.started_at, s.ended_at)
+                .unwrap();
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].project_id.as_deref(), Some(project.id.as_str()));
+            assert_eq!(got[0].ended_at, s.ended_at);
+        }
+        assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 0);
+        assert_eq!(run(&b, &mut remote, "u1").unwrap().pushed, 0);
+    }
+
+    #[test]
+    fn a_session_deleted_on_another_device_stays_deleted_while_tracking_goes_on() {
+        let a = Mutex::new(Store::open_in_memory().unwrap());
+        let b = Mutex::new(Store::open_in_memory().unwrap());
+        let mut remote = FakeRemote::default();
+        let mut s = session("Figma", 600);
+        lock(&a).upsert_session(&s).unwrap();
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+        pause();
+        lock(&b).delete_between(s.started_at, s.ended_at).unwrap();
+        pause();
+        s.ended_at += Duration::seconds(60);
+        lock(&a).upsert_session(&s).unwrap();
+        for _ in 0..3 {
+            run(&b, &mut remote, "u1").unwrap();
+            run(&a, &mut remote, "u1").unwrap();
+        }
+        for store in [&a, &b] {
+            assert!(
+                lock(store)
+                    .sessions_between(s.started_at, s.ended_at)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

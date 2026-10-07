@@ -252,6 +252,12 @@ UPDATE timesheet_entries SET consultant = (
       AND json_extract(t.value, '$.id') = timesheet_entries.timesheet_id)
 WHERE exported_at IS NOT NULL;
 "#,
+    r#"
+-- Oturumun ataması (kategori, proje) ve silinmesi içerikten ayrı zamanla eşitlenir (state_at;
+-- supabase/migrations/0012): başka bilgisayarda süren oturumun takipçe uzatılması, bu arada
+-- yapılan atamayı ya da silmeyi geri almasın. Boş: hiç düzenlenmedi (en eski sayılır).
+ALTER TABLE sessions ADD COLUMN state_at INTEGER;
+"#,
 ];
 
 /// Yedek dosyasının içeriği (geri yüklemeden önce göstermek için).
@@ -560,6 +566,8 @@ impl Store {
                 started_at = CASE WHEN sessions.deleted_at IS NULL THEN sessions.started_at
                     ELSE MAX(sessions.started_at, MIN(sessions.deleted_at, excluded.ended_at)) END,
                 deleted_at = NULL,
+                state_at = CASE WHEN sessions.deleted_at IS NULL THEN sessions.state_at
+                    ELSE excluded.updated_at END,
                 ended_at = excluded.ended_at,
                 updated_at = MAX(excluded.updated_at, sessions.updated_at + 1)",
             params![
@@ -650,7 +658,7 @@ impl Store {
     pub fn delete_session(&self, id: &Uuid) -> Result<()> {
         let now = ms(Utc::now());
         self.conn.execute(
-            "UPDATE sessions SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1)
+            "UPDATE sessions SET deleted_at = ?2, state_at = ?2, updated_at = MAX(?2, updated_at + 1)
              WHERE id = ?1 AND deleted_at IS NULL",
             params![id.to_string(), now],
         )?;
@@ -686,7 +694,7 @@ impl Store {
         self.split_at(from, to)?;
         let n = self.conn.execute(
             &format!(
-                "UPDATE sessions SET category_id = ?3, updated_at = MAX(?4, updated_at + 1)
+                "UPDATE sessions SET category_id = ?3, state_at = ?4, updated_at = MAX(?4, updated_at + 1)
                  WHERE deleted_at IS NULL AND {OVERLAPS}
                    AND category_id IS NOT ?3 AND {scope}",
                 scope = in_scope(5)
@@ -727,7 +735,7 @@ impl Store {
         self.split_at(from, to)?;
         let n = self.conn.execute(
             &format!(
-                "UPDATE sessions SET project_id = ?3, updated_at = MAX(?4, updated_at + 1)
+                "UPDATE sessions SET project_id = ?3, state_at = ?4, updated_at = MAX(?4, updated_at + 1)
                  WHERE deleted_at IS NULL AND {OVERLAPS}
                    AND project_id IS NOT ?3 AND {scope}",
                 scope = in_scope(5)
@@ -762,7 +770,7 @@ impl Store {
         self.split_at(from, to)?;
         let n = self.conn.execute(
             &format!(
-                "UPDATE sessions SET deleted_at = ?3, updated_at = MAX(?3, updated_at + 1)
+                "UPDATE sessions SET deleted_at = ?3, state_at = ?3, updated_at = MAX(?3, updated_at + 1)
                  WHERE deleted_at IS NULL AND {OVERLAPS} AND {scope}",
                 scope = in_scope(4)
             ),
@@ -912,9 +920,9 @@ impl Store {
             for (a, b) in parts {
                 self.conn.execute(
                     "INSERT INTO sessions (id, device_id, app_id, app_name, title, url, domain,
-                         category_id, project_id, started_at, ended_at, updated_at)
+                         category_id, project_id, state_at, started_at, ended_at, updated_at)
                      SELECT ?2, device_id, app_id, app_name, title, url, domain, category_id,
-                         project_id, ?3, ?4, ?5
+                         project_id, state_at, ?3, ?4, ?5
                      FROM sessions WHERE id = ?1",
                     params![id, Uuid::new_v4().to_string(), a, b, now],
                 )?;
@@ -965,7 +973,7 @@ impl Store {
             self.split_at(from, to)?;
             self.conn.execute(
                 &format!(
-                    "UPDATE sessions SET deleted_at = ?3, updated_at = MAX(?3, updated_at + 1)
+                    "UPDATE sessions SET deleted_at = ?3, state_at = ?3, updated_at = MAX(?3, updated_at + 1)
                      WHERE deleted_at IS NULL AND {OVERLAPS} AND app_id = ?4"
                 ),
                 params![ms(from), ms(to), ms(Utc::now()), IDLE_APP_ID],

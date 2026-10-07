@@ -229,6 +229,9 @@ create policy "kendi satırları" on kum.timesheet_entries for all to authentica
     using (user_id = (select auth.uid()))
     with check (user_id = (select auth.uid()));
 
+-- (0012) Oturumun ataması ve silinmesi içerikten ayrı zamanla eşitlenir.
+alter table kum.sessions add column if not exists state_at timestamptz;
+
 -- Erişim: oturum açmış kullanıcılar (satır güvenliğiyle yalnız kendi satırları) ve sunucu rolü.
 -- (0009) authenticated'a yalnızca okuma ve yazma: TRUNCATE satır güvenliğini atlar.
 revoke all on all tables in schema kum from anon;

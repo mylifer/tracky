@@ -151,7 +151,8 @@ impl Store {
                 .collect();
             for id in created {
                 self.conn.execute(
-                    "UPDATE sessions SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1)
+                    "UPDATE sessions SET deleted_at = ?2, state_at = ?2,
+                         updated_at = MAX(?2, updated_at + 1)
                      WHERE id = ?1",
                     params![id, now],
                 )?;
@@ -160,7 +161,7 @@ impl Store {
         for r in &snap.rows {
             self.conn.execute(
                 "UPDATE sessions SET started_at = ?2, ended_at = MAX(?3, ended_at),
-                     category_id = ?4, project_id = ?5, deleted_at = NULL,
+                     category_id = ?4, project_id = ?5, deleted_at = NULL, state_at = ?6,
                      updated_at = MAX(?6, updated_at + 1)
                  WHERE id = ?1",
                 params![
@@ -188,7 +189,7 @@ impl Store {
         let mut n = 0;
         for id in ids {
             n += self.conn.execute(
-                "UPDATE sessions SET project_id = ?2, updated_at = MAX(?3, updated_at + 1)
+                "UPDATE sessions SET project_id = ?2, state_at = ?3, updated_at = MAX(?3, updated_at + 1)
                  WHERE id = ?1 AND deleted_at IS NULL AND project_id IS NOT ?2
                    AND NOT (device_id != ?4 AND ended_at > ?5
                             AND substr(app_id, 1, length(?6)) != ?6 AND app_id != ?7)",
