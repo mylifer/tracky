@@ -14,6 +14,7 @@ mod effects;
 mod google;
 mod icons;
 mod secrets;
+mod shortcut;
 mod sync;
 mod timesheet;
 mod tracking;
@@ -380,6 +381,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     sync::start(app)?;
     calendar::start(app)?;
     backup::start(app)?;
+    shortcut::init(app.handle());
     updater::start(app);
 
     // Karşılama tamamlanmadıysa ya da izin eksikse pencereyi göster;
@@ -394,7 +396,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(any(target_os = "macos", windows))]
+    let builder = builder.plugin(shortcut::plugin());
+    let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
@@ -443,6 +448,11 @@ pub fn run() {
             commands::search,
             commands::set_range_project,
             edits::undo,
+            edits::label_undo,
+            edits::undo_history,
+            commands::range_apps,
+            shortcut::shortcut_status,
+            shortcut::set_shortcut_enabled,
             edits::get_unassigned,
             edits::assign_unassigned,
             edits::assign_window,

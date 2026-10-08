@@ -35,6 +35,7 @@ window-vibrancy = "0.8.1"
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
+tauri-plugin-global-shortcut = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

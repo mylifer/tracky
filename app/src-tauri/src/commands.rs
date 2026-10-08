@@ -443,6 +443,15 @@ pub async fn set_range_project(
     Ok(edited)
 }
 
+/// `[start, end)` aralığında kullanılan uygulamalar ("Son süreyi ata" önizlemesi).
+#[tauri::command]
+pub async fn range_apps(app: AppHandle, start: String, end: String) -> CmdResult<Vec<UsageTotal>> {
+    let (from, to) = (parse_time(&start)?, parse_time(&end)?);
+    lock(&app.state::<Shared>().store)
+        .app_totals(from, to)
+        .map_err(err)
+}
+
 #[tauri::command]
 pub async fn delete_range(
     app: AppHandle,

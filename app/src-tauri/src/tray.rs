@@ -65,6 +65,13 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
     )?;
     let timesheet =
         MenuItem::with_id(app, "timesheet", "Zaman Çizelgesini Aç", true, None::<&str>)?;
+    let recent = MenuItem::with_id(
+        app,
+        "assign_recent",
+        "Son Süreyi Projeye Ata…",
+        true,
+        None::<&str>,
+    )?;
     let autostart_item = CheckMenuItem::with_id(
         app,
         "autostart",
@@ -87,6 +94,7 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
             &open,
             &review,
             &timesheet,
+            &recent,
             &PredefinedMenuItem::separator(app)?,
             &autostart_item,
             &sync,
@@ -130,6 +138,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         "open" => crate::show_main_window(app),
         "review" => crate::navigate(app, "review"),
         "timesheet" => crate::navigate(app, "timesheet"),
+        "assign_recent" => crate::navigate(app, "assign-recent"),
         "autostart" => {
             let enabled = items(app)
                 .and_then(|i| i.autostart.is_checked().ok())

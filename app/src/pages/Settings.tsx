@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, X } from "lucide-react";
-import { api, type AppStatus, type PrivacySettings, type UsageTotal } from "../api";
+import { api, type AppStatus, type PrivacySettings, type ShortcutStatus, type UsageTotal } from "../api";
 import { ErrorText, Page, SettingBlock, SettingRow, SettingsGroup, ToggleRow } from "../components/settings";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -51,11 +51,13 @@ export default function Settings({
   const [diag, setDiag] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exported, setExported] = useState<string | null>(null);
+  const [shortcut, setShortcut] = useState<ShortcutStatus | null>(null);
 
   useEffect(() => {
     // Gizlilik okunamazsa bölüm sessizce kaybolmasın.
     api.privacy().then(setPrivacy, (e) => setError(friendlyError(e)));
     api.knownApps().then(setApps, () => {});
+    api.shortcutStatus().then(setShortcut, () => {});
   }, []);
   useEffect(() => {
     // Bölümler yüklenince yerleşsin diye bir kare sonra.
@@ -112,6 +114,18 @@ export default function Settings({
           checked={status.autostart}
           onChange={toggleAutostart}
         />
+        {shortcut && (
+          <ToggleRow
+            label={`Son süreyi ata kısayolu (${shortcut.label})`}
+            hint={
+              shortcut.error
+                ? `Kısayol kaydedilemedi: ${shortcut.error}. Başka bir uygulama kullanıyor olabilir.`
+                : "Hangi uygulamada olursan ol Kum'u açıp son 15–120 dakikayı bir projeye yazdırır."
+            }
+            checked={shortcut.enabled}
+            onChange={(on) => api.setShortcutEnabled(on).then(setShortcut, (e) => setError(friendlyError(e)))}
+          />
+        )}
         <SettingRow label="Açılış sayfası" hint="Kum açılınca gösterilen sayfa.">
           <Select
             value={startView}

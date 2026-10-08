@@ -20,7 +20,7 @@ use crate::tracking::{Shared, local_midnight};
 type CmdResult<T> = Result<T, String>;
 
 /// Saklanan en çok geri alma kaydı.
-const MAX_UNDO: usize = 30;
+const MAX_UNDO: usize = 50;
 /// Kural önizlemesi bu kadar günlük geçmişe bakar.
 const PREVIEW_DAYS: i64 = 30;
 
@@ -44,11 +44,41 @@ pub enum UndoOp {
     },
 }
 
-/// Geri alma kayıtları: son verilen numara ve (numara, işlemler) listesi, eskiden yeniye.
+/// Bir geri alma kaydı.
+struct Entry {
+    id: u64,
+    at: DateTime<Utc>,
+    /// Arayüzün gösterdiği ileti ("Silindi", "LOY'a atandı"…); [`label_undo`] ile gelir.
+    label: Option<String>,
+    ops: Vec<UndoOp>,
+}
+
+impl Entry {
+    fn snaps(&self) -> impl Iterator<Item = &EditSnapshot> {
+        self.ops.iter().filter_map(|op| match op {
+            UndoOp::Sessions(s) => Some(s),
+            _ => None,
+        })
+    }
+}
+
+/// Geri alma kayıtları: son verilen numara ve kayıtlar, eskiden yeniye.
 #[derive(Default)]
 struct Entries {
     last: u64,
-    list: Vec<(u64, Vec<UndoOp>)>,
+    list: Vec<Entry>,
+}
+
+impl Entries {
+    /// `i`'inci kayıt geri alınamaz: aynı süreye dokunan daha yeni bir düzenleme duruyor
+    /// (bkz. [`EditSnapshot::touches`]).
+    fn blocked(&self, i: usize) -> bool {
+        self.list[i + 1..].iter().any(|later| {
+            later
+                .snaps()
+                .any(|l| self.list[i].snaps().any(|s| s.touches(l)))
+        })
+    }
 }
 
 #[derive(Default)]
@@ -60,45 +90,76 @@ impl UndoLog {
         let mut log = lock(&self.0);
         log.last += 1;
         let id = log.last;
-        log.list.push((id, ops));
+        log.list.push(Entry {
+            id,
+            at: Utc::now(),
+            label: None,
+            ops,
+        });
         if log.list.len() > MAX_UNDO {
             log.list.remove(0);
         }
         id
     }
 
-    /// Kaydı çıkarır. Aynı süreye dokunan daha yeni bir düzenleme duruyorsa çıkarılmaz
-    /// (`Err`): önce o geri alınmalı (bkz. [`EditSnapshot::touches`]).
-    fn take(&self, id: u64) -> Result<Option<Vec<UndoOp>>, ()> {
-        let mut log = lock(&self.0);
-        let Some(i) = log.list.iter().position(|(n, _)| *n == id) else {
-            return Ok(None);
-        };
-        fn snaps(ops: &[UndoOp]) -> impl Iterator<Item = &EditSnapshot> {
-            ops.iter().filter_map(|op| match op {
-                UndoOp::Sessions(s) => Some(s),
-                _ => None,
-            })
+    /// Kayda arayüzdeki iletisini ekler (kayıt yoksa bir şey yapmaz).
+    fn label(&self, id: u64, label: String) {
+        if let Some(e) = lock(&self.0).list.iter_mut().find(|e| e.id == id) {
+            e.label = Some(label);
         }
-        let blocked = log.list[i + 1..].iter().any(|(_, later)| {
-            snaps(later).any(|later| snaps(&log.list[i].1).any(|s| s.touches(later)))
-        });
-        if blocked {
-            return Err(());
-        }
-        Ok(Some(log.list.remove(i).1))
     }
 
-    /// Geri alma başarısız olduysa (hiçbiri uygulanmadı) işlemleri aynı numarayla yerine koyar;
-    /// kullanıcı "Geri al"ı yeniden deneyebilir.
-    fn put_back(&self, id: u64, ops: Vec<UndoOp>) {
+    /// Kaydı çıkarır. Aynı süreye dokunan daha yeni bir düzenleme duruyorsa çıkarılmaz
+    /// (`Err`): önce o geri alınmalı.
+    fn take(&self, id: u64) -> Result<Option<Entry>, ()> {
         let mut log = lock(&self.0);
-        let i = log.list.partition_point(|(n, _)| *n < id);
-        log.list.insert(i, (id, ops));
+        let Some(i) = log.list.iter().position(|e| e.id == id) else {
+            return Ok(None);
+        };
+        if log.blocked(i) {
+            return Err(());
+        }
+        Ok(Some(log.list.remove(i)))
+    }
+
+    /// Geri alma başarısız olduysa (hiçbiri uygulanmadı) kaydı aynı numarayla yerine koyar;
+    /// kullanıcı "Geri al"ı yeniden deneyebilir.
+    fn put_back(&self, entry: Entry) {
+        let mut log = lock(&self.0);
+        let i = log.list.partition_point(|e| e.id < entry.id);
+        log.list.insert(i, entry);
         if log.list.len() > MAX_UNDO {
             log.list.remove(0);
         }
     }
+
+    /// Geri alınabilecek kayıtlar, en yeni önce.
+    fn history(&self) -> Vec<HistoryItem> {
+        let log = lock(&self.0);
+        (0..log.list.len())
+            .rev()
+            .map(|i| {
+                let e = &log.list[i];
+                HistoryItem {
+                    id: e.id,
+                    at: e.at,
+                    label: e.label.clone(),
+                    blocked: log.blocked(i),
+                }
+            })
+            .collect()
+    }
+}
+
+/// Değişiklik geçmişindeki bir satır.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryItem {
+    id: u64,
+    at: DateTime<Utc>,
+    label: Option<String>,
+    /// Aynı süreye dokunan daha yeni bir değişiklik var: önce o geri alınmalı.
+    blocked: bool,
 }
 
 /// Değişiklik sayısı ve geri alma numarası.
@@ -157,16 +218,29 @@ fn apply(store: &Store, op: &UndoOp) -> tracky_core::store::Result<()> {
 #[tauri::command]
 pub async fn undo(app: AppHandle, id: u64) -> CmdResult<()> {
     let log = app.state::<UndoLog>();
-    let ops = log
+    let entry = log
         .take(id)
         .map_err(|()| "Bu aralıkta daha sonra yapılan bir değişiklik var; önce onu geri al.")?
         .ok_or("Bu değişiklik artık geri alınamıyor.")?;
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    undo_ops(&store, &ops).map_err(|e| {
-        log.put_back(id, ops);
+    undo_ops(&store, &entry.ops).map_err(|e| {
+        log.put_back(entry);
         err(e)
     })
+}
+
+/// Geri alma kaydına arayüzün gösterdiği iletiyi ekler (değişiklik geçmişinde görünür).
+#[tauri::command]
+pub fn label_undo(app: AppHandle, id: u64, label: String) {
+    let label: String = label.chars().take(200).collect();
+    app.state::<UndoLog>().label(id, label);
+}
+
+/// Bu açılışta yapılan, hâlâ geri alınabilecek değişiklikler (en yeni önce).
+#[tauri::command]
+pub fn undo_history(app: AppHandle) -> Vec<HistoryItem> {
+    app.state::<UndoLog>().history()
 }
 
 /// İşlemleri sondan başa, tek işlemde (transaction) uygular: biri başarısız olursa hiçbiri
@@ -426,7 +500,7 @@ mod tests {
         let (older, newer) = (log.push(Vec::new()), log.push(Vec::new()));
         let failed = log.push(Vec::new());
         let taken = log.take(failed).unwrap().unwrap();
-        log.put_back(failed, taken);
+        log.put_back(taken);
         assert!(matches!(log.take(failed), Ok(Some(_))));
         assert!(matches!(log.take(older), Ok(Some(_))));
         assert!(matches!(log.take(newer), Ok(Some(_))));
@@ -450,6 +524,27 @@ mod tests {
         );
         assert!(matches!(log.take(newer), Ok(Some(_))));
         assert!(matches!(log.take(older), Ok(Some(_))));
+
+        // Geçmiş: en yeni önce, iletisiyle; aynı süreye dokunan eskisi engelli görünür.
+        let wide = store.snapshot_range(at(0), at(60)).unwrap();
+        let inner = store.snapshot_range(at(15), at(30)).unwrap();
+        let older = log.push(vec![UndoOp::Sessions(wide)]);
+        let newer = log.push(vec![UndoOp::Sessions(inner)]);
+        log.label(older, "LOY'a atandı".into());
+        log.label(newer, "Silindi".into());
+        let items = log.history();
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            (items[0].id, items[0].label.as_deref()),
+            (newer, Some("Silindi"))
+        );
+        assert_eq!(items[1].label.as_deref(), Some("LOY'a atandı"));
+        assert!(!items[0].blocked && items[1].blocked);
+        log.take(newer).unwrap();
+        assert!(
+            !log.history()[0].blocked,
+            "yenisi geri alınınca eskisi açılır"
+        );
     }
 
     #[test]

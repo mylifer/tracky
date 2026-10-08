@@ -86,6 +86,7 @@ export async function undo(id: number) {
  */
 export async function undoable<T extends Edited | number>(work: Promise<T>, message: string): Promise<T> {
   const result = await work;
+  api.labelUndo(typeof result === "number" ? result : result.undo, message).catch(() => {});
   if (typeof result === "number") {
     toast(message, { undo: result });
     return result;

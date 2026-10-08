@@ -417,6 +417,10 @@ export type CategoryLimit = { categoryId: string; minutes: number };
  */
 export type Edited = { changed: number; undo: number; suggestion?: RuleSuggestion };
 
+/** Değişiklik geçmişindeki bir satır; `blocked`: aynı süreye dokunan daha yeni değişiklik var. */
+export type HistoryItem = { id: number; at: string; label: string | null; blocked: boolean };
+export type ShortcutStatus = { enabled: boolean; label: string; error: string | null };
+
 /** Elle atamalardan öğrenilen kural önerisi. */
 export type RuleSuggestion = {
   /** Yoksayma anahtarı. */
@@ -547,6 +551,13 @@ export const api = {
   dismissRuleSuggestion: (key: string) => invoke<void>("dismiss_rule_suggestion", { key }),
   /** Düzenlemeyi geri alır. */
   undo: (id: number) => invoke<void>("undo", { id }),
+  /** Geri alma kaydına bildirimdeki iletiyi ekler (değişiklik geçmişinde görünür). */
+  labelUndo: (id: number, label: string) => invoke<void>("label_undo", { id, label }),
+  /** Bu açılışta yapılan, hâlâ geri alınabilecek değişiklikler (en yeni önce). */
+  undoHistory: () => invoke<HistoryItem[]>("undo_history"),
+  /** "Son süreyi ata" için her yerden kısayol. */
+  shortcutStatus: () => invoke<ShortcutStatus>("shortcut_status"),
+  setShortcutEnabled: (enabled: boolean) => invoke<ShortcutStatus>("set_shortcut_enabled", { enabled }),
   unassigned: (start: string, days: number) => invoke<Unassigned>("get_unassigned", { start, days }),
   /** Grubu (ya da başlığı) projeye atar; `rule` verilirse önce kural eklenir. */
   assignUnassigned: (
@@ -678,6 +689,8 @@ export const api = {
     projectId: string | null,
   ) => invoke<Edited>("resize_block", { start, end, newStart, newEnd, label, categoryId, projectId }),
   /** Aralıktaki oturumlara elle proje; `null` kurallara döndürür. */
+  /** Aralıkta kullanılan uygulamalar ("Son süreyi ata" önizlemesi). */
+  rangeApps: (start: string, end: string) => invoke<UsageTotal[]>("range_apps", { start, end }),
   setRangeProject: (start: string, end: string, projectId: string | null, scope: EditScope | null = null) =>
     invoke<Edited>("set_range_project", { start, end, projectId, scope }),
   privacy: () => invoke<PrivacySettings>("get_privacy"),

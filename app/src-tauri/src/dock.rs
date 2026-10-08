@@ -94,6 +94,13 @@ pub fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[
             &PredefinedMenuItem::undo(app, None)?,
             &PredefinedMenuItem::redo(app, None)?,
+            &MenuItem::with_id(
+                app,
+                "nav:history",
+                "Değişiklik Geçmişi…",
+                true,
+                Some("CmdOrCtrl+Alt+Z"),
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::cut(app, None)?,
             &PredefinedMenuItem::copy(app, None)?,

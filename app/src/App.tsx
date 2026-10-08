@@ -24,6 +24,8 @@ import {
   Command as CommandIcon,
   ReceiptText,
   House,
+  History,
+  ClockArrowDown,
 } from "lucide-react";
 import { api, formatDuration, type AppStatus, type Suggestions, type Tag, type TrackingStatus } from "./api";
 import { UpdateCard } from "./components/UpdateCard";
@@ -54,6 +56,8 @@ import { useUpdate } from "./lib/useUpdate";
 import { cn } from "./lib/utils";
 import Onboarding from "./Onboarding";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { HistoryDialog } from "./components/HistoryDialog";
+import { AssignRecentDialog } from "./components/AssignRecentDialog";
 import TagsPage from "./pages/TagsPage";
 import ClientsPage from "./pages/ClientsPage";
 import ProjectsPage from "./pages/ProjectsPage";
@@ -217,6 +221,9 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   const [tracking, setTracking] = useState<TrackingStatus>(status.tracking);
   const [update, setUpdate] = useUpdate();
   const [palette, setPalette] = useState(false);
+  const [history, setHistory] = useState(false);
+  /** "Son süreyi ata" açık mı; kısayoldan ya da menü çubuğundan açıldıysa `outside`. */
+  const [assignRecent, setAssignRecent] = useState<{ outside: boolean } | null>(null);
   const [dailyHours, setDailyHours] = useState(8);
   useEffect(() => {
     api.goals().then(
@@ -296,6 +303,10 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
     switch (target) {
       case "palette":
         return setPalette(true);
+      case "history":
+        return setHistory(true);
+      case "assign-recent":
+        return setAssignRecent({ outside: true });
       case "day":
       case "week":
       case "month":
@@ -325,8 +336,15 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   // ⌘K palet, ⌘F arama, ⌘, ayarlar, ⌘1…5 sayfalar (Mac'te menü de aynı isteği gönderir).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.defaultPrevented || e.altKey) return;
+      if (e.defaultPrevented) return;
       const mod = e.metaKey || e.ctrlKey;
+      // ⌥⌘Z / Ctrl+Alt+Z: değişiklik geçmişi (Mac'te Düzen menüsü de aynı isteği gönderir).
+      if (mod && e.altKey && e.code === "KeyZ") {
+        e.preventDefault();
+        setHistory(true);
+        return;
+      }
+      if (e.altKey) return;
       if (mod) {
         const target = (
           {
@@ -406,6 +424,14 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
       go("categories", "Kategoriler", <Tags />, undefined, "kural uygulama"),
       go("settings", "Ayarlar", <Settings2 />, `${MOD},`, "tercihler"),
       act("today", "Bugüne git", <CalendarCheck />, goToday, "today"),
+      act(
+        "assign-recent",
+        "Son süreyi projeye ata…",
+        <ClockArrowDown />,
+        () => setAssignRecent({ outside: false }),
+        "son dakika geriye dönük ata proje",
+      ),
+      act("history", "Değişiklik geçmişi", <History />, () => setHistory(true), "geri al undo son değişiklikler"),
       ...(tracking.paused
         ? [act("resume", "Takibe devam et", <Play />, togglePause, "başlat")]
         : [
@@ -638,6 +664,12 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
           setSearch({ query, days: 30 });
           setView("search");
         }}
+      />
+      <HistoryDialog open={history} onClose={() => setHistory(false)} />
+      <AssignRecentDialog
+        open={assignRecent !== null}
+        fromOutside={assignRecent?.outside ?? false}
+        onClose={() => setAssignRecent(null)}
       />
       <Toaster />
     </div>
