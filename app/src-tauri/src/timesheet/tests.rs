@@ -41,6 +41,37 @@ fn a_stale_sheet_link_does_not_send_to_google() {
 }
 
 #[test]
+fn a_sheet_the_account_cannot_edit_is_written_by_the_script() {
+    let google = GoogleAuth {
+        client_id: "x.apps.googleusercontent.com".into(),
+        refresh_token: Some("r".into()),
+        ..Default::default()
+    };
+    let link =
+        "https://docs.google.com/spreadsheets/d/1YetkisizTabloXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX/edit";
+    let sheets = Timesheet {
+        sheet_url: Some("https://script.google.com/macros/s/x/exec".into()),
+        sheet_link: Some(link.into()),
+        ..Default::default()
+    };
+    assert!(denied(&tracky_xlsx::Error::Sheets(
+        "bağlı Google hesabının bu tabloda düzenleme yetkisi yok; …".into()
+    )));
+    assert!(!denied(&tracky_xlsx::Error::Sheets(
+        "tablo bulunamadı".into()
+    )));
+    assert!(matches!(
+        FileTarget::of(&sheets, "t", &google),
+        Ok(FileTarget::Api { .. })
+    ));
+    crate::lock(&DENIED).push("1YetkisizTabloXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX".into());
+    assert!(matches!(
+        FileTarget::of(&sheets, "t", &google),
+        Ok(FileTarget::Sheets { .. })
+    ));
+}
+
+#[test]
 fn rows_of_other_consultants_are_not_mine() {
     let row = |who: &str| FileRow {
         consultant: who.into(),

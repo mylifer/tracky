@@ -13,9 +13,20 @@ pub(super) static FILE_WRITES: tauri::async_runtime::Mutex<()> =
 /// Apps Script web uygulaması, o da yoksa Excel dosyası.
 #[derive(Clone)]
 pub(super) enum FileTarget {
-    Api { id: String, auth: GoogleAuth },
-    Sheets { url: String, token: String },
-    Excel { path: std::path::PathBuf },
+    /// `script`: tablonun Apps Script bağlantısı (adres, anahtar); bağlı Google hesabının
+    /// tabloda düzenleme yetkisi yoksa ona geçilir.
+    Api {
+        id: String,
+        auth: GoogleAuth,
+        script: (String, String),
+    },
+    Sheets {
+        url: String,
+        token: String,
+    },
+    Excel {
+        path: std::path::PathBuf,
+    },
 }
 
 /// Sheets API çağrısı: geçerli erişim anahtarıyla; anahtar reddedilirse bir kez yenilenip
@@ -35,6 +46,14 @@ pub(super) fn with_google<T>(
     }
 }
 
+/// Bağlı Google hesabının düzenleme yetkisi olmadığı tablolar: bu oturumda betikle yazılır.
+pub(super) static DENIED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Sheets API, hesabın tabloda düzenleme yetkisi olmadığı için mi reddetti.
+pub(super) fn denied(e: &tracky_xlsx::Error) -> bool {
+    matches!(e, tracky_xlsx::Error::Sheets(m) if m.contains("düzenleme yetkisi yok"))
+}
+
 impl FileTarget {
     pub(super) fn of(sheet: &Timesheet, token: &str, google: &GoogleAuth) -> CmdResult<Self> {
         // Tablo bağlantısı yalnızca çizelge Sheets'e bağlıyken (`sheet_url`) geçerlidir: Excel'e
@@ -48,17 +67,20 @@ impl FileTarget {
                     .and_then(tracky_xlsx::gsheets::spreadsheet_id)
             })
             .flatten();
+        // Hesabın yetkisi olmadığı anlaşılan tablo bu oturumda doğrudan betikle yazılır.
+        let api = api.filter(|id| !crate::lock(&DENIED).contains(id));
         match (api, &sheet.sheet_url, &sheet.file_path) {
-            (Some(id), _, _) => Ok(Self::Api {
+            (Some(id), Some(url), _) => Ok(Self::Api {
                 id,
                 auth: google.clone(),
+                script: (url.clone(), token.to_string()),
             }),
-            (None, Some(url), _) => Ok(Self::Sheets {
+            (_, Some(url), _) => Ok(Self::Sheets {
                 url: url.clone(),
                 token: token.to_string(),
             }),
-            (None, None, Some(path)) => Ok(Self::Excel { path: path.into() }),
-            (None, None, None) => Err(NO_TARGET.into()),
+            (_, None, Some(path)) => Ok(Self::Excel { path: path.into() }),
+            (_, None, None) => Err(NO_TARGET.into()),
         }
     }
 
@@ -70,19 +92,45 @@ impl FileTarget {
         Ok((sheet, target))
     }
 
-    pub(super) async fn list(&self, from: NaiveDate, to: NaiveDate) -> CmdResult<Vec<FileRow>> {
+    /// `f`'yi hedefte çalıştırır. Bağlı Google hesabının tabloda düzenleme yetkisi yoksa
+    /// (tablo başka hesapla paylaşılmış) aynı işi Apps Script ile yapar; dönen hedef işin
+    /// yapıldığı yerdir.
+    pub(super) async fn run<T: Send + 'static>(
+        &self,
+        f: impl Fn(&Self) -> tracky_xlsx::Result<T> + Send + 'static,
+    ) -> CmdResult<(T, Self)> {
         let target = self.clone();
-        let rows = tauri::async_runtime::spawn_blocking(move || match &target {
-            Self::Api { id, auth } => {
-                with_google(auth, |t| tracky_xlsx::gsheets::list(t, id, from, to))
+        tauri::async_runtime::spawn_blocking(move || match (f(&target), &target) {
+            (Err(e), Self::Api { id, script, .. }) if denied(&e) => {
+                log_info!("Google hesabının tabloya yetkisi yok, Apps Script ile yazılıyor");
+                crate::lock(&DENIED).push(id.clone());
+                let (url, token) = script.clone();
+                let by_script = Self::Sheets { url, token };
+                f(&by_script).map(|r| (r, by_script))
             }
-            Self::Sheets { url, token } => tracky_xlsx::sheets::list(url, token, from, to),
-            Self::Excel { path } => tracky_xlsx::list(path, from, to),
+            (r, _) => r.map(|r| (r, target)),
         })
         .await
         .map_err(err)?
-        .map_err(err)?;
-        Ok(rows.into_iter().map(file_row).collect())
+        .map_err(err)
+    }
+
+    pub(super) async fn list(&self, from: NaiveDate, to: NaiveDate) -> CmdResult<Vec<FileRow>> {
+        self.rows(from, to).await.map(|(rows, _)| rows)
+    }
+
+    /// Dosyadaki satırlar ve okundukları hedef.
+    async fn rows(&self, from: NaiveDate, to: NaiveDate) -> CmdResult<(Vec<FileRow>, Self)> {
+        let (rows, used) = self
+            .run(move |target| match target {
+                Self::Api { id, auth, .. } => {
+                    with_google(auth, |t| tracky_xlsx::gsheets::list(t, id, from, to))
+                }
+                Self::Sheets { url, token } => tracky_xlsx::sheets::list(url, token, from, to),
+                Self::Excel { path } => tracky_xlsx::list(path, from, to),
+            })
+            .await?;
+        Ok((rows.into_iter().map(file_row).collect(), used))
     }
 
     pub(super) async fn update(
@@ -91,10 +139,10 @@ impl FileTarget {
         expect: &FileRow,
         row: &TimesheetEntry,
     ) -> CmdResult<u32> {
-        let (target, consultant) = (self.clone(), consultant.to_string());
+        let consultant = consultant.to_string();
         let (expect, row) = (sheet_row(expect), xlsx_row(row));
-        tauri::async_runtime::spawn_blocking(move || match &target {
-            Self::Api { id, auth } => with_google(auth, |t| {
+        self.run(move |target| match target {
+            Self::Api { id, auth, .. } => with_google(auth, |t| {
                 tracky_xlsx::gsheets::update(t, id, &consultant, &expect, &row)
             }),
             Self::Sheets { url, token } => {
@@ -103,14 +151,13 @@ impl FileTarget {
             Self::Excel { path } => tracky_xlsx::update(path, &consultant, &expect, &row),
         })
         .await
-        .map_err(err)?
-        .map_err(err)
+        .map(|(r, _)| r)
     }
 
     pub(super) async fn insert(&self, consultant: &str, row: &TimesheetEntry) -> CmdResult<u32> {
-        let (target, consultant, row) = (self.clone(), consultant.to_string(), xlsx_row(row));
-        tauri::async_runtime::spawn_blocking(move || match &target {
-            Self::Api { id, auth } => with_google(auth, |t| {
+        let (consultant, row) = (consultant.to_string(), xlsx_row(row));
+        self.run(move |target| match target {
+            Self::Api { id, auth, .. } => with_google(auth, |t| {
                 tracky_xlsx::gsheets::insert(t, id, &consultant, &row)
             }),
             Self::Sheets { url, token } => {
@@ -119,8 +166,7 @@ impl FileTarget {
             Self::Excel { path } => tracky_xlsx::insert(path, &consultant, &row),
         })
         .await
-        .map_err(err)?
-        .map_err(err)
+        .map(|(r, _)| r)
     }
 
     /// Kum'un aktardığı `entry` dosyada yok mu (elle silinmiş): gününün satırlarından hiçbiri
@@ -133,7 +179,11 @@ impl FileTarget {
         }
         // Danışman süzülmez: danışman adı aktarımdan sonra değiştiyse satır hâlâ dosyadadır;
         // "kayıp" sayılsaydı dosyada kalırken Kum'dan çekilirdi.
-        let rows = self.list(entry.date, entry.date).await?;
+        let (rows, used) = self.rows(entry.date, entry.date).await?;
+        // Yetkisizlikten betiğe geçildiyse betik yolundaki gibi: kayıp sayılmaz.
+        if matches!(used, Self::Sheets { .. }) {
+            return Ok(false);
+        }
         Ok(timesheet::link_file_rows(&rows, &[entry])
             .iter()
             .all(Option::is_none))
@@ -141,9 +191,9 @@ impl FileTarget {
 
     /// `id`: satırı Kum aktardıysa kaydın kimliği (Sheets betiği onu unutur; yeniden gönderilebilir).
     pub(super) async fn remove(&self, expect: &FileRow, id: Option<&str>) -> CmdResult<()> {
-        let (target, expect, id) = (self.clone(), sheet_row(expect), id.map(str::to_string));
-        tauri::async_runtime::spawn_blocking(move || match &target {
-            Self::Api { id: sid, auth } => {
+        let (expect, id) = (sheet_row(expect), id.map(str::to_string));
+        self.run(move |target| match target {
+            Self::Api { id: sid, auth, .. } => {
                 with_google(auth, |t| tracky_xlsx::gsheets::remove(t, sid, &expect))
             }
             Self::Sheets { url, token } => {
@@ -152,8 +202,7 @@ impl FileTarget {
             Self::Excel { path } => tracky_xlsx::remove(path, &expect),
         })
         .await
-        .map_err(err)?
-        .map_err(err)
+        .map(|(r, _)| r)
     }
 }
 

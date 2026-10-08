@@ -200,43 +200,24 @@ pub async fn export_timesheet(
     let rows: Vec<tracky_xlsx::Row> = pending.iter().map(|(_, e)| xlsx_row(e)).collect();
     let consultant = sheet.consultant.clone();
     let (exported, target) = match file_target {
-        FileTarget::Api { id, auth } => {
+        FileTarget::Api { .. } | FileTarget::Sheets { .. } => {
             let keyed: Vec<_> = ids.iter().cloned().zip(rows).collect();
-            let target = ExportTarget::Api {
-                id: id.clone(),
-                auth: auth.clone(),
-            };
-            let done = tauri::async_runtime::spawn_blocking(move || {
-                with_google(&auth, |t| {
-                    tracky_xlsx::gsheets::append(t, &id, &consultant, &keyed)
+            let (done, used) = file_target
+                .run(move |target| match target {
+                    FileTarget::Api { id, auth, .. } => with_google(auth, |t| {
+                        tracky_xlsx::gsheets::append(t, id, &consultant, &keyed)
+                    }),
+                    FileTarget::Sheets { url, token } => {
+                        tracky_xlsx::sheets::append(url, token, &consultant, &keyed)
+                    }
+                    FileTarget::Excel { .. } => unreachable!("aşağıda ayrıldı"),
                 })
-            })
-            .await
-            .map_err(err)?
-            .map_err(err)?;
-            let exported = Exported {
-                rows: ids.len(),
-                filled: done.filled,
-                inserted: done.inserted,
-                skipped: done.skipped,
-                backup: None,
-                target: done.sheet,
-                sheets: true,
+                .await?;
+            let target = match used {
+                FileTarget::Api { id, auth, .. } => ExportTarget::Api { id, auth },
+                FileTarget::Sheets { url, token } => ExportTarget::Sheets { url, token },
+                FileTarget::Excel { .. } => unreachable!("aşağıda ayrıldı"),
             };
-            (exported, target)
-        }
-        FileTarget::Sheets { url, token } => {
-            let keyed: Vec<_> = ids.iter().cloned().zip(rows).collect();
-            let target = ExportTarget::Sheets {
-                url: url.clone(),
-                token: token.clone(),
-            };
-            let done = tauri::async_runtime::spawn_blocking(move || {
-                tracky_xlsx::sheets::append(&url, &token, &consultant, &keyed)
-            })
-            .await
-            .map_err(err)?
-            .map_err(err)?;
             let exported = Exported {
                 rows: ids.len(),
                 filled: done.filled,
