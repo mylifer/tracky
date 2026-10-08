@@ -19,4 +19,11 @@ pub trait ActivityProvider {
 
     /// Son klavye/fare girdisinden bu yana geçen saniye.
     fn idle_seconds(&mut self) -> Result<u64, Self::Error>;
+
+    /// Bir uygulama ekranı uyanık tutuyor mu: video oynatılıyor, görüntülü görüşme sürüyor
+    /// (macOS'ta `PreventUserIdleDisplaySleep`). Ekranı sürekli açık tutan araçlar
+    /// (caffeinate, Amphetamine…) sayılmaz. Bilinmiyorsa `false`.
+    fn display_kept_awake(&mut self) -> bool {
+        false
+    }
 }

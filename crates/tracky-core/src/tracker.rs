@@ -10,6 +10,11 @@ use crate::store::Store;
 
 /// Devam eden oturum bu kadar gözlemde bir diske yazılır (çökmede en fazla bu kadar saniye kaybolur).
 const FLUSH_EVERY: u32 = 5;
+/// Ekranı uyanık tutan uygulama ancak bu kadar girdisiz süreden sonra sorulur (boşta eşiğinden
+/// kısa; her saniye sorulmasın).
+const WATCH_CHECK_AFTER_SECS: u64 = 60;
+/// Girdisiz izleme en çok bu kadar çalışma sayılır; ekranı açık unutulan video geceyi doldurmasın.
+const WATCH_MAX_SECS: u64 = 3 * 60 * 60;
 
 /// Bir gözlemin sonucu.
 #[derive(Debug, Default)]
@@ -41,6 +46,30 @@ pub struct Tracker<P: ActivityProvider> {
     flushed: Option<Uuid>,
     /// Monotonik saatin başlangıcı (bkz. [`Tracker::uptime`]).
     started: std::time::Instant,
+    watching: Watching,
+}
+
+/// Girdisiz izleme: ekran bir video ya da görüşme için uyanık tutulurken geçen süre etkinlik
+/// sayılır. Son girdiden beri izleme sürdükçe boşta süresi sıfırdır; izleme bitince boşta süresi
+/// izlemenin bittiği andan sayılır (bitişe kadarki süre geriye dönük boşta olmaz).
+#[derive(Debug, Default)]
+struct Watching {
+    /// İzlemenin son görüldüğü gözlemdeki ham boşta süresi (son girdiden beri, saniye).
+    seen_at_idle: Option<u64>,
+}
+
+impl Watching {
+    /// Ham boşta süresinden (`raw`) motora verilecek boşta süresi.
+    fn idle(&mut self, raw: u64, kept_awake: bool) -> u64 {
+        // Boşta süresi geri gitti: arada girdi oldu, eski izleme bu boşluğa ait değil.
+        if self.seen_at_idle.is_some_and(|seen| raw < seen) {
+            self.seen_at_idle = None;
+        }
+        if kept_awake && raw <= WATCH_MAX_SECS {
+            self.seen_at_idle = Some(raw);
+        }
+        raw - self.seen_at_idle.unwrap_or(0)
+    }
 }
 
 impl<P: ActivityProvider> Tracker<P> {
@@ -57,6 +86,7 @@ impl<P: ActivityProvider> Tracker<P> {
             ticks: 0,
             flushed: None,
             started: std::time::Instant::now(),
+            watching: Watching::default(),
         }
     }
 
@@ -114,9 +144,13 @@ impl<P: ActivityProvider> Tracker<P> {
             Ok(w) => (w.and_then(|w| self.privacy.apply(w)), None),
             Err(e) => (None, Some(format!("pencere okunamadı: {e}"))),
         };
+        let raw = self.provider.idle_seconds().unwrap_or(0);
+        let kept_awake = self.privacy.count_watching
+            && raw >= WATCH_CHECK_AFTER_SECS
+            && self.provider.display_kept_awake();
         Observation {
             window,
-            idle: self.provider.idle_seconds().unwrap_or(0),
+            idle: self.watching.idle(raw, kept_awake),
             error,
         }
     }
@@ -351,6 +385,102 @@ mod tests {
             apps.iter().all(|u| u.key != crate::model::IDLE_APP_ID),
             "{apps:?}"
         );
+    }
+
+    /// `Script`, ekranı uyanık tutan uygulamayla: son okunan boşta süresine göre (her gözlemde
+    /// sorulmadığı için sırayla değil).
+    struct Awake(Script, u64, fn(u64) -> bool);
+
+    impl ActivityProvider for Awake {
+        type Error = Never;
+        fn active_window(&mut self) -> Result<Option<ActiveWindow>, Never> {
+            self.0.active_window()
+        }
+        fn idle_seconds(&mut self) -> Result<u64, Never> {
+            self.1 = self.0.idle_seconds()?;
+            Ok(self.1)
+        }
+        fn display_kept_awake(&mut self) -> bool {
+            (self.2)(self.1)
+        }
+    }
+
+    /// Son girdi 9. saniyede; video 10–1000. saniyeler arasında oynar; 1300. saniyede dönüş.
+    /// (Çalışma süresi, boşta süreleri.)
+    fn watch_video(count_watching: bool) -> (Duration, Vec<Duration>) {
+        let store = Store::open_in_memory().unwrap();
+        let n = 1305;
+        let windows = (0..n).map(|_| win("A"));
+        let idles: VecDeque<u64> = (0..n as u64)
+            .map(|i| if (10..1300).contains(&i) { i - 9 } else { 0 })
+            .collect();
+        let privacy = PrivacySettings {
+            count_watching,
+            ..PrivacySettings::default()
+        };
+        let mut tracker = Tracker::new(
+            // Boşta süresi i - 9: video 10–1000. saniyelerde.
+            Awake(Script(windows.collect(), idles), 0, |idle| {
+                (1..=991).contains(&idle)
+            }),
+            EngineConfig::default(),
+            privacy,
+        );
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        for i in 0..n {
+            tracker.tick(&store, t0 + Duration::seconds(i as i64));
+        }
+        tracker.shutdown(&store, t0 + Duration::seconds(n as i64));
+        let all = store.sessions_between(t0, t0 + Duration::hours(1)).unwrap();
+        let (away, work): (Vec<_>, Vec<_>) = all.iter().partition(|s| s.is_idle());
+        let first_work = work
+            .iter()
+            .map(|s| s.duration())
+            .min_by_key(|d| -d.num_seconds());
+        (
+            first_work.unwrap_or_default(),
+            away.iter().map(|s| s.duration()).collect(),
+        )
+    }
+
+    #[test]
+    fn watching_a_video_without_input_is_not_away() {
+        let (work, away) = watch_video(true);
+        // İzleme bitene kadar çalışma; boşta yalnızca video bittikten dönüşe kadar.
+        assert!(
+            (work - Duration::seconds(1000)).num_seconds().abs() <= 2,
+            "{work:?}"
+        );
+        assert_eq!(away.len(), 1);
+        assert!(
+            (away[0] - Duration::seconds(300)).num_seconds().abs() <= 2,
+            "{away:?}"
+        );
+    }
+
+    #[test]
+    fn watching_can_be_turned_off() {
+        let (work, away) = watch_video(false);
+        assert!(work <= Duration::seconds(10), "{work:?}");
+        assert_eq!(away.len(), 1);
+        assert!(
+            (away[0] - Duration::seconds(1291)).num_seconds().abs() <= 2,
+            "{away:?}"
+        );
+    }
+
+    #[test]
+    fn watching_counts_from_the_last_input_and_only_up_to_the_limit() {
+        let mut w = Watching::default();
+        assert_eq!(w.idle(100, false), 100);
+        assert_eq!(w.idle(200, true), 0);
+        // Video bitti: boşta süresi bitişten sayılır.
+        assert_eq!(w.idle(260, false), 60);
+        // Girdi oldu: eski izleme unutulur.
+        assert_eq!(w.idle(5, false), 5);
+        // Sınırdan sonra uyanık ekran sayılmaz; sınırdan sonrası boşta.
+        assert_eq!(w.idle(WATCH_MAX_SECS, true), 0);
+        assert_eq!(w.idle(WATCH_MAX_SECS + 600, true), 600);
     }
 
     #[test]

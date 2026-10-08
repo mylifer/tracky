@@ -393,6 +393,8 @@ export type PrivacySettings = {
   record_idle: boolean;
   /** Bundan uzun boşluklar (gece gibi) kaydedilmez (dakika). */
   idle_max_minutes: number;
+  /** Video ya da görüntülü görüşme ekranı uyanık tutarken girdi olmasa da boşta sayılmaz. */
+  count_watching: boolean;
 };
 
 export type Goals = {

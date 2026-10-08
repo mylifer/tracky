@@ -28,6 +28,9 @@ pub struct PrivacySettings {
     pub record_idle: bool,
     /// Bundan uzun boşluklar (gece gibi) kaydedilmez (dakika).
     pub idle_max_minutes: u32,
+    /// Video ya da görüntülü görüşme ekranı uyanık tutarken girdi olmasa da boşta sayılmaz
+    /// (webinar, eğitim videosu, yalnızca dinlenen toplantı).
+    pub count_watching: bool,
 }
 
 /// Varsayılan en uzun boşta kaydı: öğle arası ve uzun bir toplantı sığar, gece sığmaz.
@@ -44,6 +47,7 @@ impl Default for PrivacySettings {
             title_suffixes: Vec::new(),
             record_idle: true,
             idle_max_minutes: DEFAULT_IDLE_MAX_MINUTES,
+            count_watching: true,
         }
     }
 }

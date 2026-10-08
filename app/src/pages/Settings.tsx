@@ -187,6 +187,14 @@ export default function Settings({
                 </Select>
               </SettingRow>
             )}
+            {status.platform === "macos" && (
+              <ToggleRow
+                label="İzlerken boşta sayma"
+                hint="Video oynarken ya da görüntülü görüşmedeyken (webinar, eğitim, yalnızca dinlediğin toplantı) klavyeye dokunmasan da süre çalışma sayılır; en çok 3 saat. Ekranı sürekli açık tutan araçlar (caffeinate, Amphetamine) sayılmaz."
+                checked={privacy.count_watching}
+                onChange={(v) => save({ ...privacy, count_watching: v })}
+              />
+            )}
           </>
         )}
         {status.platform === "macos" && (

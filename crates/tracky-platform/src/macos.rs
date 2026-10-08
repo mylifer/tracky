@@ -3,6 +3,7 @@ use std::ffi::c_void;
 use std::ptr;
 use std::time::{Duration, Instant};
 
+use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
@@ -71,6 +72,26 @@ unsafe extern "C" {
     static kCGWindowAlpha: CFStringRef;
 }
 
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    fn IOPMCopyAssertionsByProcess(assertions_by_pid: *mut CFDictionaryRef) -> i32;
+}
+
+/// Ekranın uykuya geçmesini engelleyen güç beyanları (video oynatma, görüntülü görüşme).
+const DISPLAY_ASSERTIONS: &[&str] = &["PreventUserIdleDisplaySleep", "NoDisplaySleepAssertion"];
+/// Ekranı izlemeden bağımsız, sürekli açık tutan araçlar (süreç adı); bunlar izleme sayılmaz.
+const KEEP_AWAKE_TOOLS: &[&str] = &[
+    "caffeinate",
+    "Amphetamine",
+    "KeepingYouAwake",
+    "Lungo",
+    "Theine",
+    "Caffeine",
+    "Owly",
+    "Jiggler",
+    "Kum",
+];
+
 /// `kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements`
 const ON_SCREEN_WINDOWS: u32 = (1 << 0) | (1 << 4);
 
@@ -102,6 +123,66 @@ impl ActivityProvider for SystemProvider {
         };
         Ok(secs.max(0.0) as u64)
     }
+
+    fn display_kept_awake(&mut self) -> bool {
+        display_wake_holders().iter().any(|name| {
+            !KEEP_AWAKE_TOOLS
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(name))
+        })
+    }
+}
+
+/// Ekranı uyanık tutan güç beyanlarının sahibi süreçlerin adları (`pmset -g assertions`).
+fn display_wake_holders() -> Vec<String> {
+    let mut raw: CFDictionaryRef = ptr::null();
+    // SAFETY: Copy kuralı; başarıda sözlük bize geçer.
+    if unsafe { IOPMCopyAssertionsByProcess(&mut raw) } != 0 || raw.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: Create kuralı; sahipliği CFDictionary devralır ve bırakır.
+    let by_pid: CFDictionary = unsafe { CFDictionary::wrap_under_create_rule(raw) };
+    let type_key = CFString::from_static_string("AssertType");
+    let name_key = CFString::from_static_string("Process Name");
+    let level_key = CFString::from_static_string("AssertLevel");
+    let mut out = Vec::new();
+    for list in by_pid.get_keys_and_values().1 {
+        // SAFETY: Sözlük yaşadıkça değerleri geçerlidir; türü denetlenir.
+        let list = unsafe { CFType::wrap_under_get_rule(list as CFTypeRef) };
+        if !list.instance_of::<CFArray>() {
+            continue;
+        }
+        let list = list.as_CFTypeRef() as CFArrayRef;
+        // SAFETY: Dizi olduğu denetlendi.
+        for i in 0..unsafe { CFArrayGetCount(list) } {
+            // SAFETY: Sınır içinde; öğe dizi yaşadıkça geçerli.
+            let item = unsafe { CFType::wrap_under_get_rule(CFArrayGetValueAtIndex(list, i)) };
+            if !item.instance_of::<CFDictionary>() {
+                continue;
+            }
+            let item = item.as_CFTypeRef() as CFDictionaryRef;
+            let kind = dict_string(item, &type_key);
+            // SAFETY: Sözlük denetlendi; anahtar geçerli.
+            let on = unsafe { number_i64(item, level_key.as_concrete_TypeRef()) } != Some(0);
+            if on && kind.is_some_and(|k| DISPLAY_ASSERTIONS.contains(&k.as_str())) {
+                out.push(dict_string(item, &name_key).unwrap_or_default());
+            }
+        }
+    }
+    out
+}
+
+/// Sözlükteki metin değeri (türü metin değilse `None`).
+fn dict_string(dict: CFDictionaryRef, key: &CFString) -> Option<String> {
+    // SAFETY: `dict` geçerli bir sözlük; değer sözlük yaşadıkça geçerli (Get kuralı).
+    let value = unsafe { CFDictionaryGetValue(dict, key.as_concrete_TypeRef().cast()) };
+    if value.is_null() {
+        return None;
+    }
+    // SAFETY: Boş değil; Get kuralıyla sarılır, türü denetlenir.
+    unsafe { CFType::wrap_under_get_rule(value) }
+        .downcast::<CFString>()
+        .map(|s| s.to_string())
 }
 
 /// Sistem geneli öğeye verilen zaman aşımı tüm AX çağrıları için geçerlidir; bir kez yeter.
@@ -383,6 +464,7 @@ pub fn diagnose() -> String {
         )
     };
     out += &format!(" idle(oturum)={combined:.0}s idle(hid)={hid:.0}s");
+    out += &format!(" ekran-uyanık={:?}", display_wake_holders());
 
     // SAFETY: Create kuralı.
     let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
