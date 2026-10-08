@@ -451,6 +451,20 @@ impl Store {
         })
     }
 
+    /// Veritabanı dosyasının sayfa ve dizin bütünlüğü (`PRAGMA quick_check`), ayrı salt okunur
+    /// bağlantıyla: takibi kilitlemez. Sağlamsa `None`, değilse ilk sorunlar.
+    pub fn check_file(path: &Path) -> Result<Option<String>> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let mut stmt = conn.prepare("PRAGMA quick_check(5)")?;
+        let problems: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok((problems != ["ok"]).then(|| problems.join("; ")))
+    }
+
     /// `source` veritabanının tutarlı bir kopyasını `target`'a yazar (geri yükleme için).
     /// Dosya kopyalamanın aksine yanındaki `-wal` dosyasındaki son değişiklikler de kopyaya
     /// girer. `source` değiştirilmez; `target` zaten varsa hata verir.
@@ -1465,6 +1479,34 @@ mod tests {
         let empty = dir.join("bos.db");
         Connection::open(&empty).unwrap();
         assert!(Store::inspect_backup(&empty).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_file_finds_damaged_pages() {
+        let dir = std::env::temp_dir().join(format!("tracky-check-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kum.db");
+        {
+            let store = Store::open(&path).unwrap();
+            for i in 0..300 {
+                store
+                    .upsert_session(&session("A", None, i * 60, i * 60 + 30))
+                    .unwrap();
+            }
+            store
+                .conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+                .unwrap();
+        }
+        assert_eq!(Store::check_file(&path).unwrap(), None);
+
+        // Son sayfaların ortasına çöp yaz (yarım kalan disk yazması gibi).
+        let mut bytes = std::fs::read(&path).unwrap();
+        let at = bytes.len() - 4096 * 2 + 100;
+        bytes[at..at + 2000].fill(0xAB);
+        std::fs::write(&path, bytes).unwrap();
+        assert!(!matches!(Store::check_file(&path), Ok(None)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

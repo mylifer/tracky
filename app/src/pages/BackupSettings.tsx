@@ -37,6 +37,12 @@ export default function BackupSettings() {
   const last = status?.last ? `Son yedek: ${when(status.last)}.` : "Henüz yedek yok.";
   return (
     <>
+      {status?.damage && (
+        <ErrorText>
+          Veritabanında bozulma bulundu; yeni yedek alınmıyor, eski sağlam yedekler korunuyor. Aşağıdan son yedeği geri
+          yükleyebilirsin. ({status.damage})
+        </ErrorText>
+      )}
       <SettingRow label="Yedekler" hint={`Haftada bir kendiliğinden alınır, en yeni 8 yedek saklanır. ${last}`}>
         <Button variant="ghost" size="sm" onClick={() => run(() => api.openBackupFolder())}>
           Klasörü aç

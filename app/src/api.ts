@@ -358,7 +358,13 @@ export type AiStatus = { enabled: boolean; hasKey: boolean; keyHint: string | nu
 export type AiChange = { key: string; details: string };
 
 export type BackupFile = { name: string; path: string; at: string; bytes: number };
-export type BackupStatus = { dir: string; last: string | null; files: BackupFile[] };
+export type BackupStatus = {
+  dir: string;
+  last: string | null;
+  /** Veritabanında bozulma bulunduysa açıklaması (o sürece yedek alınmaz). */
+  damage: string | null;
+  files: BackupFile[];
+};
 export type PickedBackup = { path: string; sessions: number; lastActivity: string | null };
 
 export type LastSync = { at: string; ok: boolean; message: string };

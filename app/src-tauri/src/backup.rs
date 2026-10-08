@@ -9,12 +9,14 @@
 //! yol açardı.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::NotificationExt;
 use tracky_core::{BackupInfo, Store};
 
 use crate::lock;
@@ -48,11 +50,16 @@ pub struct BackupFile {
     pub bytes: u64,
 }
 
+/// Son bütünlük denetiminin bulduğu sorun (sağlamsa `None`).
+static DAMAGE: Mutex<Option<String>> = Mutex::new(None);
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupStatus {
     pub dir: String,
     pub last: Option<DateTime<Utc>>,
+    /// Veritabanında bozulma bulunduysa açıklaması (yedekler o sürece alınmaz).
+    pub damage: Option<String>,
     /// En yeniden eskiye.
     pub files: Vec<BackupFile>,
 }
@@ -227,6 +234,11 @@ fn backup_now_inner(app: &AppHandle) -> CmdResult<BackupFile> {
     // Ayrı bir salt okunur bağlantıyla: büyük veritabanında kopya sürerken ortak bağlantı
     // kilitli kalıp takibi ve menü çubuğunu dondurmasın.
     Store::copy_database(&data.join(DB_FILE), &path).map_err(|e| e.to_string())?;
+    // Yedek gerçekten açılabiliyor mu: bozuk kopya iyi yedeklerin yerini almasın.
+    if let Err(e) = Store::inspect_backup(&path) {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("alınan yedek doğrulanamadı: {e}"));
+    }
     lock(&app.state::<Shared>().store)
         .save_setting(LAST_KEY, &now)
         .map_err(|e| e.to_string())?;
@@ -284,9 +296,15 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
         .name("kum-backup".into())
         .spawn(move || {
             std::thread::sleep(FIRST_CHECK);
+            let mut warned = false;
             loop {
+                let sound = check_integrity(&app, &mut warned);
                 let due = last_backup(&app).is_none_or(|at| Utc::now() - at >= EVERY);
-                if due && let Err(e) = backup_now_inner(&app) {
+                // Bozuk veritabanının yedeği eski sağlam yedekleri sıradan düşürürdü.
+                if sound
+                    && due
+                    && let Err(e) = backup_now_inner(&app)
+                {
                     log_error!("yedek alınamadı: {e}");
                 }
                 std::thread::sleep(CHECK_EVERY);
@@ -295,12 +313,43 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Veritabanının bütünlüğünü denetler; bozulma ilk görülünce günlüğe yazar ve bir kez
+/// bildirir. Denetlenemezse (dosya okunamadı) sağlam sayılır, yalnızca günlüğe yazılır.
+fn check_integrity(app: &AppHandle, warned: &mut bool) -> bool {
+    let Ok(data) = data_dir(app) else {
+        return true;
+    };
+    let damage = match Store::check_file(&data.join(DB_FILE)) {
+        Ok(damage) => damage,
+        Err(e) => {
+            log_error!("veritabanı denetlenemedi: {e}");
+            return true;
+        }
+    };
+    let sound = damage.is_none();
+    if let Some(problem) = &damage
+        && !*warned
+    {
+        *warned = true;
+        log_error!("veritabanında bozulma: {problem}");
+        let _ = app
+            .notification()
+            .builder()
+            .title("Kum veritabanında bozulma bulundu")
+            .body("Yeni yedek alınmıyor. Ayarlar → Veriler'den son yedeği geri yükleyebilirsin.")
+            .show();
+    }
+    *lock(&DAMAGE) = damage;
+    sound
+}
+
 #[tauri::command]
 pub async fn backup_status(app: AppHandle) -> CmdResult<BackupStatus> {
     let dir = backup_dir(&data_dir(&app)?);
     Ok(BackupStatus {
         dir: dir.display().to_string(),
         last: last_backup(&app),
+        damage: lock(&DAMAGE).clone(),
         files: list(&dir),
     })
 }
