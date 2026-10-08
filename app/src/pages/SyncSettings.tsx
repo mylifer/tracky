@@ -204,7 +204,7 @@ function Devices() {
       <ul className="max-w-md space-y-1.5">
         {devices.map((d) => (
           <li key={`${d.id}:${d.name}`} className="flex items-center gap-2">
-            <DeviceIcon model={d.model} className="size-6 text-muted-foreground" />
+            <DeviceIcon os={d.os} model={d.model} className="size-6 text-muted-foreground" />
             <Input
               id={`device-${d.id}`}
               className="h-8"

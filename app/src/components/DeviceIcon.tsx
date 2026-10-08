@@ -42,15 +42,19 @@ const APPLE: [string, keyof typeof SHAPES][] = [
   ["mac pro", "macPro"],
 ];
 
-/** Bilgisayarın ikonu: Mac'lerde modelin Apple ikonu, diğerlerinde çizgi ikon. */
-export function DeviceIcon({ model, className }: { model?: string; className?: string }) {
+/** Windows 11 logosu (dört kare); Apple ikonlarıyla aynı ağırlıkta görünsün diye kenar boşluklu. */
+const WINDOWS = { viewBox: "-18 -18 124 124", d: "M0 0h42v42H0zM46 0h42v42H46zM0 46h42v42H0zM46 46h42v42H46z" };
+
+/** Bilgisayarın ikonu: Mac'lerde modelin Apple ikonu, Windows'ta Windows logosu, diğerlerinde çizgi ikon. */
+export function DeviceIcon({ os, model, className }: { os?: string; model?: string; className?: string }) {
   const m = model?.toLowerCase() ?? "";
   const key = m ? APPLE.find(([prefix]) => m.startsWith(prefix))?.[1] : undefined;
-  if (!key) return <Monitor className={cn("shrink-0", className)} aria-hidden />;
-  const { viewBox, d } = SHAPES[key];
+  const shape = key ? SHAPES[key] : os === "windows" ? WINDOWS : undefined;
+  if (!shape) return <Monitor className={cn("shrink-0", className)} aria-hidden />;
+  const { viewBox, d } = shape;
   return (
     <svg viewBox={viewBox} fill="currentColor" className={cn("shrink-0", className)} aria-hidden>
-      <title>{model}</title>
+      <title>{model || "Windows"}</title>
       <path d={d} />
     </svg>
   );
