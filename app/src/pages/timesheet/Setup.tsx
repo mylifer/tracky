@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { FileSpreadsheet, Sheet } from "lucide-react";
 import { api, type Tag, type Timesheet as TimesheetInfo, type TimesheetConfig } from "../../api";
-import { CalendarConnect, SheetConnect } from "../TimesheetSettings";
+import { CalendarConnect, SheetConnect } from "../ConnectionSettings";
 import { ErrorText } from "../../components/settings";
 import { Button } from "../../components/ui/button";
 import { ProjectSelect } from "../../components/ProjectSelect";
