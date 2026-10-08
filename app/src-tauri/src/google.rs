@@ -74,14 +74,14 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 static REVOKED: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn load(store: &Store) -> GoogleAuth {
-    let mut auth: GoogleAuth = store.setting(KEY).ok().flatten().unwrap_or_default();
+    let mut auth: GoogleAuth = crate::secrets::load(store, KEY).unwrap_or_default();
     let revoked = REVOKED.lock().ok().and_then(|mut r| r.take());
     if let Some(revoked) = revoked
         && auth.refresh_token.as_deref() == Some(revoked.as_str())
     {
         auth.refresh_token = None;
         auth.email = None;
-        if let Err(e) = store.save_setting(KEY, &auth) {
+        if let Err(e) = crate::secrets::save(store, KEY, &auth) {
             log_error!("Google bağlantısı silinemedi: {e}");
         }
     }
@@ -399,8 +399,7 @@ pub async fn google_connect(
         refresh_token: Some(refresh),
         email,
     };
-    lock(&app.state::<Shared>().store)
-        .save_setting(KEY, &auth)
+    crate::secrets::save(&lock(&app.state::<Shared>().store), KEY, &auth)
         .map_err(|e| e.to_string())?;
     Ok(status(&auth))
 }
@@ -427,8 +426,7 @@ pub async fn google_disconnect(app: AppHandle) -> CmdResult<GoogleStatus> {
     }
     auth.email = None;
     forget_access();
-    lock(&app.state::<Shared>().store)
-        .save_setting(KEY, &auth)
+    crate::secrets::save(&lock(&app.state::<Shared>().store), KEY, &auth)
         .map_err(|e| e.to_string())?;
     Ok(status(&auth))
 }
@@ -479,6 +477,9 @@ mod tests {
 
     #[test]
     fn a_rejected_refresh_token_is_forgotten() {
+        let _s = crate::secrets::backend::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let store = Store::open_in_memory().unwrap();
         let auth = GoogleAuth {
             client_id: "x.apps.googleusercontent.com".into(),

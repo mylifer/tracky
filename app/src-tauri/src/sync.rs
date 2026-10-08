@@ -98,6 +98,20 @@ fn clear(app: &AppHandle, key: &str) -> CmdResult<()> {
     save(app, key, &serde_json::Value::Null)
 }
 
+/// Oturum jetonları anahtar deposunda ([`crate::secrets`]).
+fn load_auth(app: &AppHandle) -> Option<AuthSession> {
+    crate::secrets::load(&lock(&app.state::<Shared>().store), AUTH_KEY)
+}
+
+fn save_auth(app: &AppHandle, auth: &AuthSession) -> CmdResult<()> {
+    crate::secrets::save(&lock(&app.state::<Shared>().store), AUTH_KEY, auth)
+        .map_err(|e| e.to_string())
+}
+
+fn clear_auth(app: &AppHandle) -> CmdResult<()> {
+    crate::secrets::clear(&lock(&app.state::<Shared>().store), AUTH_KEY).map_err(|e| e.to_string())
+}
+
 /// Derlemede verilen varsayılan Supabase projesi (sürüm iş akışında depo değişkenlerinden).
 /// Anon anahtar gizli değildir: satırları RLS korur.
 fn default_config() -> Option<Config> {
@@ -122,7 +136,7 @@ fn config(app: &AppHandle) -> Option<Config> {
 
 fn status(app: &AppHandle) -> SyncStatus {
     let config = config(app);
-    let auth: Option<AuthSession> = load(app, AUTH_KEY);
+    let auth = load_auth(app);
     SyncStatus {
         configured: config.is_some(),
         schema: config.as_ref().and_then(|c| c.schema.clone()),
@@ -134,7 +148,7 @@ fn status(app: &AppHandle) -> SyncStatus {
 
 /// Bir kez eşitler; gerekirse oturumu yeniler. Giriş yoksa `Ok(None)`.
 fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
-    let (Some(config), Some(mut auth)) = (config(app), load::<AuthSession>(app, AUTH_KEY)) else {
+    let (Some(config), Some(mut auth)) = (config(app), load_auth(app)) else {
         return Ok(None);
     };
     let client = Client::new(config);
@@ -179,13 +193,11 @@ fn refresh(app: &AppHandle, client: &Client, auth: &AuthSession) -> Result<AuthS
     // Karşılaştırma ve kayıt tek kilitte: arada gelen bir çıkış ezilmesin.
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    let stored: Option<AuthSession> = store.setting(AUTH_KEY).ok().flatten();
+    let stored: Option<AuthSession> = crate::secrets::load(&store, AUTH_KEY);
     if stored.map(|s| s.refresh_token) != Some(auth.refresh_token.clone()) {
         return Err("Oturum değişti; eşitleme atlandı".into());
     }
-    store
-        .save_setting(AUTH_KEY, &fresh)
-        .map_err(|e| e.to_string())?;
+    crate::secrets::save(&store, AUTH_KEY, &fresh).map_err(|e| e.to_string())?;
     Ok(fresh)
 }
 
@@ -396,7 +408,7 @@ pub async fn sync_configure(
                 .filter(|s| !s.is_empty() && s != "public"),
         },
     )?;
-    clear(&app, AUTH_KEY)?;
+    clear_auth(&app)?;
     Ok(status(&app))
 }
 
@@ -440,7 +452,7 @@ pub async fn sync_sign_in(
                 .map_err(|e| e.to_string())?;
             save(&app, OWNER_KEY, &owner)?;
         }
-        save(&app, AUTH_KEY, &auth)
+        save_auth(&app, &auth)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -450,7 +462,7 @@ pub async fn sync_sign_in(
 
 #[tauri::command]
 pub async fn sync_sign_out(app: AppHandle) -> CmdResult<SyncStatus> {
-    clear(&app, AUTH_KEY)?;
+    clear_auth(&app)?;
     *lock(&app.state::<SyncWorker>().last) = None;
     Ok(status(&app))
 }
@@ -462,13 +474,13 @@ pub async fn sync_sign_out(app: AppHandle) -> CmdResult<SyncStatus> {
 ///
 /// [`Store::reset_sync_state`]: tracky_core::Store::reset_sync_state
 pub(crate) fn forget_session(store: &tracky_core::Store) -> Result<(), tracky_core::StoreError> {
-    store.save_setting(AUTH_KEY, &serde_json::Value::Null)
+    crate::secrets::clear(store, AUTH_KEY)
 }
 
 /// Bağlantıyı tamamen kaldırır (yerel veriler kalır).
 #[tauri::command]
 pub async fn sync_disconnect(app: AppHandle) -> CmdResult<SyncStatus> {
-    clear(&app, AUTH_KEY)?;
+    clear_auth(&app)?;
     clear(&app, CONFIG_KEY)?;
     *lock(&app.state::<SyncWorker>().last) = None;
     Ok(status(&app))

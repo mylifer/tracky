@@ -13,6 +13,7 @@ mod edits;
 mod effects;
 mod google;
 mod icons;
+mod secrets;
 mod sync;
 mod timesheet;
 mod tracking;

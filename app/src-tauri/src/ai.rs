@@ -13,6 +13,7 @@ use chrono::Days;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
+use tracky_core::Store;
 use tracky_core::ai::{self, RowContext};
 use tracky_core::timesheet::TimesheetEntry;
 
@@ -73,11 +74,28 @@ impl From<&AiSettings> for AiStatus {
     }
 }
 
+/// Anahtarın anahtar deposundaki adı ([`crate::secrets`]).
+const KEYCHAIN_KEY: &str = "ai_api_key";
+
 fn settings(app: &AppHandle) -> CmdResult<AiSettings> {
-    Ok(lock(&app.state::<Shared>().store)
+    load_settings(&lock(&app.state::<Shared>().store))
+}
+
+/// Ayarlar ve anahtar. Veritabanında açık metin anahtar kalmışsa (eski sürüm) depoya taşınır.
+fn load_settings(store: &Store) -> CmdResult<AiSettings> {
+    let mut s: AiSettings = store
         .setting(SETTINGS_KEY)
         .map_err(err)?
-        .unwrap_or_default())
+        .unwrap_or_default();
+    if s.api_key.is_empty() {
+        s.api_key = crate::secrets::get_value(KEYCHAIN_KEY).unwrap_or_default();
+    } else if crate::secrets::set_value(KEYCHAIN_KEY, &s.api_key) {
+        let key = std::mem::take(&mut s.api_key);
+        store.save_setting(SETTINGS_KEY, &s).map_err(err)?;
+        log_info!("yapay zekâ anahtarı anahtar deposuna taşındı");
+        s.api_key = key;
+    }
+    Ok(s)
 }
 
 #[tauri::command]
@@ -94,15 +112,17 @@ pub async fn save_ai_settings(
 ) -> CmdResult<AiStatus> {
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
-    let mut s: AiSettings = store
-        .setting(SETTINGS_KEY)
-        .map_err(err)?
-        .unwrap_or_default();
+    let mut s = load_settings(&store)?;
     s.enabled = enabled;
     if let Some(key) = api_key {
         s.api_key = key.trim().to_string();
     }
-    store.save_setting(SETTINGS_KEY, &s).map_err(err)?;
+    // Anahtar depoya yazılabildiyse veritabanında boş kalır (depo yoksa eskisi gibi orada).
+    let mut stored = s.clone();
+    if crate::secrets::set_value(KEYCHAIN_KEY, &s.api_key) {
+        stored.api_key.clear();
+    }
+    store.save_setting(SETTINGS_KEY, &stored).map_err(err)?;
     Ok(AiStatus::from(&s))
 }
 
