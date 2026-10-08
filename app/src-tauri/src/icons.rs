@@ -113,7 +113,7 @@ fn cached(
     }
     let icon = find();
     if let Err(e) = std::fs::write(&path, icon.as_deref().unwrap_or("")) {
-        eprintln!("simge önbelleğe yazılamadı: {e}");
+        log_error!("simge önbelleğe yazılamadı: {e}");
     }
     icon
 }

@@ -24,7 +24,7 @@ fn platform(window: &tauri::WebviewWindow) -> &'static str {
     ) {
         Ok(()) => "vibrancy",
         Err(e) => {
-            eprintln!("vibrancy uygulanamadı: {e}");
+            log_error!("vibrancy uygulanamadı: {e}");
             "none"
         }
     }

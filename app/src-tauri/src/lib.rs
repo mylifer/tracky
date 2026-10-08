@@ -1,5 +1,7 @@
 //! Kum masaüstü uygulaması: menü çubuğunda yaşayan zaman takipçisi.
 
+#[macro_use]
+mod applog;
 mod ai;
 mod backup;
 mod calendar;
@@ -307,31 +309,38 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     let dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&dir)?;
+    applog::init(dir.clone());
+    log_info!(
+        "Kum {} açıldı ({} {})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     if let Err(e) = backup::apply_pending_restore(&dir) {
-        eprintln!("yedek geri yüklenemedi: {e}");
+        log_error!("yedek geri yüklenemedi: {e}");
     }
     let store = match Store::open(dir.join(backup::DB_FILE)) {
         Ok(store) => store,
         // Geri yüklenen veritabanı açılamıyorsa öncekine dön; yoksa her açılışta çökerdi.
         Err(e) if backup::undo_restore(&dir).unwrap_or(false) => {
-            eprintln!("geri yüklenen veritabanı açılamadı, önceki veritabanına dönüldü: {e}");
+            log_error!("geri yüklenen veritabanı açılamadı, önceki veritabanına dönüldü: {e}");
             Store::open(dir.join(backup::DB_FILE))?
         }
         Err(e) => return Err(e.into()),
     };
     // Eşitleme başlamadan: geri yüklenen veritabanının eşitleme durumunu sıfırla.
     if let Err(e) = backup::finish_restore(&dir, &store) {
-        eprintln!("geri yükleme sonrası eşitleme durumu sıfırlanamadı: {e}");
+        log_error!("geri yükleme sonrası eşitleme durumu sıfırlanamadı: {e}");
     }
 
     // Takvimde süreler hangi bilgisayardan geldiğiyle gösterilsin: bu bilgisayarın adı.
     if let Err(e) = store.register_device(&commands::computer_name(), std::env::consts::OS) {
-        eprintln!("bilgisayar adı kaydedilemedi: {e}");
+        log_error!("bilgisayar adı kaydedilemedi: {e}");
     }
 
     if store.setting::<bool>(AUTOSTART_INIT_KEY)?.is_none() {
         if let Err(e) = app.autolaunch().enable() {
-            eprintln!("otomatik başlatma açılamadı: {e}");
+            log_error!("otomatik başlatma açılamadı: {e}");
         }
         store.save_setting(AUTOSTART_INIT_KEY, &true)?;
     }
@@ -396,6 +405,9 @@ pub fn run() {
             Some(vec![HIDDEN_ARG]),
         ))
         .invoke_handler(tauri::generate_handler![
+            applog::log_client,
+            applog::diagnostics,
+            applog::reveal_log,
             get_status,
             request_accessibility,
             open_accessibility_settings,

@@ -82,7 +82,7 @@ pub fn load(store: &Store) -> GoogleAuth {
         auth.refresh_token = None;
         auth.email = None;
         if let Err(e) = store.save_setting(KEY, &auth) {
-            eprintln!("Google bağlantısı silinemedi: {e}");
+            log_error!("Google bağlantısı silinemedi: {e}");
         }
     }
     auth
@@ -198,7 +198,7 @@ fn open_browser(url: &str) {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let r = std::process::Command::new("xdg-open").arg(url).spawn();
     if let Err(e) = r {
-        eprintln!("tarayıcı açılamadı: {e}");
+        log_error!("tarayıcı açılamadı: {e}");
     }
 }
 

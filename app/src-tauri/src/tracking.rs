@@ -127,6 +127,9 @@ pub fn run(
     let mut project_goals_primed = false;
     let mut budgets_checked = false;
     let mut ticks = 0u32;
+    // Günlüğe yalnızca değişimler yazılır (her saniye değil).
+    let mut logged_error: Option<String> = None;
+    let mut logged_permission = true;
     loop {
         let mut force = false;
         match rx.recv_timeout(Duration::from_secs(1)) {
@@ -222,6 +225,21 @@ pub fn run(
             error: outcome.error,
             paused_until: pause_until.filter(|_| tracker.privacy().paused),
         };
+        if status.error != logged_error {
+            match &status.error {
+                Some(e) => log_error!("takip: {e}"),
+                None => log_info!("takip hatası düzeldi"),
+            }
+            logged_error = status.error.clone();
+        }
+        if status.needs_permission == logged_permission {
+            logged_permission = !status.needs_permission;
+            if status.needs_permission {
+                log_error!("izin eksik: {:?}", tracky_platform::permissions());
+            } else {
+                log_info!("izinler tamam");
+            }
+        }
         // Menü güncellemesi ana iş parçacığında çalışıp sonucunu bekler; burada
         // beklersek kapanışta (ana iş parçacığı bizi beklerken) kilitlenirdik.
         let local = Local::now();
@@ -293,7 +311,7 @@ pub fn run(
     let shared = app.state::<Shared>();
     let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = tracker.shutdown(&store, Utc::now()) {
-        eprintln!("{e}");
+        log_error!("{e}");
     }
 }
 
@@ -302,7 +320,7 @@ fn remember_day(app: &AppHandle, key: &str, day: NaiveDate) {
     let shared = app.state::<Shared>();
     let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
     if let Err(e) = store.save_setting(key, &day) {
-        eprintln!("bildirim günü kaydedilemedi: {e}");
+        log_error!("bildirim günü kaydedilemedi: {e}");
     }
 }
 
@@ -350,7 +368,7 @@ fn notify(app: &AppHandle, nudge: &Nudge, names: &std::collections::HashMap<Stri
         _ => crate::navigate_on_focus(app, "day"),
     }
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        eprintln!("bildirim gösterilemedi: {e}");
+        log_error!("bildirim gösterilemedi: {e}");
     }
 }
 
@@ -363,7 +381,7 @@ fn due_budget_alerts(
     let budgets = match store.budgets(now) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("bütçeler hesaplanamadı: {e}");
+            log_error!("bütçeler hesaplanamadı: {e}");
             return Vec::new();
         }
     };
@@ -378,7 +396,7 @@ fn due_budget_alerts(
     if notified != before
         && let Err(e) = store.save_setting(BUDGET_NOTIFIED_KEY, &notified)
     {
-        eprintln!("bütçe bildirimi kaydedilemedi: {e}");
+        log_error!("bütçe bildirimi kaydedilemedi: {e}");
     }
     if alerts.is_empty() {
         return Vec::new();
@@ -431,7 +449,7 @@ fn notify_budget(
     };
     crate::navigate_on_focus(app, if alert.client { "clients" } else { "projects" });
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        eprintln!("bildirim gösterilemedi: {e}");
+        log_error!("bildirim gösterilemedi: {e}");
     }
 }
 
@@ -452,12 +470,12 @@ fn notify_day_summary(app: &AppHandle, goals: &Goals, now: DateTime<Utc>) {
             .body(day_summary_body(&r, goals))
             .show(),
         Err(e) => {
-            eprintln!("gün özeti hazırlanamadı: {e}");
+            log_error!("gün özeti hazırlanamadı: {e}");
             return;
         }
     };
     if let Err(e) = result {
-        eprintln!("bildirim gösterilemedi: {e}");
+        log_error!("bildirim gösterilemedi: {e}");
     }
 }
 
@@ -520,7 +538,7 @@ fn notify_week_summary(app: &AppHandle, week: NaiveDate) {
     let (last, before) = match reports {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("haftalık özet hazırlanamadı: {e}");
+            log_error!("haftalık özet hazırlanamadı: {e}");
             return;
         }
     };
@@ -535,7 +553,7 @@ fn notify_week_summary(app: &AppHandle, week: NaiveDate) {
         .body(week_summary_body(&last, before.total_seconds))
         .show();
     if let Err(e) = result {
-        eprintln!("bildirim gösterilemedi: {e}");
+        log_error!("bildirim gösterilemedi: {e}");
     }
 }
 
@@ -559,7 +577,7 @@ fn notify_unexported(app: &AppHandle, week: NaiveDate, today: NaiveDate) {
         .body(body)
         .show();
     if let Err(e) = result {
-        eprintln!("bildirim gösterilemedi: {e}");
+        log_error!("bildirim gösterilemedi: {e}");
     }
 }
 

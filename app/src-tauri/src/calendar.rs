@@ -150,11 +150,18 @@ fn refresh(app: &AppHandle) {
                 message: format!("{n} etkinlik"),
             }
         }
-        Err(message) => LastFetch {
-            at: Utc::now(),
-            ok: false,
-            message,
-        },
+        Err(message) => {
+            // Yalnızca ilk başarısızlık yazılır (çevrimdışıyken her denemede değil); gizli
+            // yayım bağlantısı günlüğe girmez.
+            if lock(&state.last).as_ref().is_none_or(|l| l.ok) {
+                log_error!("{}", message.replace(&url, "<takvim bağlantısı>"));
+            }
+            LastFetch {
+                at: Utc::now(),
+                ok: false,
+                message,
+            }
+        }
     };
     *lock(&state.last) = Some(last);
     drop(_update);

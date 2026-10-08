@@ -53,6 +53,7 @@ import { applyPlatform, useTheme, type ThemePref } from "./lib/theme";
 import { useUpdate } from "./lib/useUpdate";
 import { cn } from "./lib/utils";
 import Onboarding from "./Onboarding";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import TagsPage from "./pages/TagsPage";
 import ClientsPage from "./pages/ClientsPage";
 import ProjectsPage from "./pages/ProjectsPage";
@@ -532,100 +533,102 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col bg-background mica:bg-background/75">
-        {view === "day" || view === "week" || view === "month" ? (
-          <ReportView
-            mode={view}
-            start={view === "day" ? day : view === "week" ? week : month}
-            title={title}
-            onMode={selectMode}
-            onPrev={() => step(-1)}
-            onNext={() => step(1)}
-            onToday={atCurrent ? null : goToday}
-            onSelectDay={(iso) => {
-              setDay(iso);
-              setView("day");
-            }}
-            onReview={() =>
-              openReview(
-                view === "day"
-                  ? { start: day, days: 1 }
-                  : view === "week"
-                    ? { start: week, days: 7 }
-                    : { start: month, days: daysInMonth(parseIsoDate(month)) },
-              )
-            }
-          />
-        ) : view === "home" ? (
-          // Bugün üst çubuğu kendisi çizer.
-          <Today
-            tracking={tracking}
-            onTogglePause={togglePause}
-            onOpenDay={(iso) => {
-              setDay(iso);
-              setView("day");
-            }}
-            onReview={openReview}
-            onNavigate={setView}
-          />
-        ) : view === "timesheet" ? (
-          // Zaman çizelgesi üst çubuğu kendisi çizer (dönem ve görünüm denetimleriyle).
-          <Timesheet
-            onOpenDay={(iso) => {
-              setDay(iso);
-              setView("day");
-            }}
-            onReviewDay={(iso) => openReview({ start: iso, days: 1 })}
-            onOpenSettings={openSettings}
-          />
-        ) : (
-          <>
-            <Toolbar title={TITLES[view] ?? ""} />
-            <div key={view} className="page-enter flex-1 overflow-y-auto">
-              {view === "review" && (
-                <Review
-                  key={reviewRange ? `${reviewRange.start}/${reviewRange.days}` : "own"}
-                  range={reviewRange}
-                  onOpenTimesheet={() => setView("timesheet")}
-                  onOpenProjects={() => setView("projects")}
-                />
-              )}
-              {view === "trends" && (
-                <Trends
-                  onAddProject={() => setView("projects")}
-                  onSearch={(query) => {
-                    setSearch({ query, days: 30 });
-                    setView("search");
-                  }}
-                />
-              )}
-              {view === "client-report" && <ClientReport />}
-              {view === "search" && (
-                <Search
-                  state={search}
-                  onChange={setSearch}
-                  onSelectDay={(iso) => {
-                    setDay(iso);
-                    setView("day");
-                  }}
-                />
-              )}
-              {view === "clients" && (
-                <ClientsPage
-                  onOpenProjects={() => setView("projects")}
-                  onOpenProject={(id) => {
-                    setView("projects");
-                    setOpenProject(id);
-                  }}
-                />
-              )}
-              {view === "projects" && (
-                <ProjectsPage open={openProject} onOpen={setOpenProject} onSuggestions={onSuggestions} />
-              )}
-              {view === "categories" && <TagsPage key="category" kind="category" onSuggestions={onSuggestions} />}
-              {view === "settings" && <Settings status={status} onChange={refresh} section={settingsSection} />}
-            </div>
-          </>
-        )}
+        <ErrorBoundary resetKey={view}>
+          {view === "day" || view === "week" || view === "month" ? (
+            <ReportView
+              mode={view}
+              start={view === "day" ? day : view === "week" ? week : month}
+              title={title}
+              onMode={selectMode}
+              onPrev={() => step(-1)}
+              onNext={() => step(1)}
+              onToday={atCurrent ? null : goToday}
+              onSelectDay={(iso) => {
+                setDay(iso);
+                setView("day");
+              }}
+              onReview={() =>
+                openReview(
+                  view === "day"
+                    ? { start: day, days: 1 }
+                    : view === "week"
+                      ? { start: week, days: 7 }
+                      : { start: month, days: daysInMonth(parseIsoDate(month)) },
+                )
+              }
+            />
+          ) : view === "home" ? (
+            // Bugün üst çubuğu kendisi çizer.
+            <Today
+              tracking={tracking}
+              onTogglePause={togglePause}
+              onOpenDay={(iso) => {
+                setDay(iso);
+                setView("day");
+              }}
+              onReview={openReview}
+              onNavigate={setView}
+            />
+          ) : view === "timesheet" ? (
+            // Zaman çizelgesi üst çubuğu kendisi çizer (dönem ve görünüm denetimleriyle).
+            <Timesheet
+              onOpenDay={(iso) => {
+                setDay(iso);
+                setView("day");
+              }}
+              onReviewDay={(iso) => openReview({ start: iso, days: 1 })}
+              onOpenSettings={openSettings}
+            />
+          ) : (
+            <>
+              <Toolbar title={TITLES[view] ?? ""} />
+              <div key={view} className="page-enter flex-1 overflow-y-auto">
+                {view === "review" && (
+                  <Review
+                    key={reviewRange ? `${reviewRange.start}/${reviewRange.days}` : "own"}
+                    range={reviewRange}
+                    onOpenTimesheet={() => setView("timesheet")}
+                    onOpenProjects={() => setView("projects")}
+                  />
+                )}
+                {view === "trends" && (
+                  <Trends
+                    onAddProject={() => setView("projects")}
+                    onSearch={(query) => {
+                      setSearch({ query, days: 30 });
+                      setView("search");
+                    }}
+                  />
+                )}
+                {view === "client-report" && <ClientReport />}
+                {view === "search" && (
+                  <Search
+                    state={search}
+                    onChange={setSearch}
+                    onSelectDay={(iso) => {
+                      setDay(iso);
+                      setView("day");
+                    }}
+                  />
+                )}
+                {view === "clients" && (
+                  <ClientsPage
+                    onOpenProjects={() => setView("projects")}
+                    onOpenProject={(id) => {
+                      setView("projects");
+                      setOpenProject(id);
+                    }}
+                  />
+                )}
+                {view === "projects" && (
+                  <ProjectsPage open={openProject} onOpen={setOpenProject} onSuggestions={onSuggestions} />
+                )}
+                {view === "categories" && <TagsPage key="category" kind="category" onSuggestions={onSuggestions} />}
+                {view === "settings" && <Settings status={status} onChange={refresh} section={settingsSection} />}
+              </div>
+            </>
+          )}
+        </ErrorBoundary>
       </main>
       <CommandPalette
         open={palette}

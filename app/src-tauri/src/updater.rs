@@ -171,11 +171,14 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
                 }
             })
         }
-        Err(e) => set(app, |s| {
-            s.checking = false;
-            s.last_checked = Some(Utc::now());
-            s.error = Some(e);
-        }),
+        Err(e) => {
+            log_error!("güncelleme denetlenemedi: {e}");
+            set(app, |s| {
+                s.checking = false;
+                s.last_checked = Some(Utc::now());
+                s.error = Some(e);
+            })
+        }
     }
 }
 

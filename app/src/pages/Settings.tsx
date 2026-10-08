@@ -12,7 +12,7 @@ import SyncSettings from "./SyncSettings";
 import { AI_SECTION, CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections } from "./TimesheetSettings";
 import UpdateSettings from "./UpdateSettings";
 import BackupSettings from "./BackupSettings";
-import { friendlyError } from "../lib/feedback";
+import { friendlyError, toast } from "../lib/feedback";
 import { saveStartView, savedStartView, type StartView } from "../lib/startView";
 
 /** Sayfanın başındaki içindekiler: bölümler sayfadaki sırasıyla. */
@@ -265,6 +265,31 @@ export default function Settings({
           <Button variant="outline" size="sm" onClick={runDiagnostics}>
             Çalıştır
           </Button>
+        </SettingRow>
+        <SettingRow
+          label="Hata günlüğü"
+          hint="Bir sorun bildirirken sürümü, izinleri, takip ve eşitleme durumunu ve son hataları panoya kopyalar. Anahtar ve jeton içermez."
+        >
+          <div className="flex gap-2">
+            <Button variant="ghost" size="sm" onClick={() => api.revealLog()}>
+              Dosyayı göster
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                api
+                  .diagnostics()
+                  .then((text) => navigator.clipboard.writeText(text))
+                  .then(
+                    () => toast("Tanılama bilgisi kopyalandı", { tone: "success" }),
+                    (e) => setError(friendlyError(e)),
+                  )
+              }
+            >
+              Kopyala
+            </Button>
+          </div>
         </SettingRow>
         {diag && (
           <pre className="max-h-56 overflow-auto bg-muted/50 px-4 py-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">

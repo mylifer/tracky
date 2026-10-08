@@ -124,7 +124,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         "toggle_pause" => {
             let paused = crate::lock(&app.state::<crate::tracking::Shared>().status).paused;
             if let Err(e) = crate::set_paused_inner(app, !paused) {
-                eprintln!("duraklatma değiştirilemedi: {e}");
+                log_error!("duraklatma değiştirilemedi: {e}");
             }
         }
         "open" => crate::show_main_window(app),
@@ -135,7 +135,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 .and_then(|i| i.autostart.is_checked().ok())
                 .unwrap_or(false);
             if let Err(e) = crate::set_autostart_inner(app, enabled) {
-                eprintln!("otomatik başlatma değiştirilemedi: {e}");
+                log_error!("otomatik başlatma değiştirilemedi: {e}");
             }
         }
         "update" => {
@@ -145,7 +145,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 .name("kum-install".into())
                 .spawn(move || {
                     if let Err(e) = crate::updater::install(&app) {
-                        eprintln!("güncelleme kurulamadı: {e}");
+                        log_error!("güncelleme kurulamadı: {e}");
                     }
                 });
         }
@@ -158,7 +158,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 _ => None,
             };
             if let Err(e) = crate::pause_inner(app, true, Some(crate::pause_end(minutes))) {
-                eprintln!("duraklatılamadı: {e}");
+                log_error!("duraklatılamadı: {e}");
             }
         }
         _ => {}

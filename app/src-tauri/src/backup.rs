@@ -100,7 +100,7 @@ pub fn apply_pending_restore(data_dir: &Path) -> std::io::Result<()> {
     if db.exists()
         && let Err(e) = Store::checkpoint_file(&db)
     {
-        eprintln!("veritabanı WAL'ı işlenemedi: {e}");
+        log_error!("veritabanı WAL'ı işlenemedi: {e}");
     }
     let mark = data_dir.join(RESTORED_MARK);
     // Damga, geri yüklenen veritabanı açılamazsa eskisine dönmek için ([`undo_restore`]).
@@ -181,7 +181,7 @@ fn move_all(moves: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
         if let Err(e) = std::fs::rename(from, to) {
             for (from, to) in moves[..i].iter().rev() {
                 if let Err(e) = std::fs::rename(to, from) {
-                    eprintln!("{} geri taşınamadı: {e}", from.display());
+                    log_error!("{} geri taşınamadı: {e}", from.display());
                 }
             }
             return Err(e);
@@ -287,7 +287,7 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
             loop {
                 let due = last_backup(&app).is_none_or(|at| Utc::now() - at >= EVERY);
                 if due && let Err(e) = backup_now_inner(&app) {
-                    eprintln!("yedek alınamadı: {e}");
+                    log_error!("yedek alınamadı: {e}");
                 }
                 std::thread::sleep(CHECK_EVERY);
             }

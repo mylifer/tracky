@@ -1,5 +1,20 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+/** Arayüzden günlüğe (`kum.log`) yazar; yazılamazsa sessizce geçer. */
+export function logClient(level: "error" | "info", message: string) {
+  tauriInvoke("log_client", { level, message }).catch(() => {});
+}
+
+/** Başarısız komutlar hata günlüğüne de yazılır; hata çağırana aynen döner. */
+async function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
+  try {
+    return await tauriInvoke<T>(cmd, args);
+  } catch (e) {
+    logClient("error", `${cmd}: ${e instanceof Error ? e.message : String(e)}`);
+    throw e;
+  }
+}
 
 export type Current = {
   appName: string;
@@ -682,6 +697,9 @@ export const api = {
   syncNow: () => invoke<void>("sync_now"),
   onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> => listen<SyncStatus>("sync", (e) => cb(e.payload)),
   diagnose: () => invoke<string>("diagnose"),
+  /** Sürüm, izinler, takip/eşitleme durumu ve günlüklerin sonu (panoya kopyalanır). */
+  diagnostics: () => invoke<string>("diagnostics"),
+  revealLog: () => invoke<void>("reveal_log"),
   updateStatus: () => invoke<UpdateStatus>("update_status"),
   checkUpdate: () => invoke<UpdateStatus>("check_update"),
   installUpdate: () => invoke<void>("install_update"),
