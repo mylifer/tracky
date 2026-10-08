@@ -260,6 +260,12 @@ WHERE exported_at IS NOT NULL;
 -- yapılan atamayı ya da silmeyi geri almasın. Boş: hiç düzenlenmedi (en eski sayılır).
 ALTER TABLE sessions ADD COLUMN state_at INTEGER;
 "#,
+    r#"
+-- Takvim bloğunun elle bölündüğü an (Session::block_from; supabase/migrations/0013): kısaltılan
+-- bloğun kesilen kısmı silinmez, bu anda başlayan oturumdan ayrı blok olur. Atama gibi state_at
+-- ile eşitlenir.
+ALTER TABLE sessions ADD COLUMN block_from INTEGER;
+"#,
 ];
 
 /// Yedek dosyasının içeriği (geri yüklemeden önce göstermek için).
@@ -629,7 +635,7 @@ impl Store {
     ) -> Result<Vec<(Session, String)>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, app_id, app_name, title, url, domain, started_at, ended_at, category_id,
-                    project_id, device_id
+                    project_id, device_id, block_from
              FROM sessions
              WHERE deleted_at IS NULL AND {OVERLAPS}
              ORDER BY started_at"
@@ -648,6 +654,7 @@ impl Store {
                     ended_at: from_ms(r.get(7)?),
                     category_id: r.get(8)?,
                     project_id: r.get(9)?,
+                    block_from: r.get::<_, Option<i64>>(11)?.map(from_ms),
                 },
                 r.get::<_, String>(10)?,
             ))
@@ -797,12 +804,13 @@ impl Store {
     }
 
     /// Takvim bloğunu `[from, to)` aralığından `[new_from, new_to)` aralığına uzatır ya da
-    /// kısaltır. Bloğun dışında kalan kısım silinir; bloğa katılan kısımdaki kayıtlar bloğun
-    /// kategorisini ve projesini alır, kaydı olmayan boşluklar (bilgisayar başında
-    /// olunmayan süre) aynı kategori ve projede `label` adlı elle kayıtla dolar: zaman
-    /// çizelgesine bloğun yeni aralığı gider. Projesi olmayan blok projeli işin üstüne
-    /// uzarsa o işin projesini alır: iki blok tek blok (tek çizelge satırı) olur. Değişen
-    /// satır sayısı.
+    /// kısaltır. Kısaltınca blok ikiye bölünür: dışarıda kalan kısım silinmez, kategorisi ve
+    /// projesiyle ayrı blok (ayrı çizelge satırı) olur ([`Session::block_from`]). Bloğa
+    /// katılan kısımdaki kayıtlar bloğun kategorisini ve projesini alır, aradaki bölmeler
+    /// kalkar; kaydı olmayan boşluklar (bilgisayar başında olunmayan süre) aynı kategori ve
+    /// projede `label` adlı elle kayıtla dolar: zaman çizelgesine bloğun yeni aralığı gider.
+    /// Projesi olmayan blok projeli işin üstüne uzarsa o işin projesini alır: iki blok tek
+    /// blok (tek çizelge satırı) olur. Değişen satır sayısı.
     #[allow(clippy::too_many_arguments)]
     pub fn resize_block(
         &self,
@@ -832,10 +840,15 @@ impl Store {
         let project_id = project_id.or(adopted.as_deref());
         let tx = self.savepoint()?;
         let mut n = 0;
-        for (a, b) in [(from, new_from.min(to)), (new_to.max(from), to)] {
-            if b > a {
-                n += self.delete_between(a, b)?;
-            }
+        if new_from < from || new_to > to {
+            n += self.clear_block_starts(new_from, new_to)?;
+        }
+        // Kesilen baştan sonra kalan blok, kesilen sondan sonra kesilen parça yeni blok başlatır.
+        if new_from > from && new_from < to {
+            n += self.mark_block_start(new_from, to.min(new_to))?;
+        }
+        if new_to < to && new_to > from {
+            n += self.mark_block_start(new_to.max(new_from), to)?;
         }
         for (a, b) in joined {
             if b > a {
@@ -849,6 +862,39 @@ impl Store {
         }
         tx.commit()?;
         Ok(n)
+    }
+
+    /// `[from, to)` içinde başlayan ilk çalışma oturumundan yeni takvim bloğu başlatır
+    /// ([`Session::block_from`]); `from`'u aşan oturum önce bölünür. Değişen satır sayısı.
+    fn mark_block_start(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
+        self.ensure_no_foreign_live(from, to)?;
+        self.split_at(from, to)?;
+        let Some(first) = self
+            .sessions_between(from, to)?
+            .into_iter()
+            .find(|s| s.started_at >= from && s.counts_as_work())
+        else {
+            return Ok(0);
+        };
+        let now = ms(Utc::now());
+        Ok(self.conn.execute(
+            "UPDATE sessions SET block_from = started_at, state_at = ?2,
+                 updated_at = MAX(?2, updated_at + 1)
+             WHERE id = ?1",
+            params![first.id.to_string(), now],
+        )?)
+    }
+
+    /// `(from, to)` içindeki elle bölmeleri kaldırır (aralığın başındaki kalır): aralık tek
+    /// blok olur. Değişen satır sayısı.
+    fn clear_block_starts(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
+        let now = ms(Utc::now());
+        Ok(self.conn.execute(
+            "UPDATE sessions SET block_from = NULL, state_at = ?3,
+                 updated_at = MAX(?3, updated_at + 1)
+             WHERE deleted_at IS NULL AND block_from > ?1 AND block_from < ?2",
+            params![ms(from), ms(to), now],
+        )?)
     }
 
     /// [`Self::resize_block`]'ta projesi olmayan bloğa katılan aralıklarda en çok süren proje
@@ -971,9 +1017,9 @@ impl Store {
             for (a, b) in parts {
                 self.conn.execute(
                     "INSERT INTO sessions (id, device_id, app_id, app_name, title, url, domain,
-                         category_id, project_id, state_at, started_at, ended_at, updated_at)
+                         category_id, project_id, state_at, block_from, started_at, ended_at, updated_at)
                      SELECT ?2, device_id, app_id, app_name, title, url, domain, category_id,
-                         project_id, state_at, ?3, ?4, ?5
+                         project_id, state_at, block_from, ?3, ?4, ?5
                      FROM sessions WHERE id = ?1",
                     params![id, Uuid::new_v4().to_string(), a, b, now],
                 )?;
@@ -1041,6 +1087,7 @@ impl Store {
             ended_at: to,
             category_id: category_id.map(Into::into),
             project_id: project_id.map(Into::into),
+            block_from: None,
         };
         self.upsert_session(&session)?;
         self.conn.execute(
@@ -1388,6 +1435,7 @@ mod tests {
             ended_at: t(end),
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 
@@ -2282,11 +2330,24 @@ mod tests {
             .unwrap();
         let all = store.sessions_between(t(0), t(3600)).unwrap();
         let work: Vec<_> = all.iter().filter(|s| s.counts_as_work()).collect();
-        // Kısalan kısım silindi, önceki iş yerinde.
+        // Kısalan kısım silinmedi: projesiyle ayrı blok oldu; önceki iş yerinde.
+        assert!(all.iter().any(|s| s.app_name == "A"
+            && (s.started_at, s.ended_at) == (t(600), t(900))
+            && s.project_id.as_deref() == p
+            && s.block_from.is_none()));
         assert!(
-            !all.iter()
-                .any(|s| s.started_at < t(900) && s.ended_at > t(600))
+            all.iter()
+                .any(|s| s.started_at == t(900) && s.block_from == Some(t(900)))
         );
+        let report = store.report(t(0), t(3600), &[t(0)], true).unwrap();
+        let spans: Vec<_> = report
+            .work
+            .blocks
+            .iter()
+            .filter(|b| b.project_id.as_deref() == p)
+            .map(|b| (b.start, b.end))
+            .collect();
+        assert_eq!(spans, [(t(600), t(900)), (t(900), t(3000))]);
         assert!(
             work.iter()
                 .any(|s| s.app_name == "B" && s.ended_at == t(600))
@@ -2312,7 +2373,7 @@ mod tests {
             .sum();
         assert_eq!(block, 2100);
 
-        // Başı başka işin üstüne uzayınca o iş bloğa katılır.
+        // Başı başka işin üstüne uzayınca o iş ve kesilen parça bloğa katılır: bölme kalkar.
         store
             .resize_block(t(900), t(3000), t(300), t(3000), "Togg", Some(&cat), p)
             .unwrap();
@@ -2320,6 +2381,16 @@ mod tests {
         assert!(
             b.iter()
                 .all(|s| s.app_name == "B" && s.project_id.as_deref() == p)
+        );
+        let all = store.sessions_between(t(0), t(3600)).unwrap();
+        assert!(all.iter().all(|s| s.block_from.is_none()));
+        let report = store.report(t(0), t(3600), &[t(0)], true).unwrap();
+        assert!(
+            report
+                .work
+                .blocks
+                .iter()
+                .any(|b| (b.start, b.end) == (t(300), t(3000)))
         );
 
         // Gelecek ve ters aralık reddedilir.

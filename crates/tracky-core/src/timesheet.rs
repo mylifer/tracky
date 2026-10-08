@@ -512,6 +512,9 @@ pub struct Piece {
     pub title: String,
     /// Takvim toplantısının sırası (her toplantı kendi kaydıdır); oturumda `None`.
     pub meeting: Option<usize>,
+    /// Takvim bloğu burada elle bölündü ([`crate::blocks::Activity::block_start`]): projenin
+    /// açık kaydı kapanır, yeni satır başlar.
+    pub block_start: bool,
 }
 
 /// Günün zaman çizelgesine giren süresi: projesi belli toplantılar ([`meeting_project`]) ve
@@ -553,6 +556,7 @@ pub fn pieces(
             end,
             title: m.subject.clone(),
             meeting: Some(i),
+            block_start: false,
         }));
     }
     let classes: Vec<_> = sessions.iter().map(|s| classifier.classify(s)).collect();
@@ -585,6 +589,7 @@ pub fn pieces(
                 end,
                 title: title.clone(),
                 meeting: None,
+                block_start: crate::blocks::Activity::starts_block(s, start),
             }));
         }
     }
@@ -610,6 +615,7 @@ fn day_blocks(
                 app_name: &s.app_name,
                 category: class.category.as_deref(),
                 project: class.project.as_deref(),
+                block_start: crate::blocks::Activity::starts_block(s, a),
             })
         })
         .collect();
@@ -748,7 +754,7 @@ pub fn propose(
         }
         let key = p.project.clone();
         if let Some(run) = open.get(&key)
-            && a - run.end > MERGE_GAP
+            && (a - run.end > MERGE_GAP || (p.block_start && a == p.start))
         {
             let mut run = open.remove(&key).expect("az önce bulundu");
             run.settle_kind();
@@ -1173,6 +1179,7 @@ mod tests {
             ended_at: t(to),
             category_id: None,
             project_id: project.map(Into::into),
+            block_from: None,
         }
     }
 
@@ -1301,6 +1308,29 @@ mod tests {
             vec![(t(0), t(80)), (t(90), t(120))],
             "aradaki projesiz 10 dk kayda girmez"
         );
+    }
+
+    #[test]
+    fn a_split_block_is_two_rows() {
+        let (classifier, names, config, sheet) = setup();
+        let mut after = s("Figma", "Trumore Rapor — Figma", 60, 120, None);
+        after.block_from = Some(t(60));
+        let sessions = [
+            s("Figma", "Trumore Loyalty — Figma", 0, 60, None),
+            after,
+            s("Slack", "#genel", 120, 125, None), // atanmamış: bölünen ikinci bloğa girer
+        ];
+        let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
+        let rows: Vec<_> = got
+            .iter()
+            .map(|e| {
+                (
+                    e.start.format("%H:%M").to_string(),
+                    (e.worked() * 60.0).round() as i64,
+                )
+            })
+            .collect();
+        assert_eq!(rows, [("09:00".to_string(), 60), ("10:00".to_string(), 65)]);
     }
 
     #[test]

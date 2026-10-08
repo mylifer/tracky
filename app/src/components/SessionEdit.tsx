@@ -1,6 +1,14 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { PenLine, Plus, Trash2, X } from "lucide-react";
-import { api, type CalendarMeeting, type EditScope, formatDuration, NO_PROJECT, type Tag } from "../api";
+import {
+  api,
+  type CalendarMeeting,
+  type EditScope,
+  formatDuration,
+  NO_PROJECT,
+  type Tag,
+  type WorkBlock,
+} from "../api";
 import { formatTime, isoDate, parseIsoDate } from "../lib/dates";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -13,8 +21,17 @@ import { friendlyError, undoable } from "../lib/feedback";
 /** "geçersiz kayıt: bu aralıkta…" → "Bu aralıkta…" */
 const message = friendlyError;
 
-/** Takvimdeki blokların düzenleme bağlamı (kategoriler ve yenileme). */
-export const EditContext = createContext<{ categories: Tag[]; projects: Tag[]; onChanged: () => void } | null>(null);
+/**
+ * Takvimdeki blokların düzenleme bağlamı (kategoriler ve yenileme). `picked`: Shift+tıkla seçilen
+ * blokların başlangıçları; Shift+A onları birleştirir.
+ */
+export const EditContext = createContext<{
+  categories: Tag[];
+  projects: Tag[];
+  onChanged: () => void;
+  picked?: Set<string>;
+  onPick?: (b: WorkBlock) => void;
+} | null>(null);
 
 /** Seçicideki değer: kurallara bırak (elle proje yok). */
 const AUTO = "__otomatik__";

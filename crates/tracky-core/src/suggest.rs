@@ -676,6 +676,7 @@ mod tests {
             ended_at: t0 + Duration::minutes(mins),
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 

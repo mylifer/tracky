@@ -377,6 +377,7 @@ mod tests {
             ended_at: from + Duration::minutes(minutes),
             category_id: None,
             project_id: project.map(String::from),
+            block_from: None,
         }
     }
 

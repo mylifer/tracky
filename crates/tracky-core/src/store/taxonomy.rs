@@ -691,6 +691,7 @@ mod tests {
             ended_at: t(end),
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 

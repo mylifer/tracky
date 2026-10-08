@@ -298,6 +298,7 @@ fn activities<'a>(
                 app_name: &s.app_name,
                 category: category.as_deref(),
                 project: project.as_deref(),
+                block_start: Activity::starts_block(s, a),
             })
         })
         .collect()
@@ -341,6 +342,7 @@ mod tests {
             ended_at: t(b),
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 

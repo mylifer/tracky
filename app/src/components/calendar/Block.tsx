@@ -24,6 +24,16 @@ function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens) {
   };
 }
 
+/** Bloğa katılan, kaydı olmayan boşlukları dolduran elle kaydın adı: projesi, yoksa kategorisi ya da uygulaması. */
+export function blockLabel(b: WorkBlock, tags: Map<string, Tag>) {
+  return (
+    (b.projectId && tags.get(b.projectId)?.name) ||
+    (b.categoryId && tags.get(b.categoryId)?.name) ||
+    b.topApps[0]?.appName ||
+    "Çalışma"
+  );
+}
+
 /** Bloğun sürüklenen kenarı ve sürüklemenin durumu (zaman damgaları ms). */
 type Resize = { edge: "start" | "end"; y0: number; from: number; at: number };
 
@@ -76,22 +86,21 @@ export function Block({
   const summary = `${title} · ${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))} · ${formatDuration(b.activeSeconds)}${devices ? ` · ${devices}` : ""}`;
   const start = +new Date(b.start);
   const end = +new Date(b.end);
+  const picked = edit?.picked?.has(b.start) ?? false;
 
   /** Bloğu yeni aralığa getirir: zaman çizelgesine bu aralık gider. */
   async function commit(newStart: number, newEnd: number) {
     if (!edit) return;
-    // Elle eklenecek boşlukların adı: projesi, yoksa kategorisi ya da uygulaması.
-    const name =
-      (b.projectId && tags.get(b.projectId)?.name) ||
-      (b.categoryId && tags.get(b.categoryId)?.name) ||
-      b.topApps[0]?.appName ||
-      "Çalışma";
+    const name = blockLabel(b, tags);
     const iso = (t: number) => new Date(t).toISOString();
     setBusy(true);
     try {
       await undoable(
         api.resizeBlock(b.start, b.end, iso(newStart), iso(newEnd), name, b.categoryId, b.projectId),
-        `Blok ${formatTime(new Date(newStart))}–${formatTime(new Date(newEnd))} oldu`,
+        // Kısalan bloğun kesilen kısmı silinmez, ayrı blok olur.
+        newStart > start || newEnd < end
+          ? `Blok ikiye bölündü: ${formatTime(new Date(newStart))}–${formatTime(new Date(newEnd))}`
+          : `Blok ${formatTime(new Date(newStart))}–${formatTime(new Date(newEnd))} oldu`,
       );
       edit.onChanged();
     } catch (e) {
@@ -110,7 +119,7 @@ export function Block({
           edge === "end" && "items-end",
         )}
         style={{ top: edge === "start" ? top : top + height - 6 }}
-        title="Sürükle: bloğu uzat ya da kısalt (zaman çizelgesine yeni aralık gider)"
+        title="Sürükle: bloğu uzat ya da kısaltarak ikiye böl (zaman çizelgesine yeni aralık gider)"
         aria-hidden
         onPointerDown={(e) => {
           if (e.button !== 0) return;
@@ -167,6 +176,7 @@ export function Block({
             className={cn(
               "absolute inset-x-0.5 overflow-hidden rounded-[5px] border-l-[3px] px-1.5 text-left transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:ring-2 data-[state=open]:ring-[var(--cat)] dark:hover:brightness-125",
               resize && "opacity-50",
+              picked && "ring-2 ring-primary ring-offset-1 ring-offset-card",
             )}
             style={{
               top,
@@ -175,8 +185,17 @@ export function Block({
               borderLeftColor: color,
               background: blockColor ? `color-mix(in srgb, ${color} 22%, var(--card))` : `${HATCH}, var(--card)`,
             }}
-            title={summary}
+            title={edit?.onPick ? `${summary}\nShift+tıkla: seç (Shift+A seçilenleri birleştirir)` : summary}
             aria-label={summary}
+            aria-pressed={edit?.onPick ? picked : undefined}
+            // Shift+tık sayfadaki metni seçmesin.
+            onMouseDown={(e) => e.shiftKey && edit?.onPick && e.preventDefault()}
+            onClick={(e) => {
+              if (!e.shiftKey || !edit?.onPick) return;
+              // Ayrıntı açılmasın: Shift+tık yalnızca seçer.
+              e.preventDefault();
+              edit.onPick(b);
+            }}
           >
             {label && (
               <span className={cn("flex h-full flex-col", full ? "py-1" : "justify-center")}>

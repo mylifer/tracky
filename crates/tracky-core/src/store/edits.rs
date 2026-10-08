@@ -28,6 +28,7 @@ struct RowState {
     ended_at: i64,
     category_id: Option<String>,
     project_id: Option<String>,
+    block_from: Option<i64>,
 }
 
 /// Bir düzenlemeden önceki durum.
@@ -97,7 +98,7 @@ impl Store {
 
     fn row_states(&self, condition: &str, args: impl rusqlite::Params) -> Result<Vec<RowState>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, device_id, started_at, ended_at, category_id, project_id
+            "SELECT id, device_id, started_at, ended_at, category_id, project_id, block_from
              FROM sessions WHERE {condition}"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -108,6 +109,7 @@ impl Store {
                 ended_at: r.get(3)?,
                 category_id: r.get(4)?,
                 project_id: r.get(5)?,
+                block_from: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -162,7 +164,7 @@ impl Store {
             self.conn.execute(
                 "UPDATE sessions SET started_at = ?2, ended_at = MAX(?3, ended_at),
                      category_id = ?4, project_id = ?5, deleted_at = NULL, state_at = ?6,
-                     updated_at = MAX(?6, updated_at + 1)
+                     block_from = ?7, updated_at = MAX(?6, updated_at + 1)
                  WHERE id = ?1",
                 params![
                     r.id,
@@ -170,7 +172,8 @@ impl Store {
                     r.ended_at,
                     r.category_id,
                     r.project_id,
-                    now
+                    now,
+                    r.block_from
                 ],
             )?;
         }
@@ -413,6 +416,7 @@ mod tests {
             ended_at: t(to),
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 

@@ -31,6 +31,11 @@ pub struct Session {
     /// Kullanıcının elle verdiği proje; varsa kurallardan önce gelir.
     #[serde(default)]
     pub project_id: Option<String>,
+    /// Takvim bloğunun elle bölündüğü an (kısaltılan bloğun kesilen kenarı): bu anda başlayan
+    /// oturum önceki bloğa katılmaz, yeni blok (ve yeni çizelge satırı) başlatır. Oturum sonradan
+    /// bölünse de işaret parçalarda kalır; yalnızca bu anda başlayan parça bloğu böler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_from: Option<DateTime<Utc>>,
 }
 
 /// Elle eklenen kayıtların uygulama kimliği öneki: `kum.manual/<ad>`. Her ad ayrı
@@ -80,6 +85,7 @@ impl Session {
             ended_at: to,
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 }
@@ -155,6 +161,7 @@ impl Session {
             ended_at: at,
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 
@@ -188,6 +195,7 @@ mod tests {
             ended_at: t(to),
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 

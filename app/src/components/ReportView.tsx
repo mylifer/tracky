@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Hourglass, Monitor, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, Combine, Hourglass, Monitor, X, ZoomIn, ZoomOut } from "lucide-react";
 import {
   api,
   type Bucket,
@@ -11,17 +11,19 @@ import {
   type ProjectGoal,
   type Report,
   type Tag,
+  type WorkBlock,
 } from "../api";
 import { addDays, addMonths, daysInMonth, isoDate, parseIsoDate, today } from "../lib/dates";
 import { tagColor, tagMap, UNASSIGNED } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
-import { friendlyError, useChanged } from "../lib/feedback";
+import { friendlyError, toast, undoable, useChanged } from "../lib/feedback";
 import { cn } from "../lib/utils";
 import { CAL_ZOOM_MIN, clampZoom, stepZoom, useZoomGestures } from "../lib/zoom";
 import { AppList, Dot, Legend } from "./Breakdown";
 import AppTimeline from "./AppTimeline";
 import { type ColorLens, DayCalendar, HATCH, HOUR_PX, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
+import { blockLabel } from "./calendar/Block";
 import {
   EditContext,
   type EntryDraft,
@@ -244,7 +246,81 @@ export default function ReportView(p: Props) {
     setDraft((d) => ({ date: isoDate(a), from: hm(a), to, seq: (d?.seq ?? 0) + 1, label, project }));
     setPreview([start, end]);
   }, []);
-  const editCtx = useMemo(() => ({ categories, projects, onChanged: load }), [categories, projects, load]);
+  // Shift+tıkla seçilen takvim blokları (başlangıçlarıyla); Shift+A birleştirir, Esc bırakır.
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [merging, setMerging] = useState(false);
+  useEffect(() => setPicked(new Set()), [p.start, p.mode]);
+  const onPick = useCallback(
+    (b: WorkBlock) =>
+      setPicked((s) => {
+        const next = new Set(s);
+        if (!next.delete(b.start)) next.add(b.start);
+        return next;
+      }),
+    [],
+  );
+  const editCtx = useMemo(
+    () => ({ categories, projects, onChanged: load, picked, onPick }),
+    [categories, projects, load, picked, onPick],
+  );
+  const pickedBlocks = (report?.work.blocks ?? []).filter((b) => picked.has(b.start));
+  /**
+   * Seçilen blokları tek blok yapar: en uzun bloğu ilk başlangıçtan son bitişe uzatır. Aradaki
+   * süre onun kategorisini ve projesini alır, kaydı olmayan boşluklar elle kayıtla dolar; zaman
+   * çizelgesinde tek satır olur.
+   */
+  async function mergePicked() {
+    if (merging) return;
+    if (pickedBlocks.length < 2) {
+      toast("Birleştirmek için Shift+tıkla en az iki blok seç");
+      return;
+    }
+    if (new Set(pickedBlocks.map((b) => isoDate(new Date(b.start)))).size > 1) {
+      toast("Yalnızca aynı günün blokları birleştirilebilir", { tone: "error" });
+      return;
+    }
+    const main = pickedBlocks.reduce((a, b) => (b.activeSeconds > a.activeSeconds ? b : a));
+    const start = Math.min(...pickedBlocks.map((b) => +new Date(b.start)));
+    const end = Math.max(...pickedBlocks.map((b) => +new Date(b.end)));
+    const iso = (t: number) => new Date(t).toISOString();
+    setMerging(true);
+    try {
+      await undoable(
+        api.resizeBlock(
+          main.start,
+          main.end,
+          iso(start),
+          iso(end),
+          blockLabel(main, tags),
+          main.categoryId,
+          main.projectId,
+        ),
+        `${pickedBlocks.length} blok birleşti`,
+      );
+      setPicked(new Set());
+      load();
+    } catch (e) {
+      toast(friendlyError(e), { tone: "error" });
+    } finally {
+      setMerging(false);
+    }
+  }
+  // İşleyici her çizimde güncellenir; dinleyici bir kez eklenir.
+  const pickKeys = useRef<((e: KeyboardEvent) => void) | null>(null);
+  pickKeys.current = (e) => {
+    if (picked.size === 0 || e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey) return;
+    const el = e.target as HTMLElement | null;
+    if (el?.closest("input, textarea, select, [contenteditable], [role=dialog], [role=listbox], [role=menu]")) return;
+    if (e.key === "Escape") setPicked(new Set());
+    else if (e.shiftKey && (e.code === "KeyA" || e.key.toLowerCase() === "a")) void mergePicked();
+    else return;
+    e.preventDefault();
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => pickKeys.current?.(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // Hafta görünümünde elle kayıt varsayılan olarak bugüne (haftadaysa) ya da haftanın ilk gününe.
   const todayIso = isoDate(today());
   const manualDay =
@@ -567,6 +643,36 @@ export default function ReportView(p: Props) {
                         />
                       )}
                     </EditContext.Provider>
+                    {pickedBlocks.length > 0 && (
+                      <div className="sticky bottom-3 z-30 mt-2 flex justify-center">
+                        <div
+                          role="toolbar"
+                          aria-label="Seçili bloklar"
+                          className="flex items-center gap-2 rounded-xl border bg-popover px-3 py-1.5 text-xs shadow-lg"
+                        >
+                          <span className="tabular">
+                            <b className="font-semibold">{pickedBlocks.length}</b> blok seçildi
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={pickedBlocks.length < 2 || merging}
+                            title="En uzun bloğun kategorisi ve projesiyle tek blok olur (Shift+A)"
+                            onClick={() => void mergePicked()}
+                          >
+                            <Combine /> Birleştir
+                          </Button>
+                          <button
+                            aria-label="Seçimi kaldır"
+                            title="Seçimi kaldır (Esc)"
+                            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                            onClick={() => setPicked(new Set())}
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     {selection && (
                       <RangeMenu
                         selection={selection}

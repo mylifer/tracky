@@ -217,6 +217,7 @@ pub fn rule_candidates(sessions: &[Session], input: &LearnInput) -> Vec<RuleCand
         // Kurallar zaten bu projeye yazıyorsa elle atama gerekmemiştir; öğrenilecek bir şey yok.
         let by_rules = Session {
             project_id: None,
+            block_from: None,
             ..s.clone()
         };
         if classifier.classify(&by_rules).project.as_deref() == Some(p) {
@@ -298,6 +299,7 @@ pub fn rule_candidates(sessions: &[Session], input: &LearnInput) -> Vec<RuleCand
             .filter(|(i, _)| {
                 let by_rules = Session {
                     project_id: None,
+                    block_from: None,
                     ..sessions[*i].clone()
                 };
                 after.classify(&by_rules).project.as_deref() == Some(project_id.as_str())
@@ -402,6 +404,7 @@ mod tests {
             ended_at: day(d, to),
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 

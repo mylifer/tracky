@@ -168,9 +168,10 @@ const TABLES: &[Table] = &[
             ("updated_at", Col::Time),
             ("deleted_at", Col::OptTime),
             ("state_at", Col::OptTime),
+            ("block_from", Col::OptTime),
         ],
-        // 0012: atama ve silinmenin zamanı.
-        optional: &["state_at"],
+        // 0012: atama ve silinmenin zamanı; 0013: takvim bloğunun elle bölündüğü an.
+        optional: &["state_at", "block_from"],
         key: "id",
         only: None,
         prefix: None,
@@ -795,7 +796,13 @@ const TIMESHEET_MERGE: Merge = Merge {
 /// Oturumun durumu: elle atama ve silinme. İçerik (saatler, başlık) son yazandan gelir; süren
 /// oturumu takip eden cihaz onu uzatmaya devam eder.
 const SESSION_MERGE: Merge = Merge {
-    state: &["category_id", "project_id", "deleted_at", "state_at"],
+    state: &[
+        "category_id",
+        "project_id",
+        "block_from",
+        "deleted_at",
+        "state_at",
+    ],
     frozen: &[],
     fallback_to_updated: false,
 };
@@ -1133,6 +1140,7 @@ mod tests {
             ended_at: t0 + Duration::seconds(secs),
             category_id: None,
             project_id: None,
+            block_from: None,
         }
     }
 

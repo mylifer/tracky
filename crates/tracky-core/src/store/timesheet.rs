@@ -1180,6 +1180,7 @@ mod tests {
             ended_at: t(to),
             category_id: None,
             project_id: None,
+            block_from: None,
         };
         store.upsert_session(&s).unwrap();
         if let Some(p) = project {

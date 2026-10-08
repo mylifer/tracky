@@ -5,6 +5,8 @@
 //!   (bir mesaja bakmak gibi) bloğun içinde kalır. Aynı projeye atanmış iş kategorisi
 //!   değişse de, arada `timesheet::MERGE_GAP`'i geçmeyen boşluk olsa da tek bloktur:
 //!   zaman çizelgesindeki satır gibi.
+//! - **Elle bölme:** blok kısaltılınca kesilen kısım silinmez; o anda başlayan dilim
+//!   ([`Activity::block_start`]) önceki bloğa katılmaz, yeni blok başlatır.
 //! - **Mola:** iki blok arasındaki `BREAK_GAP`–`LONG_GAP` arası boşluk (gece gibi
 //!   daha uzun boşluklar mola sayılmaz).
 //! - **Bağlam değişimi:** mola vermeden bir uygulamadan başka uygulamaya geçiş.
@@ -30,6 +32,16 @@ pub struct Activity<'a> {
     pub app_name: &'a str,
     pub category: Option<&'a str>,
     pub project: Option<&'a str>,
+    /// Blok burada elle bölündü ([`crate::model::Session::block_from`]): yeni blok başlar.
+    pub block_start: bool,
+}
+
+impl Activity<'_> {
+    /// Oturumun `[start, end)` aralığına kırpılmış dilimi bloğu bölüyor mu: oturumun bölme
+    /// anında başlayan parçası, kırpılmadan.
+    pub fn starts_block(s: &crate::model::Session, start: DateTime<Utc>) -> bool {
+        s.block_from == Some(s.started_at) && start == s.started_at
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -97,6 +109,17 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
         };
         let last_end = pending.last().map_or(b.end, |p| p.end.max(b.end));
         let gap = item.start - last_end;
+        if item.block_start {
+            for p in pending.drain(..) {
+                b.add(p);
+            }
+            if gap >= BREAK_GAP && gap < LONG_GAP {
+                breaks += gap.num_seconds();
+            }
+            blocks.push(current.take().expect("blok var").finish());
+            current = Some(Builder::new(item));
+            continue;
+        }
         // Bloğun projesine atanmış iş kategorisi farklı olsa da bloğu sürdürür.
         let same_project = item.project.is_some() && item.project == b.project.as_deref();
         if gap >= BREAK_GAP && !(same_project && gap <= crate::timesheet::MERGE_GAP) {
@@ -289,6 +312,7 @@ mod tests {
             app_name: app,
             category: cat,
             project: None,
+            block_start: false,
         }
     }
 
@@ -311,6 +335,16 @@ mod tests {
         assert_eq!(s.break_seconds, 12 * 60);
         // Code→Slack→Terminal→Slack ve Safari→(mola) geçişleri sayılmaz.
         assert_eq!(s.switches, 3);
+    }
+
+    #[test]
+    fn manual_split_starts_a_new_block() {
+        let mut second = a("Code", Some("dev"), 30, 60);
+        second.block_start = true;
+        let s = analyze(&[a("Code", Some("dev"), 0, 30), second]);
+        let spans: Vec<_> = s.blocks.iter().map(|b| (b.start, b.end)).collect();
+        assert_eq!(spans, [(t(0), t(30)), (t(30), t(60))]);
+        assert_eq!(s.break_seconds, 0);
     }
 
     #[test]
