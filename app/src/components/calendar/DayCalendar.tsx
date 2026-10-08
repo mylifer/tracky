@@ -21,6 +21,7 @@ import {
 import { Block, IdleBlock } from "./Block";
 import { categoryBuckets } from "./buckets";
 import { type SheetSpan, sheetLines, sheetLinesWidth, TimesheetLines } from "./TimesheetLines";
+import { attendanceLine, isSkipped } from "../../lib/attendance";
 
 /** Tıklanan anı çevreleyen boşluk: 2 saate kadarsa tamamı, değilse tıklanan çeyrekten 1 saat. */
 export function gapAround(
@@ -318,6 +319,7 @@ function MeetingBlock({
     `${time} · ${formatDuration((+b - +a) / 1000)}`,
     m.location,
     project && `Proje: ${project.name}`,
+    project && attendanceLine(m, m.attendance),
     m.agenda && `\n${m.agenda}`,
   ]
     .filter(Boolean)
@@ -333,7 +335,7 @@ function MeetingBlock({
         project
           ? "border-l-[3px] text-foreground enabled:hover:brightness-95 dark:enabled:hover:brightness-125"
           : "border-dashed border-primary/50 bg-primary/8 text-primary enabled:hover:bg-primary/15",
-        m.ignored && "opacity-50",
+        (m.ignored || (project && isSkipped(m.attendance))) && "opacity-50",
       )}
       style={
         color
@@ -359,7 +361,14 @@ function MeetingBlock({
         <span className={cn("flex h-full flex-col", height >= FULL_LABEL_PX ? "py-1" : "justify-center")}>
           <span className="flex items-center gap-1">
             <Icon className="size-3 shrink-0" style={color ? { color } : undefined} />
-            <span className="truncate text-[11px] leading-tight font-semibold">{m.subject || "(konusuz)"}</span>
+            <span
+              className={cn(
+                "truncate text-[11px] leading-tight font-semibold",
+                project && isSkipped(m.attendance) && "line-through",
+              )}
+            >
+              {m.subject || "(konusuz)"}
+            </span>
           </span>
           {height >= FULL_LABEL_PX && (
             <span

@@ -1,5 +1,5 @@
 -- Kum'u başka bir uygulamanın Supabase projesinde, ayrı "kum" şemasında kurar (ücretsiz plandaki
--- proje sınırına takılmamak için). 0001–0010 göçlerinin "kum" şemasına uyarlanmış hâlidir;
+-- proje sınırına takılmamak için). 0001–0014 göçlerinin "kum" şemasına uyarlanmış hâlidir;
 -- SQL Editor'da bir kez çalıştırın, tekrar çalıştırmak zararsızdır. Ardından Project Settings →
 -- Data API → Exposed schemas listesine "kum" ekleyin ve Kum'da Ayarlar → Senkronizasyon →
 -- Şema alanına "kum" yazın. Diğer uygulamanın tablolarına ve ayarlarına dokunmaz.
@@ -231,6 +231,35 @@ create policy "kendi satırları" on kum.timesheet_entries for all to authentica
 
 -- (0012) Oturumun ataması ve silinmesi içerikten ayrı zamanla eşitlenir.
 alter table kum.sessions add column if not exists state_at timestamptz;
+
+-- (0013) Takvim bloğunun elle bölündüğü an.
+alter table kum.sessions add column if not exists block_from timestamptz;
+
+-- ===== 0014_calls.sql =====
+-- Görüşmeler: görüşme uygulamasının mikrofonu kullandığı aralıklar (ses değil).
+create table if not exists kum.calls (
+    id                text not null,
+    user_id           uuid not null default auth.uid() references auth.users (id) on delete cascade,
+    device_id         text not null,
+    app_id            text not null,
+    started_at        timestamptz not null,
+    ended_at          timestamptz not null,
+    updated_at        timestamptz not null,
+    deleted_at        timestamptz,
+    server_updated_at timestamptz not null default now(),
+    writer            uuid,
+    primary key (user_id, id),
+    check (ended_at >= started_at)
+);
+create index if not exists calls_user_cursor on kum.calls (user_id, server_updated_at);
+drop trigger if exists kum_lww on kum.calls;
+create trigger kum_lww before insert or update on kum.calls
+    for each row execute function kum.kum_lww();
+alter table kum.calls enable row level security;
+drop policy if exists "kendi satırları" on kum.calls;
+create policy "kendi satırları" on kum.calls for all to authenticated
+    using (user_id = (select auth.uid()))
+    with check (user_id = (select auth.uid()));
 
 -- Erişim: oturum açmış kullanıcılar (satır güvenliğiyle yalnız kendi satırları) ve sunucu rolü.
 -- (0009) authenticated'a yalnızca okuma ve yazma: TRUNCATE satır güvenliğini atlar.

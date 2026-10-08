@@ -14,6 +14,7 @@ use chrono::{Days, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tracky_core::attendance::Attendance;
 use tracky_core::meeting_suggest::{MeetingSuggester, MeetingSuggestion};
 use tracky_core::store::{DayRow, SavedEntry, TimesheetContext};
 use tracky_core::timesheet::{
@@ -273,6 +274,8 @@ pub struct CalendarMeeting {
     ignored: bool,
     /// Projesi belli olmayan (yoksayılmamış) toplantı için önerilen proje.
     suggestion: Option<MeetingSuggestion>,
+    /// Katılım ve görüşmeye göre süre ([`tracky_core::attendance`]).
+    attendance: Option<Attendance>,
 }
 
 /// `start` gününden itibaren `days` günün takvim toplantıları (gün takviminde gösterilir).
@@ -297,6 +300,11 @@ pub async fn calendar_meetings(
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
     let (known, unassigned) = store.classify_meetings(&meetings).map_err(err)?;
+    let config = store.timesheet_config().map_err(err)?;
+    let mut attendance = store
+        .meeting_attendance(&config, &meetings)
+        .map_err(err)?
+        .into_iter();
     Ok(meetings
         .into_iter()
         .map(|meeting| {
@@ -315,9 +323,19 @@ pub async fn calendar_meetings(
                 meeting,
                 project_id,
                 suggestion,
+                attendance: attendance.next(),
             }
         })
         .collect())
+}
+
+/// Toplantının bu tekrarına katılıp katılmadığını kaydeder (`key`:
+/// [`tracky_core::attendance::key`]; `None`: cevabı geri al, Kum karar versin).
+#[tauri::command]
+pub async fn answer_meeting(app: AppHandle, key: String, attended: Option<bool>) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .answer_meeting(&key, attended)
+        .map_err(err)
 }
 
 /// Takvimdeki toplantı serisini projeye atar (`None`: zaman çizelgesine alma). Atama serinin

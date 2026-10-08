@@ -195,6 +195,14 @@ export default function Settings({
                 onChange={(v) => save({ ...privacy, count_watching: v })}
               />
             )}
+            {status.platform === "macos" && (
+              <ToggleRow
+                label="Görüşmeleri algıla"
+                hint="Teams, Zoom ya da tarayıcıda Meet mikrofonu kullanırken bunun ne zaman olduğu kaydedilir (ses kaydedilmez). Katılmadığın toplantı zaman çizelgesine girmez, erken biten ya da uzayan toplantı gerçek süresiyle yazılır."
+                checked={privacy.detect_calls}
+                onChange={(v) => save({ ...privacy, detect_calls: v })}
+              />
+            )}
           </>
         )}
         {status.platform === "macos" && (

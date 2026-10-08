@@ -22,8 +22,11 @@ const CONFIG_KEY: &str = "sync_config";
 pub(crate) const AUTH_KEY: &str = "sync_auth";
 /// Yerel eşitleme durumunun ait olduğu "proje|kullanıcı".
 const OWNER_KEY: &str = "sync_owner";
-/// İmleçlerin ilerletildiği eşitleme şeması ([`tracky_core::sync::schema_fingerprint`]).
+/// İmleçlerin ilerletildiği eski, tek parça eşitleme şeması
+/// ([`tracky_core::sync::legacy_fingerprint`]); parça parça özete geçerken okunur.
 const CURSOR_VERSION_KEY: &str = "sync_cursor_version";
+/// Tablonun imlecinin ilerletildiği şekil ([`tracky_core::sync::table_fingerprints`]).
+const TABLE_SHAPE_PREFIX: &str = "sync_shape:";
 /// Arka planda bu aralıkla eşitlenir.
 const INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Başarısız eşitlemeden sonra bu kadar beklenip yeniden denenir.
@@ -157,20 +160,27 @@ fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
     }
     let store = &app.state::<Shared>().store;
     // Eski sürümün tanımayıp atladığı satırlar (yeni alan, yeni ayar) imleç geçtiği için bir
-    // daha çekilmezdi: eşitlenen şekil değişince baştan çek (her sürümde değil).
+    // daha çekilmezdi: bir tablonun eşitlenen şekli değişince o tabloyu baştan çek (her
+    // sürümde değil, bütün tabloları değil).
     {
         let store = lock(store);
-        let version = tracky_core::sync::schema_fingerprint();
-        if store
+        let legacy = store
             .setting::<String>(CURSOR_VERSION_KEY)
             .ok()
             .flatten()
-            .as_deref()
-            != Some(version.as_str())
-        {
-            store.forget_sync_cursors().map_err(|e| e.to_string())?;
+            .is_some_and(|v| v == tracky_core::sync::legacy_fingerprint());
+        let stored = |table: &str| {
             store
-                .save_setting(CURSOR_VERSION_KEY, &version)
+                .setting::<String>(&format!("{TABLE_SHAPE_PREFIX}{table}"))
+                .ok()
+                .flatten()
+        };
+        for (table, shape, refetch) in tracky_core::sync::tables_to_refetch(stored, legacy) {
+            if refetch {
+                store.forget_sync_cursor(table).map_err(|e| e.to_string())?;
+            }
+            store
+                .save_setting(&format!("{TABLE_SHAPE_PREFIX}{table}"), &shape)
                 .map_err(|e| e.to_string())?;
         }
     }

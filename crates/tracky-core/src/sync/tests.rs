@@ -25,10 +25,33 @@ struct FakeRemote {
 const NO_SETTINGS: &str = "Could not find the table 'public.settings' in the schema cache";
 
 #[test]
-fn schema_fingerprint_is_stable() {
-    let a = schema_fingerprint();
-    assert_eq!(a.len(), 16);
-    assert_eq!(a, schema_fingerprint());
+fn legacy_fingerprint_matches_the_single_summary_of_0_9_44() {
+    // 0.9.44'ün kaydettiği özet: bu eşleşmezse güncellemede bütün tablolar baştan çekilir.
+    assert_eq!(legacy_fingerprint(), "24e642a5975c0eb2");
+}
+
+#[test]
+fn only_new_or_changed_tables_are_refetched() {
+    let current: HashMap<&str, String> = table_fingerprints().into_iter().collect();
+    assert_eq!(current.len(), TABLES.len());
+    // Eski tek özetten geçiş: yalnızca yeni tablo ve yeni ayar eklenen ayarlar baştan çekilir.
+    let first = tables_to_refetch(|_| None, true);
+    let refetch: Vec<&str> = first.iter().filter(|r| r.2).map(|r| r.0).collect();
+    assert_eq!(refetch, ["settings", "calls"]);
+    assert_eq!(first.len(), TABLES.len());
+    // Kayıtlıyla aynıysa hiçbir şey; biri değişmişse yalnızca o.
+    let stored = |name: &str| current.get(name).cloned();
+    assert!(tables_to_refetch(stored, false).is_empty());
+    let changed = tables_to_refetch(
+        |name: &str| (name != "tags").then(|| current[name].clone()),
+        false,
+    );
+    assert_eq!(
+        changed.iter().map(|r| (r.0, r.2)).collect::<Vec<_>>(),
+        [("tags", true)]
+    );
+    // Eski özet de yoksa (çok eski sürüm ya da ilk eşitleme) hepsi.
+    assert!(tables_to_refetch(|_| None, false).iter().all(|r| r.2));
 }
 
 impl FakeRemote {

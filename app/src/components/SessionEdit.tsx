@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { PenLine, Plus, Trash2, X } from "lucide-react";
+import { Check, PenLine, Plus, Trash2, Undo2, X } from "lucide-react";
 import {
   api,
   type CalendarMeeting,
@@ -17,6 +17,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { CategorySelect } from "./CategorySelect";
 import { ProjectSelect } from "./ProjectSelect";
 import { friendlyError, undoable } from "../lib/feedback";
+import { attendanceLine, isSkipped } from "../lib/attendance";
+import { cn } from "../lib/utils";
 
 /** "geçersiz kayıt: bu aralıkta…" → "Bu aralıkta…" */
 const message = friendlyError;
@@ -315,6 +317,15 @@ export function MeetingMenu({
   const suggestion = value === "" && m.suggestion ? m.suggestion : null;
   const suggestedName = suggestion ? projects.find((p) => p.id === suggestion.projectId)?.name : undefined;
 
+  const attendance = m.attendance;
+  const attendanceText = attendanceLine(m, attendance);
+  // Katılım cevabı (`null`: geri al, Kum karar versin).
+  function answer(attended: boolean | null) {
+    if (!attendance) return;
+    setError(null);
+    api.answerMeeting(attendance.key, attended).then(onChanged, (e) => setError(message(e)));
+  }
+
   function assign(v: string) {
     const before = value;
     setValue(v);
@@ -370,6 +381,43 @@ export function MeetingMenu({
           <span className="block text-[11px] text-muted-foreground">
             Serinin tüm tekrarlarına uygulanır; zaman çizelgesine bu projeyle girer.
           </span>
+        </div>
+      )}
+      {attendance && m.projectId && +a < Date.now() && (
+        <div className="space-y-1">
+          {attendanceText && (
+            <p
+              className={cn(
+                "text-[11px]",
+                isSkipped(attendance) ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
+              )}
+            >
+              {attendanceText}
+            </p>
+          )}
+          {attendance.auto ? (
+            <Button size="sm" variant="outline" className="w-full" onClick={() => answer(isSkipped(attendance))}>
+              {isSkipped(attendance) ? (
+                <>
+                  <Check /> Katıldım
+                </>
+              ) : (
+                <>
+                  <X /> Katılmadım
+                </>
+              )}
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="w-full"
+              title="Kum görüşmeye bakıp karar versin"
+              onClick={() => answer(null)}
+            >
+              <Undo2 /> Cevabı geri al
+            </Button>
+          )}
         </div>
       )}
       {+a < Date.now() && (

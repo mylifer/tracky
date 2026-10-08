@@ -2,14 +2,17 @@ use chrono::{DateTime, Utc};
 
 use uuid::Uuid;
 
+use crate::calls::CallRecorder;
 use crate::engine::{Clocks, Engine, EngineConfig, elapsed_clock};
 use crate::model::{ActiveWindow, Session};
-use crate::platform::ActivityProvider;
+use crate::platform::{ActivityProvider, CallApps};
 use crate::privacy::PrivacySettings;
 use crate::store::Store;
 
 /// Devam eden oturum bu kadar gözlemde bir diske yazılır (çökmede en fazla bu kadar saniye kaybolur).
 const FLUSH_EVERY: u32 = 5;
+/// Görüşme bu kadar gözlemde bir yoklanır (~5 sn).
+const CALL_CHECK_EVERY: u32 = 5;
 /// Ekranı uyanık tutan uygulama ancak bu kadar girdisiz süreden sonra sorulur (boşta eşiğinden
 /// kısa; her saniye sorulmasın).
 const WATCH_CHECK_AFTER_SECS: u64 = 60;
@@ -31,6 +34,8 @@ pub struct Observation {
     window: Option<ActiveWindow>,
     idle: u64,
     error: Option<String>,
+    /// Görüşme sinyalleri; bu gözlemde yoklanmadıysa `None`.
+    calls: Option<CallApps>,
 }
 
 /// Gözlem → gizlilik → motor → depolama hattı. Saniyede bir `tick` çağrılır.
@@ -47,6 +52,7 @@ pub struct Tracker<P: ActivityProvider> {
     /// Monotonik saatin başlangıcı (bkz. [`Tracker::uptime`]).
     started: std::time::Instant,
     watching: Watching,
+    calls: CallRecorder,
 }
 
 /// Girdisiz izleme: ekran bir video ya da görüşme için uyanık tutulurken geçen süre etkinlik
@@ -87,6 +93,7 @@ impl<P: ActivityProvider> Tracker<P> {
             flushed: None,
             started: std::time::Instant::now(),
             watching: Watching::default(),
+            calls: CallRecorder::default(),
         }
     }
 
@@ -136,6 +143,7 @@ impl<P: ActivityProvider> Tracker<P> {
                 window: None,
                 idle: 0,
                 error: None,
+                calls: None,
             };
         }
         let privacy = &self.privacy;
@@ -148,10 +156,14 @@ impl<P: ActivityProvider> Tracker<P> {
         let kept_awake = self.privacy.count_watching
             && raw >= WATCH_CHECK_AFTER_SECS
             && self.provider.display_kept_awake();
+        // Gözlemler saniyede bir: görüşme birkaç gözlemde bir yoklanır.
+        let calls = (self.privacy.detect_calls && self.ticks.is_multiple_of(CALL_CHECK_EVERY))
+            .then(|| self.provider.call_apps());
         Observation {
             window,
             idle: self.watching.idle(raw, kept_awake),
             error,
+            calls,
         }
     }
 
@@ -179,6 +191,7 @@ impl<P: ActivityProvider> Tracker<P> {
         if self.privacy.paused {
             self.engine.forget_away(now);
         }
+        self.record_calls(store, now, obs.calls, &mut outcome);
 
         self.ticks = self.ticks.wrapping_add(1);
         if self.ticks.is_multiple_of(FLUSH_EVERY)
@@ -190,9 +203,41 @@ impl<P: ActivityProvider> Tracker<P> {
         outcome
     }
 
+    /// Görüşme yoklamasını işler; duraklatılınca ya da görüşme kaydı kapatılınca süren görüşme
+    /// son görüldüğü anda biter.
+    fn record_calls(
+        &mut self,
+        store: &Store,
+        now: DateTime<Utc>,
+        signals: Option<CallApps>,
+        outcome: &mut TickOutcome,
+    ) {
+        let calls = match signals {
+            Some(signals) => {
+                let config = store.timesheet_config().unwrap_or_default();
+                self.calls
+                    .observe(now, &crate::calls::in_call(&signals, &config))
+            }
+            None if self.privacy.paused || !self.privacy.detect_calls => {
+                self.calls.finish().into_iter().collect()
+            }
+            None => Vec::new(),
+        };
+        for call in calls {
+            if let Err(e) = store.upsert_call(&call) {
+                outcome.error = Some(format!("görüşme yazılamadı: {e}"));
+            }
+        }
+    }
+
     /// Kapanışta devam eden oturumu kaydeder.
     pub fn shutdown(&mut self, store: &Store, now: DateTime<Utc>) -> Option<String> {
         let mut outcome = TickOutcome::default();
+        if let Some(call) = self.calls.finish()
+            && let Err(e) = store.upsert_call(&call)
+        {
+            outcome.error = Some(format!("görüşme yazılamadı: {e}"));
+        }
         let before = self.engine.current().map(|s| s.id);
         let closed = self.engine.flush_with_clocks(now, self.clocks());
         self.settle(store, before, closed, &mut outcome);
@@ -467,6 +512,79 @@ mod tests {
             (away[0] - Duration::seconds(1291)).num_seconds().abs() <= 2,
             "{away:?}"
         );
+    }
+
+    /// `Script`, görüşmeyle: `in_call(gözlem sırası)`.
+    struct Calling(Script, u64, fn(u64) -> bool);
+
+    impl ActivityProvider for Calling {
+        type Error = Never;
+        fn active_window(&mut self) -> Result<Option<ActiveWindow>, Never> {
+            self.1 += 1;
+            self.0.active_window()
+        }
+        fn idle_seconds(&mut self) -> Result<u64, Never> {
+            self.0.idle_seconds()
+        }
+        fn call_apps(&mut self) -> CallApps {
+            CallApps {
+                microphone: if (self.2)(self.1) {
+                    vec![
+                        "com.microsoft.teams2".into(),
+                        "com.globaldelight.Boom3D".into(),
+                    ]
+                } else {
+                    vec!["com.globaldelight.Boom3D".into()]
+                },
+                display: Vec::new(),
+            }
+        }
+    }
+
+    fn run_call(detect_calls: bool) -> Vec<crate::calls::Call> {
+        let store = Store::open_in_memory().unwrap();
+        let n = 600;
+        let privacy = PrivacySettings {
+            detect_calls,
+            ..PrivacySettings::default()
+        };
+        // Teams 100.–400. gözlemlerde mikrofonu kullanır; Boom 3D hep.
+        let mut tracker = Tracker::new(
+            Calling(Script::windows((0..n).map(|_| win("A"))), 0, |i| {
+                (100..400).contains(&i)
+            }),
+            EngineConfig::default(),
+            privacy,
+        );
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        for i in 0..n {
+            tracker.tick(&store, t0 + Duration::seconds(i as i64));
+        }
+        tracker.shutdown(&store, t0 + Duration::seconds(n as i64));
+        store.calls_between(t0, t0 + Duration::hours(1)).unwrap()
+    }
+
+    #[test]
+    fn calls_are_recorded_from_microphone_use_of_call_apps() {
+        let calls = run_call(true);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let c = &calls[0];
+        assert_eq!(c.app_id, "com.microsoft.teams2");
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        // Yoklama 5 saniyede bir: uçlar en çok 5 sn kayar.
+        assert!(
+            (c.started_at - (t0 + Duration::seconds(99)))
+                .num_seconds()
+                .abs()
+                <= 5
+        );
+        assert!(
+            (c.ended_at - (t0 + Duration::seconds(399)))
+                .num_seconds()
+                .abs()
+                <= 5
+        );
+        assert!(run_call(false).is_empty());
     }
 
     #[test]

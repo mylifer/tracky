@@ -26,4 +26,17 @@ pub trait ActivityProvider {
     fn display_kept_awake(&mut self) -> bool {
         false
     }
+
+    /// Görüşme sinyalleri ([`crate::calls`]): mikrofonu kullanan ve ekranı uyanık tutan
+    /// uygulamalar. Desteklenmiyorsa boş.
+    fn call_apps(&mut self) -> CallApps {
+        CallApps::default()
+    }
+}
+
+/// Görüşme sinyali veren uygulamalar (kimlikleri; yardımcı süreç kendi uygulamasınınkiyle).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallApps {
+    pub microphone: Vec<String>,
+    pub display: Vec<String>,
 }

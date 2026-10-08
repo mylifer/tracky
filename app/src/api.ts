@@ -269,12 +269,28 @@ export type MeetingSuggestion = { projectId: string; reason: string };
 /** Projesi belli olmayan toplantı ve (emin olunursa) önerilen proje. */
 export type UnassignedMeeting = Meeting & { suggestion?: MeetingSuggestion | null };
 /** Gün takvimindeki toplantı: serinin projesi (elle ya da kuraldan) ile. */
+/** Toplantıya katılım (görüşmeden ya da kullanıcının cevabından). */
+export type Attendance = {
+  /** Cevabın anahtarı (`answerMeeting`). */
+  key: string;
+  status: "attended" | "skipped" | "unknown";
+  /** Kum çıkardı; kullanıcı cevaplamadı. */
+  auto: boolean;
+  /** Zaman çizelgesine giren aralık (görüşmeye göre düzeltilmiş). */
+  start: string;
+  end: string;
+  /** Toplantı süresindeki görüşme (ilk başlangıç, son bitiş). */
+  call: [string, string] | null;
+  /** Kum'un kararının gerekçesi. */
+  reason: string | null;
+};
 export type CalendarMeeting = Meeting & {
   projectId: string | null;
   /** Seri zaman çizelgesine alınmıyor. */
   ignored: boolean;
   /** Projesi belli değilse önerilen proje. */
   suggestion?: MeetingSuggestion | null;
+  attendance: Attendance | null;
 };
 export type TimesheetDay = {
   date: string;
@@ -395,6 +411,8 @@ export type PrivacySettings = {
   idle_max_minutes: number;
   /** Video ya da görüntülü görüşme ekranı uyanık tutarken girdi olmasa da boşta sayılmaz. */
   count_watching: boolean;
+  /** Görüşme uygulamasının mikrofonu ne zaman kullandığı kaydedilir (ses değil). */
+  detect_calls: boolean;
 };
 
 export type Goals = {
@@ -662,6 +680,8 @@ export const api = {
     invoke<AiChange[]>("ai_write_details", { timesheetId, date, rewrite }),
   /** Toplantı serisini projeye ata; `null` yoksayar. */
   assignMeeting: (uid: string, projectId: string | null) => invoke<void>("assign_meeting", { uid, projectId }),
+  /** Toplantının bu tekrarına katılıp katılmadığı (`null`: cevabı geri al). */
+  answerMeeting: (key: string, attended: boolean | null) => invoke<void>("answer_meeting", { key, attended }),
   /** `start` gününden itibaren `days` günün takvim toplantıları; takvim bağlı değilse boş. */
   meetings: (start: string, days: number) => invoke<CalendarMeeting[]>("calendar_meetings", { start, days }),
   calendarStatus: () => invoke<CalendarStatus>("calendar_status"),

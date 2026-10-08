@@ -89,6 +89,17 @@ const LIMITS_EVERY: u32 = 30;
 /// Sözleşme bütçeleri bu kadar gözlemde bir (~10 dk) denetlenir: tüm geçmiş toplanır.
 const BUDGETS_EVERY: u32 = 600;
 
+/// Bu bilgisayarın görüşmeleri kaydedip kaydetmediğini işler (yalnızca macOS mikrofonu
+/// kullanan uygulamayı söyleyebilir): kaydetmeyen bilgisayarda geçen toplantı yargılanmaz.
+fn mark_call_detection(app: &AppHandle, privacy: &PrivacySettings) {
+    let on = cfg!(target_os = "macos") && privacy.detect_calls;
+    let shared = app.state::<Shared>();
+    let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = store.set_call_detection(on) {
+        log_error!("görüşme kaydı durumu yazılamadı: {e}");
+    }
+}
+
 /// `rx` kapanana ya da `Shutdown` gelene kadar saniyede bir gözlem yapar.
 pub fn run(
     app: AppHandle,
@@ -97,6 +108,7 @@ pub fn run(
     mut pause_until: Option<DateTime<Utc>>,
     rx: Receiver<Command>,
 ) {
+    mark_call_detection(&app, &privacy);
     let mut tracker = Tracker::new(
         tracky_platform::provider(),
         EngineConfig::default(),
@@ -133,7 +145,10 @@ pub fn run(
     loop {
         let mut force = false;
         match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(Command::SetPrivacy(p)) => tracker.set_privacy(p),
+            Ok(Command::SetPrivacy(p)) => {
+                mark_call_detection(&app, &p);
+                tracker.set_privacy(p);
+            }
             Ok(Command::SetGoals(g)) => goals = g,
             Ok(Command::PauseUntil(until)) => {
                 pause_until = until;

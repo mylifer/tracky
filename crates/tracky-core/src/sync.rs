@@ -84,7 +84,13 @@ pub const SYNCED_SETTINGS: &[&str] = &[
     "dismissed_suggestions",
     "dismissed_rule_suggestions",
     "ignored_unassigned",
+    "meeting_attendance",
 ];
+
+/// Parça parça şekle ([`table_fingerprints`]) geçilmeden önce eklenmiş tablo ve ayarlar:
+/// [`legacy_fingerprint`] bunlarsız hesaplanır.
+const AFTER_LEGACY_TABLES: &[&str] = &["calls"];
+const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance"];
 
 /// Eşitlenen ayarlarda yalnızca bu cihazda kalan alanlar: sunucuya gönderilmez, gelen
 /// sürümde yerel değer korunur. Bir Mac'te duraklatmak diğerini duraklatmaz; API anahtarı
@@ -224,10 +230,28 @@ const TABLES: &[Table] = &[
         only: None,
         prefix: None,
     },
+    // Görüşmeler (crate::calls): toplantı katılımı başka bilgisayarda da aynı yargılanır.
+    // Sunucuda tablo yoksa (0014 öncesi) eşitlemenin geri kalanı sürer.
+    Table {
+        name: "calls",
+        cols: &[
+            ("id", Col::Text),
+            ("device_id", Col::Text),
+            ("app_id", Col::Text),
+            ("started_at", Col::Time),
+            ("ended_at", Col::Time),
+            ("updated_at", Col::Time),
+            ("deleted_at", Col::OptTime),
+        ],
+        optional: &[],
+        key: "id",
+        only: None,
+        prefix: None,
+    },
 ];
 
 /// Sonradan eklenen tablolar: sunucuda yoksa yalnızca onlar eşitlenmez, gerisi sürer.
-const LATE_TABLES: &[&str] = &["settings", "timesheet_entries"];
+const LATE_TABLES: &[&str] = &["settings", "timesheet_entries", "calls"];
 
 impl Table {
     /// Sunucudaki sütunun yereldeki adı.
@@ -301,30 +325,86 @@ pub enum SyncError {
     Invalid(String),
 }
 
-/// Bu sürümün eşitlediği şeklin (tablolar, sütunlar, eşitlenen ayarlar, yerel alanlar) kısa
-/// özeti. Eski sürümün tanımayıp atladığı satırları (yeni sütun, yeni ayar) imleç geçtiği için
-/// bir daha çekmemek yerine yalnızca bu özet değişince baştan çekilir; her sürümde değil.
-pub fn schema_fingerprint() -> String {
-    let mut text = String::new();
-    for t in TABLES {
-        text.push_str(t.name);
-        for (name, col) in t.cols {
-            text.push_str(&format!(",{name}:{col:?}"));
-        }
-        text.push_str(&format!(";{:?};{:?};{:?}|", t.optional, t.only, t.prefix));
+/// Tablonun eşitlenen şekli (sütunlar, isteğe bağlı sütunlar, eşitlenen kimlikler).
+fn table_shape(t: &Table, only: Option<&[&str]>) -> String {
+    let mut text = t.name.to_string();
+    for (name, col) in t.cols {
+        text.push_str(&format!(",{name}:{col:?}"));
     }
-    text.push_str(&format!("{LOCAL_FIELDS:?}"));
-    // FNV-1a: derlemeler arasında kararlı (std hasher değil).
+    text.push_str(&format!(";{:?};{only:?};{:?}|", t.optional, t.prefix));
+    text
+}
+
+/// FNV-1a: derlemeler arasında kararlı (std hasher değil).
+fn fnv(text: &str) -> String {
     let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     });
     format!("{hash:016x}")
 }
 
+/// Her tablonun eşitlenen şeklinin kısa özeti. Eski sürümün tanımayıp atladığı satırları (yeni
+/// sütun, yeni ayar) imleç geçtiği için bir daha çekmemek yerine yalnızca şekli değişen tablo
+/// baştan çekilir; her sürümde ve her değişiklikte bütün tablolar değil.
+pub fn table_fingerprints() -> Vec<(&'static str, String)> {
+    TABLES
+        .iter()
+        .map(|t| {
+            let mut text = table_shape(t, t.only);
+            if t.name == "settings" {
+                text.push_str(&format!("{LOCAL_FIELDS:?}"));
+            }
+            (t.name, fnv(&text))
+        })
+        .collect()
+}
+
+/// Tablolar tek bir özetle izlenirken (0.9.44'e kadar) kaydedilen özet. Bu özet kayıtlıysa
+/// tablolar o şekilde eşitlenmiştir: parça parça özete geçerken baştan çekilmesi gerekmez
+/// (yalnızca sonradan eklenenler).
+pub fn legacy_fingerprint() -> String {
+    let mut text = String::new();
+    for t in TABLES
+        .iter()
+        .filter(|t| !AFTER_LEGACY_TABLES.contains(&t.name))
+    {
+        let only: Option<Vec<&str>> = t.only.map(|ids| {
+            ids.iter()
+                .copied()
+                .filter(|id| !AFTER_LEGACY_SETTINGS.contains(id))
+                .collect()
+        });
+        text.push_str(&table_shape(t, only.as_deref()));
+    }
+    text.push_str(&format!("{LOCAL_FIELDS:?}"));
+    fnv(&text)
+}
+
+/// Şekli parça parça özete göre baştan çekilmesi gereken tablolar. `stored` tablonun kayıtlı
+/// özeti, `legacy` eski tek özet kayıtlı ve [`legacy_fingerprint`] ile aynı mı.
+pub fn tables_to_refetch(
+    stored: impl Fn(&str) -> Option<String>,
+    legacy: bool,
+) -> Vec<(&'static str, String, bool)> {
+    table_fingerprints()
+        .into_iter()
+        .filter_map(|(name, fp)| match stored(name) {
+            Some(s) if s == fp => None,
+            // Eski özetle eşitlenmiş tablo zaten bu şekildedir; yalnızca özeti kaydedilir.
+            None if legacy && !AFTER_LEGACY_TABLES.contains(&name) && name != "settings" => {
+                Some((name, fp, false))
+            }
+            _ => Some((name, fp, true)),
+        })
+        .collect()
+}
+
 impl SyncSummary {
     fn mark_unavailable(&mut self, table: &Table) {
         match table.name {
             "settings" => self.settings_unavailable = true,
+            // Görüşmeler eşitlenmezse katılım yalnızca bu bilgisayarın görüşmeleriyle yargılanır.
+            "calls" => {}
             _ => self.timesheet_unavailable = true,
         }
     }

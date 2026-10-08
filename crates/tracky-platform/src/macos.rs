@@ -124,6 +124,10 @@ impl ActivityProvider for SystemProvider {
         Ok(secs.max(0.0) as u64)
     }
 
+    fn call_apps(&mut self) -> tracky_core::platform::CallApps {
+        call_signals()
+    }
+
     fn display_kept_awake(&mut self) -> bool {
         display_wake_holders().iter().any(|name| {
             !KEEP_AWAKE_TOOLS
@@ -133,8 +137,21 @@ impl ActivityProvider for SystemProvider {
     }
 }
 
-/// Ekranı uyanık tutan güç beyanlarının sahibi süreçlerin adları (`pmset -g assertions`).
-fn display_wake_holders() -> Vec<String> {
+/// Bir güç beyanı (`pmset -g assertions`).
+struct PowerAssertion {
+    kind: String,
+    /// Sahibi sürecin adı.
+    process: String,
+    /// Sahibi süreç.
+    pid: Option<i32>,
+    /// Beyanı başka süreç adına veren (coreaudiod mikrofonu kullanan uygulama adına verir).
+    on_behalf_of: Option<i32>,
+    /// Kullanılan kaynaklar ("audio-in" = mikrofon).
+    resources: Vec<String>,
+}
+
+/// Etkin güç beyanları.
+fn power_assertions() -> Vec<PowerAssertion> {
     let mut raw: CFDictionaryRef = ptr::null();
     // SAFETY: Copy kuralı; başarıda sözlük bize geçer.
     if unsafe { IOPMCopyAssertionsByProcess(&mut raw) } != 0 || raw.is_null() {
@@ -145,6 +162,9 @@ fn display_wake_holders() -> Vec<String> {
     let type_key = CFString::from_static_string("AssertType");
     let name_key = CFString::from_static_string("Process Name");
     let level_key = CFString::from_static_string("AssertLevel");
+    let pid_key = CFString::from_static_string("AssertPID");
+    let behalf_key = CFString::from_static_string("AssertionOnBehalfOfPID");
+    let resources_key = CFString::from_static_string("ResourcesUsed");
     let mut out = Vec::new();
     for list in by_pid.get_keys_and_values().1 {
         // SAFETY: Sözlük yaşadıkça değerleri geçerlidir; türü denetlenir.
@@ -152,35 +172,116 @@ fn display_wake_holders() -> Vec<String> {
         if !list.instance_of::<CFArray>() {
             continue;
         }
-        let list = list.as_CFTypeRef() as CFArrayRef;
-        // SAFETY: Dizi olduğu denetlendi.
-        for i in 0..unsafe { CFArrayGetCount(list) } {
-            // SAFETY: Sınır içinde; öğe dizi yaşadıkça geçerli.
-            let item = unsafe { CFType::wrap_under_get_rule(CFArrayGetValueAtIndex(list, i)) };
+        for item in array_items(&list) {
             if !item.instance_of::<CFDictionary>() {
                 continue;
             }
             let item = item.as_CFTypeRef() as CFDictionaryRef;
-            let kind = dict_string(item, &type_key);
-            // SAFETY: Sözlük denetlendi; anahtar geçerli.
-            let on = unsafe { number_i64(item, level_key.as_concrete_TypeRef()) } != Some(0);
-            if on && kind.is_some_and(|k| DISPLAY_ASSERTIONS.contains(&k.as_str())) {
-                out.push(dict_string(item, &name_key).unwrap_or_default());
+            // SAFETY: Sözlük denetlendi; anahtarlar geçerli.
+            let number = |key: &CFString| unsafe { number_i64(item, key.as_concrete_TypeRef()) };
+            if number(&level_key) == Some(0) {
+                continue;
             }
+            let pid = |key: &CFString| number(key).and_then(|p| i32::try_from(p).ok());
+            out.push(PowerAssertion {
+                kind: dict_string(item, &type_key).unwrap_or_default(),
+                process: dict_string(item, &name_key).unwrap_or_default(),
+                pid: pid(&pid_key),
+                on_behalf_of: pid(&behalf_key),
+                resources: dict_value(item, &resources_key)
+                    .filter(|v| v.instance_of::<CFArray>())
+                    .map(|v| {
+                        array_items(&v)
+                            .into_iter()
+                            .filter_map(|r| r.downcast::<CFString>().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            });
         }
     }
     out
 }
 
-/// Sözlükteki metin değeri (türü metin değilse `None`).
-fn dict_string(dict: CFDictionaryRef, key: &CFString) -> Option<String> {
-    // SAFETY: `dict` geçerli bir sözlük; değer sözlük yaşadıkça geçerli (Get kuralı).
-    let value = unsafe { CFDictionaryGetValue(dict, key.as_concrete_TypeRef().cast()) };
-    if value.is_null() {
+/// CFArray olduğu denetlenmiş değerin öğeleri.
+fn array_items(array: &CFType) -> Vec<CFType> {
+    let list = array.as_CFTypeRef() as CFArrayRef;
+    // SAFETY: Dizi olduğu çağıranca denetlendi; öğeler Get kuralıyla sarılır.
+    (0..unsafe { CFArrayGetCount(list) })
+        .map(|i| unsafe { CFType::wrap_under_get_rule(CFArrayGetValueAtIndex(list, i)) })
+        .collect()
+}
+
+/// Ekranı uyanık tutan güç beyanlarının sahibi süreçlerin adları.
+fn display_wake_holders() -> Vec<String> {
+    power_assertions()
+        .into_iter()
+        .filter(|a| DISPLAY_ASSERTIONS.contains(&a.kind.as_str()))
+        .map(|a| a.process)
+        .collect()
+}
+
+/// Mikrofonu kullanan ve ekranı uyanık tutan uygulamalar (kimlikleri).
+fn call_signals() -> tracky_core::platform::CallApps {
+    let mut out = tracky_core::platform::CallApps::default();
+    for a in power_assertions() {
+        let list = if a.resources.iter().any(|r| r == "audio-in") {
+            &mut out.microphone
+        } else if DISPLAY_ASSERTIONS.contains(&a.kind.as_str()) {
+            &mut out.display
+        } else {
+            continue;
+        };
+        if let Some(id) = a.on_behalf_of.or(a.pid).and_then(app_id_of_pid)
+            && !list.contains(&id)
+        {
+            list.push(id);
+        }
+    }
+    out
+}
+
+unsafe extern "C" {
+    fn proc_pidpath(pid: i32, buffer: *mut c_void, size: u32) -> i32;
+}
+
+/// Sürecin ait olduğu uygulamanın kimliği: yardımcı süreç (Chrome Helper, Teams WebView
+/// Helper) en dıştaki `.app` paketinin kimliğini alır; oturumlardaki uygulama kimliğiyle aynı.
+/// Paket dışındaki süreçte çalıştırılabilir dosyanın yolu.
+fn app_id_of_pid(pid: i32) -> Option<String> {
+    let mut buf = vec![0u8; 4096];
+    // SAFETY: Tampon boyutuyla verildi; dönen değer yazılan bayt sayısıdır.
+    let n = unsafe { proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
         return None;
     }
-    // SAFETY: Boş değil; Get kuralıyla sarılır, türü denetlenir.
-    unsafe { CFType::wrap_under_get_rule(value) }
+    let path = String::from_utf8_lossy(&buf[..n as usize]).into_owned();
+    let Some(i) = path.find(".app/") else {
+        return Some(path);
+    };
+    let bundle = &path[..i + 4];
+    let id = CFURL::from_path(bundle, true)
+        .and_then(core_foundation::bundle::CFBundle::new)
+        .and_then(|b| {
+            b.info_dictionary()
+                .find(CFString::from_static_string("CFBundleIdentifier"))
+                .and_then(|v| v.downcast::<CFString>())
+                .map(|s| s.to_string())
+        });
+    Some(id.unwrap_or(path))
+}
+
+/// Sözlükteki değer (Get kuralıyla sarılmış).
+fn dict_value(dict: CFDictionaryRef, key: &CFString) -> Option<CFType> {
+    // SAFETY: `dict` geçerli bir sözlük; değer sözlük yaşadıkça geçerli (Get kuralı).
+    let value = unsafe { CFDictionaryGetValue(dict, key.as_concrete_TypeRef().cast()) };
+    // SAFETY: Boş değil.
+    (!value.is_null()).then(|| unsafe { CFType::wrap_under_get_rule(value) })
+}
+
+/// Sözlükteki metin değeri (türü metin değilse `None`).
+fn dict_string(dict: CFDictionaryRef, key: &CFString) -> Option<String> {
+    dict_value(dict, key)?
         .downcast::<CFString>()
         .map(|s| s.to_string())
 }
@@ -465,6 +566,7 @@ pub fn diagnose() -> String {
     };
     out += &format!(" idle(oturum)={combined:.0}s idle(hid)={hid:.0}s");
     out += &format!(" ekran-uyanık={:?}", display_wake_holders());
+    out += &format!(" görüşme-sinyali={:?}", call_signals());
 
     // SAFETY: Create kuralı.
     let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };

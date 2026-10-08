@@ -3,6 +3,7 @@
 //! yedek ve bütünlük (`files`), sınıflandırma (`taxonomy`), zaman çizelgesi (`timesheet`) ve
 //! bilgisayarlar (`devices`).
 
+mod calls;
 mod devices;
 mod edits;
 mod files;
@@ -184,6 +185,15 @@ impl Store {
                updated_at = MAX(excluded.updated_at, settings.updated_at + 1)
              WHERE settings.value IS NOT excluded.value",
             params![key, serde_json::to_string(value)?, ms(Utc::now())],
+        )?;
+        Ok(())
+    }
+
+    /// Bir tablonun eşitleme imlecini siler: sonraki eşitleme o tabloyu baştan çeker.
+    pub fn forget_sync_cursor(&self, table: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            [format!("sync_cursor:{table}")],
         )?;
         Ok(())
     }

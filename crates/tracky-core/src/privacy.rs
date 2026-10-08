@@ -31,6 +31,9 @@ pub struct PrivacySettings {
     /// Video ya da görüntülü görüşme ekranı uyanık tutarken girdi olmasa da boşta sayılmaz
     /// (webinar, eğitim videosu, yalnızca dinlenen toplantı).
     pub count_watching: bool,
+    /// Görüşmeler kaydedilir ([`crate::calls`]): bir görüşme uygulamasının mikrofonu ne zaman
+    /// kullandığı (ses değil). Toplantıya katılım ve gerçek süre bundan çıkar.
+    pub detect_calls: bool,
 }
 
 /// Varsayılan en uzun boşta kaydı: öğle arası ve uzun bir toplantı sığar, gece sığmaz.
@@ -48,6 +51,7 @@ impl Default for PrivacySettings {
             record_idle: true,
             idle_max_minutes: DEFAULT_IDLE_MAX_MINUTES,
             count_watching: true,
+            detect_calls: true,
         }
     }
 }

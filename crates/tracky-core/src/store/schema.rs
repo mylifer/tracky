@@ -225,6 +225,23 @@ ALTER TABLE sessions ADD COLUMN state_at INTEGER;
 -- ile eşitlenir.
 ALTER TABLE sessions ADD COLUMN block_from INTEGER;
 "#,
+    r#"
+-- Görüşmeler (crate::calls; supabase/migrations/0014): bir görüşme uygulamasının mikrofonu
+-- kullandığı aralıklar. Toplantıya katılım ve gerçek süre bunlardan çıkar. Eşitlenir.
+CREATE TABLE calls (
+    id         TEXT PRIMARY KEY,
+    device_id  TEXT NOT NULL,
+    app_id     TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    ended_at   INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    synced_at  INTEGER,
+    CHECK (ended_at >= started_at)
+);
+CREATE INDEX calls_started_at ON calls (started_at);
+CREATE INDEX calls_unsynced ON calls (updated_at) WHERE synced_at IS NULL OR synced_at < updated_at;
+"#,
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<()> {

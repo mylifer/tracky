@@ -4,10 +4,12 @@
 //! trait'ini uygular; motor ve depolama bu crate'te kalır ki testlerle doğrulanabilsin.
 
 pub mod ai;
+pub mod attendance;
 pub mod blocks;
 pub mod browser;
 pub mod budget;
 pub mod calendar;
+pub mod calls;
 pub mod classify;
 pub mod client_report;
 pub mod coach;

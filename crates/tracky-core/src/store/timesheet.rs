@@ -13,6 +13,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use super::{Result, Store, StoreError, from_ms, ms};
+use crate::attendance::{self, Attendance};
 use crate::classify::{Classifier, TagKind};
 use crate::meeting_suggest::{MeetingSuggester, ProjectInfo, SuggestInput};
 use crate::timesheet::{
@@ -429,6 +430,53 @@ impl Store {
         })
     }
 
+    /// Toplantıların katılımı ([`crate::attendance`]; aynı sırayla): görüşmeler, o sıradaki iş ve
+    /// görüşme pencereleri, kullanıcının cevapları ve bilgisayarların görüşmeleri kaydedip
+    /// kaydetmediğiyle.
+    pub fn meeting_attendance(
+        &self,
+        config: &TimesheetConfig,
+        meetings: &[Meeting],
+    ) -> Result<Vec<Attendance>> {
+        let (Some(from), Some(to)) = (
+            meetings.iter().map(|m| m.start).min(),
+            meetings.iter().map(|m| m.end).max(),
+        ) else {
+            return Ok(Vec::new());
+        };
+        let to = to + attendance::MAX_OVERRUN;
+        let calls: Vec<Interval> = self
+            .calls_between(from, to)?
+            .into_iter()
+            .map(|c| (c.started_at, c.ended_at))
+            .collect();
+        let (mut work, mut windows) = (Vec::new(), Vec::new());
+        for s in self.merged_sessions_between(from, to)? {
+            let span = (s.started_at, s.ended_at);
+            if timesheet::kind_of(&s, config) == EntryKind::Online {
+                windows.push((span, s.title));
+            } else {
+                work.push(span);
+            }
+        }
+        let mut monitored = HashMap::new();
+        for m in meetings {
+            monitored.insert(attendance::key(m), self.calls_monitored(m.start, m.end)?);
+        }
+        let answers = self.meeting_answers()?;
+        Ok(attendance::assess(
+            meetings,
+            &attendance::Evidence {
+                calls: &calls,
+                work: &work,
+                windows: &windows,
+                answers: &answers,
+                monitored: &|m| monitored.get(&attendance::key(m)).copied().unwrap_or(false),
+                now: Utc::now(),
+            },
+        ))
+    }
+
     /// `from`–`to` (yerel gün) arasında zaman çizelgesine giren süre: projesi belli takvim
     /// toplantıları ve oturumlar ([`timesheet::pieces`]). Çizelgeden silinmiş satırı olan
     /// toplantı yapılmamış sayılır: süresi çakışan başka toplantıya ya da o saatteki işe kalır.
@@ -467,6 +515,8 @@ impl Store {
                 rows.is_empty()
             })
             .collect();
+        // Katılınmayan toplantı çıkar, süresi görüşmeye göre düzelir.
+        let known = attendance::apply(known, &self.meeting_attendance(&ctx.config, meetings)?);
         let sessions = self.merged_sessions_between(from, to)?;
         Ok(TimesheetPieces {
             pieces: timesheet::pieces(&sessions, &known, &ctx.classifier, &ctx.config, from, to),

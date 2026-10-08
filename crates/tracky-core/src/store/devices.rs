@@ -27,6 +27,10 @@ pub struct DeviceInfo {
     /// Model ailesi ("Mac Studio", "MacBook Pro" ...); bilinmiyorsa boş. Arayüz ikonu buna göre seçer.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
+    /// Bu andan beri görüşmeleri kaydediyor ([`crate::calls`]); kaydetmiyorsa boş. Bu
+    /// bilgisayarda geçen toplantıya katılım ancak bundan sonrası için yargılanır.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls_from: Option<DateTime<Utc>>,
 }
 
 /// Kayıtlı bir bilgisayar (ayarlarda listelemek ve yeniden adlandırmak için).
@@ -65,6 +69,7 @@ impl Store {
                 name: name.into(),
                 os: os.into(),
                 model: model.into(),
+                calls_from: None,
             },
         )
     }
@@ -85,6 +90,7 @@ impl Store {
                 name: String::new(),
                 os: String::new(),
                 model: String::new(),
+                calls_from: None,
             });
         info.name = name.into();
         self.save_setting(&key, &info)
@@ -151,6 +157,7 @@ impl Store {
                         name: default_name(os).into(),
                         os: os.into(),
                         model: String::new(),
+                        calls_from: None,
                     }
                 }
             };

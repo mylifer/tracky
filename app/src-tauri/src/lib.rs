@@ -488,6 +488,7 @@ pub fn run() {
             timesheet::export::undo_last_export,
             timesheet::assign_meeting,
             timesheet::calendar_meetings,
+            timesheet::answer_meeting,
             timesheet::setup::sheet_script,
             timesheet::setup::connect_sheet,
             timesheet::setup::disconnect_sheet,

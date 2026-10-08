@@ -768,3 +768,78 @@ fn meeting_suggester_learns_from_assigned_series_and_skips_archived() {
         None
     );
 }
+
+#[test]
+fn meetings_follow_calls_and_skipped_ones_leave_their_time() {
+    use crate::calls::Call;
+    use crate::store::DEVICE_KEY_PREFIX;
+    use crate::store::devices::DeviceInfo;
+
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    project(&store, "trumore", "Trumore");
+    let togg = sheet("togg", &["togg", "trumore"]);
+    let meeting = |uid: &str, subject: &str, from: i64, to: i64| Meeting {
+        uid: uid.into(),
+        start: t(from),
+        end: t(to),
+        subject: subject.into(),
+        online: true,
+        ..Meeting::default()
+    };
+    let meetings = [
+        meeting("plan", "Haftalık plan", 0, 60),
+        meeting("ux", "Charging UX", 120, 180),
+    ];
+    store.assign_meeting("plan", Some("togg")).unwrap();
+    store.assign_meeting("ux", Some("togg")).unwrap();
+    // Planlama süresince görüşme yok, başka projede çalışıldı; UX görüşmesi yarım saat sürdü.
+    work(&store, "Trumore deck", -10, 60, Some("trumore"));
+    store
+        .upsert_call(&Call {
+            id: Uuid::new_v4(),
+            app_id: "com.microsoft.teams2".into(),
+            started_at: t(119),
+            ended_at: t(150),
+        })
+        .unwrap();
+    let rows = |store: &Store| {
+        let ctx = store.timesheet_context().unwrap();
+        let pieces = store
+            .timesheet_pieces(&ctx, t(-540), t(900), &meetings)
+            .unwrap();
+        let d = store.timesheet_day(&ctx, &togg, day(), &pieces).unwrap();
+        d.rows
+            .into_iter()
+            .map(|r| ((r.entry.worked() * 60.0).round() as i64, r.entry.details))
+            .collect::<Vec<_>>()
+    };
+    // Bu bilgisayar görüşmeleri kaydetmiyordu: planlama davetteki gibi.
+    store.register_device("Mac", "macos", "").unwrap();
+    assert_eq!(
+        rows(&store),
+        [
+            (10, "Trumore deck".to_string()),
+            (60, "Haftalık plan".to_string()),
+            (30, "Charging UX".to_string()),
+        ]
+    );
+    // Kaydediyordu: planlamaya katılınmadı, süre Trumore'a kalır.
+    let key = format!("{DEVICE_KEY_PREFIX}{}", store.device_id());
+    let mut info: DeviceInfo = store.setting(&key).unwrap().unwrap();
+    info.calls_from = Some(t(-600));
+    store.save_setting(&key, &info).unwrap();
+    assert_eq!(
+        rows(&store),
+        [
+            (70, "Trumore deck".to_string()),
+            (30, "Charging UX".to_string()),
+        ]
+    );
+    // "Katıldım" denince geri gelir.
+    let plan = crate::attendance::key(&meetings[0]);
+    store.answer_meeting(&plan, Some(true)).unwrap();
+    assert_eq!(rows(&store)[1], (60, "Haftalık plan".to_string()));
+    store.answer_meeting(&plan, None).unwrap();
+    assert_eq!(rows(&store).len(), 2);
+}
