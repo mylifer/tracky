@@ -1,6 +1,12 @@
-//! Gizli bilgiler (oturum jetonları, Google bağlantısı, yapay zekâ anahtarı) işletim sisteminin
-//! anahtar deposunda durur: macOS'ta Anahtar Zinciri, Windows'ta Kimlik Bilgisi Yöneticisi.
-//! Veritabanında (ve yedeklerde) yalnızca "anahtar deposunda" işareti kalır.
+//! Gizli bilgiler (oturum jetonları, Google bağlantısı, yapay zekâ anahtarı) veritabanının
+//! dışında durur: Windows'ta Kimlik Bilgisi Yöneticisi'nde, macOS'ta veri klasöründeki yalnızca
+//! kullanıcının okuyabildiği `secrets.json` dosyasında. Veritabanında (ve yedeklerde) yalnızca
+//! "anahtar deposunda" işareti kalır.
+//!
+//! macOS'ta Anahtar Zinciri kullanılmaz: uygulama Team ID'siz (kendinden imzalı) olduğundan
+//! Anahtar Zinciri izni her sürümde değişen kod özetine bağlanır ve her güncellemeden sonra
+//! (ve "İzin Ver" denince her okumada) parola penceresi açılır. Eski sürümlerin Anahtar
+//! Zinciri'ne yazdığı değerler ilk açılışta bir kez dosyaya taşınır.
 //!
 //! Anahtar deposu kullanılamazsa (izin verilmedi, desteklenmeyen sistem) eski davranışa
 //! dönülür: değer veritabanında kalır ve durum günlüğe yazılır. Hiçbir şey çalışmaz hale gelmez.
@@ -13,7 +19,7 @@ use tracky_core::{Store, StoreError};
 /// Değeri anahtar deposunda olan ayarın veritabanındaki yer tutucusu.
 const MARKER: &str = "keychain";
 
-#[cfg(all(not(test), any(target_os = "macos", windows)))]
+#[cfg(all(not(test), windows))]
 mod backend {
     const SERVICE: &str = "com.kum.app";
 
@@ -38,6 +44,117 @@ mod backend {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.to_string()),
         }
+    }
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+mod backend {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    const FILE: &str = "secrets.json";
+    /// Eski sürümlerin Anahtar Zinciri hizmet adı.
+    const LEGACY_SERVICE: &str = "com.kum.app";
+    /// Eski sürümlerin Anahtar Zinciri'ne yazdığı adlar.
+    const LEGACY_NAMES: &[&str] = &["sync_auth", "google_oauth", "ai_api_key"];
+
+    struct Secrets {
+        path: PathBuf,
+        items: BTreeMap<String, String>,
+    }
+
+    static STATE: Mutex<Option<Secrets>> = Mutex::new(None);
+
+    fn write(path: &Path, items: &BTreeMap<String, String>) -> Result<(), String> {
+        let text = serde_json::to_string(items).map_err(|e| e.to_string())?;
+        let tmp = path.with_extension("json.tmp");
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| e.to_string())?;
+        // Eski bir geçici dosyanın izinleri de daralsın.
+        f.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+        f.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+        fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+
+    /// Eski Anahtar Zinciri değerlerini okur (her ad için bir kez parola sorulabilir).
+    /// Yalnızca dosya henüz yokken, güncellemeden sonraki ilk açılışta çalışır.
+    fn legacy_items() -> BTreeMap<String, String> {
+        let mut items = BTreeMap::new();
+        for name in LEGACY_NAMES {
+            let Ok(entry) = keyring::Entry::new(LEGACY_SERVICE, name) else {
+                continue;
+            };
+            match entry.get_password() {
+                Ok(v) => {
+                    items.insert(name.to_string(), v);
+                }
+                Err(keyring::Error::NoEntry) => {}
+                Err(e) => log_error!("Anahtar Zinciri'nden taşınamadı ({name}): {e}"),
+            }
+        }
+        items
+    }
+
+    /// Dosyayı yükler; yoksa eski Anahtar Zinciri değerlerini taşıyarak oluşturur.
+    pub fn init(dir: &Path) {
+        let path = dir.join(FILE);
+        let items = match fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+                log_error!("{FILE} okunamadı: {e}");
+                BTreeMap::new()
+            }),
+            Err(_) => {
+                let items = legacy_items();
+                match write(&path, &items) {
+                    Ok(()) => log_info!("{} gizli değer Anahtar Zinciri'nden taşındı", items.len()),
+                    Err(e) => log_error!("{FILE} yazılamadı: {e}"),
+                }
+                items
+            }
+        };
+        *STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Secrets { path, items });
+    }
+
+    fn with<R>(f: impl FnOnce(&mut Secrets) -> Result<R, String>) -> Result<R, String> {
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        f(state.as_mut().ok_or("gizli değer dosyası hazır değil")?)
+    }
+
+    pub fn get(name: &str) -> Result<Option<String>, String> {
+        with(|s| Ok(s.items.get(name).cloned()))
+    }
+
+    pub fn set(name: &str, value: &str) -> Result<(), String> {
+        with(|s| {
+            let mut items = s.items.clone();
+            items.insert(name.into(), value.into());
+            write(&s.path, &items)?;
+            s.items = items;
+            Ok(())
+        })
+    }
+
+    pub fn delete(name: &str) -> Result<(), String> {
+        with(|s| {
+            if s.items.contains_key(name) {
+                let mut items = s.items.clone();
+                items.remove(name);
+                write(&s.path, &items)?;
+                s.items = items;
+            }
+            Ok(())
+        })
     }
 }
 
@@ -104,6 +221,14 @@ pub(crate) mod backend {
         ITEMS.lock().unwrap().get_or_insert_default().remove(name);
         Ok(())
     }
+}
+
+/// Gizli değer deposunu hazırlar; açılışta, ilk okumadan önce bir kez çağrılır.
+pub fn init(data_dir: &std::path::Path) {
+    #[cfg(all(not(test), target_os = "macos"))]
+    backend::init(data_dir);
+    #[cfg(not(all(not(test), target_os = "macos")))]
+    let _ = data_dir;
 }
 
 fn is_marker(v: &Value) -> bool {

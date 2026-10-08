@@ -312,6 +312,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&dir)?;
     applog::init(dir.clone());
+    secrets::init(&dir);
     log_info!(
         "Kum {} açıldı ({} {})",
         env!("CARGO_PKG_VERSION"),
