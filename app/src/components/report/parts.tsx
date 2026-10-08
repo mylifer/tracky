@@ -1,8 +1,9 @@
 /** Rapor ekranının küçük parçaları: bilgisayar filtresi, boş durum, yakınlaştırma, takvim
  * görünümü ve renk merceği tercihleri, proje açıklaması. */
 import { useEffect, useState } from "react";
-import { Hourglass, Monitor, ZoomIn, ZoomOut } from "lucide-react";
+import { Hourglass, ZoomIn, ZoomOut } from "lucide-react";
 import { type Bucket, type DeviceTotal, formatDuration, type Tag } from "../../api";
+import { DeviceIcon } from "../DeviceIcon";
 import { tagColor, UNASSIGNED } from "../../lib/tags";
 import { cn } from "../../lib/utils";
 import { stepZoom } from "../../lib/zoom";
@@ -43,7 +44,7 @@ export function DeviceFilter({
             title={d.current ? "Bu bilgisayar" : undefined}
             onClick={() => onChange(value === d.id ? null : d.id)}
           >
-            <Monitor className="size-3.5" aria-hidden />
+            <DeviceIcon model={d.model} className="size-5" />
             {d.name}
             <span className={cn("tabular", value === d.id ? "opacity-70" : "text-muted-foreground")}>
               {formatDuration(d.seconds)}

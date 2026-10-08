@@ -85,6 +85,30 @@ pub(crate) fn computer_name() -> String {
     }
 }
 
+/// Bu bilgisayarın model ailesi ("Mac Studio", "MacBook Air" ...); arayüz cihaz ikonunu buna
+/// göre seçer. macOS dışında boş.
+pub(crate) fn computer_model() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/sbin/system_profiler")
+            .args(["SPHardwareDataType", "-json"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+            .and_then(|v| {
+                v["SPHardwareDataType"][0]["machine_name"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        String::new()
+    }
+}
+
 /// `start` gününden başlayan `days` günde başlığında ya da uygulama adında `query` geçen süre.
 #[tauri::command]
 pub async fn search(

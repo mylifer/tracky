@@ -336,7 +336,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Takvimde süreler hangi bilgisayardan geldiğiyle gösterilsin: bu bilgisayarın adı.
-    if let Err(e) = store.register_device(&commands::computer_name(), std::env::consts::OS) {
+    if let Err(e) = store.register_device(
+        &commands::computer_name(),
+        std::env::consts::OS,
+        &commands::computer_model(),
+    ) {
         log_error!("bilgisayar adı kaydedilemedi: {e}");
     }
 

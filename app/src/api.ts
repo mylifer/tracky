@@ -95,11 +95,12 @@ export type WorkBlock = {
   /** Bloktaki süre bilgisayar başına; yalnızca aralıkta birden çok bilgisayar varsa. */
   devices?: BlockDevice[];
 };
-export type BlockDevice = { id: string; name: string; seconds: number };
+export type BlockDevice = { id: string; name: string; os: string; model: string; seconds: number };
 /** Aralıkta çalışılan bilgisayar (`Report.devices`). */
-export type DeviceTotal = { id: string; name: string; os: string; seconds: number; current: boolean };
+export type DeviceTotal = { id: string; name: string; os: string; model: string; seconds: number; current: boolean };
 /** Kayıtlı bilgisayar (Ayarlar → Eşitleme). */
-export type KnownDevice = { id: string; name: string; os: string; current: boolean };
+/** `model`: "Mac Studio", "MacBook Pro" ...; bilinmiyorsa boş. */
+export type KnownDevice = { id: string; name: string; os: string; model: string; current: boolean };
 /** Çalışma blokları ve molalar. */
 export type WorkStats = {
   activeSeconds: number;

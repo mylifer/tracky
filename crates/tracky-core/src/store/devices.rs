@@ -24,6 +24,9 @@ pub struct DeviceInfo {
     /// `macos`, `windows` ...
     #[serde(default)]
     pub os: String,
+    /// Model ailesi ("Mac Studio", "MacBook Pro" ...); bilinmiyorsa boş. Arayüz ikonu buna göre seçer.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 /// Kayıtlı bir bilgisayar (ayarlarda listelemek ve yeniden adlandırmak için).
@@ -33,15 +36,21 @@ pub struct KnownDevice {
     pub id: String,
     pub name: String,
     pub os: String,
+    pub model: String,
     pub current: bool,
 }
 
 impl Store {
     /// Bu bilgisayarı adıyla kaydeder; zaten kayıtlıysa (adı başka yerden verilmiş olabilir)
-    /// dokunmaz.
-    pub fn register_device(&self, name: &str, os: &str) -> Result<()> {
+    /// adına dokunmaz, yalnızca modelini günceller.
+    pub fn register_device(&self, name: &str, os: &str, model: &str) -> Result<()> {
         let key = format!("{DEVICE_KEY_PREFIX}{}", self.device_id);
-        if self.setting::<DeviceInfo>(&key)?.is_some() {
+        let model = model.trim();
+        if let Some(mut info) = self.setting::<DeviceInfo>(&key)? {
+            if !model.is_empty() && info.model != model {
+                info.model = model.into();
+                self.save_setting(&key, &info)?;
+            }
             return Ok(());
         }
         let name = name.trim();
@@ -55,6 +64,7 @@ impl Store {
             &DeviceInfo {
                 name: name.into(),
                 os: os.into(),
+                model: model.into(),
             },
         )
     }
@@ -68,18 +78,16 @@ impl Store {
         Uuid::parse_str(id).map_err(|e| StoreError::Invalid(e.to_string()))?;
         let key = format!("{DEVICE_KEY_PREFIX}{id}");
         // Adı hiç kaydedilmemiş bilgisayarın türü tahminden gelir.
-        let os = self
+        let mut info = self
             .resolve_names(&[id.to_string()])?
             .remove(id)
-            .map(|d| d.os)
-            .unwrap_or_default();
-        self.save_setting(
-            &key,
-            &DeviceInfo {
-                name: name.into(),
-                os,
-            },
-        )
+            .unwrap_or_else(|| DeviceInfo {
+                name: String::new(),
+                os: String::new(),
+                model: String::new(),
+            });
+        info.name = name.into();
+        self.save_setting(&key, &info)
     }
 
     /// Kayıtlı bilgisayarlar ve kaydı olmayan ama oturumu bulunanlar (tahmini adla).
@@ -100,6 +108,7 @@ impl Store {
                 id,
                 name: info.name,
                 os: info.os,
+                model: info.model,
             })
             .collect();
         out.sort_by(|a, b| b.current.cmp(&a.current).then(a.name.cmp(&b.name)));
@@ -141,6 +150,7 @@ impl Store {
                     DeviceInfo {
                         name: default_name(os).into(),
                         os: os.into(),
+                        model: String::new(),
                     }
                 }
             };
@@ -198,6 +208,7 @@ impl Store {
                     current: id == own,
                     name: info.name.clone(),
                     os: info.os.clone(),
+                    model: info.model.clone(),
                     id,
                     seconds,
                 }
@@ -210,10 +221,15 @@ impl Store {
                 seconds_by_device(&sessions, &device_of, block.start, block.end)
                     .into_iter()
                     .filter(|(_, secs)| *secs > 0)
-                    .map(|(id, seconds)| BlockDevice {
-                        name: names.get(&id).map_or_else(String::new, |i| i.name.clone()),
-                        id,
-                        seconds,
+                    .map(|(id, seconds)| {
+                        let info = names.get(&id);
+                        BlockDevice {
+                            name: info.map_or_else(String::new, |i| i.name.clone()),
+                            os: info.map_or_else(String::new, |i| i.os.clone()),
+                            model: info.map_or_else(String::new, |i| i.model.clone()),
+                            id,
+                            seconds,
+                        }
                     })
                     .collect();
             per.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.name.cmp(&b.name)));
@@ -312,7 +328,9 @@ mod tests {
     #[test]
     fn devices_are_named_totalled_and_filterable() {
         let store = Store::open_in_memory().unwrap();
-        store.register_device("Mac Studio", "macos").unwrap();
+        store
+            .register_device("Mac Studio", "macos", "Mac Studio")
+            .unwrap();
         store.upsert_session(&session("code", 0, 600)).unwrap();
         // Adı kaydedilmemiş Windows bilgisayarı: türü uygulama yolundan tahmin edilir.
         foreign(&store, &session(r"C:\Figma.exe", 600, 1800), WIN);
@@ -358,9 +376,17 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let own = store.device_id().to_string();
         store.rename_device(&own, "Çalışma Mac'i").unwrap();
-        store.register_device("Kaan's Mac Studio", "macos").unwrap();
+        store
+            .register_device("Kaan's Mac Studio", "macos", "Mac Studio")
+            .unwrap();
         let devices = store.known_devices().unwrap();
         assert_eq!(devices[0].name, "Çalışma Mac'i");
+        assert_eq!(devices[0].model, "Mac Studio");
         assert!(devices[0].current);
+
+        // Yeniden adlandırma modeli silmez; boş model kayıtlısını ezmez.
+        store.rename_device(&own, "Stüdyo").unwrap();
+        store.register_device("x", "macos", "").unwrap();
+        assert_eq!(store.known_devices().unwrap()[0].model, "Mac Studio");
     }
 }

@@ -504,8 +504,10 @@ fn computer_names_reach_the_other_device() {
     let a = Mutex::new(Store::open_in_memory().unwrap());
     let b = Mutex::new(Store::open_in_memory().unwrap());
     let mut remote = FakeRemote::default();
-    lock(&a).register_device("Mac Studio", "macos").unwrap();
-    lock(&b).register_device("Ofis PC", "windows").unwrap();
+    lock(&a)
+        .register_device("Mac Studio", "macos", "Mac Studio")
+        .unwrap();
+    lock(&b).register_device("Ofis PC", "windows", "").unwrap();
     for _ in 0..2 {
         run(&a, &mut remote, "u1").unwrap();
         run(&b, &mut remote, "u1").unwrap();

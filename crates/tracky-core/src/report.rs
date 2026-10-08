@@ -103,6 +103,8 @@ pub struct DeviceTotal {
     pub id: String,
     pub name: String,
     pub os: String,
+    /// Model ailesi ("Mac Studio" ...); bilinmiyorsa boş.
+    pub model: String,
     pub seconds: i64,
     /// Bu bilgisayar mı?
     pub current: bool,

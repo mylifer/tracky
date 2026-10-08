@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Monitor } from "lucide-react";
 import { api, type KnownDevice, type SyncStatus } from "../api";
+import { DeviceIcon } from "../components/DeviceIcon";
 import { ErrorText, SettingBlock, SettingRow, SettingsGroup } from "../components/settings";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -204,7 +204,7 @@ function Devices() {
       <ul className="max-w-md space-y-1.5">
         {devices.map((d) => (
           <li key={`${d.id}:${d.name}`} className="flex items-center gap-2">
-            <Monitor className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <DeviceIcon model={d.model} className="size-6 text-muted-foreground" />
             <Input
               id={`device-${d.id}`}
               className="h-8"
@@ -220,7 +220,9 @@ function Devices() {
               }}
             />
             <span className="w-28 shrink-0 text-xs text-muted-foreground">
-              {d.current ? "Bu bilgisayar" : d.os === "windows" ? "Windows" : d.os === "macos" ? "Mac" : ""}
+              {d.current
+                ? "Bu bilgisayar"
+                : d.model || (d.os === "windows" ? "Windows" : d.os === "macos" ? "Mac" : "")}
             </span>
           </li>
         ))}

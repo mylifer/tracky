@@ -79,6 +79,8 @@ pub struct WorkBlock {
 pub struct BlockDevice {
     pub id: String,
     pub name: String,
+    pub os: String,
+    pub model: String,
     pub seconds: i64,
 }
 

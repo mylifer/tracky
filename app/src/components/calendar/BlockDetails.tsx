@@ -9,6 +9,7 @@ import { UNASSIGNED_MIN } from "../../lib/timesheet";
 import { formatTime } from "../../lib/dates";
 import { UNASSIGNED, UNCATEGORIZED, tagColor } from "../../lib/tags";
 import { cn } from "../../lib/utils";
+import { DeviceIcon } from "../DeviceIcon";
 import { Badge } from "../ui/badge";
 import { AppIcon, SiteIcon } from "../AppIcon";
 import { BlockActions, useEdit } from "../SessionEdit";
@@ -111,7 +112,7 @@ function BlockDevices({ devices }: { devices: BlockDevice[] }) {
   if (devices.length === 1)
     return (
       <div className="flex items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1.5 text-xs">
-        <Monitor className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        <DeviceIcon model={devices[0].model} className="size-4 text-muted-foreground" />
         <span className="text-muted-foreground">Bilgisayar</span>
         <span className="ml-auto truncate font-medium">{devices[0].name}</span>
       </div>
@@ -131,6 +132,7 @@ function BlockDevices({ devices }: { devices: BlockDevice[] }) {
         {devices.map((d) => (
           <li key={d.id} className="flex items-center gap-2">
             <i className="size-2 shrink-0 rounded-full" style={{ background: deviceColor(d.id) }} aria-hidden />
+            <DeviceIcon model={d.model} className="size-4 text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate">{d.name}</span>
             <span className="text-muted-foreground tabular">
               %{total ? Math.round((d.seconds / total) * 100) : 0} · {formatDuration(d.seconds)}
