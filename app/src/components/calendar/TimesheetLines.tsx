@@ -14,6 +14,32 @@ const PAD_PX = 6;
 /** Zaman çizelgesi satırının takvimdeki aralığı: başlangıç saatinden yazılan saat kadar. */
 export type SheetLine = { entry: EntryView; start: number; end: number; lane: number };
 
+/** Satırın gerçek aralığı: kendi tarihi ve başlangıç saatinden yazılan saat kadar (ms). */
+export type SheetSpan = { entry: EntryView; start: number; end: number };
+
+export function sheetSpans(entries: EntryView[]): SheetSpan[] {
+  return entries.map((entry) => {
+    const [y, mo, d] = entry.date.split("-").map(Number);
+    const [h, m] = entry.start.split(":").map(Number);
+    const start = +new Date(y, mo - 1, d, h, m);
+    return { entry, start, end: start + entry.hours * HOUR_MS };
+  });
+}
+
+/** Aralıkla en çok örtüşen satır; örtüşen yoksa `undefined`. */
+export function sheetEntryAt(spans: SheetSpan[], start: number, end: number): EntryView | undefined {
+  let best: EntryView | undefined;
+  let most = 0;
+  for (const s of spans) {
+    const overlap = Math.min(end, s.end) - Math.max(start, s.start);
+    if (overlap > most) {
+      most = overlap;
+      best = s.entry;
+    }
+  }
+  return best;
+}
+
 /**
  * Günün satırları zaman aralığına çevrilir; çakışanlar yan yana şeritlere dizilir (her satır,
  * önceki satırı bitmiş ilk şeride).

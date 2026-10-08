@@ -11,8 +11,23 @@ import { useEdit } from "../SessionEdit";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { HOUR_MS, FULL_LABEL_PX, LABEL_MIN_PX, type ColorLens, HATCH, SNAP_MS, DRAG_MIN_PX } from "./grid";
 import { BlockDetails } from "./BlockDetails";
+import { type SheetSpan, sheetEntryAt } from "./TimesheetLines";
 
-function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens) {
+/** Çizelge merceğinde zaman çizelgesinde satırı olmayan bloğun başlığı. */
+const NOT_IN_SHEET = "Çizelgede yok";
+
+function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens, sheet: SheetSpan[]) {
+  const apps = b.topApps.map((a) => a.appName).join(", ");
+  if (lens === "sheet") {
+    // Başlık, bloğun aralığında zaman çizelgesinde yazan; satırı yoksa taralı ve renksiz.
+    const entry = sheetEntryAt(sheet, +new Date(b.start), +new Date(b.end));
+    const project = entry && tags.get(entry.projectId);
+    return {
+      color: project ? tagColor(project) : null,
+      title: entry ? entry.details.trim() || project?.name || "Satır" : NOT_IN_SHEET,
+      apps,
+    };
+  }
   const tag = b.categoryId ? tags.get(b.categoryId) : undefined;
   const project = b.projectId ? tags.get(b.projectId) : undefined;
   return {
@@ -20,7 +35,7 @@ function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens) {
     color: lens === "project" ? (project ? tagColor(project) : null) : tagColor(tag),
     // Projeye atanmış blok proje adıyla görünür: atamanın sonucu takvimde hemen fark edilsin.
     title: project?.name ?? (lens === "project" ? UNASSIGNED : (tag?.name ?? b.topApps[0]?.appName ?? UNCATEGORIZED)),
-    apps: b.topApps.map((a) => a.appName).join(", "),
+    apps,
   };
 }
 
@@ -47,6 +62,7 @@ export function Block({
   dayStart,
   narrow = false,
   lens = "category",
+  sheet = [],
   windows,
 }: {
   b: WorkBlock;
@@ -61,6 +77,8 @@ export function Block({
   /** Dar sütun (hafta): tek satırlık blokta süre yer kaplamasın, başlık okunsun. */
   narrow?: boolean;
   lens?: ColorLens;
+  /** Zaman çizelgesi satırlarının aralıkları (çizelge merceği). */
+  sheet?: SheetSpan[];
 }) {
   const edit = useEdit();
   const [resize, setResize] = useState<Resize | null>(null);
@@ -78,7 +96,7 @@ export function Block({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [resizing]);
-  const { color: blockColor, title, apps } = blockTitle(b, tags, lens);
+  const { color: blockColor, title, apps } = blockTitle(b, tags, lens, sheet);
   const color = blockColor ?? "var(--c0)";
   const full = height >= FULL_LABEL_PX;
   const label = height >= LABEL_MIN_PX;

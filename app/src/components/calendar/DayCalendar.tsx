@@ -20,7 +20,7 @@ import {
 } from "./grid";
 import { Block, IdleBlock } from "./Block";
 import { categoryBuckets } from "./buckets";
-import { sheetLines, sheetLinesWidth, TimesheetLines } from "./TimesheetLines";
+import { type SheetSpan, sheetLines, sheetLinesWidth, TimesheetLines } from "./TimesheetLines";
 
 /** Tıklanan anı çevreleyen boşluk: 2 saate kadarsa tamamı, değilse tıklanan çeyrekten 1 saat. */
 export function gapAround(
@@ -118,6 +118,7 @@ export function DayCalendar({
   preview,
   hourPx = HOUR_PX,
   lens = "category",
+  sheet = [],
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -141,6 +142,8 @@ export function DayCalendar({
   hourPx?: number;
   /** Bloklar kategori ya da proje renginde. */
   lens?: ColorLens;
+  /** Zaman çizelgesi satırlarının aralıkları: çizelge merceğinde blokların başlığı ve rengi. */
+  sheet?: SheetSpan[];
 }) {
   // Gece yarısını aşan toplantılar güne kırpılır: ızgaranın dışına taşmasınlar, saat
   // aralığı da günün içindeki kısmına göre genişlesin.
@@ -221,6 +224,7 @@ export function DayCalendar({
                 b={block}
                 tags={tags}
                 lens={lens}
+                sheet={sheet}
                 windows={windows}
                 top={t}
                 height={height}

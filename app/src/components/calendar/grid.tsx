@@ -11,8 +11,11 @@ export const FULL_LABEL_PX = 40;
 /** Bundan alçak bloklarda yazı yok (yalnızca renk; ayrıntı ipucunda). */
 export const LABEL_MIN_PX = 15;
 
-/** Blokların rengi: kategoriye ya da projeye göre (takvimin "Renk" seçimi). */
-export type ColorLens = "category" | "project";
+/**
+ * Blokların rengi (takvimin "Renk" seçimi): kategoriye, projeye ya da zaman çizelgesinde denk gelen
+ * satıra göre (başlık satırın açıklaması, renk projesi).
+ */
+export type ColorLens = "category" | "project" | "sheet";
 
 /** Taralı, renksiz zemin: projeye atanmamış blok ve lejanttaki karşılığı. */
 export const HATCH =

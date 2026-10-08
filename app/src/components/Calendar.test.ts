@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { categoryBuckets, gapAround, HOUR_PX, placeSessions, subMarks } from "./Calendar";
+import type { EntryView } from "../api";
+import { sheetEntryAt, sheetSpans } from "./calendar/TimesheetLines";
 
 const MIN = 60_000;
 const day = +new Date(2026, 9, 1);
@@ -85,5 +87,37 @@ describe("oturum yerleşimi", () => {
     // 10:00 bloğu 10:10'dakine kadar uzar, 12:00 bloğu tam çeyrek saat.
     expect(placed[0].height).toBeCloseTo(top(at(10, 10)) - top(at(10)) - 2);
     expect(placed[2].height).toBeCloseTo(HOUR_PX / 4 - 2);
+  });
+});
+
+describe("çizelge merceği", () => {
+  const row = (date: string, start: string, hours: number, details: string): EntryView => ({
+    date,
+    start,
+    hours,
+    kind: "Working",
+    details,
+    party: "",
+    projectId: "p1",
+    division: "",
+    id: null,
+    key: details,
+    exported: false,
+    stale: null,
+  });
+  const spans = sheetSpans([
+    row("2026-10-01", "09:00:00", 1, "Toplantı"),
+    row("2026-10-01", "10:00:00", 2, "Geliştirme"),
+    row("2026-10-02", "09:00:00", 1, "Ertesi gün"),
+  ]);
+
+  it("blokla en çok örtüşen satırı seçer", () => {
+    expect(sheetEntryAt(spans, at(9, 40), at(11))?.details).toBe("Geliştirme");
+    expect(sheetEntryAt(spans, at(9), at(9, 30))?.details).toBe("Toplantı");
+  });
+
+  it("satırın kendi tarihini kullanır; örtüşme yoksa satır yok", () => {
+    expect(sheetEntryAt(spans, at(12, 30), at(13))).toBeUndefined();
+    expect(sheetEntryAt(spans, at(33), at(33, 30))?.details).toBe("Ertesi gün");
   });
 });

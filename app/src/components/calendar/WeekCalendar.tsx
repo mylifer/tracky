@@ -6,6 +6,7 @@ import { cn } from "../../lib/utils";
 import { HOUR_PX, type ColorLens, hourRange, topFn, HourRail, Column, NowLine } from "./grid";
 import { Block, IdleBlock } from "./Block";
 import { gapAround, Preview, placeSessions } from "./DayCalendar";
+import type { SheetSpan } from "./TimesheetLines";
 
 /** Hafta takvimi: her gün bir sütun, bloklar kategori (ya da proje) renginde. */
 export function WeekCalendar({
@@ -21,6 +22,7 @@ export function WeekCalendar({
   preview,
   hourPx = HOUR_PX,
   lens = "category",
+  sheet = [],
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -34,6 +36,8 @@ export function WeekCalendar({
   preview?: [number, number] | null;
   hourPx?: number;
   lens?: ColorLens;
+  /** Zaman çizelgesi satırlarının aralıkları: çizelge merceğinde blokların başlığı ve rengi. */
+  sheet?: SheetSpan[];
 }) {
   const range = useMemo(() => hourRange(from, [...blocks, ...idle], hourPx, 7), [from, blocks, idle, hourPx]);
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
@@ -106,6 +110,7 @@ export function WeekCalendar({
                     tags={tags}
                     narrow
                     lens={lens}
+                    sheet={sheet}
                     windows={windows}
                     top={t}
                     height={height}

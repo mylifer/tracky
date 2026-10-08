@@ -24,6 +24,7 @@ import AppTimeline from "./AppTimeline";
 import { type ColorLens, DayCalendar, HATCH, HOUR_PX, WeekCalendar } from "./Calendar";
 import MonthCalendar from "./MonthCalendar";
 import { blockLabel } from "./calendar/Block";
+import { sheetSpans } from "./calendar/TimesheetLines";
 import {
   EditContext,
   type EntryDraft,
@@ -42,12 +43,12 @@ import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
 export type Mode = "day" | "week" | "month";
 
-/** Günün bütün zaman çizelgelerindeki satırları; projesi olan çizelge yoksa `null`. */
-async function dayEntries(day: string): Promise<EntryView[] | null> {
+/** Dönemin bütün zaman çizelgelerindeki satırları; projesi olan çizelge yoksa `null`. */
+async function dayEntries(day: string, count = 1): Promise<EntryView[] | null> {
   const sheets = (await api.timesheetConfig()).timesheets.filter((t) => t.projects.length > 0);
   if (sheets.length === 0) return null;
-  const days = await Promise.all(sheets.map((t) => api.timesheetDays(t.id, day, 1)));
-  return days.flatMap(([d]) => d?.entries ?? []);
+  const days = await Promise.all(sheets.map((t) => api.timesheetDays(t.id, day, count)));
+  return days.flat().flatMap((d) => d?.entries ?? []);
 }
 
 /** Süren dönemde raporun canlı yenilenme aralığı. */
@@ -100,9 +101,9 @@ export default function ReportView(p: Props) {
     );
   }, []);
 
-  // Gün takviminde zaman çizelgesi satırları; `null`: çizelge yok (sütun gizlenir). Hangi günün
-  // satırları olduğu da tutulur (toplantılardaki gibi).
-  const [entriesOf, setEntriesOf] = useState<{ start: string; list: EntryView[] | null } | null>(null);
+  // Gün ve hafta takviminde zaman çizelgesi satırları (gün sütunu ve çizelge merceği); `null`:
+  // çizelge yok (sütun gizlenir). Hangi dönemin satırları olduğu da tutulur (toplantılardaki gibi).
+  const [entriesOf, setEntriesOf] = useState<{ start: string; days: number; list: EntryView[] | null } | null>(null);
 
   // Her yükleme bir sıra numarası alır; geç gelen eski yanıt (başka dönem) ekranı ezmez.
   const seq = useRef(0);
@@ -138,10 +139,10 @@ export default function ReportView(p: Props) {
       (u) => n === seq.current && setReview({ seconds: u.totalSeconds, idle: u.idleSeconds }),
       () => n === seq.current && setReview(null),
     );
-    if (mode === "day") {
+    if (mode !== "month") {
       const day = p.start;
-      dayEntries(day).then(
-        (list) => n === seq.current && setEntriesOf({ start: day, list }),
+      dayEntries(day, days).then(
+        (list) => n === seq.current && setEntriesOf({ start: day, days, list }),
         () => n === seq.current && setEntriesOf(null),
       );
     }
@@ -185,7 +186,8 @@ export default function ReportView(p: Props) {
   }, [calendarOn, calendarRev, p.mode, p.start]);
   // `null`: takvim bağlı değil (sütun gizlenir); başka günün listesi gelene kadar boş sütun.
   const meetings = meetingsOf && (meetingsOf.start === p.start ? meetingsOf.list : []);
-  const entries = entriesOf && (entriesOf.start === p.start ? entriesOf.list : []);
+  const entries = entriesOf && (entriesOf.start === p.start && entriesOf.days === days ? entriesOf.list : []);
+  const sheet = useMemo(() => sheetSpans(entries ?? []), [entries]);
 
   const from = parseIsoDate(p.start);
   const end = addDays(from, days);
@@ -335,8 +337,10 @@ export default function ReportView(p: Props) {
   // Seçicide görünen değer: hafta görünümünde çizelge, ayda ikisi de yok; takvim seçili görünür.
   const shownView: CalendarView =
     p.mode === "month" || (calendarView === "sheet" && !sheetView) ? "calendar" : calendarView;
-  // Proje merceği yalnızca gün/hafta takviminde; ay ve uygulama çizelgesi kategori renginde kalır.
-  const projectLens = lens === "project" && p.mode !== "month" && !appsView;
+  // Proje ve çizelge merceği yalnızca gün/hafta takviminde; ay ve uygulama çizelgesi kategori
+  // renginde kalır. Çizelgesi olmayan kullanıcıda çizelge merceği kategoriye düşer.
+  const calLens: ColorLens =
+    p.mode === "month" || appsView || (lens === "sheet" && entries === null) ? "category" : lens;
   const zoomable = p.mode !== "month" && !sheetView && !!report && (report.totalSeconds > 0 || report.idle.length > 0);
   const [calZoom, setCalZoom] = useState(1);
   const [appZoom, setAppZoom] = useState(1);
@@ -527,7 +531,10 @@ export default function ReportView(p: Props) {
               <span className={cn("text-[11px] text-muted-foreground", lensOff && "opacity-50")} aria-hidden>
                 Renk
               </span>
-              <Tabs value={lens} onValueChange={(v) => setLens(v as ColorLens)}>
+              <Tabs
+                value={lens === "sheet" && !hasSheet ? "category" : lens}
+                onValueChange={(v) => setLens(v as ColorLens)}
+              >
                 <TabsList className="h-7" aria-label="Blokların rengi">
                   <TabsTrigger value="category" className="px-2.5 text-xs" disabled={!!lensOff}>
                     Kategori
@@ -535,6 +542,16 @@ export default function ReportView(p: Props) {
                   <TabsTrigger value="project" className="px-2.5 text-xs" disabled={!!lensOff}>
                     Proje
                   </TabsTrigger>
+                  {hasSheet && (
+                    <TabsTrigger
+                      value="sheet"
+                      className="px-2.5 text-xs"
+                      disabled={!!lensOff}
+                      title={lensOff ? undefined : "Başlık zaman çizelgesinde o aralıkta yazan, renk satırın projesi"}
+                    >
+                      Açıklama
+                    </TabsTrigger>
+                  )}
                 </TabsList>
               </Tabs>
             </div>
@@ -573,10 +590,10 @@ export default function ReportView(p: Props) {
           <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
             <div className="min-w-0 space-y-4">
               <Card className="gap-3 py-3" style={{ ["--cal-head" as string]: `${barHeight + headHeight}px` }}>
-                {(order.length > 0 || projectLens) && (
+                {(order.length > 0 || calLens !== "category") && (
                   // Yakınlaşınca uzun takvimde lejant araç satırının altında görünür kalsın.
                   <CardContent ref={setHead} className="sticky top-(--bar-h) z-30 -mt-3 rounded-t-xl bg-card pt-3 pb-1">
-                    {projectLens ? (
+                    {calLens !== "category" ? (
                       <ProjectLegend buckets={report.projects} tags={tags} />
                     ) : (
                       <Legend order={order} tags={tags} />
@@ -624,7 +641,8 @@ export default function ReportView(p: Props) {
                           onRange={selectRange}
                           preview={preview}
                           hourPx={HOUR_PX * calZoom}
-                          lens={projectLens ? "project" : "category"}
+                          lens={calLens}
+                          sheet={sheet}
                         />
                       ) : (
                         <WeekCalendar
@@ -639,7 +657,8 @@ export default function ReportView(p: Props) {
                           onRange={selectRange}
                           preview={preview}
                           hourPx={HOUR_PX * calZoom}
-                          lens={projectLens ? "project" : "category"}
+                          lens={calLens}
+                          sheet={sheet}
                         />
                       )}
                     </EditContext.Provider>
@@ -961,11 +980,12 @@ function ProjectLegend({ buckets, tags }: { buckets: Bucket[]; tags: Map<string,
 
 const LENS_KEY = "kum.calendarLens";
 
-/** Takvim blokları kategori mi proje renginde; tercih bu cihazda hatırlanır. */
+/** Takvim blokları kategori, proje ya da çizelge satırı renginde; tercih bu cihazda hatırlanır. */
 function useColorLens(): [ColorLens, (v: ColorLens) => void] {
   const [lens, setLens] = useState<ColorLens>(() => {
     try {
-      return localStorage.getItem(LENS_KEY) === "project" ? "project" : "category";
+      const v = localStorage.getItem(LENS_KEY);
+      return v === "project" || v === "sheet" ? v : "category";
     } catch {
       return "category";
     }
