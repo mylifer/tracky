@@ -9,6 +9,7 @@ const meeting: UnassignedMeeting = {
   subject: "Standup",
   location: "",
   online: true,
+  agenda: "",
 };
 
 const entry = (start: string): EntryView => ({

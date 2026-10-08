@@ -42,7 +42,7 @@ describe("dönemi kapatma denetimi", () => {
     day("2026-09-29", [row("a", 6.5, "")], { unassignedSeconds: 1800 }),
     day("2026-09-30", [], { unassignedSeconds: 120 }),
     day("2026-10-01", [row("a", 9, "Geliştirme")], {
-      meetings: [{ uid: "m", start: "", end: "", subject: "1:1", location: "", online: true }],
+      meetings: [{ uid: "m", start: "", end: "", subject: "1:1", location: "", online: true, agenda: "" }],
     }),
     day("2026-10-02", [row("a", 2, "", "Working", true), changed, row("a", 5, "Kod")]),
     day("2026-10-03", []),

@@ -318,6 +318,7 @@ function MeetingBlock({
     `${time} · ${formatDuration((+b - +a) / 1000)}`,
     m.location,
     project && `Proje: ${project.name}`,
+    m.agenda && `\n${m.agenda}`,
   ]
     .filter(Boolean)
     .join("\n");

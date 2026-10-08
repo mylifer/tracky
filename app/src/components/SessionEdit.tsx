@@ -332,6 +332,14 @@ export function MeetingMenu({
         sub={`${formatTime(a)} – ${formatTime(b)} · ${formatDuration((+b - +a) / 1000)}`}
         onClose={onClose}
       />
+      {m.agenda && (
+        <p
+          className="line-clamp-6 text-[11px] whitespace-pre-line break-words text-muted-foreground selectable"
+          title={m.agenda}
+        >
+          {m.agenda}
+        </p>
+      )}
       {projects.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
           Projeye atamak için önce kenar çubuğundaki Projeler sayfasından bir proje ekle.

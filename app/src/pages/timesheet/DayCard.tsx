@@ -383,7 +383,10 @@ export function MeetingRows({ meetings, projects, run }: { meetings: UnassignedM
             <span className="w-24 shrink-0 text-muted-foreground tabular">
               {timeFmt.format(new Date(m.start))}–{timeFmt.format(new Date(m.end))}
             </span>
-            <span className="min-w-0 flex-1 truncate" title={m.location || undefined}>
+            <span
+              className="min-w-0 flex-1 truncate"
+              title={[m.location, m.agenda].filter(Boolean).join("\n\n") || undefined}
+            >
               {m.subject || "(konusuz)"}
               <span className="ml-1.5 text-muted-foreground">{m.online ? "Online" : "F2F"}</span>
             </span>

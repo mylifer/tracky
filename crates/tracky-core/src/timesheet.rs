@@ -257,6 +257,8 @@ pub struct Meeting {
     /// Katılımcıların e-posta adresleri (küçük harf, düzenleyen dahil olabilir).
     #[serde(skip)]
     pub attendees: Vec<String>,
+    /// Davet metninden gündem (Teams bloğu, bağlantılar atılmış); yoksa boş.
+    pub agenda: String,
 }
 
 /// Toplantıların proje kuralları bu uygulama kimliğiyle denenir (yalnızca başlık kuralları uyar).

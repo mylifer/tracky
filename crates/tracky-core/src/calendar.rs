@@ -89,6 +89,8 @@ struct Event {
     recurrence_id: Option<Stamp>,
     organizer: Option<String>,
     attendees: Vec<String>,
+    /// Davet metninden gündem ([`agenda::agenda`]); yoksa boş.
+    agenda: String,
 }
 
 /// VTIMEZONE: standart ve yaz saati geçişleri.
@@ -452,6 +454,7 @@ impl Calendar {
                 online: e.online,
                 organizer: e.organizer.clone(),
                 attendees: e.attendees.clone(),
+                agenda: e.agenda.clone(),
             };
             match seen.get(e.uid.as_str()) {
                 // Değişiklik önce gelmişse yerine serinin asıl hâli yazılır.
@@ -488,6 +491,7 @@ impl Calendar {
                     online: e.online,
                     organizer: e.organizer.clone(),
                     attendees: e.attendees.clone(),
+                    agenda: e.agenda.clone(),
                 });
             }
         };
@@ -703,7 +707,17 @@ impl Event {
                 self.location = unescape(value);
                 self.mark_online(&self.location.clone());
             }
-            "DESCRIPTION" | "URL" | "X-ALT-DESC" => self.mark_online(value),
+            "DESCRIPTION" | "X-ALT-DESC" => {
+                self.mark_online(value);
+                // Düz metin varsa o; yalnızca HTML hâli yazılmışsa (Outlook bazen) o.
+                if line.name == "DESCRIPTION" || self.agenda.is_empty() {
+                    let text = agenda::agenda(&unescape(value));
+                    if !text.is_empty() {
+                        self.agenda = text;
+                    }
+                }
+            }
+            "URL" => self.mark_online(value),
             "X-MICROSOFT-SKYPETEAMSMEETINGURL"
             | "X-MICROSOFT-ONLINEMEETINGCONFLINK"
             | "X-GOOGLE-CONFERENCE" => self.online |= !value.trim().is_empty(),
@@ -965,6 +979,9 @@ fn expand(
     }
     out
 }
+
+mod agenda;
+pub use agenda::MAX_AGENDA_CHARS;
 
 #[cfg(test)]
 mod tests;

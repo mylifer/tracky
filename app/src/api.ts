@@ -261,6 +261,8 @@ export type Meeting = {
   subject: string;
   location: string;
   online: boolean;
+  /** Davet metninden gündem (Teams bloğu ve bağlantılar atılmış); yoksa boş. */
+  agenda: string;
 };
 /** Projesi belli olmayan toplantı için önerilen proje ve kısa gerekçe ("katılımcılar @acme.com"). */
 export type MeetingSuggestion = { projectId: string; reason: string };
