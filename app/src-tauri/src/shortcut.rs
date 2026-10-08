@@ -14,7 +14,7 @@ const ENABLED_KEY: &str = "recent_shortcut";
 const ACCELERATOR: &str = "Control+Alt+Super+KeyK";
 #[cfg(target_os = "macos")]
 const LABEL: &str = "⌃⌥⌘K";
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
 const ACCELERATOR: &str = "Control+Alt+Shift+KeyK";
 #[cfg(not(target_os = "macos"))]
 const LABEL: &str = "Ctrl+Alt+Shift+K";
