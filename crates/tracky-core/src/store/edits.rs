@@ -11,7 +11,8 @@ use chrono::{DateTime, Duration, Utc};
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-use super::{FOREIGN_LIVE_WINDOW_MS, OVERLAPS, Result, Store, StoreError, from_ms, ms};
+use super::sessions::{FOREIGN_LIVE_WINDOW_MS, OVERLAPS};
+use super::{Result, Store, StoreError, from_ms, ms};
 use crate::classify::{Classifier, NO_PROJECT, Rule, TagKind};
 use crate::inbox::{self, RulePreview, Unassigned};
 use crate::model::{IDLE_APP_ID, MANUAL_APP_ID};

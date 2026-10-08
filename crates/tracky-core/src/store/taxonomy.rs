@@ -669,7 +669,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::super::MIGRATIONS;
+    use super::super::schema::MIGRATIONS;
     use super::*;
     use crate::model::Session;
     use chrono::TimeZone;
