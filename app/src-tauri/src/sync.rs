@@ -22,7 +22,7 @@ const CONFIG_KEY: &str = "sync_config";
 pub(crate) const AUTH_KEY: &str = "sync_auth";
 /// Yerel eşitleme durumunun ait olduğu "proje|kullanıcı".
 const OWNER_KEY: &str = "sync_owner";
-/// İmleçlerin ilerletildiği uygulama sürümü ([`sync_once`]).
+/// İmleçlerin ilerletildiği eşitleme şeması ([`tracky_core::sync::schema_fingerprint`]).
 const CURSOR_VERSION_KEY: &str = "sync_cursor_version";
 /// Arka planda bu aralıkla eşitlenir.
 const INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -143,16 +143,16 @@ fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
     }
     let store = &app.state::<Shared>().store;
     // Eski sürümün tanımayıp atladığı satırlar (yeni alan, yeni ayar) imleç geçtiği için bir
-    // daha çekilmezdi: sürüm değişince baştan çek.
+    // daha çekilmezdi: eşitlenen şekil değişince baştan çek (her sürümde değil).
     {
         let store = lock(store);
-        let version = env!("CARGO_PKG_VERSION");
+        let version = tracky_core::sync::schema_fingerprint();
         if store
             .setting::<String>(CURSOR_VERSION_KEY)
             .ok()
             .flatten()
             .as_deref()
-            != Some(version)
+            != Some(version.as_str())
         {
             store.forget_sync_cursors().map_err(|e| e.to_string())?;
             store

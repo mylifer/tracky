@@ -301,6 +301,26 @@ pub enum SyncError {
     Invalid(String),
 }
 
+/// Bu sürümün eşitlediği şeklin (tablolar, sütunlar, eşitlenen ayarlar, yerel alanlar) kısa
+/// özeti. Eski sürümün tanımayıp atladığı satırları (yeni sütun, yeni ayar) imleç geçtiği için
+/// bir daha çekmemek yerine yalnızca bu özet değişince baştan çekilir; her sürümde değil.
+pub fn schema_fingerprint() -> String {
+    let mut text = String::new();
+    for t in TABLES {
+        text.push_str(t.name);
+        for (name, col) in t.cols {
+            text.push_str(&format!(",{name}:{col:?}"));
+        }
+        text.push_str(&format!(";{:?};{:?};{:?}|", t.optional, t.only, t.prefix));
+    }
+    text.push_str(&format!("{LOCAL_FIELDS:?}"));
+    // FNV-1a: derlemeler arasında kararlı (std hasher değil).
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{hash:016x}")
+}
+
 impl SyncSummary {
     fn mark_unavailable(&mut self, table: &Table) {
         match table.name {
@@ -1026,6 +1046,13 @@ mod tests {
     }
 
     const NO_SETTINGS: &str = "Could not find the table 'public.settings' in the schema cache";
+
+    #[test]
+    fn schema_fingerprint_is_stable() {
+        let a = schema_fingerprint();
+        assert_eq!(a.len(), 16);
+        assert_eq!(a, schema_fingerprint());
+    }
 
     impl FakeRemote {
         /// Sunucuda olmayan tablonun PostgREST hatası.
