@@ -127,4 +127,30 @@ describe("çizelge merceği", () => {
     // Uzun blok, içine tamamen giren satırları yine bulur.
     expect(sheetEntryAt(spans, at(8), at(12, 30))?.details).toBe("Geliştirme");
   });
+
+  it("projesi olan blok yalnızca kendi projesinin satırını alır", () => {
+    const other = sheetSpans([{ ...row("2026-10-01", "13:10:00", 0.25, "Başka iş"), projectId: "p2" }]);
+    // 13:00–13:45 p1 bloğunun içine düşen kısa p2 satırı bloğun adı olmaz.
+    expect(sheetEntryAt(other, at(13), at(13, 45), "p1")).toBeUndefined();
+    expect(sheetEntryAt(other, at(13), at(13, 45), "p2")?.details).toBe("Başka iş");
+    // Projesiz blok, kapsadığı satırın adını alır.
+    expect(sheetEntryAt(other, at(13), at(13, 45))?.details).toBe("Başka iş");
+  });
+
+  it("satırın yazılan saatini değil kapsadığı takip aralıklarını kullanır", () => {
+    // 07:00'den 3 saat yazılmış, ama iş 07:10–08:00 ve 09:30–10:30 arasında geçmiş.
+    const tracked = sheetSpans([
+      {
+        ...row("2026-10-01", "07:00:00", 3, "Sabah"),
+        coverage: [
+          [at(7, 10), at(8)],
+          [at(9, 30), at(10, 30)],
+        ],
+      },
+    ]);
+    // Yazılan aralığın içinde ama işin geçmediği 08:15–09:15 bloğu bu satırın değil.
+    expect(sheetEntryAt(tracked, at(8, 15), at(9, 15))).toBeUndefined();
+    // Yazılan aralığın dışında kalan ama satırın kapsadığı 10:00–10:30 bloğu bu satırın.
+    expect(sheetEntryAt(tracked, at(10), at(10, 30))?.details).toBe("Sabah");
+  });
 });

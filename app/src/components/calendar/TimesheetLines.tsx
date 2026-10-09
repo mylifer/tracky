@@ -14,29 +14,44 @@ const PAD_PX = 6;
 /** Zaman çizelgesi satırının takvimdeki aralığı: başlangıç saatinden yazılan saat kadar. */
 export type SheetLine = { entry: EntryView; start: number; end: number; lane: number };
 
-/** Satırın gerçek aralığı: kendi tarihi ve başlangıç saatinden yazılan saat kadar (ms). */
-export type SheetSpan = { entry: EntryView; start: number; end: number };
+/**
+ * Satırın gerçek aralıkları (ms): kapsadığı takip aralıkları; elle eklenen ya da eski satırda
+ * kendi tarihi ve başlangıç saatinden yazılan saat kadar. Yazılan saat yuvarlanmış ve
+ * birleştirilmiş satırda boşlukları atlamış olabilir: bloğu satırla eşlemek için gerçeği bu.
+ */
+export type SheetSpan = { entry: EntryView; parts: [number, number][]; length: number };
 
 export function sheetSpans(entries: EntryView[]): SheetSpan[] {
   return entries.map((entry) => {
-    const [y, mo, d] = entry.date.split("-").map(Number);
-    const [h, m] = entry.start.split(":").map(Number);
-    const start = +new Date(y, mo - 1, d, h, m);
-    return { entry, start, end: start + entry.hours * HOUR_MS };
+    let parts = (entry.coverage ?? []).filter(([a, b]) => b > a);
+    if (parts.length === 0) {
+      const [y, mo, d] = entry.date.split("-").map(Number);
+      const [h, m] = entry.start.split(":").map(Number);
+      const start = +new Date(y, mo - 1, d, h, m);
+      parts = [[start, start + entry.hours * HOUR_MS]];
+    }
+    return { entry, parts, length: parts.reduce((t, [a, b]) => t + b - a, 0) };
   });
 }
 
 /**
- * Aralıkla en çok örtüşen satır. Yalnızca aralığın ya da satırın en az yarısını kaplayan
- * örtüşme sayılır: uzun bir bloğun ucuna değen satır bloğun adı olmaz. Böyle satır yoksa
- * `undefined`.
+ * Bloğa karşılık gelen satır: aralıkla en çok örtüşen. Yalnızca aralığın ya da satırın en az
+ * yarısını kaplayan örtüşme sayılır: uzun bir bloğun ucuna değen satır bloğun adı olmaz.
+ * `projectId` verilirse (projesi olan blok) yalnızca o projenin satırları: başka projenin bloğu
+ * içine düşen kısa satırın adını almaz. Böyle satır yoksa `undefined`.
  */
-export function sheetEntryAt(spans: SheetSpan[], start: number, end: number): EntryView | undefined {
+export function sheetEntryAt(
+  spans: SheetSpan[],
+  start: number,
+  end: number,
+  projectId?: string | null,
+): EntryView | undefined {
   let best: EntryView | undefined;
   let most = 0;
   for (const s of spans) {
-    const overlap = Math.min(end, s.end) - Math.max(start, s.start);
-    if (overlap * 2 < Math.min(end - start, s.end - s.start)) continue;
+    if (projectId && s.entry.projectId !== projectId) continue;
+    const overlap = s.parts.reduce((t, [a, b]) => t + Math.max(0, Math.min(end, b) - Math.max(start, a)), 0);
+    if (overlap <= 0 || overlap * 2 < Math.min(end - start, s.length)) continue;
     if (overlap > most) {
       most = overlap;
       best = s.entry;

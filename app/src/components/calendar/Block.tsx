@@ -19,8 +19,9 @@ const NOT_IN_SHEET = "Çizelgede yok";
 function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens, sheet: SheetSpan[]) {
   const apps = b.topApps.map((a) => a.appName).join(", ");
   if (lens === "sheet") {
-    // Başlık, bloğun aralığında zaman çizelgesinde yazan; satırı yoksa taralı ve renksiz.
-    const entry = sheetEntryAt(sheet, +new Date(b.start), +new Date(b.end));
+    // Başlık, bloğun aralığında zaman çizelgesinde yazan (projesi olan blokta yalnızca o projenin
+    // satırı); satırı yoksa taralı ve renksiz.
+    const entry = sheetEntryAt(sheet, +new Date(b.start), +new Date(b.end), b.projectId);
     const project = entry && tags.get(entry.projectId);
     return {
       color: project ? tagColor(project) : null,
