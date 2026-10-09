@@ -136,6 +136,11 @@ export default function Timesheet({
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   // Dönemi kapatma denetimi açık.
   const [closing, setClosing] = useState(false);
+  // Denetim ana sütunun başında açılır; düğme yapışkan yan panelde: sayfa kaydırılmışsa panele git.
+  const closeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (closing) closeRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [closing]);
   // Yapay zekâyla yazma açık ve anahtar girilmiş (Ayarlar → Yapay zekâ).
   const [ai, setAi] = useState(false);
   // Hafta ve ay panosunda satırları açılan gün (dönemin dışındaysa varsayılan gün).
@@ -585,7 +590,9 @@ export default function Timesheet({
                   variant="ghost"
                   size="icon-sm"
                   aria-label={sheet.sheetUrl ? "Tabloyu aç" : "Excel dosyasını aç"}
-                  title={sheet.sheetUrl ? "Tabloyu Google Sheets'te aç" : `${fileName(sheet.filePath ?? "")} dosyasını aç`}
+                  title={
+                    sheet.sheetUrl ? "Tabloyu Google Sheets'te aç" : `${fileName(sheet.filePath ?? "")} dosyasını aç`
+                  }
                   onClick={() => api.openTimesheet(sheet.id).catch((e) => setError(friendlyError(e)))}
                 >
                   <ExternalLink />
@@ -832,23 +839,25 @@ export default function Timesheet({
             <ProjectsPrompt config={config} sheet={sheet} projects={projects} onSaved={load} onError={setError} />
           )}
           {closing && (
-            <ClosePanel
-              title={modeInfo.close}
-              report={report}
-              days={days}
-              config={config}
-              sheet={sheet}
-              projects={projects}
-              ready={fresh && !exporting}
-              ai={ai}
-              pending={pending}
-              onClose={() => setClosing(false)}
-              onSend={() => send(pending, () => setClosing(false))}
-              onOpenDay={onOpenDay}
-              onReviewDay={onReviewDay}
-              onShowDay={showDayCard}
-              run={run}
-            />
+            <div ref={closeRef} className="scroll-mt-2">
+              <ClosePanel
+                title={modeInfo.close}
+                report={report}
+                days={days}
+                config={config}
+                sheet={sheet}
+                projects={projects}
+                ready={fresh && !exporting}
+                ai={ai}
+                pending={pending}
+                onClose={() => setClosing(false)}
+                onSend={() => send(pending, () => setClosing(false))}
+                onOpenDay={onOpenDay}
+                onReviewDay={onReviewDay}
+                onShowDay={showDayCard}
+                run={run}
+              />
+            </div>
           )}
 
           <datalist id="timesheet-details">
