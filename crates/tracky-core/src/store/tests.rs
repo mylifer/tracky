@@ -74,10 +74,12 @@ fn check_file_finds_damaged_pages() {
     }
     assert_eq!(Store::check_file(&path).unwrap(), None);
 
-    // Son sayfaların ortasına çöp yaz (yarım kalan disk yazması gibi).
+    // İlk sayfadan sonraki sayfaların başına çöp yaz (yarım kalan disk yazmaları gibi). Sayfanın
+    // boş kısmına yazılan çöp denetimde görünmeyebilir; sayfa başlığı ise her zaman okunur.
     let mut bytes = std::fs::read(&path).unwrap();
-    let at = bytes.len() - 4096 * 2 + 100;
-    bytes[at..at + 2000].fill(0xAB);
+    for page in bytes.chunks_mut(4096).skip(1) {
+        page[..16].fill(0xAB);
+    }
     std::fs::write(&path, bytes).unwrap();
     assert!(!matches!(Store::check_file(&path), Ok(None)));
     let _ = std::fs::remove_dir_all(&dir);

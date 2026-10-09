@@ -273,9 +273,14 @@ pub async fn open_timesheet(app: AppHandle, timesheet_id: String) -> CmdResult<(
             .sheet_link
             .as_deref()
             .filter(|l| l.starts_with("https://docs.google.com/"))
-            .ok_or("Tablonun bağlantısı (docs.google.com/…) girilmemiş; Ayarlar → Zaman çizelgeleri.")?
+            .ok_or(
+                "Tablonun bağlantısı (docs.google.com/…) girilmemiş; Ayarlar → Zaman çizelgeleri.",
+            )?
     } else {
-        sheet.file_path.as_deref().ok_or("Kayıtların yazılacağı dosya seçilmedi.")?
+        sheet
+            .file_path
+            .as_deref()
+            .ok_or("Kayıtların yazılacağı dosya seçilmedi.")?
     };
     crate::google::open_browser(target);
     Ok(())

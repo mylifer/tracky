@@ -76,7 +76,9 @@ pub fn computer_icon(px: u32) -> Option<Vec<u8>> {
     }
 }
 
-/// Saydam kenarları atar; görsel ortada kalacak şekilde kare kırpar.
+/// Saydam kenarları atar; görsel ortada kalacak şekilde kare kırpar. Yalnızca macOS'ta
+/// çağrılır; testleri her sistemde çalışır.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn trim_png(data: &[u8]) -> Option<Vec<u8>> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
