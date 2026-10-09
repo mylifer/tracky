@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 tracky-core = { path = "../tracky-core", default-features = false }
 thiserror = "2"
+# Simgeleri PNG olarak okuyup yazmak için (Windows'ta çevirme, cihaz görselinde kırpma).
+png = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
@@ -24,8 +26,6 @@ windows = { version = "0.62", features = [
     "Win32_System_Variant",
     "Win32_UI_Accessibility",
 ] }
-# Uygulama simgesini PNG'ye çevirmek için.
-png = "0.18"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

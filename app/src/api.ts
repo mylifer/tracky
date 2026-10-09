@@ -99,8 +99,11 @@ export type BlockDevice = { id: string; name: string; os: string; model: string;
 /** Aralıkta çalışılan bilgisayar (`Report.devices`). */
 export type DeviceTotal = { id: string; name: string; os: string; model: string; seconds: number; current: boolean };
 /** Kayıtlı bilgisayar (Ayarlar → Eşitleme). */
-/** `model`: "Mac Studio", "MacBook Pro" ...; bilinmiyorsa boş. */
-export type KnownDevice = { id: string; name: string; os: string; model: string; current: boolean };
+/**
+ * `model`: "Mac Studio", "MacBook Pro" ...; `icon`: "Bu Mac Hakkında" görseli (`data:` adresi).
+ * Bilinmiyorsa boş.
+ */
+export type KnownDevice = { id: string; name: string; os: string; model: string; icon: string; current: boolean };
 /** Çalışma blokları ve molalar. */
 export type WorkStats = {
   activeSeconds: number;

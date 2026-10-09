@@ -815,7 +815,7 @@ fn meetings_follow_calls_and_skipped_ones_leave_their_time() {
             .collect::<Vec<_>>()
     };
     // Bu bilgisayar görüşmeleri kaydetmiyordu: planlama davetteki gibi.
-    store.register_device("Mac", "macos", "").unwrap();
+    store.register_device("Mac", "macos", "", "").unwrap();
     assert_eq!(
         rows(&store),
         [

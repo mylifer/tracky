@@ -109,6 +109,24 @@ pub(crate) fn computer_model() -> String {
     }
 }
 
+/// Bu bilgisayarın "Bu Mac Hakkında" görseli `data:` adresi olarak; diğer bilgisayarlar da
+/// bu görseli gösterir (eşitlenir). macOS dışında boş.
+pub(crate) fn computer_icon() -> String {
+    use base64::Engine as _;
+    tracky_platform::computer_icon(DEVICE_ICON_PX)
+        .map(|png| {
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(png)
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// Cihaz görselinin çizildiği kenar (piksel); kırpılınca biraz küçülür. Arayüzde en çok
+/// 24 noktada, Retina'da 48 pikselde gösterilir.
+const DEVICE_ICON_PX: u32 = 96;
+
 /// `start` gününden başlayan `days` günde başlığında ya da uygulama adında `query` geçen süre.
 #[tauri::command]
 pub async fn search(

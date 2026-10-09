@@ -653,9 +653,8 @@ pub fn request_permissions() -> Permissions {
 /// Uygulama simgesi: bundle id'den (ya da yürütülebilir dosya yolundan) `.app` paketini
 /// bulur, Finder'ın gösterdiği simgeyi `px` noktalık PNG'ye çevirir.
 pub fn app_icon(app_id: &str, px: u32) -> Option<Vec<u8>> {
-    use objc2::AnyThread;
-    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
-    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::NSString;
 
     let workspace = NSWorkspace::sharedWorkspace();
     // Kimlik eşitlemeyle başka cihazdan da gelebilir: otomatik bağlanan ağ yollarına
@@ -679,7 +678,23 @@ pub fn app_icon(app_id: &str, px: u32) -> Option<Vec<u8>> {
     if !std::path::Path::new(&path).exists() {
         return None;
     }
-    let image = workspace.iconForFile(&NSString::from_str(&path));
+    png_of(&workspace.iconForFile(&NSString::from_str(&path)), px)
+}
+
+/// Bu Mac'in "Bu Mac Hakkında"daki görseli (modeline ve kasa rengine göre) PNG olarak.
+pub fn computer_icon(px: u32) -> Option<Vec<u8>> {
+    use objc2_app_kit::{NSImage, NSImageNameComputer};
+    // SAFETY: AppKit'in sabit görsel adı; süreç boyunca geçerli.
+    let image = NSImage::imageNamed(unsafe { NSImageNameComputer })?;
+    png_of(&image, px)
+}
+
+/// Görseli `px` kenarlı kare olarak PNG'ye çevirir.
+fn png_of(image: &objc2_app_kit::NSImage, px: u32) -> Option<Vec<u8>> {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize};
+
     let side = f64::from(px);
     let mut rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(side, side));
     // SAFETY: `rect` çağrı boyunca yaşar; bağlam ve ipucu verilmez.

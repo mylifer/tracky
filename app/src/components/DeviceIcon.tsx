@@ -1,5 +1,41 @@
+import { useEffect, useState } from "react";
 import { Monitor } from "lucide-react";
+import { api } from "../api";
 import { cn } from "../lib/utils";
+
+/**
+ * Mac'lerin kendi görselleri ("Bu Mac Hakkında"), cihaz kimliğine göre. Rapor ve takvim
+ * verisi görseli taşımaz (her blokta tekrarlanmasın); liste bir kez alınır.
+ */
+let icons: Promise<Map<string, string>> | null = null;
+const loaded = new Map<string, string>();
+
+function loadIcons() {
+  icons ??= api.listDevices().then(
+    (devices) => {
+      for (const d of devices) if (d.icon) loaded.set(d.id, d.icon);
+      return loaded;
+    },
+    () => {
+      icons = null;
+      return loaded;
+    },
+  );
+  return icons;
+}
+
+function useDeviceImage(id: string | undefined) {
+  const [src, setSrc] = useState(() => (id ? loaded.get(id) : undefined));
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    void loadIcons().then((m) => live && setSrc(m.get(id)));
+    return () => {
+      live = false;
+    };
+  }, [id]);
+  return src;
+}
 
 /**
  * Apple'ın Mac sayfasındaki ürün menüsü ikonları (apple.com/mac, chapternav), boşlukları
@@ -45,8 +81,30 @@ const APPLE: [string, keyof typeof SHAPES][] = [
 /** Windows 11 logosu (dört kare); Apple ikonlarıyla aynı ağırlıkta görünsün diye kenar boşluklu. */
 const WINDOWS = { viewBox: "-18 -18 124 124", d: "M0 0h42v42H0zM46 0h42v42H46zM0 46h42v42H0zM46 46h42v42H46z" };
 
-/** Bilgisayarın ikonu: Mac'lerde modelin Apple ikonu, Windows'ta Windows logosu, diğerlerinde çizgi ikon. */
-export function DeviceIcon({ os, model, className }: { os?: string; model?: string; className?: string }) {
+/**
+ * Bilgisayarın ikonu: Mac'in kendi görseli ("Bu Mac Hakkında"); o Mac görselini henüz
+ * eşitlemediyse modelin Apple ikonu, Windows'ta Windows logosu, diğerlerinde çizgi ikon.
+ */
+export function DeviceIcon({
+  id,
+  icon,
+  os,
+  model,
+  className,
+}: {
+  id?: string;
+  /** Biliniyorsa görsel; yoksa `id` ile cihaz listesinden bulunur. */
+  icon?: string;
+  os?: string;
+  model?: string;
+  className?: string;
+}) {
+  const looked = useDeviceImage(icon ? undefined : id);
+  const image = icon || looked;
+  if (image)
+    return (
+      <img src={image} alt="" title={model} draggable={false} className={cn("shrink-0 object-contain", className)} />
+    );
   const m = model?.toLowerCase() ?? "";
   const key = m ? APPLE.find(([prefix]) => m.startsWith(prefix))?.[1] : undefined;
   const shape = key ? SHAPES[key] : os === "windows" ? WINDOWS : undefined;

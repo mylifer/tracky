@@ -44,7 +44,7 @@ export function DeviceFilter({
             title={d.current ? "Bu bilgisayar" : undefined}
             onClick={() => onChange(value === d.id ? null : d.id)}
           >
-            <DeviceIcon os={d.os} model={d.model} className="size-5" />
+            <DeviceIcon id={d.id} os={d.os} model={d.model} className="size-5" />
             {d.name}
             <span className={cn("tabular", value === d.id ? "opacity-70" : "text-muted-foreground")}>
               {formatDuration(d.seconds)}

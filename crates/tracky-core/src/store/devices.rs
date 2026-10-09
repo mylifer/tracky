@@ -31,6 +31,9 @@ pub struct DeviceInfo {
     /// bilgisayarda geçen toplantıya katılım ancak bundan sonrası için yargılanır.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calls_from: Option<DateTime<Utc>>,
+    /// "Bu Mac Hakkında"daki görsel (`data:image/png;base64,...`); bilinmiyorsa boş.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
 }
 
 /// Kayıtlı bir bilgisayar (ayarlarda listelemek ve yeniden adlandırmak için).
@@ -41,18 +44,26 @@ pub struct KnownDevice {
     pub name: String,
     pub os: String,
     pub model: String,
+    pub icon: String,
     pub current: bool,
 }
 
 impl Store {
     /// Bu bilgisayarı adıyla kaydeder; zaten kayıtlıysa (adı başka yerden verilmiş olabilir)
-    /// adına dokunmaz, yalnızca modelini günceller.
-    pub fn register_device(&self, name: &str, os: &str, model: &str) -> Result<()> {
+    /// adına dokunmaz, yalnızca modelini ve görselini günceller (boş gelen değer kayıtlıyı
+    /// silmez).
+    pub fn register_device(&self, name: &str, os: &str, model: &str, icon: &str) -> Result<()> {
         let key = format!("{DEVICE_KEY_PREFIX}{}", self.device_id);
-        let model = model.trim();
+        let (model, icon) = (model.trim(), icon.trim());
         if let Some(mut info) = self.setting::<DeviceInfo>(&key)? {
-            if !model.is_empty() && info.model != model {
+            let before = info.clone();
+            if !model.is_empty() {
                 info.model = model.into();
+            }
+            if !icon.is_empty() {
+                info.icon = icon.into();
+            }
+            if info != before {
                 self.save_setting(&key, &info)?;
             }
             return Ok(());
@@ -70,6 +81,7 @@ impl Store {
                 os: os.into(),
                 model: model.into(),
                 calls_from: None,
+                icon: icon.into(),
             },
         )
     }
@@ -91,6 +103,7 @@ impl Store {
                 os: String::new(),
                 model: String::new(),
                 calls_from: None,
+                icon: String::new(),
             });
         info.name = name.into();
         self.save_setting(&key, &info)
@@ -115,6 +128,7 @@ impl Store {
                 name: info.name,
                 os: info.os,
                 model: info.model,
+                icon: info.icon,
             })
             .collect();
         out.sort_by(|a, b| b.current.cmp(&a.current).then(a.name.cmp(&b.name)));
@@ -158,6 +172,7 @@ impl Store {
                         os: os.into(),
                         model: String::new(),
                         calls_from: None,
+                        icon: String::new(),
                     }
                 }
             };
@@ -336,7 +351,7 @@ mod tests {
     fn devices_are_named_totalled_and_filterable() {
         let store = Store::open_in_memory().unwrap();
         store
-            .register_device("Mac Studio", "macos", "Mac Studio")
+            .register_device("Mac Studio", "macos", "Mac Studio", "")
             .unwrap();
         store.upsert_session(&session("code", 0, 600)).unwrap();
         // Adı kaydedilmemiş Windows bilgisayarı: türü uygulama yolundan tahmin edilir.
@@ -384,7 +399,12 @@ mod tests {
         let own = store.device_id().to_string();
         store.rename_device(&own, "Çalışma Mac'i").unwrap();
         store
-            .register_device("Kaan's Mac Studio", "macos", "Mac Studio")
+            .register_device(
+                "Kaan's Mac Studio",
+                "macos",
+                "Mac Studio",
+                "data:image/png;base64,AA==",
+            )
             .unwrap();
         let devices = store.known_devices().unwrap();
         assert_eq!(devices[0].name, "Çalışma Mac'i");
@@ -393,7 +413,9 @@ mod tests {
 
         // Yeniden adlandırma modeli silmez; boş model kayıtlısını ezmez.
         store.rename_device(&own, "Stüdyo").unwrap();
-        store.register_device("x", "macos", "").unwrap();
-        assert_eq!(store.known_devices().unwrap()[0].model, "Mac Studio");
+        store.register_device("x", "macos", "", "").unwrap();
+        let devices = store.known_devices().unwrap();
+        assert_eq!(devices[0].model, "Mac Studio");
+        assert_eq!(devices[0].icon, "data:image/png;base64,AA==");
     }
 }

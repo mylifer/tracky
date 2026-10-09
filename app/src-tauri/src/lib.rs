@@ -341,6 +341,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         &commands::computer_name(),
         std::env::consts::OS,
         &commands::computer_model(),
+        &commands::computer_icon(),
     ) {
         log_error!("bilgisayar adı kaydedilemedi: {e}");
     }
