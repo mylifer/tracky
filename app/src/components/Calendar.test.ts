@@ -120,4 +120,11 @@ describe("çizelge merceği", () => {
     expect(sheetEntryAt(spans, at(12, 30), at(13))).toBeUndefined();
     expect(sheetEntryAt(spans, at(33), at(33, 30))?.details).toBe("Ertesi gün");
   });
+
+  it("bloğun ya da satırın yarısını kaplamayan örtüşmeyi saymaz", () => {
+    // 3 saatlik blok, 09:00'daki satırın yalnızca ilk 5 dakikasına değiyor.
+    expect(sheetEntryAt(spans, at(6, 5), at(9, 5))).toBeUndefined();
+    // Uzun blok, içine tamamen giren satırları yine bulur.
+    expect(sheetEntryAt(spans, at(8), at(12, 30))?.details).toBe("Geliştirme");
+  });
 });

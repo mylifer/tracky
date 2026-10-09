@@ -26,12 +26,17 @@ export function sheetSpans(entries: EntryView[]): SheetSpan[] {
   });
 }
 
-/** Aralıkla en çok örtüşen satır; örtüşen yoksa `undefined`. */
+/**
+ * Aralıkla en çok örtüşen satır. Yalnızca aralığın ya da satırın en az yarısını kaplayan
+ * örtüşme sayılır: uzun bir bloğun ucuna değen satır bloğun adı olmaz. Böyle satır yoksa
+ * `undefined`.
+ */
 export function sheetEntryAt(spans: SheetSpan[], start: number, end: number): EntryView | undefined {
   let best: EntryView | undefined;
   let most = 0;
   for (const s of spans) {
     const overlap = Math.min(end, s.end) - Math.max(start, s.start);
+    if (overlap * 2 < Math.min(end - start, s.end - s.start)) continue;
     if (overlap > most) {
       most = overlap;
       best = s.entry;
