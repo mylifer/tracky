@@ -85,12 +85,13 @@ pub const SYNCED_SETTINGS: &[&str] = &[
     "dismissed_rule_suggestions",
     "ignored_unassigned",
     "meeting_attendance",
+    "closed_days",
 ];
 
 /// Parça parça şekle ([`table_fingerprints`]) geçilmeden önce eklenmiş tablo ve ayarlar:
 /// [`legacy_fingerprint`] bunlarsız hesaplanır.
 const AFTER_LEGACY_TABLES: &[&str] = &["calls"];
-const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance"];
+const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance", "closed_days"];
 
 /// Eşitlenen ayarlarda yalnızca bu cihazda kalan alanlar: sunucuya gönderilmez, gelen
 /// sürümde yerel değer korunur. Bir Mac'te duraklatmak diğerini duraklatmaz; API anahtarı

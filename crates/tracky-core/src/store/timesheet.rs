@@ -28,6 +28,8 @@ const SUGGEST_USAGE_DAYS: u64 = 90;
 const TIMESHEET_KEY: &str = "timesheet";
 /// Takvim toplantı serilerinin elle verilen projesi (UID → proje; `null`: yoksay).
 const MEETING_ASSIGNMENTS_KEY: &str = "meeting_assignments";
+/// Gözden geçirilip kapatılan günler (YYYY-MM-DD).
+const CLOSED_DAYS_KEY: &str = "closed_days";
 
 /// (Projesi belli toplantılar ve projeleri, hiçbir projeye düşmeyen toplantılar).
 pub type SplitMeetings = (Vec<(Meeting, String)>, Vec<Meeting>);
@@ -204,6 +206,24 @@ fn new_entry_id(e: &TimesheetEntry) -> String {
 }
 
 impl Store {
+    /// Kapatılan günler, sıralı.
+    pub fn closed_days(&self) -> Result<Vec<String>> {
+        Ok(self
+            .setting::<Vec<String>>(CLOSED_DAYS_KEY)?
+            .unwrap_or_default())
+    }
+
+    /// Günü kapatıldı işaretler (`false`: yeniden açar).
+    pub fn set_day_closed(&self, date: &str, closed: bool) -> Result<()> {
+        let mut days = self.closed_days()?;
+        days.retain(|d| d != date);
+        if closed {
+            days.push(date.to_string());
+            days.sort_unstable();
+        }
+        self.save_setting(CLOSED_DAYS_KEY, &days)
+    }
+
     pub fn timesheet_config(&self) -> Result<TimesheetConfig> {
         Ok(self.setting(TIMESHEET_KEY)?.unwrap_or_default())
     }

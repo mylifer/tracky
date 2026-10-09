@@ -4,12 +4,14 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  CircleCheck,
   ClipboardCheck,
   ExternalLink,
   FileSpreadsheet,
   FolderKanban,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Settings2,
   Sheet,
   X,
@@ -120,6 +122,8 @@ export default function Timesheet({
   const [daysOf, setDaysOf] = useState("");
   const fresh = !!sheet && daysOf === `${sheet.id}/${start}/${rangeDays}`;
   const [details, setDetails] = useState<string[]>([]);
+  // Gözden geçirilip kapatılan günler (YYYY-MM-DD).
+  const [closedDays, setClosedDays] = useState<Set<string>>(() => new Set());
   const [projects, setProjects] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -169,16 +173,18 @@ export default function Timesheet({
     try {
       const c = await api.timesheetConfig();
       const t = c.timesheets.find((x) => x.id === sheetId) ?? c.timesheets[0];
-      const [d, det, tax] = await Promise.all([
+      const [d, det, tax, cd] = await Promise.all([
         t ? api.timesheetDays(t.id, start, rangeDays) : Promise.resolve<TimesheetDay[]>([]),
         api.timesheetDetails(),
         api.taxonomy(),
+        api.closedDays(),
       ]);
       if (seq !== loadSeq.current) return;
       setConfig(c);
       setDays(d);
       setDaysOf(t ? `${t.id}/${start}/${rangeDays}` : "");
       setDetails(det);
+      setClosedDays(new Set(cd));
       setProjects(tax.tags.filter((x) => x.kind === "project"));
       setError(null);
     } catch (e) {
@@ -490,8 +496,26 @@ export default function Timesheet({
       selected={selected}
       onToggle={toggle}
       alwaysShow={alwaysShow}
+      closed={closedDays.has(d.date)}
     />
   );
+  // Gün görünümünde "Günü kapat" yalnızca günü kapatıldı işaretler (denetim hafta ve ayda).
+  const dayClosed = mode === "day" && closedDays.has(start);
+  const setDayClosed = (closed: boolean) => {
+    const day = start;
+    const apply = (on: boolean) =>
+      setClosedDays((s) => {
+        const next = new Set(s);
+        if (on) next.add(day);
+        else next.delete(day);
+        return next;
+      });
+    apply(closed);
+    api.setDayClosed(day, closed).catch((e) => {
+      apply(!closed);
+      setError(friendlyError(e));
+    });
+  };
   const toggle = (rowKeys: string[], on: boolean) =>
     setSelected((s) => {
       const next = new Set(s);
@@ -683,15 +707,30 @@ export default function Timesheet({
               {sendLabel}
               {pending.length ? ` (${pending.length})` : ""}
             </Button>
-            <Button
-              variant={closing ? "secondary" : "outline"}
-              className="w-full"
-              aria-expanded={closing}
-              onClick={() => setClosing((v) => !v)}
-              title="Göndermeden önce dönemi denetle: atanmamış süre, toplantılar, saatler, açıklamalar"
-            >
-              <ClipboardCheck /> {modeInfo.close}
-            </Button>
+            {mode === "day" ? (
+              <Button
+                variant={dayClosed ? "secondary" : "outline"}
+                className="w-full"
+                onClick={() => setDayClosed(!dayClosed)}
+                title={
+                  dayClosed
+                    ? "Günü yeniden aç: kapatıldı işaretini kaldır"
+                    : "Günü gözden geçirdim: kapatıldı olarak işaretle"
+                }
+              >
+                {dayClosed ? <RotateCcw /> : <ClipboardCheck />} {dayClosed ? "Günü yeniden aç" : modeInfo.close}
+              </Button>
+            ) : (
+              <Button
+                variant={closing ? "secondary" : "outline"}
+                className="w-full"
+                aria-expanded={closing}
+                onClick={() => setClosing((v) => !v)}
+                title="Göndermeden önce dönemi denetle: atanmamış süre, toplantılar, saatler, açıklamalar"
+              >
+                <ClipboardCheck /> {modeInfo.close}
+              </Button>
+            )}
             {notice && (
               <div className="space-y-1 rounded-lg border border-success/30 bg-success/10 px-2.5 py-2 text-xs">
                 <div className="flex items-start gap-1.5">
@@ -838,7 +877,16 @@ export default function Timesheet({
           {sheet.projects.length === 0 && (
             <ProjectsPrompt config={config} sheet={sheet} projects={projects} onSaved={load} onError={setError} />
           )}
-          {closing && (
+          {dayClosed && (
+            <div className="flex items-center gap-2 rounded-xl border border-success/30 bg-success/10 px-4 py-2.5 text-[13px]">
+              <CircleCheck className="size-4 shrink-0 text-success" />
+              <span>
+                <b className="text-success">Gün kapatıldı.</b>{" "}
+                <span className="text-muted-foreground">Bu gün gözden geçirildi.</span>
+              </span>
+            </div>
+          )}
+          {closing && mode !== "day" && (
             <div ref={closeRef} className="scroll-mt-2">
               <ClosePanel
                 title={modeInfo.close}

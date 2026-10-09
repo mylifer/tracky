@@ -616,6 +616,9 @@ export const api = {
   projectStats: (id: string, start: string, days: number) =>
     invoke<ProjectStats>("get_project_stats", { id, start, days }),
   timesheetConfig: () => invoke<TimesheetConfig>("get_timesheet_config"),
+  /** Gözden geçirilip kapatılan günler (YYYY-MM-DD; cihazlar arasında eşitlenir). */
+  closedDays: () => invoke<string[]>("closed_days"),
+  setDayClosed: (date: string, closed: boolean) => invoke<void>("set_day_closed", { date, closed }),
   saveTimesheetConfig: (config: TimesheetConfig) => invoke<void>("save_timesheet_config", { config }),
   timesheetDays: (timesheetId: string, start: string, days: number) =>
     invoke<TimesheetDay[]>("timesheet_days", { timesheetId, start, days }),

@@ -56,6 +56,7 @@ export function DayCard({
   selected,
   onToggle,
   alwaysShow,
+  closed,
 }: {
   day: TimesheetDay;
   config: TimesheetConfig;
@@ -78,6 +79,8 @@ export function DayCard({
   selected: Set<string>;
   onToggle: (keys: string[], on: boolean) => void;
   alwaysShow: boolean;
+  /** Gün gözden geçirilip kapatıldı. */
+  closed: boolean;
 }) {
   const [confirmReset, setConfirmReset] = useState(false);
   // Yapay zekâ yazıyor (düğme kilitli, dönen simge).
@@ -163,6 +166,11 @@ export function DayCard({
           {total ? manDays(total, config.dayHours) : "—"}
           {total > 0 && <span title="Takip edilen gerçek süre"> · gerçek {actual(totalActual)}</span>}
         </span>
+        {closed && (
+          <Badge variant="outline" className="border-success/40 text-success">
+            Kapatıldı
+          </Badge>
+        )}
         {exported && (
           <Badge variant="outline" className="border-success/40 text-success">
             Gönderildi

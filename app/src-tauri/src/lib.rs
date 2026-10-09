@@ -470,6 +470,8 @@ pub fn run() {
             client_report::client_report,
             client_report::export_client_report,
             timesheet::get_timesheet_config,
+            timesheet::closed_days,
+            timesheet::set_day_closed,
             timesheet::save_timesheet_config,
             timesheet::timesheet_days,
             timesheet::pending_timesheet_days,

@@ -143,6 +143,23 @@ impl DayPieces<'_> {
     }
 }
 
+/// Kapatılan günler (YYYY-MM-DD).
+#[tauri::command]
+pub async fn closed_days(app: AppHandle) -> CmdResult<Vec<String>> {
+    lock(&app.state::<Shared>().store)
+        .closed_days()
+        .map_err(err)
+}
+
+/// Günü kapatıldı işaretler ya da yeniden açar.
+#[tauri::command]
+pub async fn set_day_closed(app: AppHandle, date: String, closed: bool) -> CmdResult<()> {
+    parse_date(&date)?;
+    lock(&app.state::<Shared>().store)
+        .set_day_closed(&date, closed)
+        .map_err(err)
+}
+
 #[tauri::command]
 pub async fn get_timesheet_config(app: AppHandle) -> CmdResult<TimesheetConfig> {
     lock(&app.state::<Shared>().store)
