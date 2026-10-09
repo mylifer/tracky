@@ -4,13 +4,16 @@
 //! uygulama simgesine küçült" ayarı tüm uygulamalar için geçerlidir). Kum'da sarı düğme ve
 //! ⌘M pencereyi gizler; Dock simgesine tıklamak geri açar (`RunEvent::Reopen`). Takip arka
 //! planda sürer.
+//!
+//! Ayarlardan seçilen uygulama simgesi de burada Dock'a uygulanır ([`set_app_icon`]).
 
 use std::sync::OnceLock;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSWindow, NSWindowButton};
+use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2_app_kit::{NSApplication, NSImage, NSWindow, NSWindowButton};
+use objc2_foundation::NSData;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -64,6 +67,19 @@ pub fn install(app: &AppHandle) {
     }
     // Düğme hedefi zayıf tutar; hedef uygulama boyunca yaşamalı.
     std::mem::forget(target);
+}
+
+/// Dock'ta, ⌘⇥ değiştiricide ve "Hakkında" penceresinde görünen simge; `None` paketteki
+/// simgeye döner. Finder'daki simge paketten gelir: paketi değiştirmek imzayı (ve ona bağlı
+/// Erişilebilirlik iznini) bozacağı için ona dokunulmaz. Ana iş parçacığında çağrılmalı.
+pub fn set_app_icon(png: Option<&[u8]>) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let image =
+        png.and_then(|bytes| NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(bytes)));
+    // SAFETY: ana iş parçacığındayız; nil, Apple'ın belgelediği gibi paketteki simgeye döner.
+    unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(image.as_deref()) };
 }
 
 /// Uygulama menüsü: varsayılanın aynısı, yalnızca "Küçült" (⌘M) pencereyi gizler.

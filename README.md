@@ -127,6 +127,10 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 54. Hangi bilgisayar: blok ayrıntısında bloğun bilgisayarı (birden çoksa payıyla), ipucunda adı; raporun
       üstünde bilgisayar filtresi (Tümü / her bilgisayar ve süresi). Yalnızca aralıkta birden çok bilgisayar varsa
       görünür. Adlar sistemden gelir (`device:<kimlik>` ayarı, eşitlenir), Ayarlar → Senkronizasyon'da değiştirilir
+- [x] 55. Uygulama simgesi: dilimlenmiş cam küre (Dilim), menü çubuğunda tek renkli hâli. Ayarlar → Genel'de Kum
+      (turuncu, varsayılan) ya da Kobalt (mavi); seçilen simge çalışırken macOS'ta Dock'ta, ⌘⇥'de ve Hakkında'da,
+      Windows'ta pencerede ve görev çubuğunda görünür. Paketin simgesi (Finder, kısayollar) imza ve ona bağlı
+      Erişilebilirlik izni bozulmasın diye Kum kalır. Seçim cihaza özgüdür (`app_icon`, eşitlenmez)
 
 ## Yapı
 

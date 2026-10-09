@@ -40,6 +40,10 @@ const ONBOARDED_KEY: &str = "onboarded";
 const AUTOSTART_INIT_KEY: &str = "autostart_initialized";
 /// Görünüm tercihi: "system", "light" ya da "dark".
 const THEME_KEY: &str = "theme";
+/// Uygulama simgesi: "kum" (paketteki) ya da "kobalt". Cihaza özgüdür, eşitlenmez.
+const APP_ICON_KEY: &str = "app_icon";
+/// Kobalt simge: çalışırken macOS'ta Dock'a, Windows'ta pencereye (görev çubuğu) uygulanır.
+const KOBALT_ICON: &[u8] = include_bytes!("../icons/app-icon-kobalt.png");
 
 /// Takip iş parçacığına erişim; kapanışta son oturumun yazılmasını bekleriz.
 pub(crate) struct Worker {
@@ -58,13 +62,15 @@ struct AppStatus {
     effect: &'static str,
     /// Görünüm tercihi: "system", "light" ya da "dark".
     theme: String,
+    /// Uygulama simgesi: "kum" ya da "kobalt".
+    app_icon: String,
     tracking: Status,
 }
 
 #[tauri::command]
 async fn get_status(app: AppHandle) -> Result<AppStatus, String> {
     let shared = app.state::<Shared>();
-    let (onboarded, theme) = {
+    let (onboarded, theme, app_icon) = {
         let store = lock(&shared.store);
         (
             store
@@ -72,6 +78,7 @@ async fn get_status(app: AppHandle) -> Result<AppStatus, String> {
                 .map_err(|e| e.to_string())?
                 .unwrap_or(false),
             theme_setting(&store),
+            app_icon_setting(&store),
         )
     };
     Ok(AppStatus {
@@ -81,6 +88,7 @@ async fn get_status(app: AppHandle) -> Result<AppStatus, String> {
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         effect: app.state::<effects::WindowEffect>().0,
         theme,
+        app_icon,
         tracking: lock(&shared.status).clone(),
     })
 }
@@ -142,6 +150,55 @@ async fn set_theme(app: AppHandle, theme: String) -> Result<(), String> {
         .save_setting(THEME_KEY, &theme)
         .map_err(|e| e.to_string())?;
     apply_theme(&app, &theme);
+    Ok(())
+}
+
+fn app_icon_setting(store: &Store) -> String {
+    store
+        .setting::<String>(APP_ICON_KEY)
+        .ok()
+        .flatten()
+        .filter(|i| i == "kobalt")
+        .unwrap_or_else(|| "kum".into())
+}
+
+/// Seçilen simgeyi çalışan uygulamaya uygular: macOS'ta Dock, Windows'ta pencere ve görev
+/// çubuğu. Kum simgesi paketteki simgedir; Finder'da ve kısayollarda her zaman o görünür.
+fn apply_app_icon(app: &AppHandle, icon: &str) {
+    let kobalt = icon == "kobalt";
+    #[cfg(target_os = "macos")]
+    {
+        let png = kobalt.then_some(KOBALT_ICON);
+        let _ = app.run_on_main_thread(move || dock::set_app_icon(png));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+        let image = if kobalt {
+            tauri::image::Image::from_bytes(KOBALT_ICON).ok()
+        } else {
+            app.default_window_icon().cloned()
+        };
+        if let Some(image) = image {
+            let _ = window.set_icon(image);
+        }
+    }
+}
+
+/// Uygulama simgesini kaydeder ve hemen uygular.
+#[tauri::command]
+async fn set_app_icon(app: AppHandle, icon: String) -> Result<(), String> {
+    let icon = if icon == "kobalt" {
+        icon
+    } else {
+        "kum".to_string()
+    };
+    lock(&app.state::<Shared>().store)
+        .save_setting(APP_ICON_KEY, &icon)
+        .map_err(|e| e.to_string())?;
+    apply_app_icon(&app, &icon);
     Ok(())
 }
 
@@ -362,6 +419,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .flatten()
         .filter(|_| privacy.paused);
     apply_theme(app.handle(), &theme_setting(&store));
+    apply_app_icon(app.handle(), &app_icon_setting(&store));
 
     app.manage(Shared {
         store: Mutex::new(store),
@@ -429,6 +487,7 @@ pub fn run() {
             complete_onboarding,
             diagnose,
             set_theme,
+            set_app_icon,
             commands::get_report,
             commands::list_devices,
             commands::rename_device,

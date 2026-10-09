@@ -5,13 +5,13 @@
 <filter id="b3" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="3"/></filter><filter id="b4" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="4"/></filter><filter id="b6" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="6"/></filter><filter id="b8" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="8"/></filter><filter id="b10" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="10"/></filter><filter id="b12" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="12"/></filter><filter id="b14" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="14"/></filter><filter id="b16" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="16"/></filter><filter id="b18" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="18"/></filter><filter id="b20" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="20"/></filter><filter id="b22" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="22"/></filter><filter id="b24" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="24"/></filter><filter id="b26" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="26"/></filter><filter id="b28" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="28"/></filter><filter id="b30" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="30"/></filter><filter id="b36" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="36"/></filter><filter id="b40" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="40"/></filter><filter id="b48" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="48"/></filter><filter id="b60" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="60"/></filter><filter id="b80" filterUnits="userSpaceOnUse" x="-240" y="-240" width="1504" height="1504" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="80"/></filter>
 <linearGradient id="bodyRim" gradientUnits="userSpaceOnUse" x1="0" y1="100" x2="0" y2="924"><stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.22" stop-color="#fff" stop-opacity="0"/><stop offset="0.8" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.12"/></linearGradient>
 
-  <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="160" y1="120" x2="880" y2="920"><stop offset="0" stop-color="#F8C978"/><stop offset="0.55" stop-color="#EE9447"/><stop offset="1" stop-color="#D9632A"/></linearGradient>
-  <radialGradient id="bgHi" gradientUnits="userSpaceOnUse" cx="300" cy="250" r="460" fx="300" fy="250"><stop offset="0" stop-color="#FFE6B2" stop-opacity="0.75"/><stop offset="1" stop-color="#FFE6B2" stop-opacity="0"/></radialGradient>
-  <radialGradient id="bgLo" gradientUnits="userSpaceOnUse" cx="820" cy="860" r="460" fx="820" fy="860"><stop offset="0" stop-color="#B8461C" stop-opacity="0.55"/><stop offset="1" stop-color="#B8461C" stop-opacity="0"/></radialGradient>
-  <radialGradient id="sph" gradientUnits="userSpaceOnUse" cx="400" cy="470" r="330" fx="380" fy="440"><stop offset="0" stop-color="#fff" stop-opacity="0.56"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.3"/><stop offset="1" stop-color="#FFE9D2" stop-opacity="0.14"/></radialGradient>
+  <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="160" y1="120" x2="880" y2="920"><stop offset="0" stop-color="#4D7BF0"/><stop offset="0.55" stop-color="#2A4CC2"/><stop offset="1" stop-color="#172C8A"/></linearGradient>
+  <radialGradient id="bgHi" gradientUnits="userSpaceOnUse" cx="300" cy="250" r="460" fx="300" fy="250"><stop offset="0" stop-color="#8FADFF" stop-opacity="0.6"/><stop offset="1" stop-color="#8FADFF" stop-opacity="0"/></radialGradient>
+  <radialGradient id="bgLo" gradientUnits="userSpaceOnUse" cx="820" cy="860" r="460" fx="820" fy="860"><stop offset="0" stop-color="#0C1A62" stop-opacity="0.55"/><stop offset="1" stop-color="#0C1A62" stop-opacity="0"/></radialGradient>
+  <radialGradient id="sph" gradientUnits="userSpaceOnUse" cx="400" cy="470" r="330" fx="380" fy="440"><stop offset="0" stop-color="#fff" stop-opacity="0.56"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.3"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.14"/></radialGradient>
   <linearGradient id="face" gradientUnits="userSpaceOnUse" x1="300" y1="330" x2="640" y2="600"><stop offset="0" stop-color="#fff" stop-opacity="0.8"/><stop offset="1" stop-color="#fff" stop-opacity="0.3"/></linearGradient>
   <g id="s0"><rect x="-160" y="-160" width="1344" height="1344" fill="url(#bg)"/><rect x="-160" y="-160" width="1344" height="1344" fill="url(#bgHi)"/><rect x="-160" y="-160" width="1344" height="1344" fill="url(#bgLo)"/>
-    <ellipse cx="560" cy="800" rx="230" ry="44" fill="#8E3410" opacity="0.35" filter="url(#b30)"/>
+    <ellipse cx="560" cy="800" rx="230" ry="44" fill="#08154F" opacity="0.45" filter="url(#b30)"/>
   </g>
   <g id="s1">
     <use href="#s0"/>
@@ -27,11 +27,11 @@
     <path d="M643.9 713.6A232 232 0 0 1 316.4 386.1Z" fill="none" stroke="url(#hem-r)" stroke-width="6" clip-path="url(#hem-c)"/>
     <ellipse cx="480.1" cy="549.9" rx="230.1" ry="91.1" transform="rotate(45 480.1 549.9)" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="3"/>
   </g>
-  <linearGradient id="d0side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.42"/><stop offset="1" stop-color="#FFE9D2" stop-opacity="0.16"/></linearGradient>
+  <linearGradient id="d0side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.42"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.16"/></linearGradient>
   <linearGradient id="d0face" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0.82"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.46"/><stop offset="1" stop-color="#fff" stop-opacity="0.24"/></linearGradient>
   <g id="s2sh">
     <use href="#s1"/>
-    <path d="M686.6 663A226 90.4 45 0 0 367 343.4L355.6 354.7A226 90.4 45 0 0 675.3 674.4Z" transform="translate(-14 16)" fill="#9A3A12" opacity="0.32" filter="url(#b16)"/>
+    <path d="M686.6 663A226 90.4 45 0 0 367 343.4L355.6 354.7A226 90.4 45 0 0 675.3 674.4Z" transform="translate(-14 16)" fill="#0B1966" opacity="0.36" filter="url(#b16)"/>
   </g>
   <g id="s2">
     <use href="#s2sh"/>
@@ -46,11 +46,11 @@
   <path d="M686.6 663A226 90.4 45 0 0 367 343.4L355.6 354.7A226 90.4 45 0 0 675.3 674.4Z" fill="none" stroke="url(#d0-r)" stroke-width="5" clip-path="url(#d0-c)"/>
     <ellipse cx="526.8" cy="503.2" rx="224.5" ry="88.9" transform="rotate(45 526.8 503.2)" fill="none" stroke="#fff" stroke-opacity=".72" stroke-width="3"/>
   </g>
-  <linearGradient id="d1side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.42"/><stop offset="1" stop-color="#FFE9D2" stop-opacity="0.16"/></linearGradient>
+  <linearGradient id="d1side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.42"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.16"/></linearGradient>
   <linearGradient id="d1face" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0.82"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.46"/><stop offset="1" stop-color="#fff" stop-opacity="0.24"/></linearGradient>
   <g id="s3sh">
     <use href="#s2"/>
-    <path d="M723.3 595.2A204 81.6 45 0 0 434.8 306.7L423.5 318A204 81.6 45 0 0 712 606.5Z" transform="translate(-14 16)" fill="#9A3A12" opacity="0.32" filter="url(#b16)"/>
+    <path d="M723.3 595.2A204 81.6 45 0 0 434.8 306.7L423.5 318A204 81.6 45 0 0 712 606.5Z" transform="translate(-14 16)" fill="#0B1966" opacity="0.36" filter="url(#b16)"/>
   </g>
   <g id="s3">
     <use href="#s3sh"/>
@@ -65,11 +65,11 @@
   <path d="M723.3 595.2A204 81.6 45 0 0 434.8 306.7L423.5 318A204 81.6 45 0 0 712 606.5Z" fill="none" stroke="url(#d1-r)" stroke-width="5" clip-path="url(#d1-c)"/>
     <ellipse cx="579.1" cy="450.9" rx="202.5" ry="80.1" transform="rotate(45 579.1 450.9)" fill="none" stroke="#fff" stroke-opacity=".72" stroke-width="3"/>
   </g>
-  <linearGradient id="d2side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.42"/><stop offset="1" stop-color="#FFE9D2" stop-opacity="0.16"/></linearGradient>
+  <linearGradient id="d2side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.42"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.16"/></linearGradient>
   <linearGradient id="d2face" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0.82"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.46"/><stop offset="1" stop-color="#fff" stop-opacity="0.24"/></linearGradient>
   <g id="s4sh">
     <use href="#s3"/>
-    <path d="M751.6 521.6A172 68.8 45 0 0 508.4 278.4L497.1 289.7A172 68.8 45 0 0 740.3 532.9Z" transform="translate(-14 16)" fill="#9A3A12" opacity="0.32" filter="url(#b16)"/>
+    <path d="M751.6 521.6A172 68.8 45 0 0 508.4 278.4L497.1 289.7A172 68.8 45 0 0 740.3 532.9Z" transform="translate(-14 16)" fill="#0B1966" opacity="0.36" filter="url(#b16)"/>
   </g>
   <g id="s4">
     <use href="#s4sh"/>

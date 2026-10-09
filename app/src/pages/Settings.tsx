@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, X } from "lucide-react";
-import { api, type AppStatus, type PrivacySettings, type ShortcutStatus, type UsageTotal } from "../api";
+import { api, type AppIcon, type AppStatus, type PrivacySettings, type ShortcutStatus, type UsageTotal } from "../api";
 import { ErrorText, Page, SettingBlock, SettingRow, SettingsGroup, ToggleRow } from "../components/settings";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -30,6 +30,12 @@ const SECTIONS = [
 
 /** Boşta kaydının en uzun süresi seçenekleri (dakika). */
 const IDLE_MAX_OPTIONS = [60, 120, 180, 240, 360, 480];
+
+/** Uygulama simgesi seçenekleri; görseller `public/` altında. */
+const APP_ICONS: { id: AppIcon; label: string; src: string }[] = [
+  { id: "kum", label: "Kum", src: "/icon.png" },
+  { id: "kobalt", label: "Kobalt", src: "/icon-kobalt.png" },
+];
 
 function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -159,6 +165,35 @@ export default function Settings({
               <SelectItem value="dark">Koyu</SelectItem>
             </SelectContent>
           </Select>
+        </SettingRow>
+        <SettingRow
+          label="Uygulama simgesi"
+          hint={
+            status.platform === "macos"
+              ? "Dock’ta ve uygulama değiştiricide görünür; Finder’da Kum simgesi kalır."
+              : "Görev çubuğunda görünür; kısayollarda Kum simgesi kalır."
+          }
+        >
+          <div role="group" aria-label="Uygulama simgesi" className="flex gap-1">
+            {APP_ICONS.map((icon) => {
+              const selected = status.appIcon === icon.id;
+              return (
+                <button
+                  key={icon.id}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => api.setAppIcon(icon.id).then(onChange, (e) => setError(friendlyError(e)))}
+                  className={cn(
+                    "flex w-14 flex-col items-center gap-0.5 rounded-lg py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground",
+                    selected && "bg-accent font-medium text-foreground ring-1 ring-primary/40",
+                  )}
+                >
+                  <img src={icon.src} alt="" className="size-10" />
+                  {icon.label}
+                </button>
+              );
+            })}
+          </div>
         </SettingRow>
         {privacy && (
           <>

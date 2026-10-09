@@ -1,10 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44">
-  <defs>
-    <mask id="hands">
-      <rect width="44" height="44" fill="#fff"/>
-      <path d="M29 17.6V22L32.2 23.8" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    </mask>
-  </defs>
-  <rect x="5.5" y="12.5" width="33" height="19" rx="9.5" fill="none" stroke="#000" stroke-width="3"/>
-  <circle cx="29" cy="22" r="6" fill="#000" mask="url(#hands)"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" width="44" height="44"><defs><mask id="ko0" maskUnits="userSpaceOnUse" x="0" y="0" width="44" height="44"><rect width="44" height="44" fill="#fff"/><path d="M34.2 31.2A15 6.3 45 0 0 13 10L12.3 10.7A15 6.3 45 0 0 33.5 31.9Z" fill="#000" stroke="#000" stroke-width="5.2" stroke-linejoin="round"/></mask><mask id="ko1" maskUnits="userSpaceOnUse" x="0" y="0" width="44" height="44"><rect width="44" height="44" fill="#fff"/><path d="M36.2 26.9A13.4 5.63 45 0 0 17.3 8L16.5 8.8A13.4 5.63 45 0 0 35.4 27.7Z" fill="#000" stroke="#000" stroke-width="5.2" stroke-linejoin="round"/></mask><mask id="ko2" maskUnits="userSpaceOnUse" x="0" y="0" width="44" height="44"><rect width="44" height="44" fill="#fff"/><path d="M37.5 22.3A11 4.62 45 0 0 21.9 6.7L21.2 7.5A11 4.62 45 0 0 36.7 23Z" fill="#000" stroke="#000" stroke-width="5.2" stroke-linejoin="round"/></mask></defs><g fill="#000"><g mask="url(#ko2)"><g mask="url(#ko1)"><g mask="url(#ko0)"><path d="M31.1 35A15.5 15.5 0 0 1 9.2 13.1Z"/><ellipse cx="20.18" cy="24.02" rx="15.49" ry="6.51" transform="rotate(45 20.18 24.02)"/></g><path d="M34.2 31.2A15 6.3 45 0 0 13 10L12.3 10.7A15 6.3 45 0 0 33.5 31.9Z"/></g><path d="M36.2 26.9A13.4 5.63 45 0 0 17.3 8L16.5 8.8A13.4 5.63 45 0 0 35.4 27.7Z"/></g><path d="M37.5 22.3A11 4.62 45 0 0 21.9 6.7L21.2 7.5A11 4.62 45 0 0 36.7 23Z"/></g></svg>

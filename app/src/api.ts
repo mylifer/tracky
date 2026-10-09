@@ -40,8 +40,11 @@ export type AppStatus = {
   onboarded: boolean;
   autostart: boolean;
   theme: "system" | "light" | "dark";
+  /** Uygulama simgesi: "kum" (varsayılan) ya da "kobalt"; cihaza özgü. */
+  appIcon: AppIcon;
   tracking: TrackingStatus;
 };
+export type AppIcon = "kum" | "kobalt";
 export type UsageTotal = { key: string; label: string; seconds: number };
 
 export type TagKind = "category" | "project";
@@ -533,6 +536,7 @@ export const api = {
   openAccessibilitySettings: () => invoke<void>("open_accessibility_settings"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   setTheme: (theme: "system" | "light" | "dark") => invoke<void>("set_theme", { theme }),
+  setAppIcon: (icon: AppIcon) => invoke<void>("set_app_icon", { icon }),
   setPaused: (paused: boolean) => invoke<void>("set_paused", { paused }),
   /** `null`: yarına kadar. */
   pauseFor: (minutes: number | null) => invoke<void>("pause_for", { minutes }),
