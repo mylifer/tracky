@@ -262,6 +262,25 @@ pub async fn disconnect_sheet(app: AppHandle, timesheet_id: String) -> CmdResult
     Ok(config)
 }
 
+/// Çizelgenin tablosunu tarayıcıda (Google Sheets) ya da varsayılan uygulamada (Excel) açar.
+#[tauri::command]
+pub async fn open_timesheet(app: AppHandle, timesheet_id: String) -> CmdResult<()> {
+    let shared = app.state::<Shared>();
+    let config = lock(&shared.store).timesheet_config().map_err(err)?;
+    let sheet = config.timesheet(&timesheet_id).ok_or(NO_SHEET)?;
+    let target = if sheet.sheet_url.is_some() {
+        sheet
+            .sheet_link
+            .as_deref()
+            .filter(|l| l.starts_with("https://docs.google.com/"))
+            .ok_or("Tablonun bağlantısı (docs.google.com/…) girilmemiş; Ayarlar → Zaman çizelgeleri.")?
+    } else {
+        sheet.file_path.as_deref().ok_or("Kayıtların yazılacağı dosya seçilmedi.")?
+    };
+    crate::google::open_browser(target);
+    Ok(())
+}
+
 /// Çizelgeyi kaldırır; projeleri hiçbir çizelgeye gitmez. Kaydedilmiş satırlar silinmez.
 #[tauri::command]
 pub async fn remove_timesheet(app: AppHandle, timesheet_id: String) -> CmdResult<TimesheetConfig> {

@@ -673,6 +673,8 @@ export const api = {
   connectSheet: (timesheetId: string | null, url: string, link: string | null) =>
     invoke<Imported>("connect_sheet", { timesheetId, url, link }),
   disconnectSheet: (timesheetId: string) => invoke<TimesheetConfig>("disconnect_sheet", { timesheetId }),
+  /** Çizelgenin tablosunu (Sheets bağlantısı ya da Excel dosyası) açar. */
+  openTimesheet: (timesheetId: string) => invoke<void>("open_timesheet", { timesheetId }),
   removeTimesheet: (timesheetId: string) => invoke<TimesheetConfig>("remove_timesheet", { timesheetId }),
   aiSettings: () => invoke<AiStatus>("get_ai_settings"),
   /** `apiKey` verilmezse kayıtlı anahtar korunur; boş dize siler. */

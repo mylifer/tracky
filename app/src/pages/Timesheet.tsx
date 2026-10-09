@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
+  ExternalLink,
   FileSpreadsheet,
   FolderKanban,
   Loader2,
@@ -578,6 +579,17 @@ export default function Timesheet({
                 <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">
                   {sheet.company || "Zaman çizelgesi"}
                 </span>
+              )}
+              {(sheet.sheetUrl ? sheet.sheetLink : sheet.filePath) && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={sheet.sheetUrl ? "Tabloyu aç" : "Excel dosyasını aç"}
+                  title={sheet.sheetUrl ? "Tabloyu Google Sheets'te aç" : `${fileName(sheet.filePath ?? "")} dosyasını aç`}
+                  onClick={() => api.openTimesheet(sheet.id).catch((e) => setError(friendlyError(e)))}
+                >
+                  <ExternalLink />
+                </Button>
               )}
               <Button
                 variant="ghost"

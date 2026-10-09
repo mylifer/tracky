@@ -493,6 +493,7 @@ pub fn run() {
             timesheet::setup::sheet_script,
             timesheet::setup::connect_sheet,
             timesheet::setup::disconnect_sheet,
+            timesheet::setup::open_timesheet,
             timesheet::setup::remove_timesheet,
             timesheet::sheet_rows,
             timesheet::save_sheet_row,

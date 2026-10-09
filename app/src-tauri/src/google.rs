@@ -188,7 +188,7 @@ fn email_of(id_token: &str) -> Option<String> {
     v["email"].as_str().map(str::to_string)
 }
 
-fn open_browser(url: &str) {
+pub(crate) fn open_browser(url: &str) {
     #[cfg(target_os = "macos")]
     let r = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
