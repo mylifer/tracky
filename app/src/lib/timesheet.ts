@@ -41,6 +41,27 @@ export function started(e: TimesheetEntry, now: Date) {
   return e.start.slice(0, 5) <= hm;
 }
 
+/** Bu kadar içinde dönülen iş takipten gelen satıra eklenir (çekirdekteki `MERGE_GAP`). */
+const MERGE_GAP_MS = 15 * 60_000;
+
+/**
+ * Satırın işi sürüyor mu (henüz gönderilmez). Yazılan saat yuvarlanmıştır; bitiş, kapsadığı son
+ * takip aralığından. Takipten gelen (kaydedilmemiş) satıra son işinden sonra `MERGE_GAP` dolmadan
+ * dönülen iş eklenir: o zamana kadar sürüyor sayılır. Kaydedilmiş satır yalnızca bitişine kadar
+ * (ör. süren toplantı); aralığı olmayan (elle eklenen) satırda bitiş başlangıç + saattir.
+ */
+export function running(e: EntryView, now: Date) {
+  if (!started(e, now)) return false;
+  const parts = e.coverage ?? [];
+  if (parts.length === 0) {
+    const [y, mo, d] = e.date.split("-").map(Number);
+    const [h, m, s] = e.start.split(":").map(Number);
+    return +new Date(y, mo - 1, d, h, m, s || 0) + e.hours * 3600_000 > +now;
+  }
+  const end = Math.max(...parts.map(([, b]) => b));
+  return end + (e.id === null ? MERGE_GAP_MS : 0) > +now;
+}
+
 /** Aktarılmamış satır gönderilemez: açıklaması boş ya da takipte değişmiş. */
 export function blocked(e: EntryView) {
   return !e.exported && (needsDetails(e) || isStale(e));

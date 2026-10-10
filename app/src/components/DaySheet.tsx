@@ -16,7 +16,7 @@ import { Button } from "./ui/button";
 import { parseIsoDate } from "../lib/dates";
 import { friendlyError, toast, undoable, useChanged } from "../lib/feedback";
 import { tagColor, tagInk, UNASSIGNED } from "../lib/tags";
-import { blocked, isStale, needsDetails, started } from "../lib/timesheet";
+import { blocked, isStale, needsDetails, running as entryRunning, started } from "../lib/timesheet";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { cn } from "../lib/utils";
 import { exportNotice, KINDS, num, toRef } from "../pages/timesheet/shared";
@@ -98,8 +98,12 @@ export function buildLines(sheets: Sheet[] | null, report: Report): Line[] {
 
 type EntryRow = Extract<Line, { kind: "entry" }>;
 
-/** Süren iş (bitişi şimdiden sonra) henüz gönderilmez. */
-const isRunning = (l: Line, now: number) => l.from <= now && l.to > now;
+/**
+ * Süren iş henüz gönderilmez. Çizelge satırında bitiş yazılan (yuvarlanmış) saatten değil işin
+ * kendisinden ([`entryRunning`]); diğer satırlarda aralığından.
+ */
+const isRunning = (l: Line, now: number) =>
+  l.kind === "entry" ? entryRunning(l.entry, new Date(now)) : l.from <= now && l.to > now;
 
 /** Gönderilmeye hazır satırlar: aktarılmamış, başlamış, bitmiş ve eksiği olmayan. */
 function readyOf(entries: EntryRow[], now: number) {

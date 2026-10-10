@@ -38,7 +38,7 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { friendlyError, useChanged } from "../lib/feedback";
-import { blocked, closeReport, divisionColor, keepRowIds, started, summarizeDay } from "../lib/timesheet";
+import { blocked, closeReport, divisionColor, keepRowIds, running, started, summarizeDay } from "../lib/timesheet";
 import {
   num,
   exportNotice,
@@ -411,9 +411,10 @@ export default function Timesheet({
   const outsideHours = new Map<string, number>();
   for (const r of outside) outsideHours.set(r.date, (outsideHours.get(r.date) ?? 0) + (r.hours ?? 0));
   const unsent = all.filter((e) => !e.exported);
-  // Toplu gönderim yalnızca başlamış işi gönderir; ilerideki satırlar seçilerek gönderilebilir.
+  // Toplu gönderim yalnızca başlamış ve bitmiş işi gönderir (Çizelge görünümündeki gibi);
+  // ilerideki ve süren satırlar seçilerek gönderilebilir.
   const now = new Date();
-  const pending = unsent.filter((e) => started(e, now));
+  const pending = unsent.filter((e) => started(e, now) && !running(e, now));
   const later = unsent.length - pending.length;
   const selectedRows = unsent.filter((e) => selected.has(e.key));
   const report = closeReport(days, config.dayHours, isoDate(today()), outsideHours);
@@ -687,7 +688,7 @@ export default function Timesheet({
                 value={pending.length}
                 label="bekliyor"
                 tone="bg-primary/10 text-primary"
-                title={later ? `Henüz başlamamış ${later} satır hariç` : "Gönderilmemiş satırlar"}
+                title={later ? `Başlamamış ya da süren ${later} satır hariç` : "Gönderilmemiş satırlar"}
               />
               <Stat value={exportedRows} label="gönderildi" tone="bg-success/10 text-success" />
             </div>
@@ -699,7 +700,7 @@ export default function Timesheet({
                   ? "Gönderilecek satır yok"
                   : sendBlocked
                     ? "Açıklaması boş ya da takipte değişen satırlar var: düzelt ya da gönderilecekleri seç"
-                    : `Bu dönemin gönderilmemiş ${pending.length} satırı${later ? ` (henüz başlamamış ${later} satır hariç)` : ""}: ${sheet.sheetUrl ? (sheet.sheetLink ?? "Google Sheets") : (sheet.filePath ?? "")}`
+                    : `Bu dönemin gönderilmemiş ${pending.length} satırı${later ? ` (başlamamış ya da süren ${later} satır hariç)` : ""}: ${sheet.sheetUrl ? (sheet.sheetLink ?? "Google Sheets") : (sheet.filePath ?? "")}`
               }
               onClick={() => send(pending)}
             >
