@@ -205,6 +205,8 @@ struct Builder {
     project: Option<String>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
+    /// Süreler milisaniye: binlerce kısa dilimin her biri saniyeye kırpılsa blok raporun
+    /// toplamından dakikalarca kısa kalırdı. Saniyeye en sonda çevrilir.
     active: i64,
     switches: u32,
     last_app: String,
@@ -233,25 +235,27 @@ impl Builder {
     }
 
     fn add(&mut self, item: &Activity) {
-        let secs = (item.end - item.start.max(self.end)).num_seconds().max(0);
+        let ms = (item.end - item.start.max(self.end))
+            .num_milliseconds()
+            .max(0);
         if item.app_id != self.last_app {
             self.switches += 1;
             self.last_app = item.app_id.to_string();
         }
-        self.active += secs;
+        self.active += ms;
         self.end = self.end.max(item.end);
         *self
             .categories
             .entry(item.category.map(str::to_string))
-            .or_default() += secs;
+            .or_default() += ms;
         if let Some(p) = item.project {
             self.project = Some(p.to_string());
-            *self.projects.entry(p.to_string()).or_default() += secs;
+            *self.projects.entry(p.to_string()).or_default() += ms;
         }
         self.apps
             .entry(item.app_name.to_string())
             .or_insert_with(|| (0, item.app_id.to_string()))
-            .0 += secs;
+            .0 += ms;
     }
 
     fn dominant(&self) -> Option<String> {
@@ -271,23 +275,23 @@ impl Builder {
             .projects
             .into_iter()
             .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
-            .filter(|(_, secs)| *secs * 2 >= self.active && *secs > 0)
+            .filter(|(_, ms)| *ms * 2 >= self.active && *ms > 0)
             .map(|(p, _)| p);
-        let mut apps: Vec<BlockApp> = self
-            .apps
+        let mut apps: Vec<(String, (i64, String))> = self.apps.into_iter().collect();
+        apps.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(&b.0)));
+        let apps: Vec<BlockApp> = apps
             .into_iter()
-            .map(|(app_name, (seconds, app_id))| BlockApp {
+            .take(3)
+            .map(|(app_name, (ms, app_id))| BlockApp {
                 app_id,
                 app_name,
-                seconds,
+                seconds: ms / 1000,
             })
             .collect();
-        apps.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.app_name.cmp(&b.app_name)));
-        apps.truncate(3);
         WorkBlock {
             start: self.start,
             end: self.end,
-            active_seconds: self.active,
+            active_seconds: self.active / 1000,
             category_id,
             project_id,
             switches: self.switches,
@@ -395,6 +399,29 @@ mod tests {
             ]
         );
         assert_eq!(s.blocks[0].active_seconds, 50 * 60);
+    }
+
+    #[test]
+    fn short_slices_add_up_in_milliseconds() {
+        // 1,5 sn'lik 1200 dilim = 30 dk; saniyeye tek tek kırpılsa 20 dk kalırdı.
+        let names: Vec<String> = (0..1200).map(|i| format!("app{}", i % 2)).collect();
+        let items: Vec<Activity> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Activity {
+                start: t(0) + Duration::milliseconds(i as i64 * 1500),
+                end: t(0) + Duration::milliseconds(i as i64 * 1500 + 1500),
+                app_id: name,
+                app_name: name,
+                category: Some("dev"),
+                project: None,
+                block_start: false,
+            })
+            .collect();
+        let s = analyze(&items);
+        assert_eq!(s.blocks.len(), 1);
+        assert_eq!(s.blocks[0].active_seconds, 30 * 60);
+        assert_eq!(s.blocks[0].top_apps[0].seconds, 15 * 60);
     }
 
     #[test]
