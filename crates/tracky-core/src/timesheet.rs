@@ -772,17 +772,49 @@ pub fn propose(
     runs.extend(open.into_values());
     runs.extend(meetings.into_iter().map(|(_, run)| run));
 
-    // Kaydedilmiş satırın artığı mı: oturumlarda satıra yakın iş, toplantıda aynı toplantının ucu.
-    // Satırın kapladığı aralığa sonradan atanmış en az `MIN_ENTRY` iş varsa artık değildir.
+    // Kaydedilmiş satırlar düşülmeden oturum kümeleri (önerilerin satır kaydedilmeden önceki
+    // hali): proje, aralıklar.
+    let mut whole: Vec<(&str, Vec<Interval>)> = Vec::new();
+    {
+        let mut sessions: Vec<&Piece> = pieces
+            .iter()
+            .filter(|p| p.meeting.is_none() && sheet.includes(&p.project))
+            .collect();
+        sessions.sort_by_key(|p| p.start);
+        let mut open: HashMap<&str, (usize, DateTime<Utc>)> = HashMap::new();
+        for p in sessions {
+            // Öneriler gibi: araya `MERGE_GAP`'ten uzun boşluk ya da elle bölme girince yeni küme.
+            let (i, end) = match open.get(p.project.as_str()) {
+                Some(&(i, end)) if p.start - end <= MERGE_GAP && !p.block_start => {
+                    (i, end.max(p.end))
+                }
+                _ => {
+                    whole.push((p.project.as_str(), Vec::new()));
+                    (whole.len() - 1, p.end)
+                }
+            };
+            whole[i].1.push((p.start, p.end));
+            open.insert(p.project.as_str(), (i, end));
+        }
+    }
+    let touches = |a: &[Interval], b: &[Interval]| {
+        a.iter()
+            .any(|&(x, y)| b.iter().any(|&(c, d)| x < d && c < y))
+    };
+
+    // Kaydedilmiş satırın artığı mı: oturumlarda satırla aynı kümedeki iş (satır kaydedilirken
+    // süren işin birkaç dakikası), toplantıda aynı toplantının ucu. Kaydedilmeden önce de ayrı
+    // satır olan iş (toplantının ya da elle bölünmüş bloğun yanındaki) artık değildir. Satırın
+    // kapladığı aralığa sonradan atanmış en az `MIN_ENTRY` iş de artık değildir.
     let remainder = |r: &Run| {
         if r.meeting {
             return r.trimmed;
         }
         cuts.get(r.project.as_str()).is_some_and(|(cut, hulls)| {
-            let near = r.spans.iter().any(|&(a, b)| {
-                cut.iter()
-                    .any(|&(c, d)| a <= d + MERGE_GAP && c <= b + MERGE_GAP)
-            });
+            let near = whole
+                .iter()
+                .filter(|(p, spans)| *p == r.project && touches(spans, &r.spans))
+                .any(|(_, spans)| touches(spans, cut));
             let inside: Duration = r
                 .spans
                 .iter()

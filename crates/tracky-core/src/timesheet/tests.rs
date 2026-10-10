@@ -304,6 +304,38 @@ fn a_short_meeting_after_a_saved_one_is_still_proposed() {
 }
 
 #[test]
+fn a_separate_short_row_survives_saving_its_neighbour() {
+    let (classifier, names, config, sheet) = setup();
+    // Toplantıdan önceki 8 dakikalık iş kendi satırıdır: toplantı satırı kaydedilince onun artığı
+    // sayılıp kaybolmaz.
+    let work = [s("Figma", "Trumore Loyalty — Figma", -8, 0, None)];
+    let sync = (
+        meeting("a", "Trumore haftalık", 0, 45, false),
+        "tru".to_string(),
+    );
+    let p = pieces(&work, &[sync], &classifier, &config, t(-540), t(900));
+    let all = propose(&p, &names, &sheet, &HashMap::new());
+    assert_eq!(all.len(), 2);
+    let meeting_row = all.iter().find(|e| e.kind == EntryKind::F2F).unwrap();
+    let saved = HashMap::from([("tru".to_string(), vec![meeting_row.spans()])]);
+    let left = propose(&p, &names, &sheet, &saved);
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].spans(), vec![(t(-8), t(0))]);
+
+    // Elle bölünmüş bloğun kısa ikinci yarısı da ilk yarısı kaydedilince kalır.
+    let mut split = vec![
+        s("Figma", "Trumore Loyalty — Figma", 0, 60, None),
+        s("Figma", "Trumore Loyalty — Figma", 60, 70, None),
+    ];
+    split[1].block_from = Some(t(60));
+    let p = pieces(&split, &[], &classifier, &config, t(-540), t(900));
+    let all = propose(&p, &names, &sheet, &HashMap::new());
+    assert_eq!(all.len(), 2);
+    let saved = HashMap::from([("tru".to_string(), vec![all[0].spans()])]);
+    assert_eq!(propose(&p, &names, &sheet, &saved), vec![all[1].clone()]);
+}
+
+#[test]
 fn stale_rows_are_found_and_refreshed() {
     let (classifier, names, config, sheet) = setup();
     let sessions = vec![
