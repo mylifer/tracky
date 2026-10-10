@@ -11,6 +11,7 @@ import {
   type UnassignedMeeting,
 } from "../api";
 import { HATCH } from "./Calendar";
+import { sheetEntryAt, sheetSpans } from "./calendar/TimesheetLines";
 import { ProjectSelect } from "./ProjectSelect";
 import { Button } from "./ui/button";
 import { parseIsoDate } from "../lib/dates";
@@ -63,20 +64,34 @@ async function fetchSheets(day: string): Promise<Sheet[]> {
 
 /**
  * Tablonun satırları, başlangıca göre sıralı. Projesi belli olmayan toplantılar her çizelgenin
- * gününde aynı listedir: bir kez gösterilir.
+ * gününde aynı listedir: bir kez gösterilir. Satırın bloğu takvimdeki gibi işin gerçek aralığıdır
+ * (kapsadığı ilk takip aralığının başından sonuncunun sonuna); yazılan başlangıç ve saat ayrı
+ * sütunlarda. Projesiz blok, takvimde bir satırın adını alıyorsa (ör. toplantı satırının
+ * içindeki iş) ayrıca listelenmez: süresi çizelgede zaten var.
  */
 export function buildLines(sheets: Sheet[] | null, report: Report): Line[] {
   const out: Line[] = [];
   const sheetProjects = new Set<string>();
   const meetings = new Set<string>();
+  const entries: EntryView[] = [];
   for (const s of sheets ?? []) {
     for (const id of s.projects) sheetProjects.add(id);
     for (const e of s.day?.entries ?? []) {
-      const [h, m, sec] = e.start.split(":").map(Number);
-      // Yerel saatten: yaz saatine geçilen günde gece yarısından geçen süre saatle aynı değil.
-      const d = parseIsoDate(e.date);
-      const from = +new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, sec || 0);
-      out.push({ kind: "entry", key: `e-${e.key}`, from, to: from + e.hours * 3600_000, sheetId: s.id, entry: e });
+      entries.push(e);
+      const parts = (e.coverage ?? []).filter(([a, b]) => b > a);
+      let from: number;
+      let to: number;
+      if (parts.length > 0) {
+        from = Math.min(...parts.map(([a]) => a));
+        to = Math.max(...parts.map(([, b]) => b));
+      } else {
+        const [h, m, sec] = e.start.split(":").map(Number);
+        // Yerel saatten: yaz saatine geçilen günde gece yarısından geçen süre saatle aynı değil.
+        const d = parseIsoDate(e.date);
+        from = +new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, sec || 0);
+        to = from + e.hours * 3600_000;
+      }
+      out.push({ kind: "entry", key: `e-${e.key}`, from, to, sheetId: s.id, entry: e });
     }
     for (const m of s.day?.meetings ?? []) {
       const key = `m-${m.uid}-${m.start}`;
@@ -85,12 +100,14 @@ export function buildLines(sheets: Sheet[] | null, report: Report): Line[] {
       out.push({ kind: "meeting", key, from: +new Date(m.start), to: +new Date(m.end), meeting: m });
     }
   }
+  const spans = sheetSpans(entries);
   for (const b of report.work.blocks) {
     const from = +new Date(b.start);
     const to = +new Date(b.end);
     const app = b.topApps[0]?.appName ?? "";
-    if (!b.projectId) out.push({ kind: "unassigned", key: `u-${b.start}`, from, to, app });
-    else if (sheets && !sheetProjects.has(b.projectId))
+    if (!b.projectId) {
+      if (!sheetEntryAt(spans, from, to)) out.push({ kind: "unassigned", key: `u-${b.start}`, from, to, app });
+    } else if (sheets && !sheetProjects.has(b.projectId))
       out.push({ kind: "off", key: `o-${b.start}`, from, to, projectId: b.projectId, app });
   }
   return out.sort((a, b) => a.from - b.from);
