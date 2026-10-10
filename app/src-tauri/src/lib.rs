@@ -42,7 +42,9 @@ const AUTOSTART_INIT_KEY: &str = "autostart_initialized";
 const THEME_KEY: &str = "theme";
 /// Uygulama simgesi: "kum" (paketteki) ya da "kobalt". Cihaza özgüdür, eşitlenmez.
 const APP_ICON_KEY: &str = "app_icon";
-/// Kobalt simge: çalışırken macOS'ta Dock'a, Windows'ta pencereye (görev çubuğu) uygulanır.
+/// Simgeler çalışırken macOS'ta Dock'a, Windows'ta pencereye (görev çubuğu) uygulanır. Kum,
+/// paketteki simgenin 512 px'lik PNG'si.
+const KUM_ICON: &[u8] = include_bytes!("../icons/icon.png");
 const KOBALT_ICON: &[u8] = include_bytes!("../icons/app-icon-kobalt.png");
 
 /// Takip iş parçacığına erişim; kapanışta son oturumun yazılmasını bekleriz.
@@ -163,12 +165,16 @@ fn app_icon_setting(store: &Store) -> String {
 }
 
 /// Seçilen simgeyi çalışan uygulamaya uygular: macOS'ta Dock, Windows'ta pencere ve görev
-/// çubuğu. Kum simgesi paketteki simgedir; Finder'da ve kısayollarda her zaman o görünür.
+/// çubuğu. Kum için de görsel açıkça verilir (bkz. `dock::set_app_icon`); Finder'da ve
+/// kısayollarda paketteki simge görünür.
 fn apply_app_icon(app: &AppHandle, icon: &str) {
-    let kobalt = icon == "kobalt";
+    let png = if icon == "kobalt" {
+        KOBALT_ICON
+    } else {
+        KUM_ICON
+    };
     #[cfg(target_os = "macos")]
     {
-        let png = kobalt.then_some(KOBALT_ICON);
         let _ = app.run_on_main_thread(move || dock::set_app_icon(png));
     }
     #[cfg(not(target_os = "macos"))]
@@ -176,12 +182,7 @@ fn apply_app_icon(app: &AppHandle, icon: &str) {
         let Some(window) = app.get_webview_window("main") else {
             return;
         };
-        let image = if kobalt {
-            tauri::image::Image::from_bytes(KOBALT_ICON).ok()
-        } else {
-            app.default_window_icon().cloned()
-        };
-        if let Some(image) = image {
+        if let Ok(image) = tauri::image::Image::from_bytes(png) {
             let _ = window.set_icon(image);
         }
     }

@@ -69,16 +69,17 @@ pub fn install(app: &AppHandle) {
     std::mem::forget(target);
 }
 
-/// Dock'ta, ⌘⇥ değiştiricide ve "Hakkında" penceresinde görünen simge; `None` paketteki
-/// simgeye döner. Finder'daki simge paketten gelir: paketi değiştirmek imzayı (ve ona bağlı
-/// Erişilebilirlik iznini) bozacağı için ona dokunulmaz. Ana iş parçacığında çağrılmalı.
-pub fn set_app_icon(png: Option<&[u8]>) {
+/// Dock'ta, ⌘⇥ değiştiricide ve "Hakkında" penceresinde görünen simge. Paketteki simge için
+/// de görsel verilir: nil verilince Dock, sabitlenmiş Kum'un güncellemeden önceki simgesini
+/// kendi önbelleğinden gösteriyor. Finder'daki simge paketten gelir: paketi değiştirmek imzayı
+/// (ve ona bağlı Erişilebilirlik iznini) bozacağı için ona dokunulmaz. Ana iş parçacığında
+/// çağrılmalı.
+pub fn set_app_icon(png: &[u8]) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    let image =
-        png.and_then(|bytes| NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(bytes)));
-    // SAFETY: ana iş parçacığındayız; nil, Apple'ın belgelediği gibi paketteki simgeye döner.
+    let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(png));
+    // SAFETY: ana iş parçacığındayız; görsel çözülemezse nil, paketteki simgeye döner.
     unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(image.as_deref()) };
 }
 
