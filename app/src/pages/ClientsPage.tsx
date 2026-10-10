@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Building2, ChevronDown, LayoutGrid, Plus, Settings2, Table2, Trash2, X } from "lucide-react";
+import { Building2, CalendarClock, ChevronDown, LayoutGrid, Plus, Settings2, Table2, Trash2, X } from "lucide-react";
 import { api, formatDuration, type Budgets, type BudgetUsage, type Client, type Tag } from "../api";
 import { BudgetField, BudgetMeter } from "../components/Budget";
 import {
@@ -15,6 +15,7 @@ import {
   Versus,
   weekLabels,
 } from "../components/charts";
+import { ProjectBlocks } from "../components/ProjectBlocks";
 import { ErrorText } from "../components/settings";
 import {
   AlertDialog,
@@ -116,6 +117,8 @@ export default function ClientsPage({
   });
   const { data, error: loadError, reload } = useInsights(period);
   const [editing, setEditing] = useState<string | null>(null);
+  // Zaman blokları penceresi açık müşteri.
+  const [blocksOf, setBlocksOf] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -139,6 +142,7 @@ export default function ClientsPage({
 
   const { rows, none } = useMemo(() => (data ? rowsOf(data) : { rows: [], none: null }), [data]);
   const editClient = data?.clients.find((c) => c.id === editing);
+  const blocksClient = data?.clients.find((c) => c.id === blocksOf);
   // Arşivdeki projeler toplamlara sayılır, ama bağlanmayı beklemez.
   const unlinked = data ? activeProjects(data.projects).filter((p) => !data.links[p.id]) : [];
 
@@ -205,6 +209,7 @@ export default function ClientsPage({
                   period={period}
                   dayHours={data.budgets?.dayHours ?? 8}
                   onEdit={() => setEditing(r.key)}
+                  onBlocks={r.client ? () => setBlocksOf(r.key) : undefined}
                   onOpenProject={onOpenProject}
                 />
               ))}
@@ -236,10 +241,35 @@ export default function ClientsPage({
               data={data}
               run={run}
               onDeleted={() => setEditing(null)}
+              onBlocks={() => {
+                setEditing(null);
+                setBlocksOf(editClient.id);
+              }}
               onOpenProject={(id) => {
                 setEditing(null);
                 onOpenProject(id);
               }}
+            />
+          </DialogContent>
+        )}
+      </Dialog>
+
+      <Dialog open={!!blocksClient} onOpenChange={(o) => !o && setBlocksOf(null)}>
+        {blocksClient && data && (
+          <DialogContent className="sm:max-w-3xl">
+            <div className="flex items-center gap-2 pr-6">
+              <i
+                className="size-2.5 shrink-0 rounded-full"
+                style={{ background: clientColor(data.clients, blocksClient.id) }}
+              />
+              <DialogTitle className="truncate">{blocksClient.name} · zaman blokları</DialogTitle>
+            </div>
+            <DialogDescription className="-mt-3">
+              Müşterinin projelerine yazılan takvim blokları; tıklayıp düzenleyebilirsin.
+            </DialogDescription>
+            <ProjectBlocks
+              projectIds={data.projects.filter((p) => data.links[p.id] === blocksClient.id).map((p) => p.id)}
+              showProject
             />
           </DialogContent>
         )}
@@ -339,12 +369,15 @@ function ClientCard({
   period,
   dayHours,
   onEdit,
+  onBlocks,
   onOpenProject,
 }: {
   row: Row;
   period: Period;
   dayHours: number;
   onEdit: () => void;
+  /** Müşterinin zaman bloklarını açar (müşterisiz satırda yok). */
+  onBlocks?: () => void;
   onOpenProject: (id: string) => void;
 }) {
   const projects = activeProjects(r.projects);
@@ -365,6 +398,20 @@ function ClientCard({
       <div className="flex items-center gap-2">
         <i className="size-2.5 shrink-0 rounded-full" style={{ background: r.color }} />
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{r.name}</span>
+        {onBlocks && (
+          <button
+            type="button"
+            className="-my-1 grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100"
+            onClick={(e) => {
+              e.stopPropagation();
+              onBlocks();
+            }}
+            title="Zaman blokları: bu müşterinin projelerine yazılan bloklar"
+            aria-label={`${r.name} zaman blokları`}
+          >
+            <CalendarClock className="size-3.5" />
+          </button>
+        )}
         <Settings2 className="size-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" aria-hidden />
       </div>
       <div className="flex items-baseline gap-2">
@@ -583,12 +630,14 @@ function ClientEditor({
   data,
   run,
   onDeleted,
+  onBlocks,
   onOpenProject,
 }: {
   client: Client;
   data: Insights;
   run: Run;
   onDeleted: () => void;
+  onBlocks: () => void;
   onOpenProject: (id: string) => void;
 }) {
   const [name, setName] = useState(client.name);
@@ -703,7 +752,10 @@ function ClientEditor({
           </ul>
         </div>
       )}
-      <div className="flex justify-end">
+      <div className="flex justify-between">
+        <Button variant="outline" size="sm" onClick={onBlocks} disabled={projects.length === 0}>
+          <CalendarClock /> Zaman blokları
+        </Button>
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive">

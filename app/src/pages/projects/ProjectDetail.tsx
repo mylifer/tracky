@@ -13,6 +13,7 @@ import {
   Versus,
   weekLabels,
 } from "../../components/charts";
+import { ProjectBlocks } from "../../components/ProjectBlocks";
 import { TagEditor, type Run } from "../../components/TagEditor";
 import { ErrorText } from "../../components/settings";
 import { Button } from "../../components/ui/button";
@@ -23,15 +24,16 @@ import { friendlyError, useChanged } from "../../lib/feedback";
 import { formatHours, PERIOD_WORD, WEEKS, type Insights, type Period } from "../../lib/insights";
 import { NO_CLIENT, tagColor, UNCATEGORIZED } from "../../lib/tags";
 
-export type DetailTab = "overview" | "settings";
+export type DetailTab = "overview" | "blocks" | "settings";
 
 /** Proje profilinin kapsadığı gün sayısı (ısı haritası: 26 tam hafta, bu hafta dahil). */
 const DAYS = WEEKS * 7;
 
 /**
  * Proje detayı: dönem özeti, gün gün ısı haritası, haftalık süre, günün saatleri, uygulamalar,
- * kategoriler, en çok açılan pencereler ve bütçe tahmini. "Kurallar ve ayarlar" sekmesinde
- * eski Projeler sayfasındaki düzenleyici.
+ * kategoriler, en çok açılan pencereler ve bütçe tahmini. "Zaman blokları" sekmesinde projeye
+ * yazılan takvim blokları (oradan düzenlenir), "Kurallar ve ayarlar" sekmesinde eski Projeler
+ * sayfasındaki düzenleyici.
  */
 export default function ProjectDetail({
   project,
@@ -80,6 +82,9 @@ export default function ProjectDetail({
           <TabsTrigger value="overview" className="px-3">
             Genel bakış
           </TabsTrigger>
+          <TabsTrigger value="blocks" className="px-3">
+            Zaman blokları
+          </TabsTrigger>
           <TabsTrigger value="settings" className="px-3">
             Kurallar ve ayarlar
           </TabsTrigger>
@@ -88,6 +93,8 @@ export default function ProjectDetail({
       <ErrorText>{error}</ErrorText>
       {tab === "overview" ? (
         <Overview project={project} data={data} period={period} color={color} />
+      ) : tab === "blocks" ? (
+        <ProjectBlocks projectIds={[project.id]} />
       ) : (
         <div className="max-w-3xl rounded-xl border bg-card px-5 py-4 shadow-xs">
           <TagEditor
