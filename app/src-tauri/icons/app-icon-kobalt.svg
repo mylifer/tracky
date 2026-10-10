@@ -27,62 +27,62 @@
     <path d="M643.9 713.6A232 232 0 0 1 316.4 386.1Z" fill="none" stroke="url(#hem-r)" stroke-width="6" clip-path="url(#hem-c)"/>
     <ellipse cx="480.1" cy="549.9" rx="230.1" ry="91.1" transform="rotate(45 480.1 549.9)" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="3"/>
   </g>
-  <linearGradient id="d0side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.42"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.16"/></linearGradient>
-  <linearGradient id="d0face" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0.82"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.46"/><stop offset="1" stop-color="#fff" stop-opacity="0.24"/></linearGradient>
+  <linearGradient id="d0side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.14"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.03"/></linearGradient>
+  <linearGradient id="d0face" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0.34"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.12"/><stop offset="1" stop-color="#fff" stop-opacity="0.03"/></linearGradient>
   <g id="s2sh">
     <use href="#s1"/>
-    <path d="M686.6 663A226 90.4 45 0 0 367 343.4L355.6 354.7A226 90.4 45 0 0 675.3 674.4Z" transform="translate(-14 16)" fill="#0B1966" opacity="0.36" filter="url(#b16)"/>
+    <path d="M686.6 663A226 90.4 45 0 0 367 343.4L355.6 354.7A226 90.4 45 0 0 675.3 674.4Z" transform="translate(-14 16)" fill="#0B1966" opacity="0.14400000000000002" filter="url(#b16)"/>
   </g>
   <g id="s2">
     <use href="#s2sh"/>
     
   <clipPath id="d0-c"><path d="M686.6 663A226 90.4 45 0 0 367 343.4L355.6 354.7A226 90.4 45 0 0 675.3 674.4Z"/></clipPath>
-  <linearGradient id="d0-r" gradientUnits="userSpaceOnUse" x1="260" y1="260" x2="760" y2="760"><stop offset="0" stop-color="#fff" stop-opacity="0.95"/><stop offset="0.42" stop-color="#fff" stop-opacity="0.15"/><stop offset="0.68" stop-color="#fff" stop-opacity="0.075"/><stop offset="1" stop-color="#fff" stop-opacity="0.5"/></linearGradient>
+  <linearGradient id="d0-r" gradientUnits="userSpaceOnUse" x1="260" y1="260" x2="760" y2="760"><stop offset="0" stop-color="#fff"/><stop offset="0.42" stop-color="#fff" stop-opacity="0.3"/><stop offset="0.68" stop-color="#fff" stop-opacity="0.15"/><stop offset="1" stop-color="#fff" stop-opacity="0.65"/></linearGradient>
   <g clip-path="url(#d0-c)">
-    <use href="#s2sh" filter="url(#b20)"/>
+    <use href="#s2sh" filter="url(#b8)"/>
     <path d="M686.6 663A226 90.4 45 0 0 367 343.4L355.6 354.7A226 90.4 45 0 0 675.3 674.4Z" fill="url(#d0side)"/><ellipse cx="526.8" cy="503.2" rx="226" ry="90.4" transform="rotate(45 526.8 503.2)" fill="url(#d0face)"/>
     
   </g>
   <path d="M686.6 663A226 90.4 45 0 0 367 343.4L355.6 354.7A226 90.4 45 0 0 675.3 674.4Z" fill="none" stroke="url(#d0-r)" stroke-width="5" clip-path="url(#d0-c)"/>
-    <ellipse cx="526.8" cy="503.2" rx="224.5" ry="88.9" transform="rotate(45 526.8 503.2)" fill="none" stroke="#fff" stroke-opacity=".72" stroke-width="3"/>
+    <ellipse cx="526.8" cy="503.2" rx="224.5" ry="88.9" transform="rotate(45 526.8 503.2)" fill="none" stroke="#fff" stroke-opacity="0.9" stroke-width="3"/>
   </g>
-  <linearGradient id="d1side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.42"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.16"/></linearGradient>
-  <linearGradient id="d1face" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0.82"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.46"/><stop offset="1" stop-color="#fff" stop-opacity="0.24"/></linearGradient>
+  <linearGradient id="d1side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.14"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.03"/></linearGradient>
+  <linearGradient id="d1face" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0.34"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.12"/><stop offset="1" stop-color="#fff" stop-opacity="0.03"/></linearGradient>
   <g id="s3sh">
     <use href="#s2"/>
-    <path d="M723.3 595.2A204 81.6 45 0 0 434.8 306.7L423.5 318A204 81.6 45 0 0 712 606.5Z" transform="translate(-14 16)" fill="#0B1966" opacity="0.36" filter="url(#b16)"/>
+    <path d="M723.3 595.2A204 81.6 45 0 0 434.8 306.7L423.5 318A204 81.6 45 0 0 712 606.5Z" transform="translate(-14 16)" fill="#0B1966" opacity="0.14400000000000002" filter="url(#b16)"/>
   </g>
   <g id="s3">
     <use href="#s3sh"/>
     
   <clipPath id="d1-c"><path d="M723.3 595.2A204 81.6 45 0 0 434.8 306.7L423.5 318A204 81.6 45 0 0 712 606.5Z"/></clipPath>
-  <linearGradient id="d1-r" gradientUnits="userSpaceOnUse" x1="260" y1="260" x2="760" y2="760"><stop offset="0" stop-color="#fff" stop-opacity="0.95"/><stop offset="0.42" stop-color="#fff" stop-opacity="0.15"/><stop offset="0.68" stop-color="#fff" stop-opacity="0.075"/><stop offset="1" stop-color="#fff" stop-opacity="0.5"/></linearGradient>
+  <linearGradient id="d1-r" gradientUnits="userSpaceOnUse" x1="260" y1="260" x2="760" y2="760"><stop offset="0" stop-color="#fff"/><stop offset="0.42" stop-color="#fff" stop-opacity="0.3"/><stop offset="0.68" stop-color="#fff" stop-opacity="0.15"/><stop offset="1" stop-color="#fff" stop-opacity="0.65"/></linearGradient>
   <g clip-path="url(#d1-c)">
-    <use href="#s3sh" filter="url(#b20)"/>
+    <use href="#s3sh" filter="url(#b8)"/>
     <path d="M723.3 595.2A204 81.6 45 0 0 434.8 306.7L423.5 318A204 81.6 45 0 0 712 606.5Z" fill="url(#d1side)"/><ellipse cx="579.1" cy="450.9" rx="204" ry="81.6" transform="rotate(45 579.1 450.9)" fill="url(#d1face)"/>
     
   </g>
   <path d="M723.3 595.2A204 81.6 45 0 0 434.8 306.7L423.5 318A204 81.6 45 0 0 712 606.5Z" fill="none" stroke="url(#d1-r)" stroke-width="5" clip-path="url(#d1-c)"/>
-    <ellipse cx="579.1" cy="450.9" rx="202.5" ry="80.1" transform="rotate(45 579.1 450.9)" fill="none" stroke="#fff" stroke-opacity=".72" stroke-width="3"/>
+    <ellipse cx="579.1" cy="450.9" rx="202.5" ry="80.1" transform="rotate(45 579.1 450.9)" fill="none" stroke="#fff" stroke-opacity="0.9" stroke-width="3"/>
   </g>
-  <linearGradient id="d2side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.42"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.16"/></linearGradient>
-  <linearGradient id="d2face" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0.82"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.46"/><stop offset="1" stop-color="#fff" stop-opacity="0.24"/></linearGradient>
+  <linearGradient id="d2side" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="700" y2="720"><stop offset="0" stop-color="#fff" stop-opacity="0.14"/><stop offset="1" stop-color="#DCE4FF" stop-opacity="0.03"/></linearGradient>
+  <linearGradient id="d2face" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="640"><stop offset="0" stop-color="#fff" stop-opacity="0.34"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.12"/><stop offset="1" stop-color="#fff" stop-opacity="0.03"/></linearGradient>
   <g id="s4sh">
     <use href="#s3"/>
-    <path d="M751.6 521.6A172 68.8 45 0 0 508.4 278.4L497.1 289.7A172 68.8 45 0 0 740.3 532.9Z" transform="translate(-14 16)" fill="#0B1966" opacity="0.36" filter="url(#b16)"/>
+    <path d="M751.6 521.6A172 68.8 45 0 0 508.4 278.4L497.1 289.7A172 68.8 45 0 0 740.3 532.9Z" transform="translate(-14 16)" fill="#0B1966" opacity="0.14400000000000002" filter="url(#b16)"/>
   </g>
   <g id="s4">
     <use href="#s4sh"/>
     
   <clipPath id="d2-c"><path d="M751.6 521.6A172 68.8 45 0 0 508.4 278.4L497.1 289.7A172 68.8 45 0 0 740.3 532.9Z"/></clipPath>
-  <linearGradient id="d2-r" gradientUnits="userSpaceOnUse" x1="260" y1="260" x2="760" y2="760"><stop offset="0" stop-color="#fff" stop-opacity="0.95"/><stop offset="0.42" stop-color="#fff" stop-opacity="0.15"/><stop offset="0.68" stop-color="#fff" stop-opacity="0.075"/><stop offset="1" stop-color="#fff" stop-opacity="0.5"/></linearGradient>
+  <linearGradient id="d2-r" gradientUnits="userSpaceOnUse" x1="260" y1="260" x2="760" y2="760"><stop offset="0" stop-color="#fff"/><stop offset="0.42" stop-color="#fff" stop-opacity="0.3"/><stop offset="0.68" stop-color="#fff" stop-opacity="0.15"/><stop offset="1" stop-color="#fff" stop-opacity="0.65"/></linearGradient>
   <g clip-path="url(#d2-c)">
-    <use href="#s4sh" filter="url(#b20)"/>
+    <use href="#s4sh" filter="url(#b8)"/>
     <path d="M751.6 521.6A172 68.8 45 0 0 508.4 278.4L497.1 289.7A172 68.8 45 0 0 740.3 532.9Z" fill="url(#d2side)"/><ellipse cx="630" cy="400" rx="172" ry="68.8" transform="rotate(45 630 400)" fill="url(#d2face)"/>
     
   </g>
   <path d="M751.6 521.6A172 68.8 45 0 0 508.4 278.4L497.1 289.7A172 68.8 45 0 0 740.3 532.9Z" fill="none" stroke="url(#d2-r)" stroke-width="5" clip-path="url(#d2-c)"/>
-    <ellipse cx="630" cy="400" rx="170.5" ry="67.3" transform="rotate(45 630 400)" fill="none" stroke="#fff" stroke-opacity=".72" stroke-width="3"/>
+    <ellipse cx="630" cy="400" rx="170.5" ry="67.3" transform="rotate(45 630 400)" fill="none" stroke="#fff" stroke-opacity="0.9" stroke-width="3"/>
   </g>
 </defs>
 <use href="#body" fill="#000" fill-opacity=".28" transform="translate(0 10)" filter="url(#b12)"/>
