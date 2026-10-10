@@ -170,30 +170,68 @@ function BlockApps({
   color: string;
 }) {
   const total = apps.reduce((n, a) => n + a.seconds, 0);
+  const [showShort, setShowShort] = useState(false);
+  const long = apps.filter((a) => a.seconds >= SHORT_APP_MAX);
+  // Hepsi kısaysa ayrı bölüm yalnızca boş bir liste bırakır.
+  const short = long.length > 0 ? apps.filter((a) => a.seconds < SHORT_APP_MAX) : [];
+  const main = short.length > 0 ? long : apps;
+  const shortTotal = short.reduce((n, a) => n + a.seconds, 0);
+  const row = (a: BlockApp) => <AppSection key={a.appId} block={block} app={a} total={total} tags={tags} color={color} />;
   return (
     <div className="-mr-2 max-h-80 space-y-3 overflow-y-auto pr-2">
-      {apps.map((a) => {
-        const pct = total ? Math.round((a.seconds / total) * 100) : 0;
-        return (
-          <section key={a.appId}>
-            <div className="grid grid-cols-[34px_1fr_auto] items-center gap-2 text-xs">
-              <span className="text-muted-foreground tabular">%{pct}</span>
-              <span className="min-w-0">
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <AppIcon appId={a.appId} name={a.appName} size={16} />
-                  <span className="truncate font-medium">{a.appName}</span>
-                </span>
-                <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
-                  <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
-                </span>
-              </span>
-              <span className="text-muted-foreground tabular">{formatDuration(a.seconds)}</span>
-            </div>
-            <AppWindows block={block} app={a} tags={tags} />
-          </section>
-        );
-      })}
+      {main.map(row)}
+      {short.length > 0 && (
+        <section className="space-y-3">
+          <button
+            className="flex w-full items-center gap-1 rounded py-0.5 text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+            aria-expanded={showShort}
+            onClick={() => setShowShort(!showShort)}
+          >
+            <ChevronDown className={cn("size-3 transition-transform", showShort && "rotate-180")} />
+            <span className="flex-1 text-left">Kısa oturumlar · {short.length} uygulama</span>
+            <span className="tabular">{formatDuration(shortTotal)}</span>
+          </button>
+          {showShort && short.map(row)}
+        </section>
+      )}
     </div>
+  );
+}
+
+/** Bundan kısa (ekranda "1dk" ya da "<1dk") uygulamalar katlanır bölüme alınır. */
+const SHORT_APP_MAX = 120;
+
+function AppSection({
+  block,
+  app: a,
+  total,
+  tags,
+  color,
+}: {
+  block: WorkBlock;
+  app: BlockApp;
+  total: number;
+  tags: Map<string, Tag>;
+  color: string;
+}) {
+  const pct = total ? Math.round((a.seconds / total) * 100) : 0;
+  return (
+    <section>
+      <div className="grid grid-cols-[34px_1fr_auto] items-center gap-2 text-xs">
+        <span className="text-muted-foreground tabular">%{pct}</span>
+        <span className="min-w-0">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <AppIcon appId={a.appId} name={a.appName} size={16} />
+            <span className="truncate font-medium">{a.appName}</span>
+          </span>
+          <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
+            <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+          </span>
+        </span>
+        <span className="text-muted-foreground tabular">{formatDuration(a.seconds)}</span>
+      </div>
+      <AppWindows block={block} app={a} tags={tags} />
+    </section>
   );
 }
 
