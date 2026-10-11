@@ -54,3 +54,40 @@ export function blockWindows(spans: WindowSpan[], start: string, end: string): B
     .filter((a) => a.seconds > 0)
     .sort((a, b) => b.seconds - a.seconds || a.appName.localeCompare(b.appName, "tr"));
 }
+
+/** Bloğun içinde verilen projelere düşen süre ve bu sürenin aralıkları (unix ms). */
+export type ProjectShare = { seconds: number; ranges: [number, number][] };
+
+/**
+ * Bloğun `[start, end)` aralığında `ids` projelerine yazılmış pencereler. Aralıklar, arada başka
+ * projenin (ya da projesiz) penceresi yoksa birleşir: aralığa yapılan düzenleme yalnızca bu
+ * projenin süresine dokunsun, kayıtsız boşluklar da tek aralıkta kalsın.
+ */
+export function projectShare(spans: WindowSpan[], start: string, end: string, ids: Set<string>): ProjectShare {
+  const from = Date.parse(start);
+  const to = Date.parse(end);
+  const inside = spans
+    .map((w) => ({
+      a: Math.max(Date.parse(w.start), from),
+      b: Math.min(Date.parse(w.end), to),
+      own: w.projectId !== null && ids.has(w.projectId),
+    }))
+    .filter((w) => w.b > w.a)
+    .sort((x, y) => x.a - y.a);
+  const ranges: [number, number][] = [];
+  let seconds = 0;
+  // Son aralıktan sonra başka projenin penceresi geldi mi: geldiyse yeni aralık başlar.
+  let broken = true;
+  for (const w of inside) {
+    if (!w.own) {
+      broken = true;
+      continue;
+    }
+    seconds += (w.b - w.a) / 1000;
+    const last = ranges[ranges.length - 1];
+    if (last && !broken) last[1] = Math.max(last[1], w.b);
+    else ranges.push([w.a, w.b]);
+    broken = false;
+  }
+  return { seconds: Math.round(seconds), ranges };
+}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { api, formatDuration, type Report, type Tag, type WorkBlock } from "../api";
+import { api, type Edited, formatDuration, NO_PROJECT, type Report, type Tag, type WorkBlock } from "../api";
+import { projectShare, type ProjectShare } from "../lib/blockWindows";
 import {
   addDays,
   addMonths,
@@ -28,6 +29,12 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
 type Span = "week" | "month";
+
+/** Listede bir satır: bloğun kendisi ya da (başka projenin bloğundaysa) bu projenin payı. */
+type Item = { b: WorkBlock; seconds: number; share?: ProjectShare };
+
+/** Başka projenin bloğunda bundan kısa pay listelenmez. */
+const PART_MIN_S = 60;
 
 const dayFmt = new Intl.DateTimeFormat("tr-TR", { weekday: "long", day: "numeric", month: "long" });
 
@@ -75,23 +82,31 @@ export function ProjectBlocks({ projectIds, showProject = false }: { projectIds:
   const groups = useMemo(() => {
     if (!data) return [];
     const ids = new Set(idsKey.split(","));
-    const byDay = new Map<string, WorkBlock[]>();
+    const byDay = new Map<string, Item[]>();
     for (const b of data.work.blocks) {
-      if (!b.projectId || !ids.has(b.projectId)) continue;
+      let item: Item;
+      if (b.projectId && ids.has(b.projectId)) item = { b, seconds: b.activeSeconds };
+      else {
+        // Başka projenin (ya da projesiz) bloğunun içinde bu projeye yazılmış süre: blok listede
+        // görünmese de proje toplamına sayılır, buradan bloğun projesine verilebilsin.
+        const share = projectShare(data.windows, b.start, b.end, ids);
+        if (share.seconds < PART_MIN_S) continue;
+        item = { b, seconds: share.seconds, share };
+      }
       const day = isoDate(new Date(b.start));
-      byDay.set(day, [...(byDay.get(day) ?? []), b]);
+      byDay.set(day, [...(byDay.get(day) ?? []), item]);
     }
     // En yeni gün üstte; gün içinde saat sırasıyla.
     return [...byDay.entries()]
       .sort(([a], [b]) => b.localeCompare(a))
-      .map(([day, blocks]) => ({
+      .map(([day, items]) => ({
         day,
-        blocks: blocks.sort((a, b) => a.start.localeCompare(b.start)),
-        seconds: blocks.reduce((n, b) => n + b.activeSeconds, 0),
+        items: items.sort((x, y) => x.b.start.localeCompare(y.b.start)),
+        seconds: items.reduce((n, i) => n + i.seconds, 0),
       }));
   }, [data, idsKey]);
   const total = groups.reduce((n, g) => n + g.seconds, 0);
-  const count = groups.reduce((n, g) => n + g.blocks.length, 0);
+  const count = groups.reduce((n, g) => n + g.items.length, 0);
 
   const shift = (n: number) => setAnchor(span === "week" ? addDays(start, n * 7) : addMonths(start, n));
   const isCurrent = isoDate(span === "week" ? startOfWeek(today()) : startOfMonth(today())) === startIso;
@@ -143,12 +158,21 @@ export function ProjectBlocks({ projectIds, showProject = false }: { projectIds:
             {groups.map((g) => (
               <section key={g.day} className="overflow-hidden rounded-xl border bg-card shadow-xs">
                 <header className="flex items-center justify-between border-b bg-muted/40 px-3 py-1.5 text-xs">
-                  <span className="font-medium">{capitalize(dayFmt.format(new Date(g.blocks[0].start)))}</span>
+                  <span className="font-medium">{capitalize(dayFmt.format(new Date(g.items[0].b.start)))}</span>
                   <span className="text-muted-foreground tabular">{formatDuration(g.seconds)}</span>
                 </header>
                 <ul className="divide-y">
-                  {g.blocks.map((b) => (
-                    <BlockRow key={b.start} b={b} tags={tags} windows={data.windows} showProject={showProject} />
+                  {g.items.map(({ b, seconds, share }) => (
+                    <BlockRow
+                      key={b.start}
+                      b={b}
+                      seconds={seconds}
+                      share={share}
+                      ids={projectIds}
+                      tags={tags}
+                      windows={data.windows}
+                      showProject={showProject}
+                    />
                   ))}
                 </ul>
               </section>
@@ -157,8 +181,8 @@ export function ProjectBlocks({ projectIds, showProject = false }: { projectIds:
         </EditContext.Provider>
       )}
       <p className="text-[11px] text-muted-foreground">
-        Çoğunluğu bu projede geçen takvim blokları. Bloğa tıkla: saatleri, projeyi, kategoriyi değiştir ya da sil; zaman
-        çizelgesi de buna göre güncellenir.
+        Bu projeye yazılan takvim blokları; başka projenin bloğunun içinde kalan süre “… bloğunda” diye ayrıca görünür.
+        Bloğa tıkla: saatleri, projeyi, kategoriyi değiştir ya da sil; zaman çizelgesi de buna göre güncellenir.
       </p>
     </div>
   );
@@ -166,17 +190,26 @@ export function ProjectBlocks({ projectIds, showProject = false }: { projectIds:
 
 function BlockRow({
   b,
+  seconds,
+  share,
+  ids,
   tags,
   windows,
   showProject,
 }: {
   b: WorkBlock;
+  /** Listede sayılan süre: bloğun tamamı ya da bloktaki bu projenin payı. */
+  seconds: number;
+  share?: ProjectShare;
+  ids: string[];
   tags: Map<string, Tag>;
   windows: Report["windows"];
   showProject: boolean;
 }) {
   const project = b.projectId ? tags.get(b.projectId) : undefined;
   const category = b.categoryId ? tags.get(b.categoryId) : undefined;
+  // Paydaki projeler (müşteride birden çok olabilir): adları satırda yazılır.
+  const shareNames = share ? partNames(windows, share, ids, tags) : "";
   return (
     <li>
       <Popover>
@@ -186,28 +219,126 @@ function BlockRow({
             className="grid w-full grid-cols-[92px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-left text-xs transition-colors hover:bg-accent/60 data-[state=open]:bg-accent"
           >
             <span className="tabular">
-              {formatTime(new Date(b.start))} – {formatTime(new Date(b.end))}
+              {share
+                ? `${formatTime(new Date(share.ranges[0][0]))} – ${formatTime(new Date(share.ranges[share.ranges.length - 1][1]))}`
+                : `${formatTime(new Date(b.start))} – ${formatTime(new Date(b.end))}`}
             </span>
-            <span className="flex min-w-0 items-center gap-2">
-              <i
-                className="h-4 w-[3px] shrink-0 rounded-full"
-                style={{ background: tagColor(showProject ? project : category) }}
-              />
-              {showProject && project && <span className="shrink-0 font-medium">{project.name}</span>}
-              <span className="truncate text-muted-foreground">
-                {category?.name ?? UNCATEGORIZED} · {b.topApps.map((a) => a.appName).join(", ")}
+            {share ? (
+              <span className="flex min-w-0 items-center gap-2">
+                <i className="h-4 w-[3px] shrink-0 rounded-full border border-dashed border-muted-foreground/60" />
+                {showProject && <span className="shrink-0 font-medium">{shareNames}</span>}
+                <span className="truncate text-muted-foreground">
+                  {project?.name ?? "Projesiz"} bloğunda ({formatTime(new Date(b.start))}–{formatTime(new Date(b.end))})
+                </span>
               </span>
-              <AppIconStack apps={b.topApps} size={14} className="ml-auto shrink-0" />
-            </span>
-            <span className="font-medium tabular">{formatDuration(b.activeSeconds)}</span>
+            ) : (
+              <span className="flex min-w-0 items-center gap-2">
+                <i
+                  className="h-4 w-[3px] shrink-0 rounded-full"
+                  style={{ background: tagColor(showProject ? project : category) }}
+                />
+                {showProject && project && <span className="shrink-0 font-medium">{project.name}</span>}
+                <span className="truncate text-muted-foreground">
+                  {category?.name ?? UNCATEGORIZED} · {b.topApps.map((a) => a.appName).join(", ")}
+                </span>
+                <AppIconStack apps={b.topApps} size={14} className="ml-auto shrink-0" />
+              </span>
+            )}
+            <span className="font-medium tabular">{formatDuration(seconds)}</span>
           </button>
         </PopoverTrigger>
         <PopoverContent side="bottom" align="end" className="w-96 space-y-3">
-          <BlockTimes b={b} tags={tags} />
+          {share ? <SharePart b={b} share={share} names={shareNames} tags={tags} /> : <BlockTimes b={b} tags={tags} />}
           <BlockDetails block={b} tags={tags} windows={windows} />
         </PopoverContent>
       </Popover>
     </li>
+  );
+}
+
+/** Paydaki projelerin adları ("Togg", müşteride "Togg, Portal"). */
+function partNames(windows: Report["windows"], share: ProjectShare, ids: string[], tags: Map<string, Tag>) {
+  const found = new Set<string>();
+  for (const w of windows) {
+    if (!w.projectId || !ids.includes(w.projectId)) continue;
+    const a = Date.parse(w.start);
+    const b = Date.parse(w.end);
+    if (share.ranges.some(([x, y]) => a < y && b > x)) found.add(w.projectId);
+  }
+  return [...found].map((id) => tags.get(id)?.name ?? "Proje").join(", ");
+}
+
+/**
+ * Başka projenin bloğunun içinde kalan pay: bloğun projesine verilir, projesiz yapılır ya da
+ * silinir. Yalnızca payın aralıklarına dokunulur; bloğun geri kalanı değişmez.
+ */
+function SharePart({
+  b,
+  share,
+  names,
+  tags,
+}: {
+  b: WorkBlock;
+  share: ProjectShare;
+  names: string;
+  tags: Map<string, Tag>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const owner = b.projectId ? tags.get(b.projectId) : undefined;
+  const iso = (t: number) => new Date(t).toISOString();
+  const span = share.ranges.map(([a, z]) => `${formatTime(new Date(a))}–${formatTime(new Date(z))}`).join(", ");
+
+  async function apply(edit: (a: string, z: string) => Promise<Edited>, message: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      for (const [a, z] of share.ranges) await undoable(edit(iso(a), iso(z)), message);
+      notifyChanged();
+    } catch (e) {
+      setError(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-md bg-muted/60 px-2.5 py-2 text-xs">
+      <p>
+        {owner?.name ?? "Projesiz"} bloğunun içinde <strong>{names}</strong> projesine yazılı süre:{" "}
+        <strong className="tabular">{formatDuration(share.seconds)}</strong>{" "}
+        <span className="text-muted-foreground tabular">({span})</span>
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {owner && (
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => apply((a, z) => api.setRangeProject(a, z, owner.id), `${owner.name} projesine atandı`)}
+          >
+            {owner.name} projesine ver
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => apply((a, z) => api.setRangeProject(a, z, NO_PROJECT), "Projesiz olarak işaretlendi")}
+        >
+          Projesiz yap
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="text-muted-foreground hover:text-destructive"
+          disabled={busy}
+          onClick={() => apply((a, z) => api.deleteRange(a, z), "Süre silindi")}
+        >
+          Sil
+        </Button>
+      </div>
+      {error && <p className="text-[11px] text-destructive selectable">{error}</p>}
+    </div>
   );
 }
 

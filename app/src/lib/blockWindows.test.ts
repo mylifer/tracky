@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WindowSpan } from "../api";
-import { blockWindows } from "./blockWindows";
+import { blockWindows, projectShare } from "./blockWindows";
 
 const at = (min: number) => new Date(Date.UTC(2026, 9, 5, 9, min)).toISOString();
 const span = (app: string, title: string, from: number, to: number, projectId: string | null = null): WindowSpan => ({
@@ -48,5 +48,38 @@ describe("takvim bloğundaki pencereler", () => {
       ["kum", 5 * 60],
       [null, 5 * 60],
     ]);
+  });
+});
+
+describe("bloktaki projenin payı", () => {
+  const ids = new Set(["togg"]);
+  it("arada başka proje yoksa aralıkları birleştirir, varsa ayırır", () => {
+    const share = projectShare(
+      [
+        span("Code", "a", 0, 10, "togg"),
+        span("Chrome", "b", 12, 20, "togg"),
+        span("Code", "c", 20, 30, "trumore"),
+        span("Code", "d", 30, 40, "togg"),
+        span("Code", "e", 40, 90, "trumore"),
+      ],
+      at(5),
+      at(60),
+      ids,
+    );
+    expect(share.seconds).toBe((5 + 8 + 10) * 60);
+    expect(share.ranges).toEqual([
+      [Date.parse(at(5)), Date.parse(at(20))],
+      [Date.parse(at(30)), Date.parse(at(40))],
+    ]);
+  });
+
+  it("projesiz pencere de aralığı böler", () => {
+    const share = projectShare(
+      [span("Code", "a", 0, 10, "togg"), span("Code", "b", 10, 12), span("Code", "c", 12, 20, "togg")],
+      at(0),
+      at(20),
+      ids,
+    );
+    expect(share.ranges).toHaveLength(2);
   });
 });
