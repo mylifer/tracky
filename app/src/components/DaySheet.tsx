@@ -7,6 +7,7 @@ import {
   formatDuration,
   type Report,
   type Tag,
+  type Timesheet,
   type TimesheetDay,
   type UnassignedMeeting,
 } from "../api";
@@ -20,7 +21,7 @@ import { tagColor, tagInk, UNASSIGNED } from "../lib/tags";
 import { blocked, isStale, needsDetails, running as entryRunning, started } from "../lib/timesheet";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { cn } from "../lib/utils";
-import { exportNotice, KINDS, num, toRef } from "../pages/timesheet/shared";
+import { defaultDivision, exportNotice, KINDS, num, toRef } from "../pages/timesheet/shared";
 
 /** Bloğun yüksekliği süreyle uzar (dakika başına), kısa işte de okunur, uzun işte sayfayı kaplamaz. */
 const PX_PER_MIN = 0.8;
@@ -48,7 +49,7 @@ type Line =
   | { kind: "off"; key: string; from: number; to: number; projectId: string; app: string }
   | { kind: "meeting"; key: string; from: number; to: number; meeting: UnassignedMeeting };
 
-type Sheet = { id: string; projects: Set<string>; day: TimesheetDay | null };
+type Sheet = { id: string; info: Timesheet; projects: Set<string>; day: TimesheetDay | null };
 
 /** Projesi olan çizelgeler ve günün satırları. */
 async function fetchSheets(day: string): Promise<Sheet[]> {
@@ -57,6 +58,7 @@ async function fetchSheets(day: string): Promise<Sheet[]> {
   const days = await Promise.all(list.map((t) => api.timesheetDays(t.id, day, 1)));
   return list.map((t, i) => ({
     id: t.id,
+    info: t,
     projects: new Set(t.projects.map((m) => m.projectId)),
     day: days[i][0] ?? null,
   }));
@@ -69,7 +71,7 @@ async function fetchSheets(day: string): Promise<Sheet[]> {
  * sütunlarda. Projesiz blok, takvimde bir satırın adını alıyorsa (ör. toplantı satırının
  * içindeki iş) ayrıca listelenmez: süresi çizelgede zaten var.
  */
-export function buildLines(sheets: Sheet[] | null, report: Report): Line[] {
+export function buildLines(sheets: Omit<Sheet, "info">[] | null, report: Report): Line[] {
   const out: Line[] = [];
   const sheetProjects = new Set<string>();
   const meetings = new Set<string>();
@@ -280,7 +282,7 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
               {lines.map((l) => (
                 <Fragment key={l.key}>
                   {gaps.has(l.key) && <GapRow ms={gaps.get(l.key)!} />}
-                  <Row line={l} tags={tags} projects={projects} running={running(l)} run={run} />
+                  <Row line={l} tags={tags} projects={projects} sheets={sheets} running={running(l)} run={run} />
                 </Fragment>
               ))}
             </tbody>
@@ -343,18 +345,21 @@ function Row({
   line: l,
   tags,
   projects,
+  sheets,
   running,
   run,
 }: {
   line: Line;
   tags: Map<string, Tag>;
   projects: Tag[];
+  sheets: Sheet[];
   running: boolean;
   run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
   const start = hm.format(new Date(l.from));
   const hours = num.format((l.to - l.from) / 3600_000);
-  if (l.kind === "entry") return <EntryLine line={l} tags={tags} running={running} run={run} />;
+  if (l.kind === "entry")
+    return <EntryLine line={l} tags={tags} projects={projects} sheets={sheets} running={running} run={run} />;
   if (l.kind === "off") {
     const tag = tags.get(l.projectId);
     return (
@@ -420,15 +425,19 @@ function Row({
   );
 }
 
-/** Çizelge satırı: saat, tür ve açıklama yerinde düzenlenir (gönderilmişse salt okunur). */
+/** Çizelge satırı: saat, tür, proje ve açıklama yerinde düzenlenir (gönderilmişse salt okunur). */
 function EntryLine({
   line,
   tags,
+  projects,
+  sheets,
   running,
   run,
 }: {
   line: Extract<Line, { kind: "entry" }>;
   tags: Map<string, Tag>;
+  projects: Tag[];
+  sheets: Sheet[];
   running: boolean;
   run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
@@ -446,6 +455,34 @@ function EntryLine({
     const h = Number(hours.replace(",", "."));
     if (!(h > 0)) return setHours(num.format(e.hours));
     save({ hours: Math.round(h * 4) / 4 });
+  };
+  /**
+   * Satırı başka projeye taşır: takipteki aralıkları da (blok = satır, takvim de değişir).
+   * Kaydedilmiş satırın aralıkları yeniden önerilmez; satırın kendisi de yeni projeye geçer,
+   * proje bir çizelgeye bağlı değilse çizelgeden çıkar.
+   */
+  const move = (id: string) => {
+    if (id === e.projectId) return;
+    const message = `${tags.get(id)?.name ?? "Proje"} projesine taşındı`;
+    const parts = (e.coverage ?? []).filter(([a, b]) => b > a);
+    void run(async () => {
+      for (const [a, b] of parts) {
+        const edit = api.setRangeProject(new Date(a).toISOString(), new Date(b).toISOString(), id);
+        // Kaydedilmiş satır geri almayla eski projesine dönmez: geri almayı önerme.
+        await (e.id ? edit : undoable(edit, message));
+      }
+      if (!e.id) return;
+      const target = sheets.find((s) => s.projects.has(id))?.info;
+      if (!target) await api.dismissTimesheetEntry(e.id, e);
+      else
+        await api.saveTimesheetEntry(e.id, {
+          ...e,
+          projectId: id,
+          party: target.projects.find((m) => m.projectId === id)?.party || target.defaultParty,
+          division: defaultDivision(target, projects, id),
+        });
+      toast(message, { tone: "success" });
+    });
   };
   const field =
     "h-7 w-full rounded-md border border-transparent bg-transparent px-1.5 outline-none hover:border-input focus:border-input focus:bg-background focus-visible:ring-2 focus-visible:ring-ring/40";
@@ -508,7 +545,13 @@ function EntryLine({
         </select>
       </td>
       <td className={cn(TD, "w-40")}>
-        <ProjectName tag={tag} />
+        <ProjectSelect
+          value={e.projectId}
+          projects={projects}
+          className="h-7 w-36 text-xs"
+          aria-label={`${e.start.slice(0, 5)} satırının projesi`}
+          onChange={(id) => id && move(id)}
+        />
       </td>
       <td className={TD}>
         <input
