@@ -228,7 +228,7 @@ export function NowLine({ day, range }: { day: Date; range: Range }) {
   const top = topFn(+day, range)(Date.now());
   if (top < 0 || top > (range.last - range.first) * range.px) return null;
   return (
-    <span className="pointer-events-none absolute inset-x-0 z-10 h-px bg-destructive" style={{ top }}>
+    <span data-now-line className="pointer-events-none absolute inset-x-0 z-10 h-px bg-destructive" style={{ top }}>
       <span className="absolute -top-[3px] -left-[3px] size-[7px] rounded-full bg-destructive" />
     </span>
   );

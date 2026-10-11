@@ -420,6 +420,21 @@ export default function ReportView(p: Props) {
     if (scroller.current) scroller.current.scrollTop = 0;
   };
 
+  // Bugünü gösteren gün/hafta açılınca şimdiki saat ekranın ortasına gelir (yapışkan başlıkların
+  // altında kalan alanın ortası). Dönem başına bir kez: sonraki yenilemeler kaydırmayı bozmasın.
+  const centered = useRef<string | null>(null);
+  useEffect(() => {
+    const key = `${p.mode}:${p.start}:${sheetView}`;
+    if (centered.current === key) return;
+    const box = scroller.current;
+    const line = calendarArea?.querySelector("[data-now-line]");
+    if (!box || !line) return;
+    centered.current = key;
+    const y = line.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+    const top = barHeight + headHeight;
+    box.scrollTop = Math.max(0, y - (top + box.clientHeight) / 2);
+  });
+
   // Klavye: +/− yakınlaştır, 0 sıfırla (⌘ ile ya da tek başına).
   const zoomKeys = useRef(setZoom);
   zoomKeys.current = setZoom;
