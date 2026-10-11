@@ -3,7 +3,6 @@ import {
   AppWindow,
   CheckCircle2,
   ChevronDown,
-  Coffee,
   EyeOff,
   FileSpreadsheet,
   FolderKanban,
@@ -28,7 +27,7 @@ import { RulePreview } from "../components/RulePreview";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { addDays, formatDate, formatTime, isoDate, parseIsoDate, startOfWeek, today } from "../lib/dates";
+import { addDays, formatDate, isoDate, parseIsoDate, startOfWeek, today } from "../lib/dates";
 import { addSuggestedRule, friendlyError, notifyChanged, toast, undoable, useChanged } from "../lib/feedback";
 import { readRecent, rememberRecent } from "../lib/projectOptions";
 import { ruleReason, ruleSubject } from "../lib/ruleSuggestions";
@@ -45,6 +44,8 @@ const PERIODS: { id: Period; label: string }[] = [
 const PERIOD_KEY = "kum.review.period";
 /** "Bundan sonra da otomatik yaz" son seçimi. */
 const RULE_KEY = "kum.review.rule";
+/** Atlanan gruplar (`site:alan`, `app:kimlik`): kartta bir daha gelmez, altta listelenir. */
+const SKIPPED_KEY = "kum.review.skipped";
 
 /** Başka bir sayfadan verilen aralık (raporda bakılan gün/hafta/ay, zaman çizelgesindeki gün). */
 export type ReviewRange = { start: string; days: number };
@@ -80,6 +81,23 @@ function savedPeriod(): Period {
   return "week";
 }
 
+function savedSkipped(): string[] {
+  try {
+    const list: unknown = JSON.parse(localStorage.getItem(SKIPPED_KEY) ?? "[]");
+    return Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSkipped(keys: string[]) {
+  try {
+    localStorage.setItem(SKIPPED_KEY, JSON.stringify(keys));
+  } catch {
+    /* depolama kapalıysa bu oturumla sınırlı kalır */
+  }
+}
+
 function savedRule(): boolean {
   try {
     return localStorage.getItem(RULE_KEY) === "1";
@@ -93,15 +111,11 @@ const CARD_ITEMS = 4;
 /** Kartta numaralı (1–4) proje düğmesi sayısı. */
 const CHOICES = 4;
 
-/** Sıradaki tek kart: projeye düşmeyen bir site/uygulama grubu ya da boşta geçen bir aralık. */
-type Entry =
-  | { key: string; kind: "group"; group: UnassignedGroup; seconds: number }
-  | { key: string; kind: "idle"; start: string; end: string; seconds: number };
-
 /**
  * Gözden geçir: hiçbir projeye düşmeyen süre, sırayla tek kart. Her kart bir site/uygulama
- * grubu ya da boşta aralık; numaralı düğmeyle (1–4) projeye atanır, istenirse kural da eklenir
- * (geçmişe ve geleceğe uygulanır). Atla kartı sona alır. Her atama geri alınabilir.
+ * grubu; numaralı düğmeyle (1–4) projeye atanır, istenirse kural da eklenir (geçmişe ve geleceğe
+ * uygulanır). Atlanan grup kartta bir daha gelmez, altta "Atlananlar"da durur. Boşta geçen süre
+ * burada önerilmez (takvimden atanır). Her atama geri alınabilir.
  */
 export default function Review({
   range,
@@ -116,7 +130,6 @@ export default function Review({
   const [period, setPeriodState] = useState<Period>(() => (range ? "custom" : savedPeriod()));
   const setPeriod = (p: Period) => {
     setPeriodState(p);
-    setSkipped([]);
     setDone(0);
     try {
       if (p !== "custom") localStorage.setItem(PERIOD_KEY, p);
@@ -133,8 +146,13 @@ export default function Review({
   const [ignored, setIgnored] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<RuleSuggestion[]>([]);
   const [error, setError] = useState<string | null>(null);
-  /** Atlanan kartlar (sırayla sona gider). */
-  const [skipped, setSkipped] = useState<string[]>([]);
+  const [skipped, setSkippedState] = useState<string[]>(savedSkipped);
+  const setSkipped = (f: (keys: string[]) => string[]) =>
+    setSkippedState((keys) => {
+      const next = f(keys);
+      saveSkipped(next);
+      return next;
+    });
   /** Bu dönemde bu sayfada atanan kart sayısı (sayaç için). */
   const [done, setDone] = useState(0);
   // Atanan kart yanıt beklenmeden gizlenir; atama bitince ve yeni liste gelince bırakılır
@@ -183,19 +201,14 @@ export default function Review({
 
   const queue = useMemo(() => {
     if (!data) return [];
-    const all: Entry[] = [
-      ...data.groups.map((g): Entry => ({ key: g.key, kind: "group", group: g, seconds: g.seconds })),
-      ...data.idle.map((s): Entry => ({ key: `idle:${s.start}`, kind: "idle", ...s })),
-    ]
-      .filter((e) => !hidden.current.has(e.key))
-      .sort((a, b) => b.seconds - a.seconds);
-    const rank = (e: Entry) => skipped.indexOf(e.key);
-    return [...all.filter((e) => rank(e) < 0), ...all.filter((e) => rank(e) >= 0).sort((a, b) => rank(a) - rank(b))];
+    return data.groups.filter((g) => !hidden.current.has(g.key)).sort((a, b) => b.seconds - a.seconds);
     // `hidden` bir ref; değişince `redraw` yeniden hesaplatır.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, skipped, hidden.current.size]);
-  const current = queue[0] ?? null;
-  const left = queue.reduce((a, e) => a + e.seconds, 0);
+  }, [data, hidden.current.size]);
+  const waiting = queue.filter((g) => !skipped.includes(g.key));
+  const skippedGroups = queue.filter((g) => skipped.includes(g.key));
+  const current = waiting[0] ?? null;
+  const left = queue.reduce((a, g) => a + g.seconds, 0);
 
   /** Kartı gizleyip işi yapar; hata olursa kart geri gelir. */
   async function settle(key: string, work: () => Promise<unknown>) {
@@ -205,7 +218,6 @@ export default function Review({
       await work();
       hidden.current.set(key, true);
       setDone((d) => d + 1);
-      setSkipped((s) => s.filter((k) => k !== key));
       notifyChanged();
     } catch (e) {
       hidden.current.delete(key);
@@ -218,14 +230,9 @@ export default function Review({
     return id === NO_PROJECT ? "Projesiz" : (projects.find((p) => p.id === id)?.name ?? "proje");
   }
 
-  function assignEntry(entry: Entry, projectId: string, rule: [RuleField, string] | null) {
+  function assignGroup(g: UnassignedGroup, projectId: string, rule: [RuleField, string] | null) {
     if (projectId !== NO_PROJECT) rememberRecent(projectId);
-    if (entry.kind === "idle")
-      return settle(entry.key, () =>
-        undoable(api.setRangeProject(entry.start, entry.end, projectId), `Boşta süre → ${projectName(projectId)}`),
-      );
-    const g = entry.group;
-    return settle(entry.key, () =>
+    return settle(g.key, () =>
       undoable(
         api.assignUnassigned(start, days, g.key, null, projectId, rule),
         projectId === NO_PROJECT
@@ -263,7 +270,11 @@ export default function Review({
   }
 
   function skip(key: string) {
-    setSkipped((s) => [...s.filter((k) => k !== key), key]);
+    setSkipped((keys) => [...keys.filter((k) => k !== key), key]);
+  }
+
+  function unskip(key: string) {
+    setSkipped((keys) => keys.filter((k) => k !== key));
   }
 
   async function dismissSuggestion(s: RuleSuggestion) {
@@ -317,24 +328,31 @@ export default function Review({
           ) : current ? (
             <div className="space-y-3">
               <p className="text-center text-xs text-muted-foreground tabular">
-                <b className="font-semibold text-foreground">{done + 1}</b> / {done + queue.length}
+                <b className="font-semibold text-foreground">{done + 1}</b> / {done + waiting.length}
               </p>
               <ReviewCard
                 key={current.key}
-                entry={current}
+                group={current}
                 projects={projects}
                 tags={tags}
                 projectSeconds={projectSeconds}
-                onAssign={(p, rule) => assignEntry(current, p, rule)}
-                onAssignTitle={(title, p, rule) =>
-                  current.kind === "group" && assignTitle(current.group, title, p, rule)
-                }
-                onSkip={queue.length > 1 ? () => skip(current.key) : undefined}
-                onIgnore={current.kind === "group" ? () => ignore(current.key, current.group.label) : undefined}
+                onAssign={(p, rule) => assignGroup(current, p, rule)}
+                onAssignTitle={(title, p, rule) => assignTitle(current, title, p, rule)}
+                onSkip={() => skip(current.key)}
+                onIgnore={() => ignore(current.key, current.label)}
               />
             </div>
           ) : (
-            <AllDone />
+            <AllDone skipped={skippedGroups.length} />
+          )}
+
+          {skippedGroups.length > 0 && projects.length > 0 && (
+            <SkippedList
+              groups={skippedGroups}
+              projects={projects}
+              onAssign={(g, p) => assignGroup(g, p, null)}
+              onRestore={unskip}
+            />
           )}
 
           {pending.length > 0 && (
@@ -413,10 +431,8 @@ const RULE_TEXT: Record<RuleField, string> = {
   title: "Başlığında şu geçenleri hep bu projeye yaz",
 };
 
-const dayTime = (iso: string) => `${formatDate(new Date(iso))} ${formatTime(new Date(iso))}`;
-
 function ReviewCard({
-  entry,
+  group,
   projects,
   tags,
   projectSeconds,
@@ -425,24 +441,23 @@ function ReviewCard({
   onSkip,
   onIgnore,
 }: {
-  entry: Entry;
+  group: UnassignedGroup;
   projects: Tag[];
   tags: Tag[];
   projectSeconds: Record<string, number>;
   onAssign: (projectId: string, rule: [RuleField, string] | null) => Promise<void>;
   onAssignTitle: (title: string, projectId: string, rule: [RuleField, string] | null) => void;
-  onSkip?: () => void;
-  onIgnore?: () => void;
+  onSkip: () => void;
+  onIgnore: () => void;
 }) {
-  const group = entry.kind === "group" ? entry.group : null;
-  const likely = group?.likelyProject ?? null;
+  const likely = group.likelyProject;
   const choices = useMemo(
     () => pickChoices(projects, likely, projectSeconds),
     // Kart açıldığında sabitlenir: atama "son seçilenler"i değiştirince düğmeler kaymasın.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [entry.key, projects],
+    [group.key, projects],
   );
-  const field: RuleField = group?.kind === "site" ? "domain" : "app";
+  const field: RuleField = group.kind === "site" ? "domain" : "app";
   const [rule, setRuleState] = useState(savedRule);
   const setRule = (v: boolean) => {
     setRuleState(v);
@@ -452,11 +467,11 @@ function ReviewCard({
       /* depolama kapalı */
     }
   };
-  const [pattern, setPattern] = useState(group?.pattern ?? "");
+  const [pattern, setPattern] = useState(group.pattern);
   const [previewFor, setPreviewFor] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
-  const ruleOn = !!group && rule && pattern.trim().length > 0;
+  const ruleOn = rule && pattern.trim().length > 0;
 
   async function choose(projectId: string) {
     if (busy) return;
@@ -476,7 +491,7 @@ function ReviewCard({
     if (el?.closest("input, textarea, select, [contenteditable], [role=dialog], [role=listbox], [role=menu]")) return;
     const n = Number(e.key);
     if (n >= 1 && n <= choices.length) void choose(choices[n - 1].id);
-    else if ((e.key === "s" || e.key === "S") && onSkip) onSkip();
+    else if (e.key === "s" || e.key === "S") onSkip();
     else return;
     e.preventDefault();
   };
@@ -486,8 +501,8 @@ function ReviewCard({
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  const Icon = entry.kind === "idle" ? Coffee : group?.kind === "site" ? Globe : AppWindow;
-  const items = group ? (expanded ? group.items : group.items.slice(0, CARD_ITEMS)) : [];
+  const Icon = group.kind === "site" ? Globe : AppWindow;
+  const items = expanded ? group.items : group.items.slice(0, CARD_ITEMS);
   const likelyTag = projects.find((p) => p.id === likely);
   const preview = previewFor ?? choices[0]?.id;
 
@@ -497,26 +512,22 @@ function ReviewCard({
         <div
           className={cn(
             "grid size-10 shrink-0 place-items-center rounded-xl",
-            entry.kind === "idle"
-              ? "bg-amber-500/14 text-amber-600 dark:text-amber-400"
-              : group?.kind === "site"
-                ? "bg-sky-500/12 text-sky-600 dark:text-sky-400"
-                : "bg-violet-500/12 text-violet-600 dark:text-violet-400",
+            group.kind === "site"
+              ? "bg-sky-500/12 text-sky-600 dark:text-sky-400"
+              : "bg-violet-500/12 text-violet-600 dark:text-violet-400",
           )}
         >
           <Icon className="size-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[15px] font-semibold" title={group?.label}>
-            {group ? group.label : "Bilgisayardan uzakta"}
+          <div className="truncate text-[15px] font-semibold" title={group.label}>
+            {group.label}
           </div>
           <div className="truncate text-xs text-muted-foreground tabular">
-            {entry.kind === "idle"
-              ? `${dayTime(entry.start)} – ${formatTime(new Date(entry.end))} · toplantı ya da yüz yüze iş miydi?`
-              : `${group!.kind === "site" ? group!.appName : "Uygulama"} · ${group!.items.length + group!.more} pencere`}
+            {group.kind === "site" ? group.appName : "Uygulama"} · {group.items.length + group.more} pencere
           </div>
         </div>
-        <div className="shrink-0 text-[22px] font-semibold tracking-tight tabular">{formatDuration(entry.seconds)}</div>
+        <div className="shrink-0 text-[22px] font-semibold tracking-tight tabular">{formatDuration(group.seconds)}</div>
       </div>
 
       {likelyTag && (
@@ -531,7 +542,7 @@ function ReviewCard({
         </p>
       )}
 
-      {group && (items.length > 0 || group.more > 0) && (
+      {(items.length > 0 || group.more > 0) && (
         <ul className="-mx-2 border-t pt-2">
           {items.map((item) => (
             <TitleRow
@@ -594,57 +605,55 @@ function ReviewCard({
         )}
       </div>
 
-      {group && (
-        <div className="space-y-2">
-          <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={rule}
-              onChange={(e) => setRule(e.target.checked)}
-              className="size-3.5 accent-[var(--primary)]"
-            />
-            <span className="shrink-0">{RULE_TEXT[field]}</span>
-            {rule &&
-              (group.kind === "site" ? (
-                <Input
-                  value={pattern}
-                  onChange={(e) => setPattern(e.target.value)}
-                  className="h-7 min-w-24 flex-1 text-xs"
-                  aria-label="Kural deseni"
-                />
-              ) : (
-                <code className="truncate rounded bg-muted px-1.5 py-0.5 text-[11px]">{pattern}</code>
-              ))}
-          </label>
-          {ruleOn && preview && <RulePreview tagId={preview} field={field} pattern={pattern} tags={tags} />}
-        </div>
-      )}
+      <div className="space-y-2">
+        <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={rule}
+            onChange={(e) => setRule(e.target.checked)}
+            className="size-3.5 accent-[var(--primary)]"
+          />
+          <span className="shrink-0">{RULE_TEXT[field]}</span>
+          {rule &&
+            (group.kind === "site" ? (
+              <Input
+                value={pattern}
+                onChange={(e) => setPattern(e.target.value)}
+                className="h-7 min-w-24 flex-1 text-xs"
+                aria-label="Kural deseni"
+              />
+            ) : (
+              <code className="truncate rounded bg-muted px-1.5 py-0.5 text-[11px]">{pattern}</code>
+            ))}
+        </label>
+        {ruleOn && preview && <RulePreview tagId={preview} field={field} pattern={pattern} tags={tags} />}
+      </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
         <div className="flex items-center gap-1">
-          {group && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-muted-foreground"
-              disabled={busy}
-              onClick={() => choose(NO_PROJECT)}
-            >
-              <CheckCircle2 /> Projesiz say
-            </Button>
-          )}
-          {onIgnore && (
-            <Button size="sm" variant="ghost" className="text-muted-foreground" disabled={busy} onClick={onIgnore}>
-              <EyeOff /> Hiç gösterme
-            </Button>
-          )}
-        </div>
-        {onSkip && (
-          <Button size="sm" variant="outline" disabled={busy} onClick={onSkip}>
-            <SkipForward /> Atla
-            <kbd className="ml-1 font-mono text-[10px] text-muted-foreground">S</kbd>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground"
+            disabled={busy}
+            onClick={() => choose(NO_PROJECT)}
+          >
+            <CheckCircle2 /> Projesiz say
           </Button>
-        )}
+          <Button size="sm" variant="ghost" className="text-muted-foreground" disabled={busy} onClick={onIgnore}>
+            <EyeOff /> Hiç gösterme
+          </Button>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={onSkip}
+          title="Kartta bir daha gösterme, Atlananlar'a al"
+        >
+          <SkipForward /> Atla
+          <kbd className="ml-1 font-mono text-[10px] text-muted-foreground">S</kbd>
+        </Button>
       </div>
     </section>
   );
@@ -825,15 +834,73 @@ function RuleSuggestionCard({
   );
 }
 
-function AllDone() {
+/** Atlanan gruplar: kartta gelmez; buradan projeye atanır ya da karta geri alınır. */
+function SkippedList({
+  groups,
+  projects,
+  onAssign,
+  onRestore,
+}: {
+  groups: UnassignedGroup[];
+  projects: Tag[];
+  onAssign: (group: UnassignedGroup, projectId: string) => void;
+  onRestore: (key: string) => void;
+}) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2 px-1">
+        <SkipForward className="size-4 text-muted-foreground" />
+        <h2 className="text-[13px] font-semibold">Atlananlar</h2>
+        <span className="text-xs text-muted-foreground tabular">
+          {formatDuration(groups.reduce((a, g) => a + g.seconds, 0))}
+        </span>
+      </div>
+      <ul className="divide-y rounded-xl border bg-card shadow-xs">
+        {groups.map((g) => {
+          const Icon = g.kind === "site" ? Globe : AppWindow;
+          return (
+            <li key={g.key} className="flex items-center gap-3 px-4 py-2">
+              <Icon className="size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium" title={g.label}>
+                  {g.label}
+                </div>
+                <div className="truncate text-[11px] text-muted-foreground">
+                  {g.kind === "site" ? g.appName : "Uygulama"} · {g.items.length + g.more} pencere
+                </div>
+              </div>
+              <span className="w-16 shrink-0 text-right text-[11px] text-muted-foreground tabular">
+                {formatDuration(g.seconds)}
+              </span>
+              <ProjectSelect
+                value=""
+                placeholder="Projeye ata…"
+                projects={projects}
+                className="w-44"
+                onChange={(id) => id && onAssign(g, id)}
+              />
+              <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => onRestore(g.key)}>
+                Karta al
+              </Button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function AllDone({ skipped }: { skipped: number }) {
   return (
     <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed px-6 py-12 text-center">
       <div className="grid size-14 place-items-center rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-500 text-white shadow-lg shadow-emerald-500/25">
         <CheckCircle2 className="size-7" />
       </div>
       <div>
-        <p className="text-[15px] font-semibold">Her şey bir projede</p>
-        <p className="mt-1 text-[13px] text-muted-foreground">Bu dönemde atanmamış süre yok.</p>
+        <p className="text-[15px] font-semibold">{skipped ? "Sıradaki kart kalmadı" : "Her şey bir projede"}</p>
+        <p className="mt-1 text-[13px] text-muted-foreground">
+          {skipped ? `Atladığın ${skipped} grup aşağıda.` : "Bu dönemde atanmamış süre yok."}
+        </p>
       </div>
     </div>
   );
