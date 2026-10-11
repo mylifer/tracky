@@ -422,13 +422,38 @@ export default function ReportView(p: Props) {
 
   // Bugünü gösteren gün/hafta açılınca şimdiki saat ekranın ortasına gelir (yapışkan başlıkların
   // altında kalan alanın ortası). Dönem başına bir kez: sonraki yenilemeler kaydırmayı bozmasın.
+  // Pencere kapatılınca gizlenip görünüm açık kaldığından pencere yeniden açılınca (ya da uzun bir
+  // aradan sonra öne gelince) yeniden ortalanır.
   const centered = useRef<string | null>(null);
+  const [shown, setShown] = useState(0);
   useEffect(() => {
-    const key = `${p.mode}:${p.start}:${sheetView}`;
+    let away = Date.now();
+    const again = () => setShown((n) => n + 1);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") again();
+    };
+    const onBlur = () => {
+      away = Date.now();
+    };
+    const onFocus = () => {
+      if (Date.now() - away > 5 * 60_000) again();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+  useEffect(() => {
+    const key = `${p.mode}:${p.start}:${sheetView}:${shown}`;
     if (centered.current === key) return;
     const box = scroller.current;
     const line = calendarArea?.querySelector("[data-now-line]");
-    if (!box || !line) return;
+    // Gizli pencerede ölçü yok; görünür olunca yeniden denenir.
+    if (!box || !line || box.clientHeight === 0) return;
     centered.current = key;
     const y = line.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
     const top = barHeight + headHeight;
