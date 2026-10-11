@@ -451,7 +451,9 @@ export default function ReportView(p: Props) {
     const key = `${p.mode}:${p.start}:${sheetView}:${shown}`;
     if (centered.current === key) return;
     const box = scroller.current;
-    const line = calendarArea?.querySelector("[data-now-line]");
+    // Görünüm değişirken ilk çizimde `calendarArea` hâlâ sayfadan kalkmış eski takvimi gösterir;
+    // çizgi sayfadaki kaydırma kutusunda aranır.
+    const line = report ? box?.querySelector("[data-now-line]") : null;
     // Gizli pencerede ölçü yok; görünür olunca yeniden denenir.
     if (!box || !line || box.clientHeight === 0) return;
     centered.current = key;
