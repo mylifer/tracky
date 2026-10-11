@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { api } from "../api";
-import { ErrorText, SettingRow, SettingsGroup } from "../components/settings";
+import { ErrorText, SettingRow } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { useUpdate } from "../lib/useUpdate";
 import { friendlyError } from "../lib/feedback";
 
 const time = new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
+/** Ayarlar → Hakkında ve destek: sürüm ve güncelleme satırları. */
 export default function UpdateSettings() {
   const [status, setStatus] = useUpdate();
   const [installing, setInstalling] = useState(false);
@@ -36,7 +37,7 @@ export default function UpdateSettings() {
   }
 
   return (
-    <SettingsGroup id="guncellemeler" title="Güncellemeler">
+    <>
       <SettingRow label={`Kum ${status.current}`} hint={describe()}>
         {status.ready ? (
           <Button size="sm" disabled={installing} onClick={install}>
@@ -61,6 +62,6 @@ export default function UpdateSettings() {
           )}
         </div>
       )}
-    </SettingsGroup>
+    </>
   );
 }

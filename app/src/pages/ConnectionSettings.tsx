@@ -1,14 +1,39 @@
 import { useEffect, useState } from "react";
 import { CalendarDays, Check, Copy, Loader2, RefreshCw, Sheet } from "lucide-react";
 import { api, type GoogleStatus, type CalendarStatus } from "../api";
-import { ErrorText } from "../components/settings";
+import { ErrorText, SettingBlock, SettingsGroup } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { cn } from "../lib/utils";
 import { friendlyError } from "../lib/feedback";
+import { CONNECTIONS_SECTION } from "./settingsSections";
 
 const timeFmt = new Intl.DateTimeFormat("tr-TR", { hour: "2-digit", minute: "2-digit" });
+
+/** Ayarlar → Bağlantılar: toplantıların geldiği takvim ve çizelge tablolarını okuyan Google hesabı. */
+export function ConnectionsSettings() {
+  return (
+    <SettingsGroup
+      id={CONNECTIONS_SECTION}
+      title="Bağlantılar"
+      description="Toplantıların geldiği Outlook takvimi ve zaman çizelgesi tablolarını okuyan Google hesabı."
+    >
+      <SettingBlock
+        label="Outlook takvimi"
+        hint="Toplantılar zaman çizelgesine girer: konusu bir projenin kuralına uyan toplantı o projeye yazılır."
+      >
+        <CalendarConnect />
+      </SettingBlock>
+      <SettingBlock
+        label="Google hesabı"
+        hint="Bağlıysa zaman çizelgesi tabloları Google Sheets API ile doğrudan okunup yazılır: Apps Script'ten çok daha hızlı. Çizelgenin tablo bağlantısı (docs.google.com/…) girilmiş olmalı."
+      >
+        <GoogleConnect />
+      </SettingBlock>
+    </SettingsGroup>
+  );
+}
 
 /** Outlook takviminin yayımlanan ICS bağlantısı: bağla, yenile, kaldır. */
 export function CalendarConnect() {

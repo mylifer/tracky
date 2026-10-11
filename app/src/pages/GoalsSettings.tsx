@@ -103,7 +103,7 @@ export default function GoalsSettings() {
         onChange={(v) => save({ ...goals, breakAfterMinutes: v ? DEFAULT_BREAK : null })}
       />
       {breakOn && (
-        <SettingRow label="Hatırlatma aralığı" hint="Bu kadar kesintisiz çalışınca, sonra da aynı aralıklarla.">
+        <SettingRow sub label="Hatırlatma aralığı" hint="Bu kadar kesintisiz çalışınca, sonra da aynı aralıklarla.">
           <Select
             value={String(goals.breakAfterMinutes ?? DEFAULT_BREAK)}
             onValueChange={(v) => save({ ...goals, breakAfterMinutes: Number(v) })}
@@ -128,7 +128,7 @@ export default function GoalsSettings() {
         onChange={(v) => save({ ...goals, daySummaryAt: v ? DEFAULT_SUMMARY : null })}
       />
       {summaryOn && (
-        <SettingRow label="Özet saati" hint="O gün en az 15 dakika çalışıldıysa, günde bir kez.">
+        <SettingRow sub label="Özet saati" hint="O gün en az 15 dakika çalışıldıysa, günde bir kez.">
           <Select
             value={String(goals.daySummaryAt ?? DEFAULT_SUMMARY)}
             onValueChange={(v) => save({ ...goals, daySummaryAt: Number(v) })}
@@ -159,7 +159,7 @@ export default function GoalsSettings() {
         onChange={(v) => save({ ...goals, exportReminderAt: v ? DEFAULT_EXPORT_REMINDER : null })}
       />
       {reminderOn && (
-        <SettingRow label="Hatırlatma saati" hint="Cuma, haftada bir kez.">
+        <SettingRow sub label="Hatırlatma saati" hint="Cuma, haftada bir kez.">
           <Select
             value={String(goals.exportReminderAt ?? DEFAULT_EXPORT_REMINDER)}
             onValueChange={(v) => save({ ...goals, exportReminderAt: Number(v) })}

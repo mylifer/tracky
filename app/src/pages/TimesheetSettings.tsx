@@ -2,14 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FileSpreadsheet, Plus, Sheet, Trash2, X } from "lucide-react";
 import { api, type ProjectMapping, type Tag, type Timesheet, type TimesheetConfig } from "../api";
 import { ProjectSelect } from "../components/ProjectSelect";
-import { ErrorText, SettingBlock, SettingRow, SettingsGroup } from "../components/settings";
+import { ErrorText, SettingRow, SettingsGroup } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { tagColor } from "../lib/tags";
 import { friendlyError } from "../lib/feedback";
-import { AiSettings } from "./AiSettings";
-import { CONNECTIONS_SECTION, TIMESHEET_SECTION } from "./settingsSections";
-import { CalendarConnect, GoogleConnect, SheetConnect } from "./ConnectionSettings";
+import { TIMESHEET_SECTION } from "./settingsSections";
+import { SheetConnect } from "./ConnectionSettings";
 
 export { AI_SECTION, CONNECTIONS_SECTION, TIMESHEET_SECTION } from "./settingsSections";
 
@@ -19,9 +18,9 @@ export function fileName(path: string) {
 }
 
 /**
- * Ayarlar → Bağlantılar (Outlook takvimi) ve Zaman çizelgeleri: her firmanın çizelgesi (Excel
- * dosyası ya da Google Sheets tablosu), oraya giden projeler ve birimler. Ayar burada bir kez
- * yüklenir; bir çizelge değişince diğerleri eski değeri geri yazmasın.
+ * Ayarlar → Zaman çizelgeleri: her firmanın çizelgesi (Excel dosyası ya da Google Sheets tablosu),
+ * oraya giden projeler ve birimler. Ayar burada bir kez yüklenir; bir çizelge değişince diğerleri
+ * eski değeri geri yazmasın.
  */
 export function TimesheetSections() {
   const [config, setConfig] = useState<TimesheetConfig | null>(null);
@@ -43,27 +42,8 @@ export function TimesheetSections() {
 
   return (
     <>
-      <SettingsGroup
-        id={CONNECTIONS_SECTION}
-        title="Bağlantılar"
-        description="Toplantıların geldiği takvim; zaman çizelgelerinin dosyaları aşağıda."
-      >
-        <SettingBlock
-          label="Outlook takvimi"
-          hint="Toplantılar zaman çizelgesine girer: konusu bir projenin kuralına uyan toplantı o projeye yazılır."
-        >
-          <CalendarConnect />
-        </SettingBlock>
-        <SettingBlock
-          label="Google hesabı"
-          hint="Bağlıysa zaman çizelgesi tabloları Google Sheets API ile doğrudan okunup yazılır: Apps Script'e göre çok daha hızlı (saniyeler değil, yarım saniyenin altında). Çizelgenin tablo bağlantısı (docs.google.com/…) girilmiş olmalı."
-        >
-          <GoogleConnect />
-        </SettingBlock>
-      </SettingsGroup>
       {config && <Timesheets config={config} projects={projects} onChange={load} onError={setError} />}
       <ErrorText>{error}</ErrorText>
-      <AiSettings />
     </>
   );
 }
