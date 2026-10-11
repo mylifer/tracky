@@ -50,6 +50,8 @@ enum Col {
     OptTime,
     Real,
     OptReal,
+    /// Yerelde 0/1, sunucuda `boolean`; eksik (eski satır) ya da boş değer `false` sayılır.
+    Flag,
 }
 
 struct Table {
@@ -92,6 +94,8 @@ pub const SYNCED_SETTINGS: &[&str] = &[
 /// [`legacy_fingerprint`] bunlarsız hesaplanır.
 const AFTER_LEGACY_TABLES: &[&str] = &["calls"];
 const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance", "closed_days"];
+/// Parça parça şekle geçildikten sonra eklenen sütunlar: [`legacy_fingerprint`] bunlarsız.
+const AFTER_LEGACY_COLUMNS: &[&str] = &["passive"];
 
 /// Eşitlenen ayarlarda yalnızca bu cihazda kalan alanlar: sunucuya gönderilmez, gelen
 /// sürümde yerel değer korunur. Bir Mac'te duraklatmak diğerini duraklatmaz; API anahtarı
@@ -176,9 +180,11 @@ const TABLES: &[Table] = &[
             ("deleted_at", Col::OptTime),
             ("state_at", Col::OptTime),
             ("block_from", Col::OptTime),
+            ("passive", Col::Flag),
         ],
-        // 0012: atama ve silinmenin zamanı; 0013: takvim bloğunun elle bölündüğü an.
-        optional: &["state_at", "block_from"],
+        // 0012: atama ve silinmenin zamanı; 0013: takvim bloğunun elle bölündüğü an;
+        // 0015: girdisiz izleme.
+        optional: &["state_at", "block_from", "passive"],
         key: "id",
         only: None,
         prefix: None,
@@ -327,12 +333,19 @@ pub enum SyncError {
 }
 
 /// Tablonun eşitlenen şekli (sütunlar, isteğe bağlı sütunlar, eşitlenen kimlikler).
-fn table_shape(t: &Table, only: Option<&[&str]>) -> String {
+/// `skip` sütunları yokmuş gibi.
+fn table_shape(t: &Table, only: Option<&[&str]>, skip: &[&str]) -> String {
     let mut text = t.name.to_string();
-    for (name, col) in t.cols {
+    for (name, col) in t.cols.iter().filter(|(name, _)| !skip.contains(name)) {
         text.push_str(&format!(",{name}:{col:?}"));
     }
-    text.push_str(&format!(";{:?};{only:?};{:?}|", t.optional, t.prefix));
+    let optional: Vec<&str> = t
+        .optional
+        .iter()
+        .copied()
+        .filter(|name| !skip.contains(name))
+        .collect();
+    text.push_str(&format!(";{optional:?};{only:?};{:?}|", t.prefix));
     text
 }
 
@@ -351,7 +364,7 @@ pub fn table_fingerprints() -> Vec<(&'static str, String)> {
     TABLES
         .iter()
         .map(|t| {
-            let mut text = table_shape(t, t.only);
+            let mut text = table_shape(t, t.only, &[]);
             if t.name == "settings" {
                 text.push_str(&format!("{LOCAL_FIELDS:?}"));
             }
@@ -375,7 +388,7 @@ pub fn legacy_fingerprint() -> String {
                 .filter(|id| !AFTER_LEGACY_SETTINGS.contains(id))
                 .collect()
         });
-        text.push_str(&table_shape(t, only.as_deref()));
+        text.push_str(&table_shape(t, only.as_deref(), AFTER_LEGACY_COLUMNS));
     }
     text.push_str(&format!("{LOCAL_FIELDS:?}"));
     fnv(&text)
@@ -602,10 +615,10 @@ fn push_table(
         // güncellenince tamamı gönderilir (o satırlar her çalıştırmada yeniden gönderilir).
         let (complete, partial): (Vec<Pending>, Vec<Pending>) =
             rows.iter().cloned().partition(|(row, _, _)| {
-                full || table
-                    .optional
-                    .iter()
-                    .all(|c| row.get(*c).is_none_or(Value::is_null))
+                full || table.optional.iter().all(|c| {
+                    row.get(*c)
+                        .is_none_or(|v| v.is_null() || *v == Value::Bool(false))
+                })
             });
         let marked = mark_synced(&lock(store), table, &complete)?;
         // Diğer cihazlar eksik sürümü aynı `updated_at` ile aldı; tam sürüm onlara ancak daha
@@ -743,6 +756,7 @@ fn unsynced(store: &Store, table: &Table, limit: usize) -> Result<Vec<Pending>, 
                     .get::<_, Option<f64>>(i)?
                     .and_then(serde_json::Number::from_f64)
                     .map_or(Value::Null, Value::Number),
+                Col::Flag => Value::Bool(r.get(i)?),
             };
             if *name == "id" {
                 id = r.get(i)?;
@@ -827,6 +841,8 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
             (Col::OptReal, Value::Number(n)) => SqlValue::Real(n.as_f64().ok_or_else(bad)?),
             (Col::Int, Value::Number(n)) => SqlValue::Integer(n.as_i64().ok_or_else(bad)?),
             (Col::Real, Value::Number(n)) => SqlValue::Real(n.as_f64().ok_or_else(bad)?),
+            (Col::Flag, Value::Bool(b)) => SqlValue::Integer(i64::from(*b)),
+            (Col::Flag, Value::Null) => SqlValue::Integer(0),
             (Col::Time | Col::OptTime, Value::String(s)) => {
                 SqlValue::Integer(parse_time(s).map_err(|_| bad())?.timestamp_millis())
             }

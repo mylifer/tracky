@@ -242,6 +242,11 @@ CREATE TABLE calls (
 CREATE INDEX calls_started_at ON calls (started_at);
 CREATE INDEX calls_unsynced ON calls (updated_at) WHERE synced_at IS NULL OR synced_at < updated_at;
 "#,
+    r#"
+-- Girdisiz izleme (Session::passive; supabase/migrations/0015): ekran video için uyanıkken girdi
+-- olmadan geçen süre. Bilgisayarlar arası çakışmada girdiyle geçen süreye yenilir.
+ALTER TABLE sessions ADD COLUMN passive INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<()> {

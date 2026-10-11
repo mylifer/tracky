@@ -63,10 +63,12 @@ impl Store {
     pub fn upsert_session(&self, s: &Session) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sessions
-                (id, device_id, app_id, app_name, title, url, domain, started_at, ended_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                (id, device_id, app_id, app_name, title, url, domain, started_at, ended_at, updated_at,
+                 passive)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (id) DO UPDATE SET
                 title = excluded.title,
+                passive = excluded.passive,
                 url = excluded.url,
                 domain = excluded.domain,
                 -- Süren oturum silindiyse (takvimde blok silme, başka cihaz) takip
@@ -89,6 +91,7 @@ impl Store {
                 ms(s.started_at),
                 ms(s.ended_at),
                 ms(Utc::now()),
+                s.passive,
             ],
         )?;
         Ok(())
@@ -135,7 +138,7 @@ impl Store {
     ) -> Result<Vec<(Session, String)>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, app_id, app_name, title, url, domain, started_at, ended_at, category_id,
-                    project_id, device_id, block_from
+                    project_id, device_id, block_from, passive
              FROM sessions
              WHERE deleted_at IS NULL AND {OVERLAPS}
              ORDER BY started_at"
@@ -155,6 +158,7 @@ impl Store {
                     category_id: r.get(8)?,
                     project_id: r.get(9)?,
                     block_from: r.get::<_, Option<i64>>(11)?.map(from_ms),
+                    passive: r.get(12)?,
                 },
                 r.get::<_, String>(10)?,
             ))
@@ -517,9 +521,10 @@ impl Store {
             for (a, b) in parts {
                 self.conn.execute(
                     "INSERT INTO sessions (id, device_id, app_id, app_name, title, url, domain,
-                         category_id, project_id, state_at, block_from, started_at, ended_at, updated_at)
+                         category_id, project_id, state_at, block_from, passive, started_at, ended_at,
+                         updated_at)
                      SELECT ?2, device_id, app_id, app_name, title, url, domain, category_id,
-                         project_id, state_at, block_from, ?3, ?4, ?5
+                         project_id, state_at, block_from, passive, ?3, ?4, ?5
                      FROM sessions WHERE id = ?1",
                     params![id, Uuid::new_v4().to_string(), a, b, now],
                 )?;
@@ -588,6 +593,7 @@ impl Store {
             category_id: category_id.map(Into::into),
             project_id: project_id.map(Into::into),
             block_from: None,
+            passive: false,
         };
         self.upsert_session(&session)?;
         self.conn.execute(

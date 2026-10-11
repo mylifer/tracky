@@ -235,6 +235,9 @@ alter table kum.sessions add column if not exists state_at timestamptz;
 -- (0013) Takvim bloğunun elle bölündüğü an.
 alter table kum.sessions add column if not exists block_from timestamptz;
 
+-- (0015) Girdisiz izleme: bilgisayarlar arası çakışmada girdiyle geçen süreye yenilir.
+alter table kum.sessions add column if not exists passive boolean not null default false;
+
 -- ===== 0014_calls.sql =====
 -- Görüşmeler: görüşme uygulamasının mikrofonu kullandığı aralıklar (ses değil).
 create table if not exists kum.calls (

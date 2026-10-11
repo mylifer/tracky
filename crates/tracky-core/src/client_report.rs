@@ -378,6 +378,7 @@ mod tests {
             category_id: None,
             project_id: project.map(String::from),
             block_from: None,
+            passive: false,
         }
     }
 

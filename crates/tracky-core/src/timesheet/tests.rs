@@ -23,6 +23,7 @@ fn s(app: &str, title: &str, from: i64, to: i64, project: Option<&str>) -> Sessi
         category_id: None,
         project_id: project.map(Into::into),
         block_from: None,
+        passive: false,
     }
 }
 

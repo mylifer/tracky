@@ -165,6 +165,7 @@ fn session(app: &str, secs: i64) -> Session {
         category_id: None,
         project_id: None,
         block_from: None,
+        passive: false,
     }
 }
 
@@ -770,6 +771,41 @@ fn old_server_without_0007_still_syncs_and_catches_up() {
         lock(&b).tag_extras().unwrap()[&project.id].budget_days,
         Some(10.0)
     );
+    assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 0);
+}
+
+#[test]
+fn passive_watching_reaches_the_other_device() {
+    let a = Mutex::new(Store::open_in_memory().unwrap());
+    let b = Mutex::new(Store::open_in_memory().unwrap());
+    // 0015 öncesi sunucu: işaretsiz oturum eksik sayılmaz (her çalıştırmada yeniden
+    // gönderilmez); işaretli olan sunucu güncellenince gönderilir.
+    let mut remote = FakeRemote {
+        missing: vec!["passive"],
+        ..Default::default()
+    };
+    let video = Session {
+        passive: true,
+        ..session("Firefox", 60)
+    };
+    lock(&a).upsert_session(&session("Code", 30)).unwrap();
+    lock(&a).upsert_session(&video).unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 1);
+
+    remote.missing.clear();
+    run(&a, &mut remote, "u1").unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+    let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+    let synced = lock(&b)
+        .sessions_between(t0, t0 + Duration::hours(1))
+        .unwrap();
+    let flags: Vec<(String, bool)> = synced
+        .into_iter()
+        .map(|s| (s.app_name, s.passive))
+        .collect();
+    assert!(flags.contains(&("Firefox".into(), true)), "{flags:?}");
+    assert!(flags.contains(&("Code".into(), false)), "{flags:?}");
     assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 0);
 }
 

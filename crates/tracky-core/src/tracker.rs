@@ -33,6 +33,8 @@ pub struct TickOutcome {
 pub struct Observation {
     window: Option<ActiveWindow>,
     idle: u64,
+    /// Girdisiz izleme sürüyorsa son girdiden beri geçen süre (saniye).
+    passive: Option<u64>,
     error: Option<String>,
     /// Görüşme sinyalleri; bu gözlemde yoklanmadıysa `None`.
     calls: Option<CallApps>,
@@ -75,6 +77,12 @@ impl Watching {
             self.seen_at_idle = Some(raw);
         }
         raw - self.seen_at_idle.unwrap_or(0)
+    }
+
+    /// Son girdiden beri izleme görüldü mü (girdisiz izleme sürüyor; izleme bitmiş olsa da
+    /// kullanıcı dönmedi).
+    fn active(&self) -> bool {
+        self.seen_at_idle.is_some()
     }
 }
 
@@ -142,6 +150,7 @@ impl<P: ActivityProvider> Tracker<P> {
             return Observation {
                 window: None,
                 idle: 0,
+                passive: None,
                 error: None,
                 calls: None,
             };
@@ -159,9 +168,11 @@ impl<P: ActivityProvider> Tracker<P> {
         // Gözlemler saniyede bir: görüşme birkaç gözlemde bir yoklanır.
         let calls = (self.privacy.detect_calls && self.ticks.is_multiple_of(CALL_CHECK_EVERY))
             .then(|| self.provider.call_apps());
+        let idle = self.watching.idle(raw, kept_awake);
         Observation {
             window,
-            idle: self.watching.idle(raw, kept_awake),
+            idle,
+            passive: self.watching.active().then_some(raw),
             error,
             calls,
         }
@@ -178,6 +189,11 @@ impl<P: ActivityProvider> Tracker<P> {
             self.engine.forget_away(now);
         }
 
+        // Platform anlamsız büyük boşta süresi döndürebilir (bkz. `Engine::observe`).
+        let passive = obs
+            .passive
+            .map(|raw| now - chrono::Duration::seconds(raw.min(365 * 24 * 3600) as i64));
+        self.engine.set_passive(passive);
         let closed = self
             .engine
             .tick_with_clocks(now, self.clocks(), obs.window, obs.idle);
@@ -451,8 +467,8 @@ mod tests {
     }
 
     /// Son girdi 9. saniyede; video 10–1000. saniyeler arasında oynar; 1300. saniyede dönüş.
-    /// (Çalışma süresi, boşta süreleri.)
-    fn watch_video(count_watching: bool) -> (Duration, Vec<Duration>) {
+    /// (Çalışma oturumları, boşta süreleri.)
+    fn watch_video(count_watching: bool) -> (Vec<Session>, Vec<Duration>) {
         let store = Store::open_in_memory().unwrap();
         let n = 1305;
         let windows = (0..n).map(|_| win("A"));
@@ -477,25 +493,25 @@ mod tests {
         }
         tracker.shutdown(&store, t0 + Duration::seconds(n as i64));
         let all = store.sessions_between(t0, t0 + Duration::hours(1)).unwrap();
-        let (away, work): (Vec<_>, Vec<_>) = all.iter().partition(|s| s.is_idle());
-        let first_work = work
-            .iter()
-            .map(|s| s.duration())
-            .min_by_key(|d| -d.num_seconds());
-        (
-            first_work.unwrap_or_default(),
-            away.iter().map(|s| s.duration()).collect(),
-        )
+        let (away, work): (Vec<_>, Vec<_>) = all.into_iter().partition(|s| s.is_idle());
+        (work, away.iter().map(|s| s.duration()).collect())
+    }
+
+    /// Oturumların (girdisiz mi, saniye) listesi.
+    fn kinds(work: &[Session]) -> Vec<(bool, i64)> {
+        work.iter()
+            .map(|s| (s.passive, s.duration().num_seconds()))
+            .collect()
     }
 
     #[test]
     fn watching_a_video_without_input_is_not_away() {
         let (work, away) = watch_video(true);
-        // İzleme bitene kadar çalışma; boşta yalnızca video bittikten dönüşe kadar.
-        assert!(
-            (work - Duration::seconds(1000)).num_seconds().abs() <= 2,
-            "{work:?}"
-        );
+        // İzleme bitene kadar çalışma; son girdiden sonrası girdisiz izleme. Boşta yalnızca
+        // video bittikten dönüşe kadar; dönüşle girdili oturum yeniden başlar.
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        assert_eq!(kinds(&work), [(false, 9), (true, 991), (false, 5)]);
+        assert_eq!(work[1].started_at, t0 + Duration::seconds(9));
         assert_eq!(away.len(), 1);
         assert!(
             (away[0] - Duration::seconds(300)).num_seconds().abs() <= 2,
@@ -506,7 +522,7 @@ mod tests {
     #[test]
     fn watching_can_be_turned_off() {
         let (work, away) = watch_video(false);
-        assert!(work <= Duration::seconds(10), "{work:?}");
+        assert_eq!(kinds(&work), [(false, 9), (false, 5)]);
         assert_eq!(away.len(), 1);
         assert!(
             (away[0] - Duration::seconds(1291)).num_seconds().abs() <= 2,

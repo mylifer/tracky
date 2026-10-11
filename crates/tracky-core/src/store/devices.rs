@@ -319,6 +319,7 @@ mod tests {
             category_id: None,
             project_id: None,
             block_from: None,
+            passive: false,
         }
     }
 

@@ -218,6 +218,7 @@ pub fn rule_candidates(sessions: &[Session], input: &LearnInput) -> Vec<RuleCand
         let by_rules = Session {
             project_id: None,
             block_from: None,
+            passive: false,
             ..s.clone()
         };
         if classifier.classify(&by_rules).project.as_deref() == Some(p) {
@@ -300,6 +301,7 @@ pub fn rule_candidates(sessions: &[Session], input: &LearnInput) -> Vec<RuleCand
                 let by_rules = Session {
                     project_id: None,
                     block_from: None,
+                    passive: false,
                     ..sessions[*i].clone()
                 };
                 after.classify(&by_rules).project.as_deref() == Some(project_id.as_str())
@@ -405,6 +407,7 @@ mod tests {
             category_id: None,
             project_id: None,
             block_from: None,
+            passive: false,
         }
     }
 

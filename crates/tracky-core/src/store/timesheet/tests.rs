@@ -29,6 +29,7 @@ fn work(store: &Store, title: &str, from: i64, to: i64, project: Option<&str>) {
         category_id: None,
         project_id: None,
         block_from: None,
+        passive: false,
     };
     store.upsert_session(&s).unwrap();
     if let Some(p) = project {

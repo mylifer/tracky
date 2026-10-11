@@ -48,6 +48,8 @@ pub struct Engine {
     last_uptime: Option<std::time::Duration>,
     /// Son gözlemdeki, uykuda da ilerleyen saat (bkz. [`Clocks::elapsed`]).
     last_elapsed: Option<std::time::Duration>,
+    /// Girdisiz izlemenin başladığı an (son girdi); bkz. [`Engine::set_passive`].
+    passive_since: Option<DateTime<Utc>>,
 }
 
 /// Duvar saatinden bağımsız saatler (süreç başından beri): aradaki boşluğun ne olduğunu ayırır.
@@ -106,7 +108,15 @@ impl Engine {
             last_tick: None,
             last_uptime: None,
             last_elapsed: None,
+            passive_since: None,
         }
+    }
+
+    /// Girdisiz izleme ([`Session::passive`]): `Some(since)`, kullanıcı `since`'ten (son
+    /// girdi) beri girdi vermeden izliyor demektir (ekran video ya da görüşme için uyanık);
+    /// `None`, girdi var. Sonraki gözlemde açık oturum durumun değiştiği anda bölünür.
+    pub fn set_passive(&mut self, since: Option<DateTime<Utc>>) {
+        self.passive_since = since;
     }
 
     /// Boşta kaydının en uzun süresi (`None`: kaydetme). Süren bir boşluğa da uygulanır.
@@ -290,15 +300,36 @@ impl Engine {
         let Some(window) = window else {
             return self.close_at(Some(now));
         };
+        let passive = self.passive_since.is_some();
         match &mut self.current {
-            Some(s) if s.matches(&window) => {
+            Some(s) if s.matches(&window) && s.passive == passive => {
                 // Sistem saati geri alınırsa bitiş başlangıçtan önceye düşmesin.
                 s.ended_at = now.max(s.started_at);
                 None
             }
+            // Aynı pencere, girdi durumu değişti: oturum değişimin anında (izlemede son girdi,
+            // dönüşte ilk girdi) bölünür. O an oturumdan önceyse oturumun tamamı yeni durumdadır.
+            Some(s) if s.matches(&window) => {
+                let at = self.passive_since.unwrap_or(now - idle).min(now);
+                if at <= s.started_at {
+                    s.passive = passive;
+                    s.ended_at = now.max(s.started_at);
+                    return None;
+                }
+                let closed = self.close_at(Some(at));
+                self.current = Some(Session {
+                    passive,
+                    ended_at: now,
+                    ..Session::start(window, at)
+                });
+                closed
+            }
             _ => {
                 let closed = self.close_at(Some(now));
-                self.current = Some(Session::start(window, now));
+                self.current = Some(Session {
+                    passive,
+                    ..Session::start(window, now)
+                });
                 closed
             }
         }
@@ -388,6 +419,50 @@ mod tests {
             (cur.app_name.as_str(), cur.started_at, cur.ended_at),
             ("Safari", t(3), t(4))
         );
+    }
+
+    #[test]
+    fn watching_without_input_splits_at_the_last_input() {
+        let mut e = Engine::new(EngineConfig::default());
+        // `from`'dan `to`'ya (dahil) 5 saniyede bir gözlem; kapanan oturumlar.
+        let step = |e: &mut Engine, from: i64, to: i64, title: &str, idle: u64| {
+            (from..=to)
+                .step_by(5)
+                .filter_map(|at| e.tick(t(at), win("Firefox", title), idle))
+                .collect::<Vec<_>>()
+        };
+        step(&mut e, 0, 25, "video 1", 0);
+        // Son girdi 10. saniyede (boşta süresi bilerek 0 verilir: izleme sürüyor); video 30.
+        // saniyede kendiliğinden sonrakine geçti.
+        step(&mut e, 30, 65, "video 2", 0);
+        // İzleme 70. saniyede anlaşıldı: girdisiz süre son girdiden başlar, ama "video 2"
+        // oturumu ondan sonra başladığı için bölünmez, tamamı girdisiz olur.
+        e.set_passive(Some(t(10)));
+        assert!(step(&mut e, 70, 85, "video 2", 0).is_empty());
+        let cur = e.current().unwrap();
+        assert!(cur.passive);
+        assert_eq!((cur.started_at, cur.ended_at), (t(30), t(85)));
+        // Sonraki video da girdisiz başlar.
+        let closed = step(&mut e, 90, 95, "video 3", 0);
+        assert!(closed[0].passive);
+        assert!(e.current().unwrap().passive);
+        // Girdi döndü: aynı pencerede girdili oturum dönüş anından başlar.
+        e.set_passive(None);
+        let closed = step(&mut e, 100, 100, "video 3", 2);
+        assert!(closed[0].passive);
+        assert_eq!((closed[0].started_at, closed[0].ended_at), (t(90), t(98)));
+        let cur = e.current().unwrap();
+        assert!(!cur.passive);
+        assert_eq!((cur.started_at, cur.ended_at), (t(98), t(100)));
+        // Yeniden izleme: girdili oturum son girdide kapanır, girdisiz kısım oradan sürer.
+        step(&mut e, 105, 165, "video 3", 0);
+        e.set_passive(Some(t(110)));
+        let closed = step(&mut e, 170, 170, "video 3", 0);
+        assert!(!closed[0].passive);
+        assert_eq!((closed[0].started_at, closed[0].ended_at), (t(98), t(110)));
+        let cur = e.current().unwrap();
+        assert!(cur.passive);
+        assert_eq!((cur.started_at, cur.ended_at), (t(110), t(170)));
     }
 
     #[test]

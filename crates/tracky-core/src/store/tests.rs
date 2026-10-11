@@ -23,6 +23,7 @@ fn session(app: &str, url: Option<&str>, start: i64, end: i64) -> Session {
         category_id: None,
         project_id: None,
         block_from: None,
+        passive: false,
     }
 }
 

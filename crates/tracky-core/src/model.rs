@@ -36,6 +36,11 @@ pub struct Session {
     /// bölünse de işaret parçalarda kalır; yalnızca bu anda başlayan parça bloğu böler.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_from: Option<DateTime<Utc>>,
+    /// Girdisiz izleme: ekran bir video ya da görüşme için uyanık tutulurken, girdi olmadan
+    /// geçen süre. Çalışma sayılır; ama aynı anda başka bilgisayarda girdiyle geçen süreye
+    /// yenilir ([`merge_devices`]).
+    #[serde(default)]
+    pub passive: bool,
 }
 
 /// Elle eklenen kayıtların uygulama kimliği öneki: `kum.manual/<ad>`. Her ad ayrı
@@ -86,25 +91,31 @@ impl Session {
             category_id: None,
             project_id: None,
             block_from: None,
+            passive: false,
         }
     }
 }
 
 /// Birden çok bilgisayarın (eşitlenmiş) oturumlarını tek zaman çizelgesinde birleştirir:
 /// aynı ana düşen süre bir kez sayılır. İnsan aynı anda iki bilgisayarda çalışmaz; iki cihaz
-/// aynı dakikalarda kayıt tuttuysa (örn. birinde video açık kaldı) o an en son başlayan
-/// oturuma, yani en son geçilen bilgisayara yazılır. Önceki oturum araya giren kısım kadar
-/// bölünür; parçalar aynı oturumun alanlarını taşır. Boşta kayıtları her zaman geri planda
-/// kalır: bir cihaz boştayken diğerinde çalışılan süre çalışma sayılır. Girdi başlangıca göre
-/// sıralı olmalı.
+/// aynı dakikalarda kayıt tuttuysa o an girdinin olduğu bilgisayara yazılır: girdisiz izleme
+/// ([`Session::passive`], örn. birinde video kendi kendine oynuyor) öteki bilgisayarda girdiyle
+/// geçen süreyi hiçbir zaman ezmez. Aynı türden çakışmada an en son başlayan oturuma, yani en
+/// son geçilen bilgisayara yazılır. Önceki oturum araya giren kısım kadar bölünür; parçalar
+/// aynı oturumun alanlarını taşır. Boşta kayıtları her zaman geri planda kalır: bir cihaz
+/// boştayken diğerinde çalışılan süre çalışma sayılır. Girdi başlangıca göre sıralı olmalı.
 pub fn merge_devices(sessions: Vec<Session>) -> Vec<Session> {
-    let (idle, active): (Vec<Session>, Vec<Session>) =
+    let (idle, rest): (Vec<Session>, Vec<Session>) =
         sessions.into_iter().partition(Session::is_idle);
+    let (passive, active): (Vec<Session>, Vec<Session>) = rest.into_iter().partition(|s| s.passive);
     let mut out = latest_wins(&active, &[]);
-    // `latest_wins` çıktısı çakışmasız; başlangıca göre sıralanınca bitişler de sıralı olur.
-    out.sort_by_key(|s| s.started_at);
-    let idle = latest_wins(&idle, &out);
-    out.extend(idle);
+    // Her katman bir öncekinin altında kalır. `latest_wins` çıktısı çakışmasız; başlangıca
+    // göre sıralanınca bitişler de sıralı olur.
+    for below in [passive, idle] {
+        out.sort_by_key(|s| s.started_at);
+        let below = latest_wins(&below, &out);
+        out.extend(below);
+    }
     out.sort_by_key(|s| s.started_at);
     out
 }
@@ -162,6 +173,7 @@ impl Session {
             category_id: None,
             project_id: None,
             block_from: None,
+            passive: false,
         }
     }
 
@@ -196,6 +208,7 @@ mod tests {
             category_id: None,
             project_id: None,
             block_from: None,
+            passive: false,
         }
     }
 
@@ -232,6 +245,33 @@ mod tests {
         assert_eq!(
             spans(&merge_devices(plain)),
             [("a".into(), 30), ("b".into(), 30)]
+        );
+    }
+
+    #[test]
+    fn passive_watching_never_hides_input_on_another_device() {
+        let passive = |app: &str, from: i64, to: i64| Session {
+            passive: true,
+            ..s(app, from, to)
+        };
+        // Masaüstünde 09:00–09:35 oyun (girdiyle); dizüstünde 09:01'de başlayan video kendi
+        // kendine oynuyor. Sonra başlasa da video oyunu ezmez.
+        let merged = merge_devices(vec![s("game", 0, 35), passive("video", 1, 40)]);
+        assert_eq!(spans(&merged), [("game".into(), 35), ("video".into(), 5)]);
+
+        // İki girdisiz izleme arasında en son başlayan kazanır; boşta kaydı ikisinin de altında.
+        let mut away = s(IDLE_APP_ID, 0, 60);
+        away.app_name = IDLE_NAME.into();
+        let merged = merge_devices(vec![away, passive("a", 10, 40), passive("b", 20, 30)]);
+        assert_eq!(
+            spans(&merged),
+            [
+                (IDLE_APP_ID.into(), 10),
+                ("a".into(), 10),
+                ("b".into(), 10),
+                ("a".into(), 10),
+                (IDLE_APP_ID.into(), 20),
+            ]
         );
     }
 

@@ -706,6 +706,7 @@ fn random_day(seed: u64) -> Day {
             category_id: None,
             project_id: None,
             block_from: None,
+            passive: false,
         };
         // İkinci bilgisayar: öncekiyle çakışan kayıt.
         if rng.chance(0.03) {
