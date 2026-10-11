@@ -56,8 +56,10 @@ jobs:
         run: bash .github/scripts/macos-keychain.sh
 
       # Paketleri derler, güncelleme imzalarını üretir ve `latest.json` ile
-      # birlikte Release'e yükler. Uygulama içi güncelleyici bu dosyayı okur;
-      # bu yüzden Release taslak değil, yayınlanmış olmalı.
+      # birlikte taslak Release'e yükler. Taslak, iki işletim sisteminin paketi
+      # de yüklendikten sonra `publish` işinde yayınlanır: yoksa önce biten işin
+      # `latest.json`'u diğer sistemin kaydı olmadan görünür ve o sistemdeki
+      # uygulama "bu sistem için paket yok" der.
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,7 +73,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Kum ${{ github.ref_name }}
           releaseBody: Güncellemeler uygulama içinden otomatik indirilir.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           args: --bundles ${{ matrix.bundles }}
 
@@ -80,3 +82,13 @@ jobs:
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
         run: bash .github/scripts/macos-verify.sh
+
+  # Uygulama içi güncelleyici `releases/latest`'i okur; taslaklar orada görünmez.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release'i yayınla
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

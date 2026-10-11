@@ -120,6 +120,15 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
             Ok(None) | Err(tauri_plugin_updater::Error::ReleaseNotFound) => {
                 return Ok::<_, String>(None);
             }
+            // Yayın sürerken latest.json'da bu sistemin kaydı henüz olmayabilir: diğer
+            // sistemin paketi yüklenmiştir, bunun ki birkaç dakika sonra gelir.
+            Err(
+                e @ (tauri_plugin_updater::Error::TargetNotFound(_)
+                | tauri_plugin_updater::Error::TargetsNotFound(_)),
+            ) => {
+                log_info!("güncelleme bu sistem için henüz yok: {e}");
+                return Ok(None);
+            }
             Err(e) => return Err(message(e)),
         };
         let pending = lock(&app.state::<UpdateState>().pending)
