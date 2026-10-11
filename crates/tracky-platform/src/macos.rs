@@ -46,6 +46,16 @@ const ADDRESS_BUDGET: Duration = Duration::from_millis(150);
 
 /// Ekran kilitli / ekran koruyucu açıkken öne gelen sistem süreçleri.
 const IGNORED_BUNDLES: &[&str] = &["com.apple.loginwindow", "com.apple.ScreenSaver.Engine"];
+/// Kısa süreliğine öne gelen sistem panelleri (Denetim Merkezi, Bildirim Merkezi, Dock...).
+/// Ayrı bir uygulama sayılmaz; açıkken bir önceki pencerenin oturumu sürer.
+const OVERLAY_BUNDLES: &[&str] = &[
+    "com.apple.controlcenter",
+    "com.apple.controlcenter.helper",
+    "com.apple.notificationcenterui",
+    "com.apple.dock",
+    "com.apple.WindowManager",
+    "com.apple.MenuBarAgent",
+];
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -98,6 +108,8 @@ const ON_SCREEN_WINDOWS: u32 = (1 << 0) | (1 << 4);
 #[derive(Debug, Default)]
 pub struct SystemProvider {
     addresses: AddressCache,
+    /// Son okunan gerçek pencere; sistem paneli öndeyken bu sürer.
+    last: Option<ActiveWindow>,
 }
 
 impl ActivityProvider for SystemProvider {
@@ -113,7 +125,19 @@ impl ActivityProvider for SystemProvider {
         &mut self,
         read_title: &dyn Fn(&str) -> bool,
     ) -> Result<Option<ActiveWindow>, PlatformError> {
-        objc2::rc::autoreleasepool(|_| active_window(read_title, &mut self.addresses))
+        let observed =
+            objc2::rc::autoreleasepool(|_| active_window(read_title, &mut self.addresses));
+        match observed {
+            Ok(Focus::Overlay) => Ok(self.last.clone()),
+            Ok(Focus::Window(window)) => {
+                self.last.clone_from(&window);
+                Ok(window)
+            }
+            Err(e) => {
+                self.last = None;
+                Err(e)
+            }
+        }
     }
 
     fn idle_seconds(&mut self) -> Result<u64, PlatformError> {
@@ -297,29 +321,36 @@ fn set_ax_timeout() {
     });
 }
 
+/// Öndeki odağın gözlemi.
+enum Focus {
+    /// Öndeki pencere (`None`: yok ya da kilit ekranı).
+    Window(Option<ActiveWindow>),
+    /// Öne bir sistem paneli geldi ([`OVERLAY_BUNDLES`]).
+    Overlay,
+}
+
 fn active_window(
     read_title: &dyn Fn(&str) -> bool,
     addresses: &mut AddressCache,
-) -> Result<Option<ActiveWindow>, PlatformError> {
+) -> Result<Focus, PlatformError> {
     if !is_trusted() {
         return Err(PlatformError::PermissionDenied);
     }
     set_ax_timeout();
     let Some(pid) = focused_pid()? else {
-        return Ok(None);
+        return Ok(Focus::Window(None));
     };
     // SAFETY: Create kuralı; sahipliği CFType devralır ve bırakır.
     let app = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) };
     let Some(running) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else {
-        return Ok(None);
+        return Ok(Focus::Window(None));
     };
 
     let bundle_id = running.bundleIdentifier().map(|s| s.to_string());
-    if bundle_id
-        .as_deref()
-        .is_some_and(|id| IGNORED_BUNDLES.contains(&id))
-    {
-        return Ok(None);
+    match bundle_id.as_deref() {
+        Some(id) if IGNORED_BUNDLES.contains(&id) => return Ok(Focus::Window(None)),
+        Some(id) if OVERLAY_BUNDLES.contains(&id) => return Ok(Focus::Overlay),
+        _ => {}
     }
     let exe_path = running
         .executableURL()
@@ -346,12 +377,12 @@ fn active_window(
         None
     };
 
-    Ok(Some(ActiveWindow {
+    Ok(Focus::Window(Some(ActiveWindow {
         app_id,
         app_name,
         title,
         url,
-    }))
+    })))
 }
 
 /// Tarayıcının öndeki penceresindeki adres. Safari'de web alanının `AXURL` özniteliği (tam
