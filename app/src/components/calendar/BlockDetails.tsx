@@ -176,7 +176,9 @@ function BlockApps({
   const short = long.length > 0 ? apps.filter((a) => a.seconds < SHORT_APP_MAX) : [];
   const main = short.length > 0 ? long : apps;
   const shortTotal = short.reduce((n, a) => n + a.seconds, 0);
-  const row = (a: BlockApp) => <AppSection key={a.appId} block={block} app={a} total={total} tags={tags} color={color} />;
+  const row = (a: BlockApp) => (
+    <AppSection key={a.appId} block={block} app={a} total={total} tags={tags} color={color} />
+  );
   return (
     <div className="-mr-2 max-h-80 space-y-3 overflow-y-auto pr-2">
       {main.map(row)}
