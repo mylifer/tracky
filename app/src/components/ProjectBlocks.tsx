@@ -21,7 +21,8 @@ import { cn } from "../lib/utils";
 import { AppIconStack } from "./AppIcon";
 import { BlockDetails } from "./calendar/BlockDetails";
 import { blockLabel } from "./calendar/Block";
-import { EditContext } from "./SessionEdit";
+import { EditContext, useEdit } from "./SessionEdit";
+import { ProjectSelect } from "./ProjectSelect";
 import { ErrorText } from "./settings";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -269,8 +270,8 @@ function partNames(windows: Report["windows"], share: ProjectShare, ids: string[
 }
 
 /**
- * Başka projenin bloğunun içinde kalan pay: bloğun projesine verilir, projesiz yapılır ya da
- * silinir. Yalnızca payın aralıklarına dokunulur; bloğun geri kalanı değişmez.
+ * Başka projenin bloğunun içinde kalan pay: bloğun projesine ya da başka projeye verilir,
+ * projesiz yapılır ya da silinir. Yalnızca payın aralıklarına dokunulur; bloğun geri kalanı değişmez.
  */
 function SharePart({
   b,
@@ -286,6 +287,7 @@ function SharePart({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const owner = b.projectId ? tags.get(b.projectId) : undefined;
+  const projects = useEdit()?.projects ?? [];
   const iso = (t: number) => new Date(t).toISOString();
   const span = share.ranges.map(([a, z]) => `${formatTime(new Date(a))}–${formatTime(new Date(z))}`).join(", ");
 
@@ -337,6 +339,15 @@ function SharePart({
           Sil
         </Button>
       </div>
+      <ProjectSelect
+        value=""
+        projects={projects}
+        placeholder="Başka projeye ata…"
+        className="w-full"
+        onChange={(id) =>
+          id && void apply((a, z) => api.setRangeProject(a, z, id), `${tags.get(id)?.name ?? "Proje"} projesine atandı`)
+        }
+      />
       {error && <p className="text-[11px] text-destructive selectable">{error}</p>}
     </div>
   );
