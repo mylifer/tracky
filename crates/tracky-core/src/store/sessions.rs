@@ -130,7 +130,10 @@ impl Store {
             .collect())
     }
 
-    /// [`Self::sessions_between`], her oturumun bilgisayarıyla.
+    /// [`Self::sessions_between`], her oturumun bilgisayarıyla. Aynı anda başlayanlar (iki
+    /// bilgisayarda eşitlenmeden bölünen oturumun parçaları) en son düzenlenen sona gelecek
+    /// şekilde, kimliğe kadar sıralı: birleştirmede ([`crate::model::merge_devices`]) sonraki
+    /// kazanır, her bilgisayar aynısını seçer.
     pub(super) fn sessions_with_devices_between(
         &self,
         from: DateTime<Utc>,
@@ -141,7 +144,7 @@ impl Store {
                     project_id, device_id, block_from, passive
              FROM sessions
              WHERE deleted_at IS NULL AND {OVERLAPS}
-             ORDER BY started_at"
+             ORDER BY started_at, COALESCE(state_at, 0), updated_at, id"
         ))?;
         let rows = stmt.query_map(params![ms(from), ms(to)], |r| {
             Ok((
