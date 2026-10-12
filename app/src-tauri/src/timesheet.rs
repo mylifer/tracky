@@ -757,8 +757,8 @@ pub async fn refresh_timesheet_entries(app: AppHandle, ids: Vec<String>) -> CmdR
             };
             let day = pieces.get(saved.entry.date)?;
             if let Some((saved, sheet, target)) = exported_entry(&store, Some(id))? {
-                if timesheet::stale_hours(day, &saved.entry).is_some() {
-                    let fresh = timesheet::refreshed(day, &saved.entry);
+                if store.stale_hours(day, &saved).map_err(err)?.is_some() {
+                    let fresh = store.refreshed(day, &saved).map_err(err)?;
                     remote.push((saved, sheet, target, fresh));
                 }
                 continue;

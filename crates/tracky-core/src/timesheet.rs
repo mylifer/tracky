@@ -959,11 +959,20 @@ pub fn still_covered(pieces: &[Piece], project: &str, spans: &[Interval]) -> Vec
 /// Kaydedilmiş satır takipte değiştiyse projede kalan süre (saat): satırın aralıklarındaki
 /// süre `STALE_SLACK`'ten fazla azalmış. Elle eklenen ve eski satırlar değişmez.
 pub fn stale_hours(pieces: &[Piece], entry: &TimesheetEntry) -> Option<f64> {
+    stale_hours_with(pieces, entry, &[])
+}
+
+/// [`stale_hours`]; `taken` aralıkları (aynı işi kapsayan, önce gelen satırlarınki) da düşülür.
+pub fn stale_hours_with(
+    pieces: &[Piece],
+    entry: &TimesheetEntry,
+    taken: &[Interval],
+) -> Option<f64> {
     let spans = entry.spans();
     if spans.is_empty() {
         return None;
     }
-    let left = total(&still_covered(pieces, &entry.project_id, &spans));
+    let left = total(&left_of(pieces, entry, taken));
     let hours = left.num_seconds() as f64 / 3600.0;
     (total(&spans) - left > STALE_SLACK).then_some(hours)
 }
@@ -973,9 +982,23 @@ pub fn stale_hours(pieces: &[Piece], entry: &TimesheetEntry) -> Option<f64> {
 /// Projede `MIN_ENTRY`'den az süre kaldıysa `None` (birkaç saniye çeyrek saate yuvarlanıp
 /// satır olarak kalmasın; öneriler de bu kadar kısa satır çıkarmaz).
 pub fn refreshed(pieces: &[Piece], entry: &TimesheetEntry) -> Option<TimesheetEntry> {
-    narrowed(
-        entry,
+    refreshed_with(pieces, entry, &[])
+}
+
+/// [`refreshed`]; `taken` aralıkları (aynı işi kapsayan, önce gelen satırlarınki) da düşülür.
+pub fn refreshed_with(
+    pieces: &[Piece],
+    entry: &TimesheetEntry,
+    taken: &[Interval],
+) -> Option<TimesheetEntry> {
+    narrowed(entry, left_of(pieces, entry, taken))
+}
+
+/// Satırın aralıklarında projede hâlâ kalan ve `taken`ın kapsamadığı süre.
+fn left_of(pieces: &[Piece], entry: &TimesheetEntry, taken: &[Interval]) -> Vec<Interval> {
+    taken.iter().fold(
         still_covered(pieces, &entry.project_id, &entry.spans()),
+        |left, &cut| subtract(left, cut),
     )
 }
 

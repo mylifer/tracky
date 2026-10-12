@@ -164,8 +164,20 @@ pub async fn export_timesheet(
             days: HashMap::new(),
         };
         let mut stale = Vec::new();
-        for (_, e) in &entries {
-            if timesheet::stale_hours(pieces.get(e.date)?, e).is_some() {
+        for (id, e) in &entries {
+            let day = pieces.get(e.date)?;
+            // Kaydedilmiş satırda aynı işi kapsayan, önce gelen satırlar da sayılır.
+            let saved = id
+                .as_deref()
+                .map(|id| store.timesheet_entry(id))
+                .transpose()
+                .map_err(err)?
+                .flatten();
+            let hours = match &saved {
+                Some(saved) => store.stale_hours(day, saved).map_err(err)?,
+                None => timesheet::stale_hours(day, e),
+            };
+            if hours.is_some() {
                 stale.push(label(e));
             }
         }

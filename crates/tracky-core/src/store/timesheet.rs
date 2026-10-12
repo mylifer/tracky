@@ -158,6 +158,24 @@ fn row_key(id: Option<&str>, e: &TimesheetEntry) -> String {
     }
 }
 
+/// `s`'den önce gelen, aynı projenin gizlenmemiş satırlarının aralıkları (`all`: günün satırları).
+/// İki bilgisayarda eşitlenmeden kaydedilen satırlar aynı işi kapsayabilir: sonra gelende bu süre
+/// takipte değişmiş sayılır (gönderilmez, güncellenince düşülür). Önce gelen: gönderilmiş (önce
+/// gönderilen), sonra kimliğe göre. Sıra iki bilgisayarda aynı olan alanlardan: ikisi de aynı
+/// satırı işaretler.
+fn taken(all: &[SavedEntry], s: &SavedEntry) -> Vec<Interval> {
+    let rank = |x: &SavedEntry| (x.exported_at.is_none(), x.exported_at, x.id.clone());
+    all.iter()
+        .filter(|x| {
+            x.id != s.id
+                && !x.dismissed
+                && x.entry.project_id == s.entry.project_id
+                && rank(x) < rank(s)
+        })
+        .flat_map(|x| x.entry.spans())
+        .collect()
+}
+
 fn overlaps(a: &[Interval], b: &[Interval]) -> bool {
     a.iter()
         .any(|&(x, y)| b.iter().any(|&(c, d)| x < d && c < y))
@@ -574,6 +592,7 @@ impl Store {
         );
         let mut rows = Vec::new();
         let mut hidden = 0;
+        let all = saved.clone();
         for s in saved {
             let routed = match (&s.exported_at, &s.timesheet_id) {
                 (Some(_), Some(t)) => *t == sheet.id,
@@ -587,7 +606,7 @@ impl Store {
                 continue;
             }
             // Aktarılmış satır da takipte değişebilir: güncellenince dosyadaki satırı da değişir.
-            let stale = timesheet::stale_hours(pieces, &s.entry);
+            let stale = timesheet::stale_hours_with(pieces, &s.entry, &taken(&all, &s));
             rows.push(DayRow {
                 key: row_key(Some(&s.id), &s.entry),
                 id: Some(s.id),
@@ -796,6 +815,32 @@ impl Store {
         };
         tx.commit()?;
         Ok(id)
+    }
+
+    /// Kaydedilmiş satır takipte değiştiyse projede kalan süre ([`timesheet::stale_hours`]);
+    /// aynı işi kapsayan, önce gelen satırların süresi de düşülür ([`taken`]).
+    pub fn stale_hours(&self, pieces: &[Piece], saved: &SavedEntry) -> Result<Option<f64>> {
+        let all = self.saved_rows(saved.entry.date, saved.entry.date)?;
+        Ok(timesheet::stale_hours_with(
+            pieces,
+            &saved.entry,
+            &taken(&all, saved),
+        ))
+    }
+
+    /// Takipte değişen satırın yeni hali ([`timesheet::refreshed`]); aynı işi kapsayan, önce
+    /// gelen satırların süresi düşülür ([`taken`]).
+    pub fn refreshed(
+        &self,
+        pieces: &[Piece],
+        saved: &SavedEntry,
+    ) -> Result<Option<TimesheetEntry>> {
+        let all = self.saved_rows(saved.entry.date, saved.entry.date)?;
+        Ok(timesheet::refreshed_with(
+            pieces,
+            &saved.entry,
+            &taken(&all, saved),
+        ))
     }
 
     /// Canlı öneriyle aynı aralıkları kapsayan kaydedilmiş (aktarılmamış, gizlenmemiş) satır:
@@ -1009,12 +1054,9 @@ impl Store {
         for (id, _) in &removed {
             self.remove_entry(id, false)?;
         }
-        let coverage = merged.coverage.clone().unwrap_or_default();
-        if self.claim_spans(&merged, &coverage)?.is_some() {
-            return Err(StoreError::Invalid(
-                "Bu satırın işi zaten kaydedilmiş; sayfa yenilendi, tekrar dene.".into(),
-            ));
-        }
+        // Birleşen satır başka bir satırla aynı işi kapsıyorsa (ör. öteki bilgisayarda kaydedildi)
+        // reddedilmez: en yeni satır olarak o süre onda takipte değişmiş sayılır ([`taken`]),
+        // güncellenince düşülür.
         let id = Uuid::new_v4().to_string();
         self.insert_entry(&id, &merged)?;
         tx.commit()?;
@@ -1050,7 +1092,7 @@ impl Store {
         if saved.exported_at.is_some() || saved.dismissed || saved.entry.spans().is_empty() {
             return Ok(true);
         }
-        match timesheet::refreshed(pieces, &saved.entry) {
+        match self.refreshed(pieces, &saved)? {
             Some(fresh) => {
                 let tx = self.savepoint()?;
                 self.update_entry(id, &fresh)?;

@@ -990,3 +990,33 @@ fn meetings_follow_calls_and_skipped_ones_leave_their_time() {
     store.answer_meeting(&plan, None).unwrap();
     assert_eq!(rows(&store).len(), 2);
 }
+
+#[test]
+fn work_saved_on_two_computers_is_marked_until_refreshed() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    work(&store, "Loyalty", 0, 90, Some("togg"));
+    let togg = sheet("togg", &["togg"]);
+    let (r, _) = rows(&store, &togg);
+    let id = store.save_timesheet_entry(None, &r[0].entry).unwrap();
+    // Öteki bilgisayarda eşitlenmeden kaydedilen satır: aynı işin son yarım saati.
+    let other = TimesheetEntry {
+        start: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+        hours: 0.5,
+        actual_hours: Some(0.5),
+        coverage: Some(timesheet::to_coverage(&[(t(60), t(90))])),
+        ..r[0].entry.clone()
+    };
+    store.insert_entry("zz-other", &other).unwrap();
+    // Sonra gelen satırda tekrarlanan süre takipte değişmiş sayılır (gönderilmez).
+    let (r, _) = rows(&store, &togg);
+    let stale: Vec<_> = r.iter().map(|r| (r.id.clone().unwrap(), r.stale)).collect();
+    assert_eq!(stale, [(id.clone(), None), ("zz-other".into(), Some(0.0))]);
+    // Güncellenince o süre düşülür: işi kalmayan satır silinir.
+    let ctx = store.timesheet_context().unwrap();
+    let pieces = store.timesheet_pieces(&ctx, t(-540), t(900), &[]).unwrap();
+    assert!(!store.refresh_timesheet_entry("zz-other", &pieces).unwrap());
+    let (r, _) = rows(&store, &togg);
+    assert_eq!(short(&r), [(true, "09:00".into(), 90, "Loyalty".into())]);
+    assert_eq!(r[0].stale, None);
+}
