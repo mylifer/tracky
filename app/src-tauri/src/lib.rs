@@ -607,6 +607,8 @@ pub fn run() {
             sync::sync_sign_out,
             sync::sync_disconnect,
             sync::sync_now,
+            sync::sync_set_passphrase,
+            sync::sync_forget_passphrase,
             updater::update_status,
             updater::check_update,
             updater::install_update,

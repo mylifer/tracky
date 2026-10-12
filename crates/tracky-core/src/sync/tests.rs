@@ -809,23 +809,50 @@ fn passive_watching_reaches_the_other_device() {
     assert_eq!(run(&a, &mut remote, "u1").unwrap().pushed, 0);
 }
 
+/// İki cihazda aynı eşitleme parolası (testte ucuz olsun diye anahtar bir kez türetilir).
+fn shared_key() -> crate::vault::SyncKey {
+    static KEY: std::sync::OnceLock<crate::vault::SyncKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| crate::vault::SyncKey::derive("ortak eşitleme parolası", "u1").unwrap())
+        .clone()
+}
+
+fn secrets_on_server(remote: &FakeRemote) -> String {
+    remote.rows["settings"]
+        .values()
+        .map(|r| r.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn device_independent_settings_reach_a_new_device() {
     let a = Mutex::new(Store::open_in_memory().unwrap());
     let b = Mutex::new(Store::open_in_memory().unwrap());
+    lock(&a).set_sync_key(Some(shared_key()));
+    lock(&b).set_sync_key(Some(shared_key()));
     let mut remote = FakeRemote::default();
     {
         let a = lock(&a);
         a.save_setting("calendar_url", &Some("https://cal.example/ics"))
             .unwrap();
-        a.save_setting("timesheet", &serde_json::json!({ "sheetToken": "t" }))
-            .unwrap();
+        a.save_setting(
+            "timesheet",
+            &serde_json::json!({ "sheetToken": "gizli-jeton", "dayHours": 7.5 }),
+        )
+        .unwrap();
         a.save_setting("sync_auth", &"jeton").unwrap();
         a.save_setting("onboarded", &true).unwrap();
     }
     run(&a, &mut remote, "u1").unwrap();
     let ids: Vec<&String> = remote.rows["settings"].keys().collect();
     assert!(ids.iter().all(|k| SYNCED_SETTINGS.contains(&k.as_str())));
+    // Sunucuda gizli bilgiler yalnızca şifreli.
+    let server = secrets_on_server(&remote);
+    assert!(
+        !server.contains("cal.example") && !server.contains("gizli-jeton"),
+        "{server}"
+    );
+    assert!(server.contains("kum-enc:v1:"), "{server}");
 
     let summary = run(&b, &mut remote, "u1").unwrap();
     assert!(summary.settings_pulled);
@@ -834,13 +861,97 @@ fn device_independent_settings_reach_a_new_device() {
         b.setting::<Option<String>>("calendar_url").unwrap(),
         Some(Some("https://cal.example/ics".into()))
     );
+    let timesheet = b.setting::<Value>("timesheet").unwrap().unwrap();
+    assert_eq!(timesheet["sheetToken"], "gizli-jeton");
     assert_eq!(
-        b.setting::<Value>("timesheet").unwrap().unwrap()["sheetToken"],
-        "t"
+        timesheet["dayHours"], 7.5,
+        "gizli olmayan alanlar her zamanki gibi"
     );
     // Cihaza özgü ayarlar gelmez.
     assert_eq!(b.setting::<String>("sync_auth").unwrap(), None);
     assert_eq!(b.setting::<bool>("onboarded").unwrap(), None);
+}
+
+#[test]
+fn secrets_stay_on_devices_without_the_passphrase() {
+    let a = Mutex::new(Store::open_in_memory().unwrap());
+    let b = Mutex::new(Store::open_in_memory().unwrap());
+    let mut remote = FakeRemote::default();
+    {
+        let b = lock(&b);
+        b.save_setting("calendar_url", &Some("https://b.example/ics"))
+            .unwrap();
+        b.save_setting("timesheet", &serde_json::json!({ "sheetToken": "b-jeton" }))
+            .unwrap();
+    }
+    // A'nın ayarları daha yeni: son yazan kazanır, gizli alan yine yerelde kalır.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    // A'da parola yok: gizli bilgiler hiç gönderilmez, diğer ayarlar gider.
+    {
+        let a = lock(&a);
+        a.save_setting("calendar_url", &Some("https://a.example/ics"))
+            .unwrap();
+        a.save_setting(
+            "timesheet",
+            &serde_json::json!({ "sheetToken": "a-jeton", "dayHours": 6.0 }),
+        )
+        .unwrap();
+    }
+    run(&a, &mut remote, "u1").unwrap();
+    let server = secrets_on_server(&remote);
+    assert!(
+        !server.contains("a.example") && !server.contains("a-jeton"),
+        "{server}"
+    );
+    run(&b, &mut remote, "u1").unwrap();
+    {
+        let b = lock(&b);
+        assert_eq!(
+            b.setting::<Option<String>>("calendar_url").unwrap(),
+            Some(Some("https://b.example/ics".into())),
+            "yerel değer korunur"
+        );
+        let timesheet = b.setting::<Value>("timesheet").unwrap().unwrap();
+        assert_eq!(timesheet["sheetToken"], "b-jeton");
+        assert_eq!(timesheet["dayHours"], 6.0);
+    }
+
+    // A parolayı girer; B'de başka bir parola var: B şifreli değeri açamaz, kendi değeri kalır.
+    lock(&a).set_sync_key(Some(shared_key()));
+    lock(&a)
+        .save_setting("calendar_url", &Some("https://a2.example/ics"))
+        .unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    lock(&b).set_sync_key(Some(
+        crate::vault::SyncKey::derive("başka bir parola", "u1").unwrap(),
+    ));
+    run(&b, &mut remote, "u1").unwrap();
+    assert_eq!(
+        lock(&b).setting::<Option<String>>("calendar_url").unwrap(),
+        Some(Some("https://b.example/ics".into()))
+    );
+}
+
+#[test]
+fn plain_secrets_from_an_older_version_are_still_accepted() {
+    let b = Mutex::new(Store::open_in_memory().unwrap());
+    let mut remote = FakeRemote::default();
+    remote
+        .push(
+            "settings",
+            &[serde_json::json!({
+                "id": "calendar_url",
+                "value": "\"https://eski.example/ics\"",
+                "updated_at": iso(1_800_000_000_000),
+                "deleted_at": null,
+            })],
+        )
+        .unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+    assert_eq!(
+        lock(&b).setting::<Option<String>>("calendar_url").unwrap(),
+        Some(Some("https://eski.example/ics".into()))
+    );
 }
 
 #[test]

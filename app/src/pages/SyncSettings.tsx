@@ -167,10 +167,78 @@ export default function SyncSettings() {
             <div className="flex-1" />
             <ErrorText>{error ?? (status.last && !status.last.ok ? status.last.message : null)}</ErrorText>
           </div>
+          <Passphrase status={status} onStatus={setStatus} />
           <Devices />
         </>
       )}
     </SettingsGroup>
+  );
+}
+
+const PASSPHRASE_HINT: Record<SyncStatus["passphrase"], string> = {
+  off: "Takvim bağlantısı ve zaman çizelgesi anahtarı sunucuya gönderilmez. Bir parola kurarsan şifreli gider; diğer bilgisayarda aynı parolayı girince oraya da gelir.",
+  needed:
+    "Diğer bilgisayarda bir eşitleme parolası kurulmuş. Aynı parolayı gir: takvim bağlantısı ve zaman çizelgesi anahtarı buraya da gelsin.",
+  set: "Takvim bağlantısı ve zaman çizelgesi anahtarı sunucuya yalnızca bu parolayla şifreli gider. Parola saklanmaz; unutulursa bu iki bilgi her bilgisayarda yeniden girilir.",
+};
+
+/** Gizli bilgiler için eşitleme parolası (uçtan uca şifreleme). */
+function Passphrase({ status, onStatus }: { status: SyncStatus; onStatus: (s: SyncStatus) => void }) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      onStatus(await api.syncSetPassphrase(value));
+      setValue("");
+      toast("Eşitleme parolası kuruldu; gizli bilgiler şifreli eşitlenecek.");
+    } catch (e) {
+      setError(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <SettingBlock label="Gizli bilgileri şifrele" hint={PASSPHRASE_HINT[status.passphrase]}>
+      {status.passphrase === "set" ? (
+        <div className="flex items-center gap-2">
+          <Badge variant="success">Şifreli</Badge>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => api.syncForgetPassphrase().then(onStatus, (e) => setError(friendlyError(e)))}
+          >
+            Bu bilgisayardan kaldır
+          </Button>
+        </div>
+      ) : (
+        <form
+          className="flex max-w-md items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
+        >
+          <Input
+            type="password"
+            className="h-7 text-xs"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={status.passphrase === "needed" ? "Diğer bilgisayardaki parola" : "En az 8 karakter"}
+            autoComplete="new-password"
+          />
+          <Button type="submit" size="sm" disabled={busy || value.length < 8}>
+            {busy ? "Kuruluyor…" : status.passphrase === "needed" ? "Parolayı gir" : "Parola kur"}
+          </Button>
+        </form>
+      )}
+      <ErrorText>{error}</ErrorText>
+    </SettingBlock>
   );
 }
 

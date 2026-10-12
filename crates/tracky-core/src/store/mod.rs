@@ -68,6 +68,9 @@ pub struct Store {
     instance_id: Uuid,
     /// Tüm geçmişin proje toplamlarının eski kısmı (bkz. [`Store::project_totals_all_time`]).
     totals_cache: std::cell::RefCell<Option<reports::TotalsCache>>,
+    /// Eşitlemede gizli bilgileri şifreleyen anahtar (bkz. [`crate::vault`]); yalnızca bellekte,
+    /// uygulama anahtar deposundan yükler.
+    sync_key: std::cell::RefCell<Option<crate::vault::SyncKey>>,
 }
 
 /// İç içe geçebilen işlem (SQLite `SAVEPOINT`). Dışarıda açık bir işlem yoksa kendisi başlatır
@@ -140,10 +143,21 @@ impl Store {
             device_id,
             instance_id: Uuid::new_v4(),
             totals_cache: Default::default(),
+            sync_key: Default::default(),
         };
         store.seed_default_tags()?;
         store.migrate_timesheets()?;
         Ok(store)
+    }
+
+    /// Eşitlemede gizli bilgileri şifreleyecek anahtarı ayarlar (`None`: bu cihazda parola yok;
+    /// gizli bilgiler gönderilmez).
+    pub fn set_sync_key(&self, key: Option<crate::vault::SyncKey>) {
+        *self.sync_key.borrow_mut() = key;
+    }
+
+    pub fn sync_key(&self) -> Option<crate::vault::SyncKey> {
+        self.sync_key.borrow().clone()
     }
 
     /// Senkronizasyon modülü için ham bağlantı.
@@ -189,6 +203,16 @@ impl Store {
              WHERE settings.value IS NOT excluded.value",
             params![key, serde_json::to_string(value)?, ms(Utc::now())],
         )?;
+        Ok(())
+    }
+
+    /// Ayarları, değeri ve zamanı değişmeden yeniden gönderilecek sayar (ör. gizli alanları
+    /// artık şifreli gitsin diye). Sunucuda daha yeni bir sürüm varsa o kazanır ve çekilir.
+    pub fn resend_settings(&self, keys: &[&str]) -> Result<()> {
+        for key in keys {
+            self.conn
+                .execute("UPDATE settings SET synced_at = NULL WHERE key = ?1", [key])?;
+        }
         Ok(())
     }
 

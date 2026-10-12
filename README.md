@@ -304,6 +304,13 @@ kendi verisini görür. Ayarlardan cihazdan bağımsız olanlar da eşitlenir; g
 hesapta kayıtlı ayarlar o cihazın varsayılanlarının yerine geçer. Bağlantı bilgileri, oturum,
 izin kurulumu ve takibin duraklatılması yalnızca o cihazda kalır.
 
+**Gizli bilgiler şifreli eşitlenir:** Outlook takvim bağlantısı ve zaman çizelgesi (Apps Script)
+anahtarı sunucuya yalnızca *Ayarlar → Senkronizasyon → Gizli bilgileri şifrele* bölümünde kurulan
+eşitleme parolasıyla şifreli gider (Argon2id ile türetilen anahtar, XChaCha20-Poly1305). Parola
+saklanmaz; türetilen anahtar o bilgisayarın anahtar deposunda durur. Parola kurulmamış bilgisayar
+bu iki bilgiyi hiç göndermez; parolası olmayan ya da farklı olan bilgisayar kendi değerini korur.
+Parolayı önce bir bilgisayarda kur, eşitlendikten sonra diğerinde aynısını gir.
+
 ## Sürüm çıkarmak
 
 **Bir kerelik kurulum:** güncelleme imzalama anahtarını GitHub'da
