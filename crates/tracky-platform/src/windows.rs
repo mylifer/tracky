@@ -13,6 +13,7 @@ use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
+use windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
@@ -104,6 +105,16 @@ impl ActivityProvider for SystemProvider {
         // Her iki değer de ~49 günde bir taşar; wrapping_sub bunu doğru hesaplar.
         let elapsed_ms = unsafe { GetTickCount() }.wrapping_sub(info.dwTime);
         Ok(u64::from(elapsed_ms / 1000))
+    }
+
+    /// Uyku ve hazırda bekletmede ilerlemeyen kesme saati (100 ns birimi). Takip bir süre
+    /// takılınca (yoğun bir sorgu, yavaş bir pencere) bu saat ilerlemeye devam eder; böylece
+    /// gecikme uyku sanılıp aradaki çalışma "Boşta" olmaz.
+    fn awake_clock(&self) -> Option<std::time::Duration> {
+        let mut ticks = 0u64;
+        // SAFETY: Çıktı işaretçisi geçerli bir u64'e işaret ediyor.
+        (unsafe { QueryUnbiasedInterruptTime(&mut ticks) } != 0)
+            .then(|| std::time::Duration::from_nanos(ticks.saturating_mul(100)))
     }
 }
 

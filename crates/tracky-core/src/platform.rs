@@ -27,6 +27,14 @@ pub trait ActivityProvider {
         false
     }
 
+    /// Makine uyurken (uyku, hazırda bekletme) ilerlemeyen saat; gözlemler arasındaki uzun
+    /// boşluğun uyku mu yoksa takipteki bir gecikme mi olduğunu ayırmak için. Yalnızca
+    /// farkları kullanılır. `None`: sistemin `Instant`'ı zaten uykuda duruyor (macOS, Linux)
+    /// ya da böyle bir saat yok.
+    fn awake_clock(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     /// Görüşme sinyalleri ([`crate::calls`]): mikrofonu kullanan ve ekranı uyanık tutan
     /// uygulamalar. Desteklenmiyorsa boş.
     fn call_apps(&mut self) -> CallApps {

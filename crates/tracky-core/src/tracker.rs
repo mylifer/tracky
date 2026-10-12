@@ -107,13 +107,12 @@ impl<P: ActivityProvider> Tracker<P> {
 
     /// Makine uyurken ilerlemeyen saat: gözlem arasındaki uzun boşluğun uyku mu, gecikme mi
     /// olduğunu ayırır ([`Engine::tick_with_uptime`]). macOS'ta (ve Linux'ta) `Instant` uykuda
-    /// durur; Windows'ta (QPC) uykuda da ilerlediği için ayırt edemez, kullanılmaz.
+    /// durur; Windows'ta (QPC) uykuda da ilerlediği için sağlayıcının saati kullanılır
+    /// ([`ActivityProvider::awake_clock`]). İkisi de yoksa her uzun boşluk uyku sayılır.
     fn uptime(&self) -> Option<std::time::Duration> {
-        if cfg!(any(target_os = "macos", target_os = "linux")) {
-            Some(self.started.elapsed())
-        } else {
-            None
-        }
+        self.provider.awake_clock().or_else(|| {
+            cfg!(any(target_os = "macos", target_os = "linux")).then(|| self.started.elapsed())
+        })
     }
 
     /// Saatler ([`Clocks`]): makine uyurken duran ve uykuda da ilerleyen.
@@ -331,6 +330,43 @@ mod tests {
             title: "t".into(),
             url: None,
         })
+    }
+
+    /// Uyurken duran saati dışarıdan sürülen sağlayıcı (Windows'taki gibi).
+    struct AwakeClock(std::rc::Rc<std::cell::Cell<u64>>);
+
+    impl ActivityProvider for AwakeClock {
+        type Error = Never;
+        fn active_window(&mut self) -> Result<Option<ActiveWindow>, Never> {
+            Ok(win("Code"))
+        }
+        fn idle_seconds(&mut self) -> Result<u64, Never> {
+            Ok(0)
+        }
+        fn awake_clock(&self) -> Option<std::time::Duration> {
+            Some(std::time::Duration::from_secs(self.0.get()))
+        }
+    }
+
+    #[test]
+    fn provider_awake_clock_feeds_the_engine() {
+        // Windows'ta `Instant` uykuda da ilerler; uyanık saat sağlayıcıdan gelir. Uyku ile
+        // takip gecikmesini ayırma mantığı motorun testlerinde (`tick_with_uptime`).
+        let awake = std::rc::Rc::new(std::cell::Cell::new(1_000));
+        let tracker = Tracker::new(
+            AwakeClock(awake.clone()),
+            EngineConfig::default(),
+            PrivacySettings::default(),
+        );
+        assert_eq!(
+            tracker.clocks().uptime,
+            Some(std::time::Duration::from_secs(1_000))
+        );
+        awake.set(1_060);
+        assert_eq!(
+            tracker.clocks().uptime,
+            Some(std::time::Duration::from_secs(1_060))
+        );
     }
 
     #[test]
