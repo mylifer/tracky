@@ -380,6 +380,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = backup::apply_pending_restore(&dir) {
         log_error!("yedek geri yüklenemedi: {e}");
     }
+    backup::backup_before_migration(&dir);
     let store = match Store::open(dir.join(backup::DB_FILE)) {
         Ok(store) => store,
         // Geri yüklenen veritabanı açılamıyorsa öncekine dön; yoksa her açılışta çökerdi.

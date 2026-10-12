@@ -78,6 +78,22 @@ impl Store {
         Ok((problems != ["ok"]).then(|| problems.join("; ")))
     }
 
+    /// `path`'teki veritabanı açılınca göç çalışacak mı (eski bir sürümden güncelleme): öyleyse
+    /// dosyanın şema sürümü. Dosya yoksa, boşsa (yeni kurulum) ya da güncelse `None`. Dosyayı
+    /// değiştirmez; açılıştan önce yedek almak için.
+    pub fn pending_migration(path: &Path) -> Result<Option<usize>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let version = usize::try_from(version).unwrap_or(usize::MAX);
+        Ok((1..MIGRATIONS.len()).contains(&version).then_some(version))
+    }
+
     /// `source` veritabanının tutarlı bir kopyasını `target`'a yazar (geri yükleme için).
     /// Dosya kopyalamanın aksine yanındaki `-wal` dosyasındaki son değişiklikler de kopyaya
     /// girer. `source` değiştirilmez; `target` zaten varsa hata verir.

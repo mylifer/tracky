@@ -80,6 +80,47 @@ fn backup_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(DIR)
 }
 
+/// Açılışta, veritabanı açılmadan önce: güncellemeyle gelen şema göçü çalışacaksa
+/// veritabanının bir kopyasını `backups/` altına alır. Göçler adım adım işlem içinde çalışır
+/// ama verinin yeni biçimini değiştiren bir göç hatalıysa, kayıp en son haftalık yedeğe kadar
+/// gitmesin: bu kopya Ayarlar → Veriler'deki yedekler arasında görünür ve geri yüklenebilir.
+/// Kopya alınamazsa açılış sürer (eski davranış); hata günlüğe yazılır.
+pub fn backup_before_migration(data_dir: &Path) -> Option<PathBuf> {
+    let db = data_dir.join(DB_FILE);
+    let version = match Store::pending_migration(&db) {
+        Ok(Some(version)) => version,
+        Ok(None) => return None,
+        Err(e) => {
+            log_error!("veritabanı sürümü okunamadı, göç öncesi yedek alınmadı: {e}");
+            return None;
+        }
+    };
+    let dir = backup_dir(data_dir);
+    let path = dir.join(format!(
+        "{PREFIX}{}-guncelleme-oncesi-v{version}.db",
+        Local::now().format("%Y-%m-%d-%H%M%S")
+    ));
+    let copied = std::fs::create_dir_all(&dir)
+        .map_err(|e| e.to_string())
+        .and_then(|()| Store::copy_database(&db, &path).map_err(|e| e.to_string()))
+        .and_then(|()| {
+            Store::inspect_backup(&path)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        });
+    match copied {
+        Ok(()) => {
+            log_info!("güncelleme öncesi yedek alındı: {}", path.display());
+            Some(path)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            log_error!("güncelleme öncesi yedek alınamadı: {e}");
+            None
+        }
+    }
+}
+
 /// Açılışta, veritabanı açılmadan önce: bekleyen geri yükleme varsa uygular. Eski veritabanı
 /// (WAL dosyalarıyla) `backups/` altına "geri-yukleme-oncesi" adıyla taşınır, silinmez.
 /// Bir adım başarısız olursa yapılan taşımalar geri alınır: veritabanı yerinde kalır, yanında
@@ -447,6 +488,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "db");
         assert_eq!(std::fs::read_to_string(dir.join("a-wal")).unwrap(), "wal");
         assert!(!dir.join("b").exists() && !dir.join("b-wal").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_database_is_backed_up_before_migrating() {
+        let dir = std::env::temp_dir().join(format!("kum-premigrate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Yeni kurulum ve güncel veritabanı: yedek yok.
+        assert_eq!(backup_before_migration(&dir), None);
+        drop(Store::open(dir.join(DB_FILE)).unwrap());
+        assert_eq!(backup_before_migration(&dir), None);
+        // Bir önceki sürümün veritabanı: yedeklenir, listede görünür ve açılabilir.
+        let conn = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        conn.pragma_update(None, "user_version", version - 1)
+            .unwrap();
+        drop(conn);
+        let path = backup_before_migration(&dir).expect("yedek alınmalı");
+        assert_eq!(list(&backup_dir(&dir)).len(), 1);
+        assert!(Store::inspect_backup(&path).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

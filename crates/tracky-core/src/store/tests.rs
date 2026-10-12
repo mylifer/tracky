@@ -57,6 +57,30 @@ fn backups_are_complete_and_can_be_inspected() {
 }
 
 #[test]
+fn pending_migration_is_reported_only_for_older_databases() {
+    let dir = std::env::temp_dir().join(format!("tracky-migrate-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("kum.db");
+    assert_eq!(Store::pending_migration(&path).unwrap(), None, "dosya yok");
+    drop(Store::open(&path).unwrap());
+    assert_eq!(Store::pending_migration(&path).unwrap(), None, "güncel");
+    let old = super::schema::MIGRATIONS.len() - 1;
+    Connection::open(&path)
+        .unwrap()
+        .pragma_update(None, "user_version", old as i64)
+        .unwrap();
+    assert_eq!(Store::pending_migration(&path).unwrap(), Some(old));
+    let empty = dir.join("bos.db");
+    Connection::open(&empty).unwrap();
+    assert_eq!(
+        Store::pending_migration(&empty).unwrap(),
+        None,
+        "yeni kurulum"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_file_finds_damaged_pages() {
     let dir = std::env::temp_dir().join(format!("tracky-check-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
