@@ -18,7 +18,9 @@ function undoSaves(saved: Saved[]) {
     saved.map(({ before, id }) =>
       before.id ? api.saveTimesheetEntry(before.id, before) : api.deleteTimesheetEntry(id),
     ),
-  ).then(notifyChanged, (e) => toast(friendlyError(e), { tone: "error" }));
+  )
+    .catch((e) => toast(friendlyError(e), { tone: "error" }))
+    .finally(notifyChanged);
 }
 
 /**
@@ -108,7 +110,9 @@ export async function dismissRows(rows: EntryView[]) {
             Promise.all([
               saved.length ? api.undismissTimesheetEntries(saved) : null,
               ...live.map((id) => api.deleteTimesheetEntry(id)),
-            ]).then(notifyChanged, (e) => toast(friendlyError(e), { tone: "error" }));
+            ])
+              .catch((e) => toast(friendlyError(e), { tone: "error" }))
+              .finally(notifyChanged);
           },
         },
       });
@@ -125,7 +129,8 @@ export async function mergeRows(rows: EntryView[]) {
       run: () =>
         api
           .unmergeTimesheetEntries(merged.id, merged.removed)
-          .then(notifyChanged, (e) => toast(friendlyError(e), { tone: "error" })),
+          .catch((e) => toast(friendlyError(e), { tone: "error" }))
+          .finally(notifyChanged),
     },
   });
 }

@@ -313,6 +313,7 @@ export default function Timesheet({
   // Süren kayıtlar (satırdan çıkınca kaydedilen düzenleme): gönderim onları bekler.
   const inFlight = useRef(new Set<Promise<unknown>>());
   const run = (f: () => Promise<unknown>) => async () => {
+    let failure: { error: unknown } | null = null;
     try {
       setError(null);
       const p = f();
@@ -322,10 +323,13 @@ export default function Timesheet({
       } finally {
         inFlight.current.delete(p);
       }
-      await load();
     } catch (e) {
-      setError(friendlyError(e));
+      failure = { error: e };
     }
+    // Hata olsa da yenilenir: satır başka yerde değiştiyse sayfa güncel halini gösterir ("sayfa
+    // yenilendi, tekrar dene"); yoksa her deneme aynı eski satırla yine reddedilirdi.
+    await load();
+    if (failure) setError(friendlyError(failure.error));
   };
   /**
    * Dosyaya da yazan işlemler: beklenmez (Sheets yanıtı saniyeler sürer), arka planda sırayla
