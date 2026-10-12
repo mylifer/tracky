@@ -10,6 +10,13 @@ use crate::classify::Classifier;
 use crate::model::{IDLE_APP_ID, Session};
 use crate::report::{self, Report};
 
+/// [`Store::project_totals_all_time`] için eski geçmişin proje toplamları (milisaniye).
+pub(super) struct TotalsCache {
+    cutoff: DateTime<Utc>,
+    fingerprint: Vec<i64>,
+    totals_ms: HashMap<String, i64>,
+}
+
 impl Store {
     /// `[from, to)` aralığında başlığında ya da uygulama adında `query` geçen süre.
     pub fn search(
@@ -149,16 +156,107 @@ impl Store {
         to: DateTime<Utc>,
         pick: fn(crate::classify::Classification) -> Option<String>,
     ) -> Result<std::collections::HashMap<String, i64>> {
+        let mut out = self.tag_totals_ms(from, to, pick)?;
+        out.values_mut().for_each(|v| *v /= 1000);
+        Ok(out)
+    }
+
+    /// [`Self::tag_totals`], milisaniye: oturum başına kırpılmaz, en sonda saniyeye çevrilir.
+    fn tag_totals_ms(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        pick: fn(crate::classify::Classification) -> Option<String>,
+    ) -> Result<HashMap<String, i64>> {
         let classifier = Classifier::new(&self.tags()?, &self.rules()?);
-        // Milisaniye toplanır, en sonda saniyeye çevrilir (oturum başına kırpılmaz).
-        let mut out: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        let mut out: HashMap<String, i64> = HashMap::new();
         for s in self.merged_sessions_between(from, to)? {
             let ms = (s.ended_at.min(to) - s.started_at.max(from)).num_milliseconds();
             if let (Some(id), true) = (pick(classifier.classify(&s)), ms > 0) {
                 *out.entry(id).or_default() += ms;
             }
         }
+        Ok(out)
+    }
+
+    /// Projelerin bugüne (`now`) kadarki tüm süresi (sözleşme bütçeleri için), saniye.
+    ///
+    /// Tüm geçmişi toplamak geçmiş büyüdükçe uzar ve bu sırada depo kilitli kalır (takip,
+    /// menü çubuğu ve arayüz bekler). Bu yüzden iki günden eski kısmın toplamı saklanır ve
+    /// yalnızca o kısma dokunan bir değişiklikte (eski oturuma atama, silme, eşitlemeyle
+    /// gelen satır, kural ya da proje değişikliği) yeniden hesaplanır; son iki gün her
+    /// seferinde toplanır. Aralıklar kesişen oturumları tam aldığı ve cihaz birleştirmesi
+    /// aralıktan bağımsız olduğu için iki parçanın toplamı tek seferde toplamaya eşittir.
+    pub fn project_totals_all_time(&self, now: DateTime<Utc>) -> Result<HashMap<String, i64>> {
+        let pick: fn(crate::classify::Classification) -> Option<String> = |c| c.project;
+        let cutoff = (now - chrono::Duration::days(2))
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .map_or(now, |t| t.and_utc());
+        let fingerprint = self.history_fingerprint(cutoff)?;
+        let cached = self
+            .totals_cache
+            .borrow()
+            .as_ref()
+            .filter(|c| c.cutoff == cutoff && c.fingerprint == fingerprint)
+            .map(|c| c.totals_ms.clone());
+        let mut out = match cached {
+            Some(totals) => totals,
+            None => {
+                let totals = self.tag_totals_ms(DateTime::<Utc>::UNIX_EPOCH, cutoff, pick)?;
+                *self.totals_cache.borrow_mut() = Some(TotalsCache {
+                    cutoff,
+                    fingerprint,
+                    totals_ms: totals.clone(),
+                });
+                totals
+            }
+        };
+        for (id, ms) in self.tag_totals_ms(cutoff, now, pick)? {
+            *out.entry(id).or_default() += ms;
+        }
         out.values_mut().for_each(|v| *v /= 1000);
+        Ok(out)
+    }
+
+    /// `cutoff`'tan önce başlayan oturumlar ve sınıflandırmayı belirleyen etiket ve kurallar
+    /// değişince değişen özet. Her satır değişikliği `updated_at`'i değiştirir; toplamlar
+    /// taşmasın diye zaman damgaları bir asal sayıya göre kalanla toplanır.
+    fn history_fingerprint(&self, cutoff: DateTime<Utc>) -> Result<Vec<i64>> {
+        const P: i64 = 2_147_483_647;
+        let mut out = Vec::with_capacity(13);
+        let row =
+            |sql: &str, n: usize, p: &[&dyn rusqlite::ToSql], out: &mut Vec<i64>| -> Result<()> {
+                self.conn.query_row(sql, p, |r| {
+                    for i in 0..n {
+                        out.push(r.get::<_, Option<i64>>(i)?.unwrap_or(0));
+                    }
+                    Ok(())
+                })?;
+                Ok(())
+            };
+        row(
+            "SELECT COUNT(*), MAX(updated_at), SUM(updated_at % ?2), SUM(ended_at % ?2),
+                    SUM(COALESCE(state_at, 0) % ?2), SUM(COALESCE(deleted_at, 0) % ?2)
+             FROM sessions WHERE started_at < ?1",
+            6,
+            &[&cutoff.timestamp_millis(), &P],
+            &mut out,
+        )?;
+        row(
+            "SELECT COUNT(*), SUM(updated_at % ?1), SUM(COALESCE(deleted_at, 0) % ?1),
+                    SUM(COALESCE(archived_at, 0) % ?1)
+             FROM tags",
+            4,
+            &[&P],
+            &mut out,
+        )?;
+        row(
+            "SELECT COUNT(*), SUM(updated_at % ?1), SUM(COALESCE(deleted_at, 0) % ?1) FROM rules",
+            3,
+            &[&P],
+            &mut out,
+        )?;
         Ok(out)
     }
 

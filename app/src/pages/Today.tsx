@@ -106,8 +106,14 @@ export default function Today({ tracking, onTogglePause, onOpenDay, onReview, on
 
   useEffect(() => {
     load();
-    const id = setInterval(load, REFRESH_MS);
-    return () => clearInterval(id);
+    // Pencere gizliyken (menü çubuğunda sürerken) yenileme yok; görününce hemen yenilenir.
+    const id = setInterval(() => document.visibilityState !== "hidden" && load(), REFRESH_MS);
+    const onVisible = () => document.visibilityState === "visible" && load();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [load]);
   useChanged(load);
   useTauriEvent(api.onSync, load);

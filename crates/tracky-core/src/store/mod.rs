@@ -66,6 +66,8 @@ pub struct Store {
     /// Kopyalanan bir veritabanı (örn. Taşıma Yardımcısı) cihaz kimliğini de taşır;
     /// kalıcı kimlik kullanılsaydı iki kurulum birbirinin satırlarını hiç çekmezdi.
     instance_id: Uuid,
+    /// Tüm geçmişin proje toplamlarının eski kısmı (bkz. [`Store::project_totals_all_time`]).
+    totals_cache: std::cell::RefCell<Option<reports::TotalsCache>>,
 }
 
 /// İç içe geçebilen işlem (SQLite `SAVEPOINT`). Dışarıda açık bir işlem yoksa kendisi başlatır
@@ -137,6 +139,7 @@ impl Store {
             conn,
             device_id,
             instance_id: Uuid::new_v4(),
+            totals_cache: Default::default(),
         };
         store.seed_default_tags()?;
         store.migrate_timesheets()?;

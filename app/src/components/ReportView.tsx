@@ -202,10 +202,12 @@ export default function ReportView(p: Props) {
   const end = addDays(from, days);
   const isLive = new Date() < end && new Date() >= from;
   // Süren dönemde takip durumu her pencere geçişinde gelir; raporu her seferinde
-  // yeniden hesaplamak yerine en çok 15 sn'de bir yenile.
+  // yeniden hesaplamak yerine en çok 15 sn'de bir yenile. Pencere kapalıyken (uygulama
+  // menü çubuğunda sürerken) ya da simge durumundayken hiç yenileme: rapor hesabı depoyu
+  // kilitler, görünmeyen ekran için takibi bekletmeye değmez.
   const pending = useRef<number | null>(null);
   useTauriEvent(api.onStatus, () => {
-    if (!isLive || pending.current !== null) return;
+    if (!isLive || pending.current !== null || document.visibilityState === "hidden") return;
     pending.current = window.setTimeout(() => {
       pending.current = null;
       load();
@@ -218,6 +220,15 @@ export default function ReportView(p: Props) {
     },
     [load],
   );
+  // Gizliyken atlanan yenilemeyi, pencere yeniden görününce hemen yap.
+  useEffect(() => {
+    if (!isLive) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [isLive, load]);
 
   const tags = useMemo(() => tagMap(report?.tags ?? []), [report]);
   const categories = useMemo(() => (report?.tags ?? []).filter((t) => t.kind === "category"), [report]);

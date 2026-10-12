@@ -655,7 +655,7 @@ impl Store {
         let used = if projects.is_empty() && clients.is_empty() {
             HashMap::new()
         } else {
-            self.project_totals(DateTime::<Utc>::UNIX_EPOCH, now)?
+            self.project_totals_all_time(now)?
         };
         Ok(crate::budget::budgets(
             self.timesheet_config()?.day_hours,
@@ -838,6 +838,64 @@ mod tests {
             b.clients[0].level(),
             Some(crate::budget::BudgetLevel::Reached)
         );
+    }
+
+    #[test]
+    fn all_time_project_totals_are_cached_and_follow_history_edits() {
+        const DAY: i64 = 86_400;
+        let store = Store::open_in_memory().unwrap();
+        let kum = store.accept_project_suggestion("Kum").unwrap();
+        let other = store.accept_project_suggestion("Trumore").unwrap();
+        let now = t(20 * DAY);
+        let fresh = |store: &Store| {
+            store
+                .project_totals(DateTime::<Utc>::UNIX_EPOCH, now)
+                .unwrap()
+        };
+        // Eski geçmiş, önbellek sınırını (iki gün önce) aşan ve bugünkü oturum.
+        store
+            .upsert_session(&session("Kum — eski", 2 * DAY, 2 * DAY + 3600))
+            .unwrap();
+        store
+            .upsert_session(&session("Kum — gece", 18 * DAY - 1800, 18 * DAY + 1800))
+            .unwrap();
+        store
+            .upsert_session(&session("Kum — bugün", 20 * DAY - 600, 20 * DAY))
+            .unwrap();
+
+        let first = store.project_totals_all_time(now).unwrap();
+        assert_eq!(first, fresh(&store));
+        assert_eq!(first[&kum.id], 3600 + 3600 + 600);
+        // Önbellekten aynı sonuç.
+        assert_eq!(store.project_totals_all_time(now).unwrap(), first);
+
+        // Eski oturum başka projeye atanır: önbellek geçersiz olur.
+        store
+            .set_project_between(t(2 * DAY), t(2 * DAY + 3600), Some(&other.id))
+            .unwrap();
+        let moved = store.project_totals_all_time(now).unwrap();
+        assert_eq!(moved, fresh(&store));
+        assert_eq!(moved[&other.id], 3600);
+
+        // Kural eski oturumların sınıfını değiştirir.
+        store
+            .upsert_session(&session("trumore notları", 3 * DAY, 3 * DAY + 1200))
+            .unwrap();
+        store
+            .upsert_rule(&Rule {
+                id: Uuid::new_v4().to_string(),
+                tag_id: other.id.clone(),
+                field: RuleField::Title,
+                pattern: "notları".into(),
+            })
+            .unwrap();
+        let ruled = store.project_totals_all_time(now).unwrap();
+        assert_eq!(ruled, fresh(&store));
+        assert_eq!(ruled[&other.id], 3600 + 1200);
+
+        // Eski oturum silinir.
+        store.delete_between(t(3 * DAY), t(3 * DAY + 1200)).unwrap();
+        assert_eq!(store.project_totals_all_time(now).unwrap(), fresh(&store));
     }
 
     #[test]
