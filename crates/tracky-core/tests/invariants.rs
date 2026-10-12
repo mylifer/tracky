@@ -26,8 +26,8 @@ use tracky_core::client_report::ReportSource;
 use tracky_core::model::{IDLE_APP_ID, Session};
 use tracky_core::store::{DayRow, Store};
 use tracky_core::timesheet::{
-    EntryKind, Interval, MERGE_GAP, MIN_ENTRY, Meeting, ProjectMapping, STALE_SLACK, Timesheet,
-    TimesheetConfig, coalesce, round_quarter, total,
+    EntryKind, Interval, MERGE_GAP, MIN_ENTRY, MIN_REMAINDER, Meeting, ProjectMapping, STALE_SLACK,
+    Timesheet, TimesheetConfig, TimesheetEntry, coalesce, round_quarter, total,
 };
 use uuid::Uuid;
 
@@ -1085,4 +1085,534 @@ fn one_seed() {
     let seed: u64 = std::env::var("SEED").unwrap().parse().unwrap();
     let bad = run_seed(seed);
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+// --- Arayüz eylemleri --------------------------------------------------------------------------
+
+/// Bildirimdeki "Geri al".
+enum Undo {
+    Dismiss {
+        id: String,
+        live: bool,
+    },
+    Merge {
+        id: String,
+        removed: Vec<(String, TimesheetEntry)>,
+    },
+    Export(Vec<String>),
+}
+
+/// Satırlarını her adımda yeniden okuyarak (sayfa yenilenmiş gibi) arayüzün sunduğu eylemlerden
+/// rastgele birini uygular. Sunulan eylem reddedilmemeli (yoksa satır sayfada takılı kalır) ve gün
+/// her adımdan sonra tutarlı kalmalı: aynı saat iki satıra yazılmaz, iş kaybolmaz.
+fn run_actions(seed: u64, steps: usize) -> Vec<String> {
+    let day = random_day(seed);
+    let projects = ["alpha", "beta", "gamma", "delta"].map(String::from);
+    act(
+        &day.store,
+        day.date,
+        &day.meetings,
+        &projects,
+        seed,
+        steps,
+        Vec::new(),
+        true,
+    )
+}
+
+/// `run_actions`'ın eylemleri `date` gününde; `projects` taşıma ve atama hedefleri. `hidden`:
+/// günün önceden gizlenmiş satırları; `whole`: kayıp iş denetlenir (aralıkları bilinmeyen eski
+/// satırların günü değil).
+#[allow(clippy::too_many_arguments)]
+fn act(
+    store: &Store,
+    date: NaiveDate,
+    meetings: &[Meeting],
+    projects: &[String],
+    seed: u64,
+    steps: usize,
+    mut hidden: Vec<String>,
+    whole: bool,
+) -> Vec<String> {
+    let (from, to) = (midnight(date), midnight(date + Days::new(1)));
+    let mut rng = Rng(seed ^ 0xA5A5_5A5A_1234_5678);
+    let mut log: Vec<String> = Vec::new();
+    let mut undo: Option<Undo> = None;
+    // Raporda ve toplantıda: bir proje, "Projesiz" ya da atamayı kaldırmak ("").
+    let mut targets: Vec<&str> = projects.iter().map(String::as_str).collect();
+    targets.extend([NO_PROJECT, ""]);
+    for _ in 0..steps {
+        let rows = rows_of(store, date, meetings);
+        let ctx = store.timesheet_context().unwrap();
+        let pieces = store.timesheet_pieces(&ctx, from, to, meetings).unwrap();
+        let open: Vec<&(Timesheet, DayRow)> = rows.iter().filter(|(_, r)| !r.exported).collect();
+        let sent: Vec<&(Timesheet, DayRow)> = rows.iter().filter(|(_, r)| r.exported).collect();
+        let pick_open = |rng: &mut Rng| (!open.is_empty()).then(|| *rng.pick(&open));
+        let what = |r: &DayRow| {
+            format!(
+                "{} {} {} {:.2} sa",
+                if r.id.is_none() {
+                    "canlı"
+                } else if r.exported {
+                    "gönderilmiş"
+                } else {
+                    "kayıtlı"
+                },
+                r.entry.start.format("%H:%M:%S"),
+                r.entry.project_id,
+                r.entry.worked()
+            )
+        };
+        // (eylem, sonuç); `None`: eylem bu durumda sunulmuyor.
+        let done: Option<(String, Result<(), String>)> = match rng.below(15) {
+            0 => pick_open(&mut rng).map(|(_, r)| {
+                let mut e = r.entry.clone();
+                match rng.below(3) {
+                    0 => e.details = format!("{} (düzenlendi)", e.details),
+                    1 => e.hours = (e.hours + 0.25).min(24.0),
+                    _ => {
+                        e.kind = *rng.pick(&[EntryKind::Working, EntryKind::Online, EntryKind::F2F])
+                    }
+                }
+                let res = store.save_timesheet_entry(r.id.as_deref(), &e).map(|_| ());
+                (
+                    format!("düzenle [{}]", what(r)),
+                    res.map_err(|e| e.to_string()),
+                )
+            }),
+            1 => pick_open(&mut rng).map(|(_, r)| {
+                let res = store.dismiss_timesheet_entry(r.id.as_deref(), &r.entry);
+                if let Ok(id) = &res {
+                    hidden.push(id.clone());
+                    undo = Some(Undo::Dismiss {
+                        id: id.clone(),
+                        live: r.id.is_none(),
+                    });
+                }
+                (
+                    format!("sil [{}]", what(r)),
+                    res.map(|_| ()).map_err(|e| e.to_string()),
+                )
+            }),
+            // Geri almanın hatası bildirimde görünür (araya başka değişiklik girmiş olabilir);
+            // takılma sayılmaz, ama gün yine tutarlı kalmalı.
+            2 => undo.take().map(|u| {
+                let (label, res) = match u {
+                    Undo::Dismiss { id, live: true } => {
+                        ("geri al: sil (canlı)", store.delete_timesheet_entry(&id))
+                    }
+                    Undo::Dismiss { id, live: false } => {
+                        ("geri al: sil", store.undismiss_timesheet_entries(&[id]))
+                    }
+                    Undo::Merge { id, removed } => (
+                        "geri al: birleştir",
+                        store.unmerge_timesheet_entries(&id, &removed),
+                    ),
+                    Undo::Export(ids) => ("geri al: gönder", store.unmark_timesheet_exported(&ids)),
+                };
+                if let Err(e) = res {
+                    log.push(format!("{label} reddedildi (bildirim): {e}"));
+                }
+                (label.to_string(), Ok(()))
+            }),
+            3 => {
+                let mut groups: HashMap<(String, String), Vec<&DayRow>> = HashMap::new();
+                for (s, r) in &open {
+                    groups
+                        .entry((s.id.clone(), r.entry.project_id.clone()))
+                        .or_default()
+                        .push(r);
+                }
+                let mut groups: Vec<Vec<&DayRow>> =
+                    groups.into_values().filter(|g| g.len() >= 2).collect();
+                groups.sort_by_key(|g| g[0].key.clone());
+                (!groups.is_empty()).then(|| {
+                    let g = rng.pick(&groups);
+                    let n = 2 + rng.below(g.len() as u64 - 1) as usize;
+                    let chosen: Vec<(Option<String>, TimesheetEntry)> = g[..n]
+                        .iter()
+                        .map(|r| (r.id.clone(), r.entry.clone()))
+                        .collect();
+                    let res = store.merge_timesheet_entries(&chosen);
+                    let label = format!(
+                        "birleştir [{}]",
+                        g[..n]
+                            .iter()
+                            .map(|r| what(r))
+                            .collect::<Vec<_>>()
+                            .join(" + ")
+                    );
+                    match res {
+                        Ok((id, removed)) => {
+                            undo = Some(Undo::Merge { id, removed });
+                            (label, Ok(()))
+                        }
+                        Err(e) => (label, Err(e.to_string())),
+                    }
+                })
+            }
+            4 => {
+                let stale: Vec<&(Timesheet, DayRow)> =
+                    rows.iter().filter(|(_, r)| r.stale.is_some()).collect();
+                (!stale.is_empty()).then(|| {
+                    let (_, r) = *rng.pick(&stale);
+                    let id = r.id.clone().unwrap();
+                    let res = if r.exported {
+                        match tracky_core::timesheet::refreshed(&pieces, &r.entry) {
+                            Some(fresh) => store.save_exported_entry(&id, &fresh, true, None),
+                            None => store.withdraw_exported_entry(&id, false),
+                        }
+                    } else {
+                        store.refresh_timesheet_entry(&id, &pieces).map(|_| ())
+                    };
+                    (
+                        format!("güncelle [{}]", what(r)),
+                        res.map_err(|e| e.to_string()),
+                    )
+                })
+            }
+            5 => {
+                let sheet = rng.pick(&ctx.config.timesheets).clone();
+                // Gönderilebilenler: açıklaması dolu, takipte değişmemiş.
+                let ready: Vec<&DayRow> = open
+                    .iter()
+                    .filter(|(s, r)| {
+                        s.id == sheet.id && !r.entry.details.trim().is_empty() && r.stale.is_none()
+                    })
+                    .map(|(_, r)| r)
+                    .filter(|_| rng.chance(0.7))
+                    .collect();
+                (!ready.is_empty()).then(|| {
+                    let label = format!(
+                        "gönder {} [{}]",
+                        sheet.id,
+                        ready
+                            .iter()
+                            .map(|r| what(r))
+                            .collect::<Vec<_>>()
+                            .join(" + ")
+                    );
+                    let res = store.atomic(|s| {
+                        let mut ids = Vec::new();
+                        for r in &ready {
+                            let id = match &r.id {
+                                Some(id) => id.clone(),
+                                None => match s.saved_twin(&r.entry)? {
+                                    Some(twin) => twin.id,
+                                    None => s.save_timesheet_entry(None, &r.entry)?,
+                                },
+                            };
+                            if !ids.contains(&id) {
+                                ids.push(id);
+                            }
+                        }
+                        s.mark_timesheet_exported(&ids, Utc::now(), &sheet.id, "")?;
+                        Ok(ids)
+                    });
+                    match res {
+                        Ok(ids) => {
+                            undo = Some(Undo::Export(ids));
+                            (label, Ok(()))
+                        }
+                        Err(e) => (label, Err(e.to_string())),
+                    }
+                })
+            }
+            6 => {
+                let sheet = rng.pick(&ctx.config.timesheets).clone();
+                let res = store.reset_timesheet_day(&sheet, date).map(|_| ());
+                Some((
+                    format!("yeniden öner {}", sheet.id),
+                    res.map_err(|e| e.to_string()),
+                ))
+            }
+            7 => {
+                let sheet = rng.pick(&ctx.config.timesheets).clone();
+                let res = store.restore_hidden(&sheet, date).map(|_| ());
+                Some((
+                    format!("gizlenenleri geri getir {}", sheet.id),
+                    res.map_err(|e| e.to_string()),
+                ))
+            }
+            8 => {
+                let sheet = rng.pick(&ctx.config.timesheets).clone();
+                let p = rng.pick(&sheet.projects).project_id.clone();
+                let manual = TimesheetEntry {
+                    date,
+                    start: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+                    hours: 1.0,
+                    actual_hours: None,
+                    kind: EntryKind::Working,
+                    details: String::new(),
+                    party: sheet.default_party.clone(),
+                    project_id: p.clone(),
+                    division: String::new(),
+                    coverage: Some(Vec::new()),
+                };
+                let res = store.save_timesheet_entry(None, &manual).map(|_| ());
+                Some((format!("elle satır {p}"), res.map_err(|e| e.to_string())))
+            }
+            // Gün takviminde satırı başka projeye taşı: aralıkları raporda da taşınır.
+            9 => pick_open(&mut rng).map(|(_, r)| {
+                let target = rng.pick(projects).clone();
+                let e = &r.entry;
+                let res = (|| {
+                    if target == e.project_id {
+                        return Ok(());
+                    }
+                    for (a, b) in e.spans() {
+                        store.set_project_between(a, b, Some(&target))?;
+                    }
+                    let Some(id) = &r.id else { return Ok(()) };
+                    match ctx.config.timesheets.iter().find(|s| s.includes(&target)) {
+                        None => {
+                            hidden.push(store.dismiss_timesheet_entry(Some(id), e)?);
+                        }
+                        Some(_) => {
+                            store.save_timesheet_entry(
+                                Some(id),
+                                &TimesheetEntry {
+                                    project_id: target.clone(),
+                                    ..e.clone()
+                                },
+                            )?;
+                        }
+                    }
+                    Ok(())
+                })();
+                (
+                    format!("taşı [{}] → {target}", what(r)),
+                    res.map_err(|e: tracky_core::store::StoreError| e.to_string()),
+                )
+            }),
+            10 => {
+                let a = from + Duration::hours(6) + rng.ms(0, 14 * 3_600_000);
+                let b = a + rng.ms(60_000, 2 * 3_600_000);
+                let p = *rng.pick(&targets);
+                let res = store
+                    .set_project_between(a, b, (!p.is_empty()).then_some(p))
+                    .map(|_| ());
+                Some((
+                    format!("raporda {}–{} → {p:?}", hm(a), hm(b)),
+                    res.map_err(|e| e.to_string()),
+                ))
+            }
+            11 => (!meetings.is_empty()).then(|| {
+                let m = rng.pick(meetings);
+                let p = *rng.pick(&targets);
+                let p = if p == NO_PROJECT { "" } else { p };
+                let res = store.assign_meeting(&m.uid, (!p.is_empty()).then_some(p));
+                (
+                    format!("toplantı {} → {p:?}", m.subject),
+                    res.map_err(|e| e.to_string()),
+                )
+            }),
+            12 => (!meetings.is_empty()).then(|| {
+                let m = rng.pick(meetings);
+                let a = *rng.pick(&[Some(true), Some(false), None]);
+                let res = store.answer_meeting(&tracky_core::attendance::key(m), a);
+                (
+                    format!("katılım {} → {a:?}", m.subject),
+                    res.map_err(|e| e.to_string()),
+                )
+            }),
+            13 => (!sent.is_empty()).then(|| {
+                let (_, r) = *rng.pick(&sent);
+                let e = TimesheetEntry {
+                    details: format!("{} (dosyada)", r.entry.details),
+                    ..r.entry.clone()
+                };
+                let res = store.save_exported_entry(r.id.as_deref().unwrap(), &e, false, None);
+                (
+                    format!("gönderilmişi düzenle [{}]", what(r)),
+                    res.map_err(|e| e.to_string()),
+                )
+            }),
+            _ => (!sent.is_empty()).then(|| {
+                let (_, r) = *rng.pick(&sent);
+                let id = r.id.clone().unwrap();
+                let res = store.withdraw_exported_entry(&id, true);
+                hidden.push(id);
+                (
+                    format!("gönderilmişi sil [{}]", what(r)),
+                    res.map_err(|e| e.to_string()),
+                )
+            }),
+        };
+        let Some((label, res)) = done else { continue };
+        log.push(label.clone());
+        let mut bad = Vec::new();
+        if let Err(e) = res {
+            bad.push(format!("sunulan eylem reddedildi: {label}: {e}"));
+        }
+        bad.extend(check_day(store, date, meetings, false, STALE_SLACK));
+        if whole {
+            bad.extend(lost_work(store, date, meetings, &hidden));
+        }
+        if !bad.is_empty() {
+            return vec![format!(
+                "{}\n    adımlar:\n      {}",
+                bad.join("\n    "),
+                log.join("\n      ")
+            )];
+        }
+    }
+    Vec::new()
+}
+
+/// Çizelgeye bağlı projelerin satıra girmemiş işi: ne bir satırda ne gizlenmiş bir satırda, ve
+/// kaydedilmiş satırın artığı sayılamayacak kadar uzun (kayıp iş).
+fn lost_work(
+    store: &Store,
+    date: NaiveDate,
+    meetings: &[Meeting],
+    hidden: &[String],
+) -> Vec<String> {
+    let (from, to) = (midnight(date), midnight(date + Days::new(1)));
+    let ctx = store.timesheet_context().unwrap();
+    let pieces = store.timesheet_pieces(&ctx, from, to, meetings).unwrap();
+    let rows = rows_of(store, date, meetings);
+    let mut bad = Vec::new();
+    for sheet in &ctx.config.timesheets {
+        for m in &sheet.projects {
+            let p = m.project_id.as_str();
+            let work = coalesce(
+                pieces
+                    .iter()
+                    .filter(|x| x.project == p)
+                    .map(|x| (x.start, x.end))
+                    .collect(),
+            );
+            let mut covered: Vec<Interval> = rows
+                .iter()
+                .filter(|(_, r)| r.entry.project_id == p)
+                .flat_map(|(_, r)| r.entry.spans())
+                .collect();
+            for id in hidden {
+                if let Some(s) = store.timesheet_entry(id).unwrap()
+                    && s.entry.project_id == p
+                {
+                    covered.extend(s.entry.spans());
+                }
+            }
+            let left = minus(&work, &coalesce(covered));
+            // Satıra girmeyen iş kümeleri (MERGE_GAP'e kadar boşlukla).
+            let mut clusters: Vec<Vec<Interval>> = Vec::new();
+            for span in left {
+                match clusters.last_mut() {
+                    Some(c) if span.0 - c.last().unwrap().1 <= MERGE_GAP => c.push(span),
+                    _ => clusters.push(vec![span]),
+                }
+            }
+            for c in clusters {
+                if total(&c) > MIN_REMAINDER + Duration::minutes(1) {
+                    bad.push(format!(
+                        "kayıp iş: {p} {}–{} ({} sn) hiçbir satırda değil",
+                        hm(c[0].0),
+                        hm(c[c.len() - 1].1),
+                        total(&c).num_seconds()
+                    ));
+                }
+            }
+        }
+    }
+    bad
+}
+
+#[test]
+fn random_actions_never_get_stuck() {
+    let seeds: u64 = std::env::var("KUM_ACTION_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(40);
+    let first: u64 = std::env::var("KUM_ACTION_FROM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let mut failures = Vec::new();
+    for seed in first..first + seeds {
+        let bad = run_actions(seed, 30);
+        if !bad.is_empty() {
+            failures.push(format!("tohum {seed}:\n  {}", bad.join("\n  ")));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} / {seeds} gün bozuk:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Gerçek verinin son günlerinde rastgele arayüz eylemleri (her deneme veritabanının taze bir
+/// kopyasında; KUM_DB, isteğe bağlı KUM_ICS; KUM_DAYS gün, gün başına KUM_RUNS deneme).
+#[test]
+#[ignore = "gerçek veritabanı ister: KUM_DB=…/kum.db"]
+fn real_database_survives_random_actions() {
+    let source = std::env::var("KUM_DB").expect("KUM_DB");
+    let env = |k: &str, d: u64| {
+        std::env::var(k)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(d)
+    };
+    let (days, runs) = (env("KUM_DAYS", 14), env("KUM_RUNS", 4));
+    let calendar = std::env::var("KUM_ICS")
+        .ok()
+        .map(|p| Calendar::parse(&std::fs::read_to_string(p).unwrap()));
+    let today = Local::now().date_naive();
+    let mut failures = Vec::new();
+    for back in 0..days {
+        let date = today - Days::new(back);
+        let meetings = calendar
+            .as_ref()
+            .map(|c| c.meetings(midnight(date), midnight(date + Days::new(1))))
+            .unwrap_or_default();
+        for run in 0..runs {
+            let copy = std::env::temp_dir().join(format!("kum-actions-{}.db", Uuid::new_v4()));
+            Store::copy_database(std::path::Path::new(&source), &copy).unwrap();
+            let store = Store::open(&copy).unwrap();
+            let projects: Vec<String> = store
+                .tags()
+                .unwrap()
+                .into_iter()
+                .filter(|t| t.kind == TagKind::Project)
+                .map(|t| t.id)
+                .collect();
+            let db = rusqlite::Connection::open(&copy).unwrap();
+            let ids = |filter: &str| -> Vec<String> {
+                db.prepare(&format!(
+                    "SELECT id FROM timesheet_entries WHERE date = ?1 AND deleted_at IS NULL AND {filter}"
+                ))
+                .unwrap()
+                .query_map([date.to_string()], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+            };
+            let (hidden, legacy) = (ids("dismissed_at IS NOT NULL"), ids("coverage IS NULL"));
+            drop(db);
+            let bad = act(
+                &store,
+                date,
+                &meetings,
+                &projects,
+                back * 1000 + run,
+                30,
+                hidden,
+                legacy.is_empty(),
+            );
+            if !bad.is_empty() {
+                failures.push(format!("{date} deneme {run}:\n  {}", bad.join("\n  ")));
+            }
+            drop(store);
+            let _ = std::fs::remove_file(&copy);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} deneme bozuk:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
