@@ -789,6 +789,19 @@ fn rows_of(store: &Store, date: NaiveDate, meetings: &[Meeting]) -> Vec<(Timeshe
         .collect()
 }
 
+/// Günün canlı satırlarını kaydeder: her öneri kaydedilebilir olmalı (kaydedilemeyen öneri
+/// sayfada hep kalır, gönderilemez).
+fn save_live_rows(store: &Store, date: NaiveDate, meetings: &[Meeting]) -> Vec<String> {
+    rows_of(store, date, meetings)
+        .into_iter()
+        .filter(|(_, r)| r.id.is_none())
+        .filter_map(|(_, r)| {
+            let e = store.save_timesheet_entry(None, &r.entry).err()?;
+            Some(format!("öneri {} kaydedilemedi: {e}", r.entry.start))
+        })
+        .collect()
+}
+
 fn covered_by_project(rows: &[(Timesheet, DayRow)]) -> HashMap<String, Vec<Interval>> {
     let mut out: HashMap<String, Vec<Interval>> = HashMap::new();
     for (_, r) in rows {
@@ -985,6 +998,14 @@ fn run_seed(seed: u64) -> Vec<String> {
             );
         }
     }
+
+    // 4. Kalan bütün öneriler kaydedilebilir (gizlenen toplantının saatine düşenler de); gün
+    //    ardından da tutarlı kalır.
+    fail("kaydet", save_live_rows(store, date, meetings));
+    fail(
+        "kaydet",
+        check_day(store, date, meetings, false, STALE_SLACK),
+    );
     bad
 }
 
@@ -1040,6 +1061,7 @@ fn real_database_is_consistent() {
         if date.weekday().num_days_from_monday() == 0 {
             bad.extend(check_span(&store, date, 7));
         }
+        bad.extend(save_live_rows(&store, date, &meetings));
         if !bad.is_empty() {
             failures.push(format!("{date}:\n  {}", bad.join("\n  ")));
         }

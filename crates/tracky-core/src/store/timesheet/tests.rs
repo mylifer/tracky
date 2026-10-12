@@ -268,12 +268,62 @@ fn a_deleted_meeting_leaves_its_time_to_an_overlapping_one() {
         .rows;
     store.dismiss_timesheet_entry(None, &r[0].entry).unwrap();
     assert_eq!(rows(&store), [(30, "Charging UX".to_string())]);
+    // Kalan toplantı, silinen satırın aralığına düşse de kaydedilir.
+    let pieces = store
+        .timesheet_pieces(&ctx, t(-540), t(900), &meetings)
+        .unwrap();
+    let r = store
+        .timesheet_day(&ctx, &togg, day(), &pieces)
+        .unwrap()
+        .rows;
+    store.save_timesheet_entry(None, &r[0].entry).unwrap();
+    assert_eq!(rows(&store), [(30, "Charging UX".to_string())]);
     // Aralıkları bilinmeyen eski satır da aynı saatte başlayan toplantısıyla eşlenir.
     store
         .conn
         .execute("UPDATE timesheet_entries SET coverage = NULL", [])
         .unwrap();
     assert_eq!(rows(&store), [(30, "Charging UX".to_string())]);
+}
+
+#[test]
+fn work_in_a_deleted_meeting_can_be_saved() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    let togg = sheet("togg", &["togg"]);
+    let meetings = [Meeting {
+        uid: "ux".into(),
+        start: t(30),
+        end: t(60),
+        subject: "UX gösterimi".into(),
+        online: true,
+        ..Meeting::default()
+    }];
+    store.assign_meeting("ux", Some("togg")).unwrap();
+    work(&store, "Loyalty", 0, 90, Some("togg"));
+    let rows = |store: &Store| {
+        let ctx = store.timesheet_context().unwrap();
+        let pieces = store
+            .timesheet_pieces(&ctx, t(-540), t(900), &meetings)
+            .unwrap();
+        store
+            .timesheet_day(&ctx, &togg, day(), &pieces)
+            .unwrap()
+            .rows
+    };
+    let r = rows(&store);
+    let meeting = r
+        .iter()
+        .find(|r| r.entry.details == "UX gösterimi")
+        .unwrap();
+    store.dismiss_timesheet_entry(None, &meeting.entry).unwrap();
+    // Toplantı yapılmadı: saati işe kalır ve iş tek satır olarak kaydedilir.
+    let r = rows(&store);
+    assert_eq!(short(&r), [(false, "09:00".into(), 90, "Loyalty".into())]);
+    let id = store.save_timesheet_entry(None, &r[0].entry).unwrap();
+    let r = rows(&store);
+    assert_eq!(short(&r), [(true, "09:00".into(), 90, "Loyalty".into())]);
+    assert_eq!(r[0].id.as_deref(), Some(id.as_str()));
 }
 
 #[test]

@@ -809,21 +809,22 @@ impl Store {
     }
 
     /// Takipten gelen satır kaydedilirken: aynı aralıklar zaten kaydedildiyse o satırın kimliği;
-    /// aralıklar başka bir satırınkilerle kesişiyorsa hata.
+    /// aralıklar başka bir satırınkilerle kesişiyorsa hata. Gizlenen satırlar sayılmaz: dosyaya
+    /// gitmezler ve yapılmadı sayılan toplantının gizlenen satırının saati işe kalır.
     fn claim_spans(&self, entry: &TimesheetEntry, coverage: &[[i64; 2]]) -> Result<Option<String>> {
         if coverage.is_empty() {
             return Ok(None);
         }
         let spans = timesheet::from_coverage(coverage);
         for s in self.saved_rows(entry.date, entry.date)? {
-            if s.entry.project_id != entry.project_id {
+            if s.dismissed || s.entry.project_id != entry.project_id {
                 continue;
             }
             let theirs = s.entry.spans();
             if !overlaps(&spans, &theirs) {
                 continue;
             }
-            if theirs == spans && s.exported_at.is_none() && !s.dismissed {
+            if theirs == spans && s.exported_at.is_none() {
                 return Ok(Some(s.id));
             }
             return Err(StoreError::Invalid(
