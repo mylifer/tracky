@@ -433,6 +433,12 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(TrayItems(Mutex::new(None)));
     app.manage(edits::UndoLog::default());
     app.manage(PendingNav::default());
+    // Önceki oturumda zaman çizelgesi aktarımı yarıda kaldıysa: dosyaya yazılan satırlar
+    // gönderildi sayılır (arka planda; dosya okuması açılışı bekletmesin).
+    let handle = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        timesheet::export::recover_interrupted_export(&handle).await;
+    });
     tray::create(app.handle(), app.autolaunch().is_enabled().unwrap_or(false))?;
 
     let (tx, rx) = mpsc::channel();

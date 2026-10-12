@@ -32,6 +32,119 @@ pub(super) enum ExportTarget {
     },
 }
 
+/// Sürmekte olan aktarımın kaydı (yalnızca bu cihazda): uygulama dosyaya yazdıktan sonra,
+/// satırları "gönderildi" işaretleyemeden kapanırsa (çökme, kapatma, veritabanı hatası)
+/// bir sonraki açılışta ya da aktarımda hangi satırların gerçekten yazıldığına bakılır.
+const INTERRUPTED_KEY: &str = "timesheet_export_inflight";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Interrupted {
+    sheet_id: String,
+    consultant: String,
+    /// Excel dosyası; Sheets'te `None` (orada satırlar kimlikle işaretli, ikinci kez yazılmaz).
+    excel: Option<std::path::PathBuf>,
+    ids: Vec<String>,
+    at: chrono::DateTime<Utc>,
+}
+
+fn save_interrupted(app: &AppHandle, journal: Option<&Interrupted>) -> CmdResult<()> {
+    lock(&app.state::<Shared>().store)
+        .save_setting(INTERRUPTED_KEY, &journal)
+        .map_err(err)
+}
+
+/// Yarıda kalmış aktarımı çözer: Excel dosyasına yazılmış ama Kum'da gönderilmemiş görünen
+/// satırlar "gönderildi" işaretlenir (yeniden gönderilip dosyada ikilenmesin). Dosyada
+/// olmayanlar gönderilmemiş kalır. Sheets'te bir şey gerekmez: tablo, kimliğiyle yazılmış
+/// satırı ikinci kez yazmaz. Dosya okunamazsa kayıt kalır ve hata döner: aktarım, önce
+/// hangi satırların yazıldığı bilinmeden yapılmasın.
+async fn recover_interrupted(app: &AppHandle) -> CmdResult<()> {
+    let journal = lock(&app.state::<Shared>().store)
+        .setting::<Option<Interrupted>>(INTERRUPTED_KEY)
+        .map_err(err)?
+        .flatten();
+    let Some(journal) = journal else {
+        return Ok(());
+    };
+    if let Some(path) = journal.excel.clone() {
+        let pending = interrupted_pending(&lock(&app.state::<Shared>().store), &journal)?;
+        if !pending.is_empty() {
+            let rows: Vec<tracky_xlsx::Row> = pending.iter().map(|(_, e)| xlsx_row(e)).collect();
+            let consultant = journal.consultant.clone();
+            let found = tauri::async_runtime::spawn_blocking(move || {
+                tracky_xlsx::contains(&path, &consultant, &rows)
+            })
+            .await
+            .map_err(err)?
+            .map_err(|e| {
+                format!(
+                    "Önceki aktarım yarıda kalmıştı; dosyaya hangi satırların yazıldığı okunamadı: {e}"
+                )
+            })?;
+            let written = settle_interrupted(
+                &lock(&app.state::<Shared>().store),
+                &journal,
+                &pending,
+                &found,
+            )?;
+            log_info!(
+                "yarıda kalan aktarım: {} satırdan {written}'i dosyada bulundu, gönderildi sayıldı",
+                pending.len()
+            );
+        }
+    }
+    save_interrupted(app, None)
+}
+
+/// Yarıda kalan aktarımın hâlâ gönderilmemiş görünen satırları (silinen ya da bu arada
+/// gönderilen dışarıda kalır).
+fn interrupted_pending(
+    store: &Store,
+    journal: &Interrupted,
+) -> CmdResult<Vec<(String, TimesheetEntry)>> {
+    let mut pending = Vec::new();
+    for id in &journal.ids {
+        if let Some(saved) = store
+            .timesheet_entry(id)
+            .map_err(err)?
+            .filter(|s| !s.dismissed && s.exported_at.is_none())
+        {
+            pending.push((id.clone(), saved.entry));
+        }
+    }
+    Ok(pending)
+}
+
+/// `found[i]`: `pending[i]` dosyada var. Bulunanlar aktarımın zamanıyla gönderildi işaretlenir;
+/// sayıları döner.
+fn settle_interrupted(
+    store: &Store,
+    journal: &Interrupted,
+    pending: &[(String, TimesheetEntry)],
+    found: &[bool],
+) -> CmdResult<usize> {
+    let written: Vec<String> = pending
+        .iter()
+        .zip(found)
+        .filter(|(_, found)| **found)
+        .map(|((id, _), _)| id.clone())
+        .collect();
+    if !written.is_empty() {
+        store
+            .mark_timesheet_exported(&written, journal.at, &journal.sheet_id, &journal.consultant)
+            .map_err(err)?;
+    }
+    Ok(written.len())
+}
+
+/// Açılışta: önceki oturumda yarıda kalan aktarım varsa çözer (aktarımla aynı dosya kilidiyle).
+pub(crate) async fn recover_interrupted_export(app: &AppHandle) {
+    let _write = FILE_WRITES.lock().await;
+    if let Err(e) = recover_interrupted(app).await {
+        log_error!("yarıda kalan aktarım çözülemedi: {e}");
+    }
+}
+
 pub(super) fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -86,6 +199,8 @@ pub async fn export_timesheet(
     }
     let _guard = ExportGuard;
     let _write = FILE_WRITES.lock().await;
+    // Önceki aktarım yarıda kaldıysa önce o çözülür: dosyaya yazılmış satırlar ikinci kez gitmesin.
+    recover_interrupted(&app).await?;
     let (Some(first), Some(last)) = (
         rows.iter().map(|r| r.entry.date).min(),
         rows.iter().map(|r| r.entry.date).max(),
@@ -211,64 +326,96 @@ pub async fn export_timesheet(
     };
     let rows: Vec<tracky_xlsx::Row> = pending.iter().map(|(_, e)| xlsx_row(e)).collect();
     let consultant = sheet.consultant.clone();
-    let (exported, target) = match file_target {
-        FileTarget::Api { .. } | FileTarget::Sheets { .. } => {
-            let keyed: Vec<_> = ids.iter().cloned().zip(rows).collect();
-            let (done, used) = file_target
-                .run(move |target| match target {
-                    FileTarget::Api { id, auth, .. } => with_google(auth, |t| {
-                        tracky_xlsx::gsheets::append(t, id, &consultant, &keyed)
-                    }),
-                    FileTarget::Sheets { url, token } => {
-                        tracky_xlsx::sheets::append(url, token, &consultant, &keyed)
-                    }
+    save_interrupted(
+        &app,
+        Some(&Interrupted {
+            sheet_id: sheet.id.clone(),
+            consultant: sheet.consultant.clone(),
+            excel: match &file_target {
+                FileTarget::Excel { path } => Some(path.clone()),
+                _ => None,
+            },
+            ids: ids.clone(),
+            at: Utc::now(),
+        }),
+    )?;
+    let sent: CmdResult<(Exported, ExportTarget)> = async {
+        Ok(match file_target {
+            FileTarget::Api { .. } | FileTarget::Sheets { .. } => {
+                let keyed: Vec<_> = ids.iter().cloned().zip(rows).collect();
+                let (done, used) = file_target
+                    .run(move |target| match target {
+                        FileTarget::Api { id, auth, .. } => with_google(auth, |t| {
+                            tracky_xlsx::gsheets::append(t, id, &consultant, &keyed)
+                        }),
+                        FileTarget::Sheets { url, token } => {
+                            tracky_xlsx::sheets::append(url, token, &consultant, &keyed)
+                        }
+                        FileTarget::Excel { .. } => unreachable!("aşağıda ayrıldı"),
+                    })
+                    .await?;
+                let target = match used {
+                    FileTarget::Api { id, auth, .. } => ExportTarget::Api { id, auth },
+                    FileTarget::Sheets { url, token } => ExportTarget::Sheets { url, token },
                     FileTarget::Excel { .. } => unreachable!("aşağıda ayrıldı"),
+                };
+                let exported = Exported {
+                    rows: ids.len(),
+                    filled: done.filled,
+                    inserted: done.inserted,
+                    skipped: done.skipped,
+                    backup: None,
+                    target: done.sheet,
+                    sheets: true,
+                };
+                (exported, target)
+            }
+            FileTarget::Excel { path: file } => {
+                let written = file.clone();
+                let done = tauri::async_runtime::spawn_blocking(move || {
+                    tracky_xlsx::append(&written, &consultant, &rows)
                 })
-                .await?;
-            let target = match used {
-                FileTarget::Api { id, auth, .. } => ExportTarget::Api { id, auth },
-                FileTarget::Sheets { url, token } => ExportTarget::Sheets { url, token },
-                FileTarget::Excel { .. } => unreachable!("aşağıda ayrıldı"),
-            };
-            let exported = Exported {
-                rows: ids.len(),
-                filled: done.filled,
-                inserted: done.inserted,
-                skipped: done.skipped,
-                backup: None,
-                target: done.sheet,
-                sheets: true,
-            };
-            (exported, target)
-        }
-        FileTarget::Excel { path: file } => {
-            let written = file.clone();
-            let done = tauri::async_runtime::spawn_blocking(move || {
-                tracky_xlsx::append(&written, &consultant, &rows)
-            })
-            .await
-            .map_err(err)?
-            .map_err(err)?;
-            let exported = Exported {
-                rows: ids.len(),
-                filled: done.filled,
-                inserted: done.inserted,
-                skipped: 0,
-                backup: Some(done.backup.display().to_string()),
-                target: file.display().to_string(),
-                sheets: false,
-            };
-            let target = ExportTarget::Excel {
-                modified: modified(&file),
-                path: file,
-                backup: done.backup,
-            };
-            (exported, target)
+                .await
+                .map_err(err)?
+                .map_err(err)?;
+                let exported = Exported {
+                    rows: ids.len(),
+                    filled: done.filled,
+                    inserted: done.inserted,
+                    skipped: 0,
+                    backup: Some(done.backup.display().to_string()),
+                    target: file.display().to_string(),
+                    sheets: false,
+                };
+                let target = ExportTarget::Excel {
+                    modified: modified(&file),
+                    path: file,
+                    backup: done.backup,
+                };
+                (exported, target)
+            }
+        })
+    }
+    .await;
+    // Yazılamadıysa kayıt silinir: satırlar gönderilmemiş kalır (Excel'de dosya yazılmadan önce
+    // yedeklenir; Sheets'te yarıda yazılanlar kimlikleriyle bir daha yazılmaz).
+    let (exported, target) = match sent {
+        Ok(sent) => sent,
+        Err(e) => {
+            if let Err(clear) = save_interrupted(&app, None) {
+                log_error!("aktarım kaydı silinemedi: {clear}");
+            }
+            return Err(e);
         }
     };
+    // İşaretlenemezse kayıt kalır; bir sonraki açılışta dosyaya bakılarak çözülür.
     lock(&app.state::<Shared>().store)
         .mark_timesheet_exported(&ids, Utc::now(), &sheet.id, &sheet.consultant)
         .map_err(err)?;
+    // Satırlar gönderildi; kayıt silinemezse bir sonraki çözümde zaten gönderilmiş görünürler.
+    if let Err(e) = save_interrupted(&app, None) {
+        log_error!("aktarım kaydı silinemedi: {e}");
+    }
     *lock(&LAST_EXPORT) = Some(LastExport { ids, target });
     Ok(exported)
 }
@@ -356,4 +503,82 @@ pub async fn undo_last_export(app: AppHandle) -> CmdResult<String> {
         .unmark_timesheet_exported(&undone)
         .map_err(err)?;
     Ok(message)
+}
+
+#[cfg(test)]
+mod interrupted_tests {
+    use super::*;
+    use tracky_core::timesheet::EntryKind;
+
+    fn entry(hour: u32, details: &str) -> TimesheetEntry {
+        TimesheetEntry {
+            date: NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
+            start: chrono::NaiveTime::from_hms_opt(hour, 0, 0).unwrap(),
+            hours: 1.0,
+            actual_hours: None,
+            kind: EntryKind::Working,
+            details: details.into(),
+            party: "ADBA".into(),
+            project_id: "togg".into(),
+            division: "Togg".into(),
+            coverage: Some(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn only_rows_found_in_the_file_count_as_exported() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .upsert_tag(
+                &Tag {
+                    id: "togg".into(),
+                    kind: TagKind::Project,
+                    name: "Togg".into(),
+                    color: 1,
+                },
+                0,
+            )
+            .unwrap();
+        let a = store
+            .save_timesheet_entry(None, &entry(9, "yazıldı"))
+            .unwrap();
+        let b = store
+            .save_timesheet_entry(None, &entry(11, "yazılmadı"))
+            .unwrap();
+        let journal = Interrupted {
+            sheet_id: "togg".into(),
+            consultant: "Kaan".into(),
+            excel: Some("/tmp/togg.xlsx".into()),
+            ids: vec![a.clone(), b.clone(), "silinmis".into()],
+            at: Utc::now(),
+        };
+        let pending = interrupted_pending(&store, &journal).unwrap();
+        assert_eq!(pending.len(), 2, "bilinmeyen kimlik atlanır");
+        assert_eq!(
+            settle_interrupted(&store, &journal, &pending, &[true, false]).unwrap(),
+            1
+        );
+        assert!(
+            store
+                .timesheet_entry(&a)
+                .unwrap()
+                .unwrap()
+                .exported_at
+                .is_some()
+        );
+        assert!(
+            store
+                .timesheet_entry(&b)
+                .unwrap()
+                .unwrap()
+                .exported_at
+                .is_none()
+        );
+        // Yeniden denenirse yalnızca dosyada olmayan kalır.
+        let again = interrupted_pending(&store, &journal).unwrap();
+        assert_eq!(
+            again.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            [b.as_str()]
+        );
+    }
 }

@@ -399,6 +399,36 @@ pub fn list(path: &Path, from: NaiveDate, to: NaiveDate) -> Result<Vec<SheetRow>
         .collect())
 }
 
+/// Yarıda kalan bir aktarımdan sonra: `rows` içindeki her kayıt dosyada aynı içerikle (tarih,
+/// saat, süre, tür, açıklama, taraf, birim, danışman) var mı. Dosyaya yazılıp Kum'da
+/// "gönderildi" işaretlenemeyen kayıtlar ikinci kez yazılmasın diye.
+pub fn contains(path: &Path, consultant: &str, rows: &[Row]) -> Result<Vec<bool>> {
+    let (Some(from), Some(to)) = (
+        rows.iter().map(|r| r.date).min(),
+        rows.iter().map(|r| r.date).max(),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let found = list(path, from, to)?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let want = SheetRow {
+                row: 0,
+                date: r.date,
+                start: Some(r.start),
+                hours: Some(r.hours),
+                kind: r.kind.clone(),
+                details: r.details.clone(),
+                party: r.party.clone(),
+                division: r.division.clone(),
+                consultant: consultant.to_string(),
+            };
+            found.iter().any(|f| f.same(&want))
+        })
+        .collect())
+}
+
 /// `expect` satırının bugünkü yeri: ipucundaki satır hâlâ aynıysa o, değilse içeriği aynı tek
 /// satır. Bulunamazsa (ya da birden çoksa) dosyaya dokunulmaz.
 fn locate(ws: &Worksheet, cols: Columns, expect: &SheetRow) -> Result<u32> {
@@ -674,6 +704,31 @@ mod tests {
         assert_eq!(slot(&[], d(1), t(9)), (2, true));
         assert!(in_order(&lines, 4, d(3), t(7)));
         assert!(!in_order(&lines, 0, d(1), t(23)));
+    }
+
+    #[test]
+    fn contains_finds_exactly_the_rows_that_were_written() {
+        let dir = std::env::temp_dir().join(format!("kum-xlsx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sablon.xlsx");
+        template(&path);
+        let written = [
+            row(3, 10, 1.0 + 10.0 / 60.0, "İkinci"),
+            row(2, 9, 2.5, "Tek"),
+        ];
+        append(&path, "Kaan Baytur", &written).unwrap();
+        let mut asked = written.to_vec();
+        asked.push(row(4, 9, 1.0, "Yazılmadı"));
+        asked.push(row(2, 9, 2.0, "Tek"));
+        assert_eq!(
+            contains(&path, "Kaan Baytur", &asked).unwrap(),
+            [true, true, false, false]
+        );
+        assert_eq!(
+            contains(&path, "Kaan Baytur", &[]).unwrap(),
+            Vec::<bool>::new()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
