@@ -324,6 +324,102 @@ fn work_in_a_deleted_meeting_can_be_saved() {
     let r = rows(&store);
     assert_eq!(short(&r), [(true, "09:00".into(), 90, "Loyalty".into())]);
     assert_eq!(r[0].id.as_deref(), Some(id.as_str()));
+    // Toplantı geri getirilince işi zaten satırda olan saati ikinci kez yazmaz.
+    assert_eq!(
+        store.restore_hidden(&togg, day()).unwrap().len(),
+        1,
+        "geri getirilir"
+    );
+    let r = rows(&store);
+    assert_eq!(short(&r), [(true, "09:00".into(), 90, "Loyalty".into())]);
+    assert_eq!(
+        store.timesheet_entries(day(), day()).unwrap().len(),
+        1,
+        "işi tamamen satırda olan toplantı gizli kalır: {r:?}"
+    );
+}
+
+#[test]
+fn a_restored_row_leaves_saved_work_alone() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    let togg = sheet("togg", &["togg"]);
+    let meetings = [Meeting {
+        uid: "ux".into(),
+        start: t(30),
+        end: t(90),
+        subject: "UX gösterimi".into(),
+        online: true,
+        ..Meeting::default()
+    }];
+    store.assign_meeting("ux", Some("togg")).unwrap();
+    work(&store, "Loyalty", 0, 60, Some("togg"));
+    let rows = |store: &Store| {
+        let ctx = store.timesheet_context().unwrap();
+        let pieces = store
+            .timesheet_pieces(&ctx, t(-540), t(900), &meetings)
+            .unwrap();
+        store
+            .timesheet_day(&ctx, &togg, day(), &pieces)
+            .unwrap()
+            .rows
+    };
+    let r = rows(&store);
+    let meeting = r
+        .iter()
+        .find(|r| r.entry.details == "UX gösterimi")
+        .unwrap();
+    let hidden = store.dismiss_timesheet_entry(None, &meeting.entry).unwrap();
+    // Toplantının ilk yarım saati iş olarak kaydedildi; toplantı geri gelince kalan yarım saat.
+    let r = rows(&store);
+    assert_eq!(short(&r), [(false, "09:00".into(), 60, "Loyalty".into())]);
+    store.save_timesheet_entry(None, &r[0].entry).unwrap();
+    store
+        .undismiss_timesheet_entries(std::slice::from_ref(&hidden))
+        .unwrap();
+    let r = rows(&store);
+    assert_eq!(
+        short(&r),
+        [
+            (true, "09:00".into(), 60, "Loyalty".into()),
+            (true, "10:00".into(), 30, "UX gösterimi".into())
+        ]
+    );
+    assert_eq!(r[1].entry.hours, 0.5);
+}
+
+#[test]
+fn a_row_moved_onto_saved_work_does_not_write_it_twice() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    project(&store, "kum", "Kum");
+    work(&store, "Loyalty", 0, 60, Some("togg"));
+    let togg = sheet("togg", &["togg", "kum"]);
+    let (r, _) = rows(&store, &togg);
+    store.save_timesheet_entry(None, &r[0].entry).unwrap();
+    // İşin yarısı raporda Kum'a alındı, Kum satırı kaydedildi; sonra Togg'a geri taşındı.
+    store
+        .set_project_between(t(30), t(60), Some("kum"))
+        .unwrap();
+    let (r, _) = rows(&store, &togg);
+    let kum = r.iter().find(|r| r.entry.project_id == "kum").unwrap();
+    let id = store.save_timesheet_entry(None, &kum.entry).unwrap();
+    store
+        .set_project_between(t(30), t(60), Some("togg"))
+        .unwrap();
+    store
+        .save_timesheet_entry(
+            Some(&id),
+            &TimesheetEntry {
+                project_id: "togg".into(),
+                ..kum.entry.clone()
+            },
+        )
+        .unwrap();
+    // Togg'un satırı zaten o yarım saati kapsıyor: taşınan satır kalmaz.
+    let (r, _) = rows(&store, &togg);
+    assert_eq!(short(&r), [(true, "09:00".into(), 60, "Loyalty".into())]);
+    assert_eq!(r[0].stale, None);
 }
 
 #[test]

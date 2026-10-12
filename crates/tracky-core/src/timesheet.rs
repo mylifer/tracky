@@ -973,8 +973,16 @@ pub fn stale_hours(pieces: &[Piece], entry: &TimesheetEntry) -> Option<f64> {
 /// Projede `MIN_ENTRY`'den az süre kaldıysa `None` (birkaç saniye çeyrek saate yuvarlanıp
 /// satır olarak kalmasın; öneriler de bu kadar kısa satır çıkarmaz).
 pub fn refreshed(pieces: &[Piece], entry: &TimesheetEntry) -> Option<TimesheetEntry> {
+    narrowed(
+        entry,
+        still_covered(pieces, &entry.project_id, &entry.spans()),
+    )
+}
+
+/// Satırın aralıkları `left`e (satırın aralıklarının ayrık, sıralı bir parçası) indiğinde yeni
+/// hali ([`refreshed`] gibi); `MIN_ENTRY`'den az süre kaldıysa `None`.
+pub fn narrowed(entry: &TimesheetEntry, left: Vec<Interval>) -> Option<TimesheetEntry> {
     let spans = entry.spans();
-    let left = still_covered(pieces, &entry.project_id, &spans);
     if total(&left) < MIN_ENTRY {
         return None;
     }

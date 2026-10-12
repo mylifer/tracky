@@ -763,6 +763,14 @@ impl Store {
                     ));
                 }
                 self.update_entry(&saved.id, entry)?;
+                // Başka projeye taşınan satır, o projede zaten bir satırda olan işi almaz; işinin
+                // hepsi oradaysa satır kalmaz.
+                if saved.entry.project_id != entry.project_id
+                    && !saved.dismissed
+                    && !self.yield_to_others(&saved.id)?
+                {
+                    self.remove_entry(&saved.id, true)?;
+                }
                 saved.id
             }
             None => {
@@ -895,19 +903,58 @@ impl Store {
         Ok(n)
     }
 
-    /// Gizlenen satırları geri getirir.
+    /// Gizlenen satırları geri getirir. Satır gizliyken işi başka satıra girdiyse (silinen
+    /// toplantının saati iş olarak kaydedildi) o süre geri gelen satırdan düşülür; işinin hepsi
+    /// başka satırdaysa gizli kalır.
     pub fn undismiss_timesheet_entries(&self, ids: &[String]) -> Result<()> {
         let tx = self.savepoint()?;
         for id in ids {
-            self.conn.execute(
+            let n = self.conn.execute(
                 &format!(
                     "UPDATE timesheet_entries SET dismissed_at = NULL, {TOUCH}, {STATE}
                      WHERE id = ?1 AND dismissed_at IS NOT NULL AND deleted_at IS NULL"
                 ),
                 [id],
             )?;
+            if n > 0 && !self.yield_to_others(id)? {
+                self.conn.execute(
+                    &format!(
+                        "UPDATE timesheet_entries SET dismissed_at = ?2, {TOUCH}, {STATE}
+                         WHERE id = ?1"
+                    ),
+                    params![id, ms(Utc::now())],
+                )?;
+            }
         }
         tx.commit()
+    }
+
+    /// Satırın aralıklarından projenin başka (gizlenmemiş) satırlarının kapladığı süre düşülür:
+    /// aynı saat iki satıra yazılmasın. Satırda `MIN_ENTRY`'den az iş kaldıysa satıra dokunulmaz
+    /// ve `false` döner (çağıran satırı gizler ya da siler).
+    fn yield_to_others(&self, id: &str) -> Result<bool> {
+        let Some(saved) = self.timesheet_entry(id)? else {
+            return Ok(true);
+        };
+        let spans = saved.entry.spans();
+        if spans.is_empty() {
+            return Ok(true);
+        }
+        let left = self
+            .saved_rows(saved.entry.date, saved.entry.date)?
+            .into_iter()
+            .filter(|s| s.id != id && !s.dismissed && s.entry.project_id == saved.entry.project_id)
+            .flat_map(|s| s.entry.spans())
+            .fold(spans.clone(), timesheet::subtract);
+        if left == spans {
+            return Ok(true);
+        }
+        let Some(fresh) = timesheet::narrowed(&saved.entry, left) else {
+            return Ok(false);
+        };
+        self.update_entry(id, &fresh)?;
+        self.set_coverage(id, coverage_json(&fresh)?)?;
+        Ok(true)
     }
 
     /// Günün `sheet` çizelgesinde gizlenen satırlarını geri getirir; kimliklerini döndürür.
