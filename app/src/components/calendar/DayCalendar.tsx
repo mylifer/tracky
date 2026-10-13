@@ -73,7 +73,7 @@ const SLOT_MS = 15 * MIN;
 const SHOW_MIN_MS = SLOT_MS / 3;
 
 type SessionItem = { start: string; end: string; ms: number } & (
-  { block: WorkBlock; idle?: undefined } | { idle: IdleSpan; block?: undefined }
+  { block: WorkBlock; idle?: undefined; away: IdleSpan[] } | { idle: IdleSpan; block?: undefined; away?: undefined }
 );
 
 /**
@@ -103,10 +103,19 @@ function idleOutsideBlocks(idle: IdleSpan[], blocks: WorkBlock[]): IdleSpan[] {
   });
 }
 
+/** Boşta aralıkların bloğun içine düşen parçaları (blokta silik taralı şerit olarak çizilir). */
+function idleWithin(b: WorkBlock, idle: IdleSpan[]): IdleSpan[] {
+  const [a, z] = [+new Date(b.start), +new Date(b.end)];
+  return idle.flatMap((s) => {
+    const [x, y] = [Math.max(a, +new Date(s.start)), Math.min(z, +new Date(s.end))];
+    return y > x ? [{ start: new Date(x).toISOString(), end: new Date(y).toISOString() }] : [];
+  });
+}
+
 /**
  * Oturumlar sütununun yerleşimi: kısa (anlamsız) bloklar gösterilmez; kalanlar en az bir
  * dilim yüksekliğinde, ama bir sonrakinin üstüne binmeden çizilir. Boşta süre blokların
- * dışında kalan kısmıyla çizilir.
+ * dışında kalan kısmıyla ayrı, içinde kalan kısmıyla bloğun içinde (`away`) çizilir.
  */
 export function placeSessions(
   blocks: WorkBlock[],
@@ -115,7 +124,13 @@ export function placeSessions(
   hourPx: number,
 ): (SessionItem & { top: number; height: number })[] {
   const items: SessionItem[] = [
-    ...blocks.map((b) => ({ start: b.start, end: b.end, ms: b.activeSeconds * 1000, block: b })),
+    ...blocks.map((b) => ({
+      start: b.start,
+      end: b.end,
+      ms: b.activeSeconds * 1000,
+      block: b,
+      away: idleWithin(b, idle),
+    })),
     ...idleOutsideBlocks(idle, blocks).map((s) => ({
       start: s.start,
       end: s.end,
@@ -249,13 +264,14 @@ export function DayCalendar({
           }
           onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y))}
         >
-          {placeSessions(blocks, idle, top, range.px).map(({ block, idle: span, top: t, height }) =>
+          {placeSessions(blocks, idle, top, range.px).map(({ block, idle: span, away, top: t, height }) =>
             span ? (
               <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
             ) : (
               <Block
                 key={block.start}
                 b={block}
+                away={away}
                 tags={tags}
                 lens={lens}
                 sheet={sheet}

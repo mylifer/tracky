@@ -65,8 +65,11 @@ export function Block({
   lens = "category",
   sheet = [],
   windows,
+  away = [],
 }: {
   b: WorkBlock;
+  /** Bloğun içine düşen boşta aralıklar: bloğun süresine sayılmaz, silik taralı şerit olarak çizilir. */
+  away?: IdleSpan[];
   tags: Map<string, Tag>;
   top: number;
   height: number;
@@ -106,6 +109,11 @@ export function Block({
   const start = +new Date(b.start);
   const end = +new Date(b.end);
   const picked = edit?.picked?.has(b.start) ?? false;
+  const awayMs = away.reduce((n, s) => n + (+new Date(s.end) - +new Date(s.start)), 0);
+  const awayNote =
+    awayMs > 0
+      ? `\nİçinde ${formatDuration(awayMs / 1000)} boşta (taralı)${b.projectId ? ": projenin sayılır" : ""}`
+      : "";
 
   /** Bloğu yeni aralığa getirir: zaman çizelgesine bu aralık gider. */
   async function commit(newStart: number, newEnd: number) {
@@ -204,7 +212,11 @@ export function Block({
               borderLeftColor: color,
               background: blockColor ? `color-mix(in srgb, ${color} 22%, var(--card))` : `${HATCH}, var(--card)`,
             }}
-            title={edit?.onPick ? `${summary}\nShift+tıkla: seç (Shift+A seçilenleri birleştirir)` : summary}
+            title={
+              edit?.onPick
+                ? `${summary}${awayNote}\nShift+tıkla: seç (Shift+A seçilenleri birleştirir)`
+                : `${summary}${awayNote}`
+            }
             aria-label={summary}
             aria-pressed={edit?.onPick ? picked : undefined}
             // Shift+tık sayfadaki metni seçmesin.
@@ -216,8 +228,25 @@ export function Block({
               edit.onPick(b);
             }}
           >
+            {away.map((s) => {
+              const a = wall(+new Date(s.start)) - wall(start);
+              const z = wall(+new Date(s.end)) - wall(start);
+              return (
+                <span
+                  key={s.start}
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 border-y border-dashed border-muted-foreground/25"
+                  style={{
+                    top: (a / HOUR_MS) * hourPx,
+                    height: Math.max(2, ((z - a) / HOUR_MS) * hourPx),
+                    background: `repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted-foreground) 14%, var(--card)) 0 4px, var(--card) 4px 9px)`,
+                    opacity: 0.75,
+                  }}
+                />
+              );
+            })}
             {label && (
-              <span className={cn("flex h-full flex-col", full ? "py-1" : "justify-center")}>
+              <span className={cn("relative flex h-full flex-col", full ? "py-1" : "justify-center")}>
                 <span className="flex min-w-0 items-center gap-1.5">
                   <AppIconStack apps={b.topApps} size={full ? 14 : 12} max={narrow ? 1 : 3} />
                   <span className="truncate text-[11px] leading-tight font-semibold">{title}</span>

@@ -89,7 +89,7 @@ describe("oturum yerleşimi", () => {
     expect(placed[2].height).toBeCloseTo(HOUR_PX / 4 - 2);
   });
 
-  it("bloğun içindeki boşta süreyi blokla üst üste çizmez, dışta kalanını gösterir", () => {
+  it("bloğun içindeki boşta süreyi blokla üst üste çizmez, blokta şerit yapar; dışta kalanını gösterir", () => {
     const idle = (a: number, b: number) => span(a, b) as never;
     const placed = placeSessions(
       [block(at(13, 31), at(14, 13))],
@@ -101,6 +101,8 @@ describe("oturum yerleşimi", () => {
       [new Date(at(13, 31)).toISOString(), new Date(at(14, 13)).toISOString(), "block"],
       [new Date(at(14, 13)).toISOString(), new Date(at(14, 30)).toISOString(), "idle"],
     ]);
+    // İçte kalan kısımlar blokta taralı şerit olur.
+    expect(placed[0].away).toEqual([span(at(13, 45), at(13, 57)), span(at(14, 5), at(14, 13))]);
   });
 });
 

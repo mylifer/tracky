@@ -100,13 +100,14 @@ export function WeekCalendar({
                 idle.filter((s) => +new Date(s.start) >= dayStart && +new Date(s.start) < dayEnd),
                 top,
                 range.px,
-              ).map(({ block, idle: span, top: t, height }) =>
+              ).map(({ block, idle: span, away, top: t, height }) =>
                 span ? (
                   <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
                 ) : (
                   <Block
                     key={block.start}
                     b={block}
+                    away={away}
                     tags={tags}
                     narrow
                     lens={lens}
