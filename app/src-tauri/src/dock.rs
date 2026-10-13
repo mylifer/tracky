@@ -5,7 +5,8 @@
 //! ⌘M pencereyi gizler; Dock simgesine tıklamak geri açar (`RunEvent::Reopen`). Takip arka
 //! planda sürer.
 //!
-//! Ayarlardan seçilen uygulama simgesi de burada Dock'a uygulanır ([`set_app_icon`]).
+//! Ayarlardan seçilen uygulama simgesi de burada Dock'a uygulanır ([`set_app_icon`]);
+//! güncellemeden sonra sistemin simge önbelleği tazelenir ([`refresh_icon_cache`]).
 
 use std::sync::OnceLock;
 
@@ -81,6 +82,39 @@ pub fn set_app_icon(png: &[u8]) {
     let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(png));
     // SAFETY: ana iş parçacığındayız; görsel çözülemezse nil, paketteki simgeye döner.
     unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(image.as_deref()) };
+}
+
+/// LaunchServices'in kaydı (`-f`: paket yeniden okunur).
+const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister";
+
+/// Güncellemeden sonra macOS'un simge önbelleğini tazeler. Güncelleme paketi yerinde
+/// değiştirdiği için sistem bildirimleri (ve Finder) paketin eski simgesini önbellekten
+/// göstermeyi sürdürüyor. Paketin tarihi yenilenir (imzayı bozmaz), LaunchServices'e yeniden
+/// kaydedilir ve bildirim servisleri yeniden başlatılır (launchd hemen yeniden açar; bekleyen
+/// bildirimler kaybolmaz). Arka planda çalışır.
+pub fn refresh_icon_cache() {
+    let Some(bundle) = std::env::current_exe().ok().and_then(|exe| {
+        exe.ancestors()
+            .nth(3)
+            .filter(|p| p.extension().is_some_and(|e| e == "app"))
+            .map(std::path::Path::to_path_buf)
+    }) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let run = |cmd: &str, args: &[&std::ffi::OsStr]| {
+            if let Err(e) = std::process::Command::new(cmd).args(args).output() {
+                crate::log_error!("simge önbelleği: {cmd} çalışmadı: {e}");
+            }
+        };
+        run("/usr/bin/touch", &[bundle.as_os_str()]);
+        run(LSREGISTER, &["-f".as_ref(), bundle.as_os_str()]);
+        run(
+            "/usr/bin/killall",
+            &["usernoted".as_ref(), "NotificationCenter".as_ref()],
+        );
+        crate::log_info!("simge önbelleği tazelendi: {}", bundle.display());
+    });
 }
 
 /// Uygulama menüsü: varsayılanın aynısı, yalnızca "Küçült" (⌘M) pencereyi gizler.
