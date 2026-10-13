@@ -104,7 +104,7 @@ pub fn refresh_icon_cache() {
     std::thread::spawn(move || {
         let run = |cmd: &str, args: &[&std::ffi::OsStr]| {
             if let Err(e) = std::process::Command::new(cmd).args(args).output() {
-                crate::log_error!("simge önbelleği: {cmd} çalışmadı: {e}");
+                log_error!("simge önbelleği: {cmd} çalışmadı: {e}");
             }
         };
         run("/usr/bin/touch", &[bundle.as_os_str()]);
@@ -113,7 +113,7 @@ pub fn refresh_icon_cache() {
             "/usr/bin/killall",
             &["usernoted".as_ref(), "NotificationCenter".as_ref()],
         );
-        crate::log_info!("simge önbelleği tazelendi: {}", bundle.display());
+        log_info!("simge önbelleği tazelendi: {}", bundle.display());
     });
 }
 
