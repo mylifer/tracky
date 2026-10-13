@@ -77,8 +77,36 @@ type SessionItem = { start: string; end: string; ms: number } & (
 );
 
 /**
+ * Boşta aralıkların blokların dışında kalan parçaları. Aynı projenin oturumları arasındaki kısa
+ * boşta süre bloğa katılır (o projenin sayılır); blokla üst üste ayrıca çizilmez.
+ */
+function idleOutsideBlocks(idle: IdleSpan[], blocks: WorkBlock[]): IdleSpan[] {
+  const covers = blocks.map((b) => [+new Date(b.start), +new Date(b.end)] as const);
+  return idle.flatMap((s) => {
+    let parts: [number, number][] = [[+new Date(s.start), +new Date(s.end)]];
+    for (const [a, b] of covers) {
+      parts = parts.flatMap(([x, y]): [number, number][] =>
+        b <= x || a >= y
+          ? [[x, y]]
+          : (
+              [
+                [x, a],
+                [b, y],
+              ] as [number, number][]
+            ).filter(([p, q]) => q > p),
+      );
+    }
+    const iso = (t: number) => new Date(t).toISOString();
+    return parts.map(([x, y]) =>
+      x === +new Date(s.start) && y === +new Date(s.end) ? s : { start: iso(x), end: iso(y) },
+    );
+  });
+}
+
+/**
  * Oturumlar sütununun yerleşimi: kısa (anlamsız) bloklar gösterilmez; kalanlar en az bir
- * dilim yüksekliğinde, ama bir sonrakinin üstüne binmeden çizilir.
+ * dilim yüksekliğinde, ama bir sonrakinin üstüne binmeden çizilir. Boşta süre blokların
+ * dışında kalan kısmıyla çizilir.
  */
 export function placeSessions(
   blocks: WorkBlock[],
@@ -88,7 +116,12 @@ export function placeSessions(
 ): (SessionItem & { top: number; height: number })[] {
   const items: SessionItem[] = [
     ...blocks.map((b) => ({ start: b.start, end: b.end, ms: b.activeSeconds * 1000, block: b })),
-    ...idle.map((s) => ({ start: s.start, end: s.end, ms: +new Date(s.end) - +new Date(s.start), idle: s })),
+    ...idleOutsideBlocks(idle, blocks).map((s) => ({
+      start: s.start,
+      end: s.end,
+      ms: +new Date(s.end) - +new Date(s.start),
+      idle: s,
+    })),
   ];
   const shown = items.filter((i) => i.ms >= SHOW_MIN_MS).sort((a, b) => +new Date(a.start) - +new Date(b.start));
   const minHeight = (SLOT_MS / HOUR_MS) * hourPx - 2;
