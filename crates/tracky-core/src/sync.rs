@@ -88,17 +88,12 @@ pub const SYNCED_SETTINGS: &[&str] = &[
     "ignored_unassigned",
     "meeting_attendance",
     "closed_days",
-    SYNC_KEY_CHECK,
 ];
-
-/// Eşitleme parolasının doğruluğunu diğer bilgisayarlarda sınayan şifreli değer
-/// ([`crate::vault::SyncKey::check_value`]).
-pub const SYNC_KEY_CHECK: &str = "sync_key_check";
 
 /// Parça parça şekle ([`table_fingerprints`]) geçilmeden önce eklenmiş tablo ve ayarlar:
 /// [`legacy_fingerprint`] bunlarsız hesaplanır.
 const AFTER_LEGACY_TABLES: &[&str] = &["calls"];
-const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance", "closed_days", SYNC_KEY_CHECK];
+const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance", "closed_days"];
 /// Parça parça şekle geçildikten sonra eklenen sütunlar: [`legacy_fingerprint`] bunlarsız.
 const AFTER_LEGACY_COLUMNS: &[&str] = &["passive"];
 
@@ -106,29 +101,6 @@ const AFTER_LEGACY_COLUMNS: &[&str] = &["passive"];
 /// sürümde yerel değer korunur. Bir Mac'te duraklatmak diğerini duraklatmaz; API anahtarı
 /// gizlidir ve sunucuda (sürüm derlemelerinde ortak projede) açık metin durmamalı.
 const LOCAL_FIELDS: &[(&str, &[&str])] = &[("privacy", &["paused"]), ("ai_details", &["apiKey"])];
-
-/// Eşitlenen ayarlarda gizli olan alanlar (`""`: ayarın tamamı): sunucuya yalnızca eşitleme
-/// parolasından türetilen anahtarla şifreli gider ([`crate::vault`]); bu cihazda parola yoksa
-/// hiç gitmez. Gelen şifreli değer açılabiliyorsa yazılır, açılamıyorsa (parola girilmemiş ya
-/// da farklı) yerel değer korunur. Eski sürümden gelen açık değer kabul edilir.
-const SECRET_FIELDS: &[(&str, &[&str])] =
-    &[("calendar_url", &[""]), ("timesheet", &["sheetToken"])];
-
-fn secret_fields(key: &str) -> &'static [&'static str] {
-    SECRET_FIELDS
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map_or(&[], |(_, fields)| fields)
-}
-
-/// Şifreli değerin bağlandığı ad (AAD): ayar ve alan.
-fn secret_aad(key: &str, field: &str) -> String {
-    if field.is_empty() {
-        key.to_string()
-    } else {
-        format!("{key}.{field}")
-    }
-}
 
 fn local_fields(key: &str) -> &'static [&'static str] {
     LOCAL_FIELDS
@@ -394,7 +366,7 @@ pub fn table_fingerprints() -> Vec<(&'static str, String)> {
         .map(|t| {
             let mut text = table_shape(t, t.only, &[]);
             if t.name == "settings" {
-                text.push_str(&format!("{LOCAL_FIELDS:?}{SECRET_FIELDS:?}"));
+                text.push_str(&format!("{LOCAL_FIELDS:?}"));
             }
             (t.name, fnv(&text))
         })
@@ -796,7 +768,6 @@ fn unsynced(store: &Store, table: &Table, limit: usize) -> Result<Vec<Pending>, 
         }
         if table.name == "settings" {
             strip_local_fields(&mut obj);
-            seal_secret_fields(store.sync_key().as_ref(), &mut obj);
         }
         Ok((obj, id, updated))
     })?;
@@ -845,7 +816,6 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
     if table.name == "settings" {
         let id = id.to_string();
         keep_local_fields(store, &id, &mut obj)?;
-        open_secret_fields(store, &id, &mut obj)?;
     }
     let merge = match table.name {
         "timesheet_entries" => Some(&TIMESHEET_MERGE),
@@ -1088,109 +1058,6 @@ fn keep_local_fields(
         "value".into(),
         Value::String(Value::Object(remote).to_string()),
     );
-    Ok(())
-}
-
-/// Gönderilecek ayarın gizli alanlarını ([`SECRET_FIELDS`]) şifreler; anahtar yoksa çıkarır
-/// (ayarın tamamı gizliyse `null` gider: diğer cihazlar yerel değerini korur).
-fn seal_secret_fields(key: Option<&crate::vault::SyncKey>, obj: &mut Map<String, Value>) {
-    let id = obj
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let fields = secret_fields(&id);
-    if fields.is_empty() {
-        return;
-    }
-    let Some(Value::String(raw)) = obj.get("value") else {
-        return;
-    };
-    let Ok(mut value) = serde_json::from_str::<Value>(raw) else {
-        return;
-    };
-    let seal = |field: &str, v: &Value| -> Option<Value> {
-        let text = match v {
-            Value::Null => return Some(Value::Null),
-            Value::String(s) if s.is_empty() => return Some(v.clone()),
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        key.map(|k| Value::String(k.seal(&secret_aad(&id, field), &text)))
-    };
-    for field in fields {
-        if field.is_empty() {
-            value = seal(field, &value).unwrap_or(Value::Null);
-        } else if let Value::Object(map) = &mut value
-            && let Some(v) = map.get(*field)
-        {
-            match seal(field, v) {
-                Some(sealed) => map.insert((*field).into(), sealed),
-                None => map.remove(*field),
-            };
-        }
-    }
-    obj.insert("value".into(), Value::String(value.to_string()));
-}
-
-/// Gelen ayarın gizli alanları: şifreliyse bu cihazın anahtarıyla açılır; açılamıyorsa ya da
-/// gelmediyse yerel değer korunur. Şifresiz (eski sürümden) gelen değer olduğu gibi yazılır.
-fn open_secret_fields(
-    store: &Store,
-    key: &str,
-    obj: &mut Map<String, Value>,
-) -> Result<(), SyncError> {
-    let fields = secret_fields(key);
-    if fields.is_empty() {
-        return Ok(());
-    }
-    let Some(Value::String(raw)) = obj.get("value") else {
-        return Ok(());
-    };
-    let Ok(mut remote) = serde_json::from_str::<Value>(raw) else {
-        return Ok(());
-    };
-    let sync_key = store.sync_key();
-    let local: Option<Value> = store.setting(key)?;
-    // Gelen değer: `Some(açık değer)`, ya da yerel korunacaksa `None`.
-    let incoming = |field: &str, v: Option<&Value>| -> Option<Value> {
-        match v {
-            None | Some(Value::Null) => None,
-            Some(Value::String(s)) if crate::vault::is_sealed(s) => {
-                let plain = sync_key.as_ref()?.open(&secret_aad(key, field), s)?;
-                // Ayarın tamamı JSON olarak şifrelenir; alan düz metin.
-                Some(if field.is_empty() {
-                    serde_json::from_str(&plain).unwrap_or(Value::String(plain))
-                } else {
-                    Value::String(plain)
-                })
-            }
-            Some(v) => Some(v.clone()),
-        }
-    };
-    for field in fields {
-        if field.is_empty() {
-            remote = match incoming(field, Some(&remote)) {
-                Some(v) => v,
-                None => local.clone().unwrap_or(Value::Null),
-            };
-        } else if let Value::Object(map) = &mut remote {
-            match incoming(field, map.get(*field)) {
-                Some(v) => {
-                    map.insert((*field).into(), v);
-                }
-                None => match local.as_ref().and_then(|l| l.get(*field)) {
-                    Some(v) => {
-                        map.insert((*field).into(), v.clone());
-                    }
-                    None => {
-                        map.remove(*field);
-                    }
-                },
-            }
-        }
-    }
-    obj.insert("value".into(), Value::String(remote.to_string()));
     Ok(())
 }
 

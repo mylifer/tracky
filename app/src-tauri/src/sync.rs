@@ -12,8 +12,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use tracky_core::sync::{SYNC_KEY_CHECK, SyncSummary};
-use tracky_core::vault::SyncKey;
+use tracky_core::sync::SyncSummary;
 use tracky_sync::{AuthSession, Client, Config};
 
 use crate::lock;
@@ -28,10 +27,6 @@ const OWNER_KEY: &str = "sync_owner";
 const CURSOR_VERSION_KEY: &str = "sync_cursor_version";
 /// Tablonun imlecinin ilerletildiği şekil ([`tracky_core::sync::table_fingerprints`]).
 const TABLE_SHAPE_PREFIX: &str = "sync_shape:";
-/// Eşitleme parolasından türetilen anahtar (anahtar deposunda, "kullanıcı|anahtar").
-const SYNC_KEY_SECRET: &str = "sync_key";
-/// Gizli alanları şifreli eşitlenen ayarlar (bkz. `tracky_core::sync`).
-const SECRET_SETTINGS: &[&str] = &["calendar_url", "timesheet"];
 /// Arka planda bu aralıkla eşitlenir.
 const INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Başarısız eşitlemeden sonra bu kadar beklenip yeniden denenir.
@@ -84,9 +79,6 @@ pub struct SyncStatus {
     schema: Option<String>,
     email: Option<String>,
     last: Option<LastSync>,
-    /// Gizli bilgilerin şifreli eşitlenmesi: "set" (bu bilgisayarda parola var), "needed"
-    /// (hesapta parola kurulmuş, bu bilgisayarda girilmemiş), "off" (hiç kurulmamış).
-    passphrase: &'static str,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -154,42 +146,7 @@ fn status(app: &AppHandle) -> SyncStatus {
         url: config.map(|c| c.url),
         email: auth.map(|a| a.email),
         last: lock(&app.state::<SyncWorker>().last).clone(),
-        passphrase: passphrase_state(app),
     }
-}
-
-fn passphrase_state(app: &AppHandle) -> &'static str {
-    let shared = app.state::<Shared>();
-    let store = lock(&shared.store);
-    if store.sync_key().is_some() {
-        "set"
-    } else if store
-        .setting::<String>(SYNC_KEY_CHECK)
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        "needed"
-    } else {
-        "off"
-    }
-}
-
-/// Bu bilgisayarın eşitleme anahtarını, oturumdaki hesabınsa depoya yükler.
-pub(crate) fn load_sync_key(app: &AppHandle) {
-    let user = load_auth(app).map(|a| a.user_id);
-    let key = crate::secrets::get_value(SYNC_KEY_SECRET).and_then(|v| {
-        let (owner, key) = v.split_once('|')?;
-        (Some(owner) == user.as_deref())
-            .then(|| SyncKey::import(key).ok())
-            .flatten()
-    });
-    lock(&app.state::<Shared>().store).set_sync_key(key);
-}
-
-fn forget_sync_key(app: &AppHandle) {
-    crate::secrets::set_value(SYNC_KEY_SECRET, "");
-    lock(&app.state::<Shared>().store).set_sync_key(None);
 }
 
 /// Bir kez eşitler; gerekirse oturumu yeniler. Giriş yoksa `Ok(None)`.
@@ -505,9 +462,7 @@ pub async fn sync_sign_in(
                 .map_err(|e| e.to_string())?;
             save(&app, OWNER_KEY, &owner)?;
         }
-        save_auth(&app, &auth)?;
-        load_sync_key(&app);
-        Ok(())
+        save_auth(&app, &auth)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -515,65 +470,9 @@ pub async fn sync_sign_in(
     Ok(status(&app))
 }
 
-/// Gizli bilgileri (takvim bağlantısı, Sheets anahtarı) şifreli eşitlemek için parolayı bu
-/// bilgisayarda kurar. Hesapta parola kurulmuşsa aynısı olmalı; değilse bu parola hesabın
-/// parolası olur. Sunucudaki açık değerler şifreli halleriyle değişir, gelen şifreliler açılır.
-#[tauri::command]
-pub async fn sync_set_passphrase(app: AppHandle, passphrase: String) -> CmdResult<SyncStatus> {
-    let auth = load_auth(&app).ok_or("Önce giriş yap.")?;
-    let user = auth.user_id.clone();
-    // Anahtar türetmek bilerek yavaş (Argon2id): arayüzü bekletmesin.
-    let key = tauri::async_runtime::spawn_blocking(move || SyncKey::derive(&passphrase, &user))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-    {
-        let shared = app.state::<Shared>();
-        let store = lock(&shared.store);
-        match store
-            .setting::<String>(SYNC_KEY_CHECK)
-            .map_err(|e| e.to_string())?
-        {
-            Some(check) if !key.matches(&check) => {
-                return Err(
-                    "Bu parola diğer bilgisayarda kurulan eşitleme parolasıyla aynı değil.".into(),
-                );
-            }
-            Some(_) => {}
-            None => store
-                .save_setting(SYNC_KEY_CHECK, &key.check_value())
-                .map_err(|e| e.to_string())?,
-        }
-        if !crate::secrets::set_value(
-            SYNC_KEY_SECRET,
-            &format!("{}|{}", auth.user_id, key.export()),
-        ) {
-            return Err("Parola bu bilgisayarın anahtar deposuna kaydedilemedi.".into());
-        }
-        store.set_sync_key(Some(key));
-        store
-            .resend_settings(SECRET_SETTINGS)
-            .map_err(|e| e.to_string())?;
-        store
-            .forget_sync_cursor("settings")
-            .map_err(|e| e.to_string())?;
-    }
-    sync_now(app.clone());
-    Ok(status(&app))
-}
-
-/// Parolayı bu bilgisayardan kaldırır: gizli bilgiler buradan artık gönderilmez ve gelen
-/// şifreli değerler açılmaz (yerel değerler kalır).
-#[tauri::command]
-pub async fn sync_forget_passphrase(app: AppHandle) -> CmdResult<SyncStatus> {
-    forget_sync_key(&app);
-    Ok(status(&app))
-}
-
 #[tauri::command]
 pub async fn sync_sign_out(app: AppHandle) -> CmdResult<SyncStatus> {
     clear_auth(&app)?;
-    forget_sync_key(&app);
     *lock(&app.state::<SyncWorker>().last) = None;
     Ok(status(&app))
 }
@@ -592,7 +491,6 @@ pub(crate) fn forget_session(store: &tracky_core::Store) -> Result<(), tracky_co
 #[tauri::command]
 pub async fn sync_disconnect(app: AppHandle) -> CmdResult<SyncStatus> {
     clear_auth(&app)?;
-    forget_sync_key(&app);
     clear(&app, CONFIG_KEY)?;
     *lock(&app.state::<SyncWorker>().last) = None;
     Ok(status(&app))
@@ -622,7 +520,6 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
         gate: Mutex::new(()),
         failing_since: Mutex::new(None),
     });
-    load_sync_key(app.handle());
     let handle = app.handle().clone();
     std::thread::Builder::new()
         .name("kum-sync".into())

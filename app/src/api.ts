@@ -400,11 +400,6 @@ export type SyncStatus = {
   schema: string | null;
   email: string | null;
   last: LastSync | null;
-  /**
-   * Gizli bilgilerin (takvim bağlantısı, Sheets anahtarı) şifreli eşitlenmesi: "set" bu
-   * bilgisayarda parola var, "needed" hesapta kurulmuş ama burada girilmemiş, "off" kurulmamış.
-   */
-  passphrase: "set" | "needed" | "off";
 };
 
 /** Rust tarafında veritabanına bu adlarla kaydedildiği için snake_case. */
@@ -756,8 +751,6 @@ export const api = {
   syncSignOut: () => invoke<SyncStatus>("sync_sign_out"),
   syncDisconnect: () => invoke<SyncStatus>("sync_disconnect"),
   syncNow: () => invoke<void>("sync_now"),
-  syncSetPassphrase: (passphrase: string) => invoke<SyncStatus>("sync_set_passphrase", { passphrase }),
-  syncForgetPassphrase: () => invoke<SyncStatus>("sync_forget_passphrase"),
   onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> => listen<SyncStatus>("sync", (e) => cb(e.payload)),
   diagnose: () => invoke<string>("diagnose"),
   /** Sürüm, izinler, takip/eşitleme durumu ve günlüklerin sonu (panoya kopyalanır). */

@@ -35,8 +35,6 @@ pub mod timesheet;
 pub mod tracker;
 pub mod trends;
 pub mod url_util;
-#[cfg(feature = "store")]
-pub mod vault;
 
 pub use classify::{Classifier, Client, NO_PROJECT, Rule, RuleField, Tag, TagKind};
 pub use coach::{CategoryLimit, Coach, Goals, Nudge, ProjectGoal, export_reminder_due};
