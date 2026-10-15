@@ -6,7 +6,7 @@
 //! planda sürer.
 //!
 //! Ayarlardan seçilen uygulama simgesi de burada Dock'a uygulanır ([`set_app_icon`]);
-//! güncellemeden sonra sistemin simge önbelleği tazelenir ([`refresh_icon_cache`]).
+//! paket simgesi değişince sistemin simge önbelleği sıfırlanır ([`refresh_icon_cache`]).
 
 use std::sync::OnceLock;
 
@@ -84,36 +84,41 @@ pub fn set_app_icon(png: &[u8]) {
     unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(image.as_deref()) };
 }
 
-/// LaunchServices'in kaydı (`-f`: paket yeniden okunur).
-const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister";
-
-/// Güncellemeden sonra macOS'un simge önbelleğini tazeler. Güncelleme paketi yerinde
-/// değiştirdiği için sistem bildirimleri (ve Finder) paketin eski simgesini önbellekten
-/// göstermeyi sürdürüyor. Paketin tarihi yenilenir (imzayı bozmaz), LaunchServices'e yeniden
-/// kaydedilir ve bildirim servisleri yeniden başlatılır (launchd hemen yeniden açar; bekleyen
-/// bildirimler kaybolmaz). Arka planda çalışır.
+/// Paket simgesi değiştikten sonra kullanıcının simge önbelleğini sıfırlar. Bildirim Merkezi
+/// uygulama simgesini IconServices'ten alıyor ve kullanıcıya özgü dizin
+/// (`$DARWIN_USER_CACHE_DIR/com.apple.iconservices`) onu güncellemeden önceki simgenin kaydına
+/// yönlendirmeyi sürdürüyor. LaunchServices'e yeniden kayıt da, bildirim servislerini yeniden
+/// başlatmak da bunu düzeltmiyor. Dizin silinir (macOS yeniden kurar) ve onu tutan servisler
+/// yeniden başlatılır (launchd hemen yeniden açar; bekleyen bildirimler kaybolmaz). Arka planda
+/// çalışır.
 pub fn refresh_icon_cache() {
-    let Some(bundle) = std::env::current_exe().ok().and_then(|exe| {
-        exe.ancestors()
-            .nth(3)
-            .filter(|p| p.extension().is_some_and(|e| e == "app"))
-            .map(std::path::Path::to_path_buf)
-    }) else {
-        return;
-    };
-    std::thread::spawn(move || {
-        let run = |cmd: &str, args: &[&std::ffi::OsStr]| {
-            if let Err(e) = std::process::Command::new(cmd).args(args).output() {
-                log_error!("simge önbelleği: {cmd} çalışmadı: {e}");
+    std::thread::spawn(|| {
+        let cache_dir = match std::process::Command::new("/usr/bin/getconf")
+            .arg("DARWIN_USER_CACHE_DIR")
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).trim().to_owned()
+            }
+            _ => {
+                log_error!("simge önbelleği: kullanıcı önbellek klasörü bulunamadı");
+                return;
             }
         };
-        run("/usr/bin/touch", &[bundle.as_os_str()]);
-        run(LSREGISTER, &["-f".as_ref(), bundle.as_os_str()]);
-        run(
-            "/usr/bin/killall",
-            &["usernoted".as_ref(), "NotificationCenter".as_ref()],
-        );
-        log_info!("simge önbelleği tazelendi: {}", bundle.display());
+        let index = std::path::Path::new(&cache_dir).join("com.apple.iconservices");
+        if let Err(e) = std::fs::remove_dir_all(&index)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log_error!("simge önbelleği silinemedi: {e}");
+            return;
+        }
+        if let Err(e) = std::process::Command::new("/usr/bin/killall")
+            .args(["iconservicesagent", "NotificationCenter", "usernoted"])
+            .output()
+        {
+            log_error!("simge önbelleği: killall çalışmadı: {e}");
+        }
+        log_info!("simge önbelleği sıfırlandı: {}", index.display());
     });
 }
 

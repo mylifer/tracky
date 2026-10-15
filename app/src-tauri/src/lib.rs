@@ -42,9 +42,10 @@ const AUTOSTART_INIT_KEY: &str = "autostart_initialized";
 const THEME_KEY: &str = "theme";
 /// Uygulama simgesi: "kum" (paketteki) ya da "kobalt". Cihaza özgüdür, eşitlenmez.
 const APP_ICON_KEY: &str = "app_icon";
-/// macOS'ta simge önbelleğinin en son tazelendiği sürüm (`dock::refresh_icon_cache`).
+/// macOS'ta simge önbelleğinin en son hangi paket simgesi için sıfırlandığı (simgenin
+/// SHA-256 özetinin başı; `dock::refresh_icon_cache`).
 #[cfg(target_os = "macos")]
-const ICON_CACHE_KEY: &str = "icon_cache_version";
+const ICON_CACHE_KEY: &str = "icon_cache_digest";
 /// Simgeler çalışırken macOS'ta Dock'a, Windows'ta pencereye (görev çubuğu) uygulanır. Kum,
 /// paketteki simgenin 512 px'lik PNG'si.
 const KUM_ICON: &[u8] = include_bytes!("../icons/icon.png");
@@ -425,13 +426,17 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .filter(|_| privacy.paused);
     apply_theme(app.handle(), &theme_setting(&store));
     apply_app_icon(app.handle(), &app_icon_setting(&store));
-    // Her sürümde bir kez: güncellenen paketin simgesi bildirimlerde de görünsün.
+    // Paket simgesi her değiştiğinde bir kez: yeni simge bildirimlerde de görünsün.
     #[cfg(target_os = "macos")]
     {
-        let version = app.package_info().version.to_string();
-        if store.setting::<String>(ICON_CACHE_KEY)?.as_deref() != Some(version.as_str()) {
+        use sha2::Digest;
+        let digest: String = sha2::Sha256::digest(KUM_ICON)[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if store.setting::<String>(ICON_CACHE_KEY)?.as_deref() != Some(digest.as_str()) {
             dock::refresh_icon_cache();
-            store.save_setting(ICON_CACHE_KEY, &version)?;
+            store.save_setting(ICON_CACHE_KEY, &digest)?;
         }
     }
 
