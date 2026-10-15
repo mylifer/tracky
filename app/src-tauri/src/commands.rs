@@ -422,7 +422,7 @@ pub async fn assign_app_category(
         .map_err(err)
 }
 
-fn parse_time(s: &str) -> CmdResult<DateTime<Utc>> {
+pub(crate) fn parse_time(s: &str) -> CmdResult<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .map(|t| t.with_timezone(&Utc))
         .map_err(|e| format!("geçersiz zaman {s}: {e}"))

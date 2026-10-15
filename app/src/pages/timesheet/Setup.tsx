@@ -42,8 +42,9 @@ export function ProjectsPrompt({
     <section className="space-y-2 rounded-xl border border-dashed bg-card px-4 py-3 shadow-xs">
       <div className="text-[13px] font-semibold">Bu zaman çizelgesine hangi projeler gitsin?</div>
       <p className="text-xs text-muted-foreground">
-        Yalnızca seçtiğin projelere atanan süre {sheet.company ? `${sheet.company} çizelgesinde` : "burada"} satır olur
-        ve tablosuna gönderilir. Bir proje tek bir çizelgeye bağlanır.
+        Yalnızca seçtiğin projelerin takvimde “Zaman çizelgesine gönder” dediğin blokları{" "}
+        {sheet.company ? `${sheet.company} çizelgesinde` : "burada"} satır olur ve tablosuna gönderilir. Bir proje tek
+        bir çizelgeye bağlanır.
       </p>
       {free.length > 0 ? (
         <ProjectSelect

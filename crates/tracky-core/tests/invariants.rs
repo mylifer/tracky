@@ -2,7 +2,9 @@
 //!
 //! Rastgele (tohumdan tekrarlanabilir) günler üretilir: kısa pencere geçişleri, molalar, iki
 //! bilgisayarın çakışan kayıtları, elle atamalar, projeye atanmış boşta süre, elle bölünmüş
-//! bloklar, gece yarısını aşan oturumlar ve takvim toplantıları. Her gün üç halde denetlenir:
+//! bloklar, gece yarısını aşan oturumlar ve takvim toplantıları. Bloklar seçerek gönderilir: bazı
+//! günlerde hepsi önceki sürümdeki gibi gönderilmiş sayılır, bazılarında yalnızca gönderilenler
+//! (geçiş günün başında ya da ortasında). Her gün üç halde denetlenir:
 //! taze; satırların bir kısmı kaydedilmiş, düzenlenmiş, gizlenmiş ve gönderilmiş; ardından işin
 //! bir kısmı raporda başka projeye ya da projesize alınmış.
 //!
@@ -20,6 +22,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Datelike, Days, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
+use tracky_core::blocks::WorkBlock;
 use tracky_core::calendar::Calendar;
 use tracky_core::classify::{NO_PROJECT, Rule, RuleField, Tag, TagKind};
 use tracky_core::client_report::ReportSource;
@@ -295,14 +298,55 @@ fn check_day(
             }
         }
     }
+    // Takvimde bloğun "gönderildi" bilgisi (düğmesi) zaman çizelgesindekiyle aynı: içindeki
+    // parçalar da gönderilmiş ya da gönderilmemiş. Projesi bir çizelgeye bağlı her blokta var.
+    for b in blocks {
+        let linked = b
+            .project_id
+            .as_deref()
+            .is_some_and(|p| ctx.config.timesheet_of(p).is_some());
+        if linked != b.sent.is_some() {
+            bad.push(format!(
+                "blok {}–{}: çizelgeye bağlı {linked} ama gönderilme bilgisi {:?}",
+                hm(b.start),
+                hm(b.end),
+                b.sent
+            ));
+        }
+        let Some(sent) = b.sent else { continue };
+        if let Some(p) = pieces
+            .iter()
+            .find(|p| p.meeting.is_none() && b.start <= p.start && p.end <= b.end && p.sent != sent)
+        {
+            bad.push(format!(
+                "blok {}–{} gönderildi {sent} ama parçası {}–{} {}",
+                hm(b.start),
+                hm(b.end),
+                hm(p.start),
+                hm(p.end),
+                p.sent
+            ));
+        }
+    }
     let mut piece_spans: HashMap<&str, Vec<Interval>> = HashMap::new();
+    let mut sent_spans: HashMap<&str, Vec<Interval>> = HashMap::new();
     for p in pieces.iter() {
         piece_spans
             .entry(p.project.as_str())
             .or_default()
             .push((p.start, p.end));
+        if p.sent {
+            sent_spans
+                .entry(p.project.as_str())
+                .or_default()
+                .push((p.start, p.end));
+        }
     }
     let piece_spans: HashMap<&str, Vec<Interval>> = piece_spans
+        .into_iter()
+        .map(|(k, v)| (k, coalesce(v)))
+        .collect();
+    let sent_spans: HashMap<&str, Vec<Interval>> = sent_spans
         .into_iter()
         .map(|(k, v)| (k, coalesce(v)))
         .collect();
@@ -388,6 +432,18 @@ fn check_day(
                         total(&outside).num_seconds()
                     ));
                 }
+                let unsent = minus(
+                    &minus(&spans, &outside),
+                    sent_spans
+                        .get(e.project_id.as_str())
+                        .map_or(&[][..], |v| v.as_slice()),
+                );
+                if !unsent.is_empty() {
+                    bad.push(format!(
+                        "{label}: zaman çizelgesine gönderilmemiş bloğun {} sn işini kapsıyor",
+                        total(&unsent).num_seconds()
+                    ));
+                }
             }
             rows.push((label, row));
         }
@@ -415,7 +471,7 @@ fn check_day(
         }
     }
 
-    // --- Taze gün: her iş kümesi ya bir satır ya da satır olamayacak kadar kısa ----------------
+    // --- Taze gün: gönderilen her iş kümesi ya bir satır ya da satır olamayacak kadar kısa ------
     if fresh {
         for sheet in &ctx.config.timesheets {
             for mapping in &sheet.projects {
@@ -424,7 +480,8 @@ fn check_day(
                 // her toplantı ayrı küme.
                 let mut clusters: Vec<Vec<Interval>> = Vec::new();
                 let mut meeting_clusters: HashMap<usize, Vec<Interval>> = HashMap::new();
-                let mut own: Vec<_> = pieces.iter().filter(|x| x.project == p).collect();
+                // Yalnızca zaman çizelgesine gönderilen blokların işi satır olur.
+                let mut own: Vec<_> = pieces.iter().filter(|x| x.project == p && x.sent).collect();
                 own.sort_by_key(|x| x.start);
                 let mut end = None;
                 for x in own {
@@ -761,6 +818,30 @@ fn random_day(seed: u64) -> Day {
             ..Default::default()
         });
     }
+    // Bloklar seçerek gönderilir: bazen bütün gün önceki sürümdeki gibi (geçiş sonra), bazen
+    // günün başında ya da ortasında geçilmiş; gönderilmemiş blokların bir kısmı gönderilir.
+    let mut pick = Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1);
+    match pick.below(3) {
+        0 => {}
+        1 => store
+            .set_selective_since(from - Duration::hours(1))
+            .unwrap(),
+        _ => store
+            .set_selective_since(from + Duration::hours(6) + pick.ms(0, 14 * 3_600_000))
+            .unwrap(),
+    }
+    for b in day_blocks(&store, date) {
+        if b.sent == Some(false) && pick.chance(0.6) {
+            store
+                .send_block(
+                    (b.start, b.end),
+                    b.project_id.as_deref(),
+                    &[from, to],
+                    &meetings,
+                )
+                .unwrap();
+        }
+    }
     Day {
         store,
         date,
@@ -768,6 +849,16 @@ fn random_day(seed: u64) -> Day {
         split,
         projects: vec!["alpha".into(), "beta".into(), "delta".into()],
     }
+}
+
+/// Günün takvim blokları (gün görünümü).
+fn day_blocks(store: &Store, date: NaiveDate) -> Vec<WorkBlock> {
+    let from = midnight(date);
+    store
+        .report(from, midnight(date + Days::new(1)), &[from], true)
+        .unwrap()
+        .work
+        .blocks
 }
 
 /// Günün bütün çizelgelerindeki satırları.
@@ -1100,6 +1191,16 @@ enum Undo {
         removed: Vec<(String, TimesheetEntry)>,
     },
     Export(Vec<String>),
+    /// Takvimde bloğu zaman çizelgesine gönder.
+    Send {
+        span: Interval,
+        project: Option<String>,
+    },
+    /// Takvimde bloğu zaman çizelgesinden çıkar.
+    Remove {
+        span: Interval,
+        hidden: Vec<String>,
+    },
 }
 
 /// Satırlarını her adımda yeniden okuyarak (sayfa yenilenmiş gibi) arayüzün sunduğu eylemlerden
@@ -1159,7 +1260,16 @@ fn step(
         )
     };
     // (eylem, sonuç); `None`: eylem bu durumda sunulmuyor.
-    let done: Option<(String, Result<(), String>)> = match rng.below(15) {
+    let blocks = day_blocks(store, date);
+    let block_label = |verb: &str, b: &WorkBlock| {
+        format!(
+            "bloğu {verb} {}–{} {:?}",
+            hm(b.start),
+            hm(b.end),
+            b.project_id
+        )
+    };
+    let done: Option<(String, Result<(), String>)> = match rng.below(17) {
         0 => pick_open(rng).map(|(_, r)| {
             let mut e = r.entry.clone();
             match rng.below(3) {
@@ -1202,6 +1312,15 @@ fn step(
                     store.unmerge_timesheet_entries(&id, &removed),
                 ),
                 Undo::Export(ids) => ("geri al: gönder", store.unmark_timesheet_exported(&ids)),
+                Undo::Send { span, project } => (
+                    "geri al: bloğu gönder",
+                    store
+                        .remove_block(span, project.as_deref(), &[from, to], meetings)
+                        .map(|u| hidden.extend(u.hidden)),
+                ),
+                Undo::Remove { span, hidden } => {
+                    ("geri al: bloğu çıkar", store.restore_block(span, &hidden))
+                }
             };
             if let Err(e) = res {
                 log.push(format!("{label} reddedildi (bildirim): {e}"));
@@ -1422,6 +1541,42 @@ fn step(
                 res.map_err(|e| e.to_string()),
             )
         }),
+        // Takvimde bloğu zaman çizelgesine gönder.
+        15 => {
+            let unsent: Vec<&WorkBlock> = blocks.iter().filter(|b| b.sent == Some(false)).collect();
+            (!unsent.is_empty()).then(|| {
+                let b = *rng.pick(&unsent);
+                let span = (b.start, b.end);
+                let res = store.send_block(span, b.project_id.as_deref(), &[from, to], meetings);
+                if res.is_ok() {
+                    *undo = Some(Undo::Send {
+                        span,
+                        project: b.project_id.clone(),
+                    });
+                }
+                (block_label("gönder", b), res.map_err(|e| e.to_string()))
+            })
+        }
+        // Takvimde bloğu zaman çizelgesinden çıkar.
+        16 => {
+            let sent_blocks: Vec<&WorkBlock> =
+                blocks.iter().filter(|b| b.sent == Some(true)).collect();
+            (!sent_blocks.is_empty()).then(|| {
+                let b = *rng.pick(&sent_blocks);
+                let span = (b.start, b.end);
+                match store.remove_block(span, b.project_id.as_deref(), &[from, to], meetings) {
+                    Ok(u) => {
+                        hidden.extend(u.hidden.iter().cloned());
+                        *undo = Some(Undo::Remove {
+                            span,
+                            hidden: u.hidden,
+                        });
+                        (block_label("çıkar", b), Ok(()))
+                    }
+                    Err(e) => (block_label("çıkar", b), Err(e.to_string())),
+                }
+            })
+        }
         _ => (!sent.is_empty()).then(|| {
             let (_, r) = *rng.pick(&sent);
             let id = r.id.clone().unwrap();
@@ -1485,8 +1640,8 @@ fn act(
     Vec::new()
 }
 
-/// Çizelgeye bağlı projelerin satıra girmemiş işi: ne bir satırda ne gizlenmiş bir satırda, ve
-/// kaydedilmiş satırın artığı sayılamayacak kadar uzun (kayıp iş).
+/// Çizelgeye bağlı projelerin gönderilen bloklardaki satıra girmemiş işi: ne bir satırda ne
+/// gizlenmiş bir satırda, ve kaydedilmiş satırın artığı sayılamayacak kadar uzun (kayıp iş).
 fn lost_work(
     store: &Store,
     date: NaiveDate,
@@ -1501,10 +1656,11 @@ fn lost_work(
     for sheet in &ctx.config.timesheets {
         for m in &sheet.projects {
             let p = m.project_id.as_str();
+            // Zaman çizelgesine gönderilmemiş bloğun işi satırda olmamalı.
             let work = coalesce(
                 pieces
                     .iter()
-                    .filter(|x| x.project == p)
+                    .filter(|x| x.project == p && x.sent)
                     .map(|x| (x.start, x.end))
                     .collect(),
             );

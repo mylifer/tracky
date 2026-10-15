@@ -1,6 +1,7 @@
 use super::*;
 use crate::classify::{Client, Tag};
 use crate::model::Session;
+use crate::store::Unsent;
 use chrono::{Duration, Local, TimeZone};
 
 /// 2026-03-02 (yerel) 09:00'dan `min` dakika sonra.
@@ -1019,4 +1020,224 @@ fn work_saved_on_two_computers_is_marked_until_refreshed() {
     let (r, _) = rows(&store, &togg);
     assert_eq!(short(&r), [(true, "09:00".into(), 90, "Loyalty".into())]);
     assert_eq!(r[0].stale, None);
+}
+
+/// Bloklar `min` dakikada seçerek gönderilmeye başlandı: ondan önce başlayan bloklar gönderilmiş
+/// sayılır.
+fn opt_in_at(store: &Store, min: i64) {
+    store.set_selective_since(t(min)).unwrap();
+}
+
+fn send(store: &Store, from: i64, to: i64, project: Option<&str>) {
+    store
+        .send_block((t(from), t(to)), project, &[t(-540), t(900)], &[])
+        .unwrap();
+}
+
+fn remove(store: &Store, from: i64, to: i64, project: Option<&str>) -> Unsent {
+    store
+        .remove_block((t(from), t(to)), project, &[t(-540), t(900)], &[])
+        .unwrap()
+}
+
+#[test]
+fn only_sent_blocks_become_rows_and_rows_follow_their_block() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    opt_in_at(&store, -60);
+    work(&store, "Loyalty", 0, 60, Some("togg"));
+    work(&store, "Rapor", 180, 240, Some("togg"));
+    let togg = sheet("togg", &["togg"]);
+    // Gönderilmeyen blok satır olmaz.
+    assert!(rows(&store, &togg).0.is_empty());
+
+    // Gönderilen blok satır olur; öteki gönderilmedikçe gelmez.
+    send(&store, 0, 60, Some("togg"));
+    assert_eq!(
+        short(&rows(&store, &togg).0),
+        [(false, "09:00".into(), 60, "Loyalty".into())]
+    );
+
+    // Blok uzayınca (ya da içine iş atanınca) satırı da uzar.
+    work(&store, "Loyalty", 60, 90, Some("togg"));
+    assert_eq!(
+        short(&rows(&store, &togg).0),
+        [(false, "09:00".into(), 90, "Loyalty".into())]
+    );
+
+    // Kısaltılan bloğun kesilen kısmı ayrı blok olur ve gönderilmemiş sayılır.
+    store
+        .resize_block(t(0), t(90), t(0), t(45), "Togg", None, Some("togg"))
+        .unwrap();
+    assert_eq!(
+        short(&rows(&store, &togg).0),
+        [(false, "09:00".into(), 45, "Loyalty".into())]
+    );
+
+    // Çizelgeden çıkan bloğun satırı gider.
+    assert_eq!(remove(&store, 0, 45, Some("togg")), Unsent::default());
+    assert!(rows(&store, &togg).0.is_empty());
+}
+
+#[test]
+fn blocks_before_opting_in_stay_in_the_timesheet() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    work(&store, "Loyalty", 0, 60, Some("togg"));
+    work(&store, "Rapor", 180, 240, Some("togg"));
+    let togg = sheet("togg", &["togg"]);
+    opt_in_at(&store, 120);
+    assert_eq!(
+        short(&rows(&store, &togg).0),
+        [(false, "09:00".into(), 60, "Loyalty".into())]
+    );
+    // Bilgisayarlar farklı zamanlarda güncellenir: en erken geçen geçerli.
+    store
+        .conn
+        .execute(
+            "INSERT INTO timesheet_marks (id, kind, started_at, ended_at, updated_at)
+             VALUES ('since:other', 'since', ?1, ?1, ?1)",
+            [ms(t(-60))],
+        )
+        .unwrap();
+    assert!(rows(&store, &togg).0.is_empty());
+}
+
+#[test]
+fn meetings_enter_without_sending() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    opt_in_at(&store, -60);
+    work(&store, "Loyalty", 0, 90, Some("togg"));
+    let togg = sheet("togg", &["togg"]);
+    let meetings = [Meeting {
+        uid: "plan".into(),
+        start: t(60),
+        end: t(90),
+        subject: "Haftalık plan".into(),
+        online: true,
+        ..Meeting::default()
+    }];
+    store.assign_meeting("plan", Some("togg")).unwrap();
+    let ctx = store.timesheet_context().unwrap();
+    let day_rows = || {
+        let pieces = store
+            .timesheet_pieces(&ctx, t(-540), t(900), &meetings)
+            .unwrap();
+        short(
+            &store
+                .timesheet_day(&ctx, &togg, day(), &pieces)
+                .unwrap()
+                .rows,
+        )
+    };
+    assert_eq!(
+        day_rows(),
+        [(false, "10:00".into(), 30, "Haftalık plan".into())]
+    );
+    send(&store, 0, 90, Some("togg"));
+    assert_eq!(
+        day_rows(),
+        [
+            (false, "09:00".into(), 60, "Loyalty".into()),
+            (false, "10:00".into(), 30, "Haftalık plan".into())
+        ]
+    );
+}
+
+#[test]
+fn sending_again_brings_back_a_deleted_row() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    opt_in_at(&store, -60);
+    work(&store, "Loyalty", 0, 60, Some("togg"));
+    let togg = sheet("togg", &["togg"]);
+    send(&store, 0, 60, Some("togg"));
+    let (r, _) = rows(&store, &togg);
+    store.dismiss_timesheet_entry(None, &r[0].entry).unwrap();
+    assert_eq!(rows(&store, &togg).1, 1);
+    remove(&store, 0, 60, Some("togg"));
+    send(&store, 0, 60, Some("togg"));
+    assert_eq!(
+        short(&rows(&store, &togg).0),
+        [(false, "09:00".into(), 60, "Loyalty".into())]
+    );
+}
+
+#[test]
+fn report_blocks_tell_whether_they_were_sent() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    project(&store, "kum", "Kum");
+    opt_in_at(&store, -60);
+    work(&store, "Loyalty", 0, 60, Some("togg"));
+    work(&store, "Kum", 120, 180, Some("kum"));
+    work(&store, "Rapor", 240, 300, Some("togg"));
+    store
+        .save_timesheet_config(&TimesheetConfig {
+            timesheets: vec![sheet("togg", &["togg"])],
+            ..Default::default()
+        })
+        .unwrap();
+    send(&store, 0, 60, Some("togg"));
+    let report = store.report(t(-540), t(900), &[t(-540)], true).unwrap();
+    let sent: Vec<_> = report
+        .work
+        .blocks
+        .iter()
+        .map(|b| (b.project_id.as_deref(), b.sent))
+        .collect();
+    // Çizelgeye bağlı olmayan projenin bloğunda bilgi yok.
+    assert_eq!(
+        sent,
+        [
+            (Some("togg"), Some(true)),
+            (Some("kum"), None),
+            (Some("togg"), Some(false))
+        ]
+    );
+}
+
+#[test]
+fn removing_a_block_hides_its_rows_and_undo_brings_them_back() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    work(&store, "Loyalty", 0, 60, Some("togg"));
+    work(&store, "Rapor", 90, 150, Some("togg"));
+    let togg = sheet("togg", &["togg"]);
+    store
+        .save_timesheet_config(&TimesheetConfig {
+            timesheets: vec![togg.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+    // Seçerek göndermeden önceki blok: satırı canlı. Düzenlenen satır da kaydedilir.
+    opt_in_at(&store, 180);
+    let (r, _) = rows(&store, &togg);
+    assert_eq!(r.len(), 2);
+    store
+        .save_timesheet_entry(
+            None,
+            &TimesheetEntry {
+                details: "Rapor yazımı".into(),
+                ..r[1].entry.clone()
+            },
+        )
+        .unwrap();
+    // Çıkarılan blokların satırları gider: canlı satır gönderilmemiş sayıldığı için, düzenlenen
+    // satır gizlenerek.
+    let gone = remove(&store, 0, 150, Some("togg"));
+    assert_eq!(gone.hidden.len(), 1);
+    assert_eq!(rows(&store, &togg), (Vec::new(), 1));
+    let report = store.report(t(-540), t(900), &[t(-540)], true).unwrap();
+    assert!(report.work.blocks.iter().all(|b| b.sent == Some(false)));
+    // Geri alınca aynen geri gelir.
+    store.restore_block((t(0), t(150)), &gone.hidden).unwrap();
+    assert_eq!(
+        short(&rows(&store, &togg).0),
+        [
+            (false, "09:00".into(), 60, "Loyalty".into()),
+            (true, "10:30".into(), 60, "Rapor yazımı".into())
+        ]
+    );
 }

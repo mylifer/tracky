@@ -16,7 +16,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tracky_core::attendance::Attendance;
 use tracky_core::meeting_suggest::{MeetingSuggester, MeetingSuggestion};
-use tracky_core::store::{DayRow, SavedEntry, TimesheetContext};
+use tracky_core::store::{DayRow, SavedEntry, TimesheetContext, Unsent};
 use tracky_core::timesheet::{
     self, FileRow, Meeting, Piece, ProjectMapping, Timesheet, TimesheetConfig, TimesheetEntry,
 };
@@ -344,6 +344,82 @@ pub async fn calendar_meetings(
             }
         })
         .collect())
+}
+
+/// `[start, end)` bloğunun zamanı, günlerinin yerel sınırları ve o günlerin takvim toplantıları.
+fn block_days(
+    app: &AppHandle,
+    start: &str,
+    end: &str,
+) -> CmdResult<(
+    timesheet::Interval,
+    Vec<chrono::DateTime<Utc>>,
+    Vec<Meeting>,
+)> {
+    let (from, to) = (
+        crate::commands::parse_time(start)?,
+        crate::commands::parse_time(end)?,
+    );
+    let day = |t: chrono::DateTime<Utc>| t.with_timezone(&chrono::Local).date_naive();
+    // Gece yarısında biten bloğun bitiş günü katılmaz.
+    let last = day(to - chrono::Duration::milliseconds(1)).max(day(from));
+    let day_starts: Vec<_> = day(from)
+        .iter_days()
+        .take_while(|d| *d <= last + Days::new(1))
+        .map(local_midnight)
+        .collect();
+    let meetings = crate::calendar::meetings(app, day_starts[0], day_starts[day_starts.len() - 1]);
+    Ok(((from, to), day_starts, meetings))
+}
+
+/// Takvim bloğunu (`[start, end)`) zaman çizelgesine gönderir: işi satır olur ve blok değiştikçe
+/// satırı da değişir ([`Store::send_block`]).
+#[tauri::command]
+pub async fn send_block_to_timesheet(
+    app: AppHandle,
+    start: String,
+    end: String,
+    project_id: Option<String>,
+) -> CmdResult<()> {
+    let (span, day_starts, meetings) = block_days(&app, &start, &end)?;
+    lock(&app.state::<Shared>().store)
+        .send_block(span, project_id.as_deref(), &day_starts, &meetings)
+        .map_err(err)
+}
+
+/// Takvim bloğunu (`[start, end)`) zaman çizelgesinden çıkarır ([`Store::remove_block`]):
+/// gizlenen satırlar geri almak için döner.
+#[tauri::command]
+pub async fn remove_block_from_timesheet(
+    app: AppHandle,
+    start: String,
+    end: String,
+    project_id: Option<String>,
+) -> CmdResult<Unsent> {
+    let (span, day_starts, meetings) = block_days(&app, &start, &end)?;
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    not_exporting()?;
+    store
+        .remove_block(span, project_id.as_deref(), &day_starts, &meetings)
+        .map_err(err)
+}
+
+/// Çizelgeden çıkarmayı geri alır: blok yeniden gönderilir, gizlenen satırlar geri gelir.
+#[tauri::command]
+pub async fn resend_block_to_timesheet(
+    app: AppHandle,
+    start: String,
+    end: String,
+    hidden: Vec<String>,
+) -> CmdResult<()> {
+    let span = (
+        crate::commands::parse_time(&start)?,
+        crate::commands::parse_time(&end)?,
+    );
+    lock(&app.state::<Shared>().store)
+        .restore_block(span, &hidden)
+        .map_err(err)
 }
 
 /// Toplantının bu tekrarına katılıp katılmadığını kaydeder (`key`:

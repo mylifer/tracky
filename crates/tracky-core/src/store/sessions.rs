@@ -357,6 +357,12 @@ impl Store {
         if new_to < to && new_to > from {
             n += self.mark_block_start(new_to.max(new_from), to)?;
         }
+        // Zaman çizelgesine gönderilen bloğun kesilen kısmı ayrı blok olur, gönderilmemiş sayılır.
+        for (a, b) in [(from, new_from.min(to)), (new_to.max(from), to)] {
+            if b > a {
+                self.unsend_from_timesheet(a, b)?;
+            }
+        }
         for (a, b) in joined {
             if b > a {
                 n += self.join_block(a, b, label, category_id, project_id)?;

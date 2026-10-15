@@ -88,6 +88,13 @@ pub struct TimesheetPieces {
     skipped: HashSet<String>,
 }
 
+impl TimesheetPieces {
+    /// Toplantısı yapılmamış sayılan (çizelgeden silinmiş) satırların kimlikleri.
+    pub fn skipped(&self) -> &HashSet<String> {
+        &self.skipped
+    }
+}
+
 impl std::ops::Deref for TimesheetPieces {
     type Target = [Piece];
 
@@ -516,7 +523,8 @@ impl Store {
     }
 
     /// `from`–`to` (yerel gün) arasında zaman çizelgesine giren süre: projesi belli takvim
-    /// toplantıları ve oturumlar ([`timesheet::pieces`]). Çizelgeden silinmiş satırı olan
+    /// toplantıları ve oturumlar ([`timesheet::pieces`]); oturumların parçası, bloğu zaman
+    /// çizelgesine gönderildiyse gönderilmiştir ([`Self::timesheet_sent`]). Çizelgeden silinmiş satırı olan
     /// toplantı yapılmamış sayılır: süresi çakışan başka toplantıya ya da o saatteki işe kalır.
     pub fn timesheet_pieces(
         &self,
@@ -556,8 +564,16 @@ impl Store {
         // Katılınmayan toplantı çıkar, süresi görüşmeye göre düzelir.
         let known = attendance::apply(known, &self.meeting_attendance(&ctx.config, meetings)?);
         let sessions = self.merged_sessions_between(from, to)?;
+        let sent = self.timesheet_sent(from, to)?;
         Ok(TimesheetPieces {
-            pieces: timesheet::pieces(&sessions, &known, &ctx.classifier, &ctx.config, from, to),
+            pieces: timesheet::pieces_with(
+                &sessions,
+                &known,
+                &ctx.classifier,
+                &ctx.config,
+                (from, to),
+                &sent,
+            ),
             skipped,
         })
     }
@@ -924,10 +940,25 @@ impl Store {
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> Result<usize> {
+        self.forget_dismissed_except(project, from, to, &HashSet::new())
+    }
+
+    /// [`Self::forget_dismissed`]; `keep` satırlarına dokunulmaz.
+    pub(crate) fn forget_dismissed_except(
+        &self,
+        project: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        keep: &HashSet<String>,
+    ) -> Result<usize> {
         let day = |t: DateTime<Utc>| t.with_timezone(&chrono::Local).date_naive();
         let mut n = 0;
         for s in self.saved_rows(day(from), day(to))? {
-            if !s.dismissed || s.entry.project_id != project || s.entry.coverage.is_none() {
+            if !s.dismissed
+                || s.entry.project_id != project
+                || s.entry.coverage.is_none()
+                || keep.contains(&s.id)
+            {
                 continue;
             }
             let spans = s.entry.spans();

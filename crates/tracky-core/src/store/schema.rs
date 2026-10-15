@@ -247,6 +247,25 @@ CREATE INDEX calls_unsynced ON calls (updated_at) WHERE synced_at IS NULL OR syn
 -- olmadan geçen süre. Bilgisayarlar arası çakışmada girdiyle geçen süreye yenilir.
 ALTER TABLE sessions ADD COLUMN passive INTEGER NOT NULL DEFAULT 0;
 "#,
+    r#"
+-- Zaman çizelgesine gönderilen takvim blokları (store::marks; supabase/migrations/0016): 'sent'
+-- aralıklarıyla kesişen bloğun işi canlı öneri olur. 'since' boş aralığı bir bilgisayarın blokları
+-- seçerek göndermeye geçtiği andır; ondan önce başlayan bloklar gönderilmiş sayılır, 'unsent'
+-- aralıklarıyla kesişenler (çizelgeden çıkarılanlar) hariç. Eşitlenir.
+CREATE TABLE timesheet_marks (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL CHECK (kind IN ('sent', 'unsent', 'since')),
+    started_at INTEGER NOT NULL,
+    ended_at   INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    synced_at  INTEGER,
+    CHECK (ended_at >= started_at)
+);
+CREATE INDEX timesheet_marks_started_at ON timesheet_marks (started_at);
+CREATE INDEX timesheet_marks_unsynced ON timesheet_marks (updated_at)
+    WHERE synced_at IS NULL OR synced_at < updated_at;
+"#,
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<()> {

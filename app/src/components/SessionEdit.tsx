@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { Check, PenLine, Plus, Trash2, Undo2, X } from "lucide-react";
+import { Check, CircleCheck, PenLine, Plus, Send, Trash2, Undo2, X } from "lucide-react";
 import {
   api,
   type CalendarMeeting,
@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { CategorySelect } from "./CategorySelect";
 import { ProjectSelect } from "./ProjectSelect";
 import { friendlyError, undoable } from "../lib/feedback";
+import { removeBlock, sendBlock } from "../lib/blockSheet";
 import { attendanceLine, isSkipped } from "../lib/attendance";
 import { cn } from "../lib/utils";
 
@@ -439,12 +440,13 @@ export function MeetingMenu({
   );
 }
 
-/** Blok kartının altı: bloğu kategoriye ata ya da sil. */
+/** Blok kartının altı: bloğu zaman çizelgesine gönder ya da çıkar, kategoriye ata ya da sil. */
 export function BlockActions({
   start,
   end,
   categoryId,
   projectId,
+  sent,
   categories,
   projects,
   onChanged,
@@ -453,19 +455,51 @@ export function BlockActions({
   end: string;
   categoryId: string | null;
   projectId: string | null;
+  /** Projesi bir zaman çizelgesine bağlıysa blok oraya gönderildi mi (`WorkBlock.sent`). */
+  sent?: boolean;
   categories: Tag[];
   projects: Tag[];
   onChanged: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const run = (f: () => Promise<unknown>) =>
     f().then(onChanged, (e) => {
       setError(message(e));
       return false;
     });
+  const sheet = (f: typeof sendBlock) => {
+    setBusy(true);
+    setError(null);
+    f({ start, end, projectId }, onChanged)
+      .catch((e) => setError(message(e)))
+      .finally(() => setBusy(false));
+  };
 
   return (
     <div className="space-y-2 border-t pt-3">
+      {sent === false && (
+        <Button size="sm" className="w-full" disabled={busy} onClick={() => sheet(sendBlock)}>
+          <Send />
+          Zaman çizelgesine gönder
+        </Button>
+      )}
+      {sent === true && (
+        <div className="flex items-center gap-2 text-xs">
+          <CircleCheck className="size-3.5 shrink-0 text-success" aria-hidden />
+          <span className="flex-1">Zaman çizelgesinde</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-muted-foreground"
+            disabled={busy}
+            onClick={() => sheet(removeBlock)}
+            title="Bloğu zaman çizelgesinden çıkar (dosyaya gönderilmiş satırlar kalır)"
+          >
+            Çizelgeden çıkar
+          </Button>
+        </div>
+      )}
       <ProjectAssign
         value={projectId}
         projects={projects}

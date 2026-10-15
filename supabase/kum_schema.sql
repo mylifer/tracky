@@ -1,5 +1,5 @@
 -- Kum'u başka bir uygulamanın Supabase projesinde, ayrı "kum" şemasında kurar (ücretsiz plandaki
--- proje sınırına takılmamak için). 0001–0014 göçlerinin "kum" şemasına uyarlanmış hâlidir;
+-- proje sınırına takılmamak için). 0001–0016 göçlerinin "kum" şemasına uyarlanmış hâlidir;
 -- SQL Editor'da bir kez çalıştırın, tekrar çalıştırmak zararsızdır. Ardından Project Settings →
 -- Data API → Exposed schemas listesine "kum" ekleyin ve Kum'da Ayarlar → Senkronizasyon →
 -- Şema alanına "kum" yazın. Diğer uygulamanın tablolarına ve ayarlarına dokunmaz.
@@ -261,6 +261,32 @@ create trigger kum_lww before insert or update on kum.calls
 alter table kum.calls enable row level security;
 drop policy if exists "kendi satırları" on kum.calls;
 create policy "kendi satırları" on kum.calls for all to authenticated
+    using (user_id = (select auth.uid()))
+    with check (user_id = (select auth.uid()));
+
+-- ===== 0016_timesheet_marks.sql =====
+-- Zaman çizelgesine gönderilen takvim blokları; "since:" kimlikli boş aralık bir bilgisayarın
+-- blokları seçerek göndermeye geçtiği an.
+create table if not exists kum.timesheet_marks (
+    id                text not null,
+    user_id           uuid not null default auth.uid() references auth.users (id) on delete cascade,
+    kind              text not null check (kind in ('sent', 'unsent', 'since')),
+    started_at        timestamptz not null,
+    ended_at          timestamptz not null,
+    updated_at        timestamptz not null,
+    deleted_at        timestamptz,
+    server_updated_at timestamptz not null default now(),
+    writer            uuid,
+    primary key (user_id, id),
+    check (ended_at >= started_at)
+);
+create index if not exists timesheet_marks_user_cursor on kum.timesheet_marks (user_id, server_updated_at);
+drop trigger if exists kum_lww on kum.timesheet_marks;
+create trigger kum_lww before insert or update on kum.timesheet_marks
+    for each row execute function kum.kum_lww();
+alter table kum.timesheet_marks enable row level security;
+drop policy if exists "kendi satırları" on kum.timesheet_marks;
+create policy "kendi satırları" on kum.timesheet_marks for all to authenticated
     using (user_id = (select auth.uid()))
     with check (user_id = (select auth.uid()));
 

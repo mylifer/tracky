@@ -10,12 +10,14 @@ import {
   type Timesheet,
   type TimesheetDay,
   type UnassignedMeeting,
+  type WorkBlock,
 } from "../api";
 import { HATCH } from "./Calendar";
 import { sheetEntryAt, sheetSpans } from "./calendar/TimesheetLines";
 import { ProjectSelect } from "./ProjectSelect";
 import { Button } from "./ui/button";
 import { parseIsoDate } from "../lib/dates";
+import { sendBlock } from "../lib/blockSheet";
 import { friendlyError, toast, undoable, useChanged } from "../lib/feedback";
 import { tagColor, tagInk, UNASSIGNED } from "../lib/tags";
 import { blocked, isStale, needsDetails, running as entryRunning, started } from "../lib/timesheet";
@@ -42,11 +44,15 @@ type Props = {
   onChanged: () => void;
 };
 
-/** Tablodaki bir satır: çizelge satırı, projesiz blok, çizelgeye gitmeyen proje ya da toplantı. */
+/**
+ * Tablodaki bir satır: çizelge satırı, projesiz blok, çizelgeye gitmeyen proje, zaman çizelgesine
+ * gönderilmemiş blok ya da toplantı.
+ */
 type Line =
   | { kind: "entry"; key: string; from: number; to: number; sheetId: string; entry: EntryView }
   | { kind: "unassigned"; key: string; from: number; to: number; app: string }
   | { kind: "off"; key: string; from: number; to: number; projectId: string; app: string }
+  | { kind: "unsent"; key: string; from: number; to: number; projectId: string; app: string; block: WorkBlock }
   | { kind: "meeting"; key: string; from: number; to: number; meeting: UnassignedMeeting };
 
 type Sheet = { id: string; info: Timesheet; projects: Set<string>; day: TimesheetDay | null };
@@ -69,7 +75,8 @@ async function fetchSheets(day: string): Promise<Sheet[]> {
  * gününde aynı listedir: bir kez gösterilir. Satırın bloğu takvimdeki gibi işin gerçek aralığıdır
  * (kapsadığı ilk takip aralığının başından sonuncunun sonuna); yazılan başlangıç ve saat ayrı
  * sütunlarda. Projesiz blok, takvimde bir satırın adını alıyorsa (ör. toplantı satırının
- * içindeki iş) ayrıca listelenmez: süresi çizelgede zaten var.
+ * içindeki iş) ayrıca listelenmez: süresi çizelgede zaten var. Zaman çizelgesine gönderilmemiş
+ * blok soluk görünür, buradan gönderilir.
  */
 export function buildLines(sheets: Omit<Sheet, "info">[] | null, report: Report): Line[] {
   const out: Line[] = [];
@@ -111,6 +118,8 @@ export function buildLines(sheets: Omit<Sheet, "info">[] | null, report: Report)
       if (!sheetEntryAt(spans, from, to)) out.push({ kind: "unassigned", key: `u-${b.start}`, from, to, app });
     } else if (sheets && !sheetProjects.has(b.projectId))
       out.push({ kind: "off", key: `o-${b.start}`, from, to, projectId: b.projectId, app });
+    else if (b.sent === false)
+      out.push({ kind: "unsent", key: `s-${b.start}`, from, to, projectId: b.projectId, app, block: b });
   }
   return out.sort((a, b) => a.from - b.from);
 }
@@ -185,6 +194,7 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
     entries.filter((l) => blocked(l.entry)).length +
     lines.filter((l) => l.kind === "unassigned" || l.kind === "meeting").length;
   const allSent = entries.length > 0 && entries.every((l) => l.entry.exported);
+  const unsent = lines.filter((l) => l.kind === "unsent").length;
 
   async function send() {
     if (ready.length === 0) return;
@@ -228,11 +238,12 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
   }
 
   const stats =
-    entries.length === 0
+    (entries.length === 0
       ? formatDuration(report.totalSeconds)
       : allSent
         ? `${formatDuration(report.totalSeconds)} · gönderildi`
-        : `${formatDuration(report.totalSeconds)} · ${ready.length} satır hazır${missing ? `, ${missing} eksik` : ""}`;
+        : `${formatDuration(report.totalSeconds)} · ${ready.length} satır hazır${missing ? `, ${missing} eksik` : ""}`) +
+    (unsent ? ` · ${unsent} blok çizelgede değil` : "");
   // Satırlar arasındaki boşluk (mola, toplantı dışı): başlangıca göre sıralı satırların o ana
   // kadarki en geç bitişinden sonraki ilk başlangıca kadar.
   const gaps = new Map<string, number>();
@@ -360,7 +371,7 @@ function Row({
   const hours = num.format((l.to - l.from) / 3600_000);
   if (l.kind === "entry")
     return <EntryLine line={l} tags={tags} projects={projects} sheets={sheets} running={running} run={run} />;
-  if (l.kind === "off") {
+  if (l.kind === "off" || l.kind === "unsent") {
     const tag = tags.get(l.projectId);
     return (
       <tr className="text-muted-foreground/80">
@@ -373,7 +384,22 @@ function Row({
         <td className={TD}>
           <ProjectName tag={tag} />
         </td>
-        <td className={cn(TD, PLAIN)}>{tag ? "Zaman çizelgesine bağlı değil · gönderilmez" : l.app}</td>
+        {l.kind === "unsent" ? (
+          <td className={TD}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7"
+              title="Bu bloğun işi zaman çizelgesinde satır olur; blok değiştikçe satırı da değişir"
+              onClick={() => run(() => sendBlock(l.block, () => {}))}
+            >
+              <Send />
+              Zaman çizelgesine gönder
+            </Button>
+          </td>
+        ) : (
+          <td className={cn(TD, PLAIN)}>{tag ? "Zaman çizelgesine bağlı değil · gönderilmez" : l.app}</td>
+        )}
       </tr>
     );
   }

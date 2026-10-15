@@ -96,4 +96,22 @@ describe("çizelge görünümü satırları", () => {
     );
     expect(lines.filter((l) => l.kind === "unassigned").map((l) => l.from)).toEqual([+new Date(at(11, 0))]);
   });
+
+  it("zaman çizelgesine gönderilmemiş blok gönderilecek satır olarak görünür", () => {
+    const at = (h: number) => new Date(2026, 9, 7, h, 0).toISOString();
+    const block = (h: number, sent: boolean) => ({
+      start: at(h),
+      end: at(h + 1),
+      activeSeconds: 3600,
+      categoryId: null,
+      projectId: "p1",
+      switches: 0,
+      topApps: [],
+      sent,
+    });
+    const lines = buildLines([{ id: "a", projects: new Set(["p1"]), day: { ...day([]), meetings: [] } }], {
+      work: { blocks: [block(9, false), block(11, true)] },
+    } as unknown as Report);
+    expect(lines.map((l) => l.kind)).toEqual(["unsent"]);
+  });
 });

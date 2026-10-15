@@ -166,7 +166,8 @@ export function WeekBoard({ summaries, divisions, dayHours, selected, onSelect, 
         </div>
         {rows.length === 0 ? (
           <p className="px-4 py-3 text-xs text-muted-foreground">
-            Bu hafta kayıt yok. Raporda bu çizelgenin projelerine atadığın süre burada satır olur.
+            Bu hafta kayıt yok. Takvimde bu çizelgenin projelerindeki bir bloğu “Zaman çizelgesine gönder” dediğinde
+            burada satır olur.
           </p>
         ) : (
           rows.map(([division, sum]) => (

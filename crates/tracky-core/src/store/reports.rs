@@ -110,7 +110,8 @@ impl Store {
         self.report_for_device(from, to, day_starts, with_timeline, None)
     }
 
-    /// Birleştirilmiş oturumlardan rapor.
+    /// Birleştirilmiş oturumlardan rapor. Projesi bir zaman çizelgesine bağlı bloğun oraya
+    /// gönderilip gönderilmediği de yazılır ([`crate::blocks::WorkBlock::sent`]).
     pub(super) fn build_report(
         &self,
         sessions: &[Session],
@@ -121,7 +122,7 @@ impl Store {
     ) -> Result<Report> {
         let tags = self.tags()?;
         let classifier = Classifier::new(&tags, &self.rules()?);
-        Ok(report::build(
+        let mut report = report::build(
             sessions,
             &tags,
             &classifier,
@@ -129,7 +130,20 @@ impl Store {
             to,
             day_starts,
             with_timeline,
-        ))
+        );
+        if !report.work.blocks.is_empty() {
+            let config = self.timesheet_config()?;
+            let sent = self.timesheet_sent(from, to)?;
+            for b in &mut report.work.blocks {
+                if b.project_id
+                    .as_deref()
+                    .is_some_and(|p| config.timesheet_of(p).is_some())
+                {
+                    b.sent = Some(sent.block(b.start, b.end));
+                }
+            }
+        }
+        Ok(report)
     }
 
     /// Kategori başına toplam süre (saniye); kategorisiz süre dahil edilmez.

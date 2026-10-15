@@ -97,7 +97,11 @@ export type WorkBlock = {
   topApps: { appId: string; appName: string; seconds: number }[];
   /** Bloktaki süre bilgisayar başına; yalnızca aralıkta birden çok bilgisayar varsa. */
   devices?: BlockDevice[];
+  /** Projesi bir zaman çizelgesine bağlıysa blok oraya gönderildi mi; bağlı değilse yok. */
+  sent?: boolean;
 };
+/** Bloğu çizelgeden çıkarırken gizlenen satırlar ve dosyaya gönderilmiş olduğu için kalanlar. */
+export type Unsent = { hidden: string[]; exported: number };
 export type BlockDevice = { id: string; name: string; os: string; model: string; seconds: number };
 /** Aralıkta çalışılan bilgisayar (`Report.devices`). */
 export type DeviceTotal = { id: string; name: string; os: string; model: string; seconds: number; current: boolean };
@@ -646,6 +650,15 @@ export const api = {
   deleteSheetRow: (timesheetId: string, expect: FileRow) =>
     invoke<void>("delete_sheet_row", { timesheetId, expect: plainFileRow(expect) }),
   undismissTimesheetEntries: (ids: string[]) => invoke<void>("undismiss_timesheet_entries", { ids }),
+  /** Takvim bloğunu zaman çizelgesine gönderir: işi satır olur, blok değiştikçe satırı da değişir. */
+  sendBlockToTimesheet: (start: string, end: string, projectId: string | null) =>
+    invoke<void>("send_block_to_timesheet", { start, end, projectId }),
+  /** Takvim bloğunu zaman çizelgesinden çıkarır; gizlenen satırlar geri almak için döner. */
+  removeBlockFromTimesheet: (start: string, end: string, projectId: string | null) =>
+    invoke<Unsent>("remove_block_from_timesheet", { start, end, projectId }),
+  /** Çizelgeden çıkarmayı geri alır. */
+  resendBlockToTimesheet: (start: string, end: string, hidden: string[]) =>
+    invoke<void>("resend_block_to_timesheet", { start, end, hidden }),
   /** Günün gizlenen satırlarını geri getirir. */
   restoreHiddenEntries: (timesheetId: string, date: string) =>
     invoke<string[]>("restore_hidden_entries", { timesheetId, date }),

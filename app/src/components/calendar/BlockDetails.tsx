@@ -90,6 +90,7 @@ export function BlockDetails({
           end={block.end}
           categoryId={block.categoryId}
           projectId={block.projectId}
+          sent={block.sent}
           categories={edit.categories}
           projects={edit.projects}
           onChanged={edit.onChanged}

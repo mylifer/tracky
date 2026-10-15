@@ -92,7 +92,7 @@ pub const SYNCED_SETTINGS: &[&str] = &[
 
 /// Parça parça şekle ([`table_fingerprints`]) geçilmeden önce eklenmiş tablo ve ayarlar:
 /// [`legacy_fingerprint`] bunlarsız hesaplanır.
-const AFTER_LEGACY_TABLES: &[&str] = &["calls"];
+const AFTER_LEGACY_TABLES: &[&str] = &["calls", "timesheet_marks"];
 const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance", "closed_days"];
 /// Parça parça şekle geçildikten sonra eklenen sütunlar: [`legacy_fingerprint`] bunlarsız.
 const AFTER_LEGACY_COLUMNS: &[&str] = &["passive"];
@@ -255,10 +255,28 @@ const TABLES: &[Table] = &[
         only: None,
         prefix: None,
     },
+    // Zaman çizelgesine gönderilen bloklar (store::marks): öteki bilgisayarda da yalnızca
+    // gönderilen blokların satırı olur. Sunucuda tablo yoksa (0016 öncesi) eşitlemenin geri
+    // kalanı sürer.
+    Table {
+        name: "timesheet_marks",
+        cols: &[
+            ("id", Col::Text),
+            ("kind", Col::Text),
+            ("started_at", Col::Time),
+            ("ended_at", Col::Time),
+            ("updated_at", Col::Time),
+            ("deleted_at", Col::OptTime),
+        ],
+        optional: &[],
+        key: "id",
+        only: None,
+        prefix: None,
+    },
 ];
 
 /// Sonradan eklenen tablolar: sunucuda yoksa yalnızca onlar eşitlenmez, gerisi sürer.
-const LATE_TABLES: &[&str] = &["settings", "timesheet_entries", "calls"];
+const LATE_TABLES: &[&str] = &["settings", "timesheet_entries", "calls", "timesheet_marks"];
 
 impl Table {
     /// Sunucudaki sütunun yereldeki adı.
@@ -419,6 +437,8 @@ impl SyncSummary {
             "settings" => self.settings_unavailable = true,
             // Görüşmeler eşitlenmezse katılım yalnızca bu bilgisayarın görüşmeleriyle yargılanır.
             "calls" => {}
+            // Gönderilen bloklar eşitlenmezse her bilgisayar yalnızca kendi gönderdiklerini görür.
+            "timesheet_marks" => {}
             _ => self.timesheet_unavailable = true,
         }
     }

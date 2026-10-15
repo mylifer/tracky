@@ -253,9 +253,9 @@ function TimesheetEditor({
       <div className="space-y-1.5">
         <div className="text-[13px] font-medium">Projeler</div>
         <p className="text-xs text-muted-foreground">
-          Raporda bu projelere atadığın süre bu çizelgede satır olur. Birim, satırın birim sütununa yazılan değerdir
-          (boşsa proje adı; satırda değiştirilebilir); taraf boşsa varsayılan. Hazır açıklama, pencere başlıklarından
-          açıklama çıkmayan satırlara yazılır.
+          Takvimde bu projelerin “Zaman çizelgesine gönder” dediğin blokları (ve projesi belli toplantılar) bu çizelgede
+          satır olur. Birim, satırın birim sütununa yazılan değerdir (boşsa proje adı; satırda değiştirilebilir); taraf
+          boşsa varsayılan. Hazır açıklama, pencere başlıklarından açıklama çıkmayan satırlara yazılır.
         </p>
         {sheet.projects.length > 0 && (
           <ul className="divide-y rounded-lg border">

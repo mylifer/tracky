@@ -17,9 +17,11 @@
 //! çevrim içiyse Online, değilse F2F). Toplantı süresince takip edilen iş sayılmaz: aynı
 //! saat iki kez yazılmasın.
 //!
-//! Öneriler canlıdır: raporda projeye atanan süre hemen satır olur. Düzenlenen, birleştirilen,
-//! gizlenen ya da aktarılan satır kaydedilir ve kapsadığı takip aralıklarını
-//! ([`TimesheetEntry::coverage`]) saklar; bu aralıklar yeni önerilerden düşülür ([`propose`]).
+//! Yalnızca zaman çizelgesine gönderilen takvim bloklarının işi satır olur ([`Sent`]); projesi
+//! belli toplantılar kendiliğinden girer. Öneriler canlıdır: gönderilen bloğun satırı blok
+//! değiştikçe değişir. Düzenlenen, birleştirilen, gizlenen ya da aktarılan satır kaydedilir ve
+//! kapsadığı takip aralıklarını ([`TimesheetEntry::coverage`]) saklar; bu aralıklar yeni
+//! önerilerden düşülür ([`propose`]).
 //! Sonradan atanan iş kaydedilmiş satırlara dokunmadan yeni satır olarak gelir, aynı iş iki kez
 //! yazılmaz.
 //!
@@ -294,7 +296,7 @@ pub fn meeting_project(
 pub type Interval = (DateTime<Utc>, DateTime<Utc>);
 
 /// `pieces`'ten `cut` aralığını çıkarır.
-pub(crate) fn subtract(pieces: Vec<Interval>, cut: Interval) -> Vec<Interval> {
+pub fn subtract(pieces: Vec<Interval>, cut: Interval) -> Vec<Interval> {
     let mut out = Vec::with_capacity(pieces.len() + 1);
     for (a, b) in pieces {
         if cut.1 <= a || cut.0 >= b {
@@ -517,6 +519,39 @@ pub struct Piece {
     /// Takvim bloğu burada elle bölündü ([`crate::blocks::Activity::block_start`]): projenin
     /// açık kaydı kapanır, yeni satır başlar.
     pub block_start: bool,
+    /// Parçanın takvim bloğu zaman çizelgesine gönderildi ([`Sent`]); toplantıda her zaman.
+    /// Gönderilmeyen parça öneri olmaz.
+    pub sent: bool,
+}
+
+/// Zaman çizelgesine gönderilen takvim blokları: yalnızca bunların işi (ve projesi belli
+/// toplantılar) canlı öneri olur. Blok, gönderilen aralıklardan (`spans`) biriyle kesişiyorsa
+/// ya da `before`'dan önce başlıyorsa (bloklar seçilerek gönderilmeden önceki iş; `off`
+/// aralıklarıyla kesişen, çizelgeden çıkarılanlar hariç) gönderilmiştir. Aralık bloğun
+/// gönderildiği andaki halidir; blok sonradan uzasa da kısalsa da onunla kesiştikçe satırı
+/// bloğu izler.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sent {
+    pub spans: Vec<Interval>,
+    pub off: Vec<Interval>,
+    pub before: DateTime<Utc>,
+}
+
+impl Sent {
+    /// Her blok gönderilmiş (seçerek göndermeden önceki davranış).
+    pub fn all() -> Self {
+        Self {
+            spans: Vec::new(),
+            off: Vec::new(),
+            before: DateTime::<Utc>::MAX_UTC,
+        }
+    }
+
+    /// `[start, end)` bloğu gönderildi mi?
+    pub fn block(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> bool {
+        let touches = |spans: &[Interval]| spans.iter().any(|&(a, b)| a < end && start < b);
+        touches(&self.spans) || (start < self.before && !touches(&self.off))
+    }
 }
 
 /// Günün zaman çizelgesine giren süresi: projesi belli toplantılar ([`meeting_project`]) ve
@@ -534,6 +569,25 @@ pub fn pieces(
     config: &TimesheetConfig,
     day_start: DateTime<Utc>,
     day_end: DateTime<Utc>,
+) -> Vec<Piece> {
+    pieces_with(
+        sessions,
+        meetings,
+        classifier,
+        config,
+        (day_start, day_end),
+        &Sent::all(),
+    )
+}
+
+/// [`pieces`]; oturumların parçası, takvim bloğu `sent`'te gönderilmişse gönderilmiştir.
+pub fn pieces_with(
+    sessions: &[Session],
+    meetings: &[(Meeting, String)],
+    classifier: &Classifier,
+    config: &TimesheetConfig,
+    (day_start, day_end): Interval,
+    sent: &Sent,
 ) -> Vec<Piece> {
     let mut sorted: Vec<&(Meeting, String)> = meetings.iter().collect();
     sorted.sort_by_key(|(m, _)| (m.start, m.end));
@@ -559,10 +613,20 @@ pub fn pieces(
             title: m.subject.clone(),
             meeting: Some(i),
             block_start: false,
+            sent: true,
         }));
     }
     let classes: Vec<_> = sessions.iter().map(|s| classifier.classify(s)).collect();
-    let blocks = day_blocks(sessions, &classes, day_start, day_end);
+    let all = day_blocks(sessions, &classes, day_start, day_end);
+    let sent_blocks: Vec<Interval> = all
+        .iter()
+        .filter(|b| sent.block(b.start, b.end))
+        .map(|b| (b.start, b.end))
+        .collect();
+    let blocks: Vec<(DateTime<Utc>, DateTime<Utc>, String)> = all
+        .into_iter()
+        .filter_map(|b| Some((b.start, b.end, b.project_id?)))
+        .collect();
     for (s, class) in sessions.iter().zip(&classes) {
         let (a, b) = (s.started_at.max(day_start), s.ended_at.min(day_end));
         if b <= a {
@@ -592,19 +656,21 @@ pub fn pieces(
                 title: title.clone(),
                 meeting: None,
                 block_start: crate::blocks::Activity::starts_block(s, start),
+                // Oturum tek bir bloğun içindedir: parçası o bloğun durumunu alır.
+                sent: sent_blocks.iter().any(|&(c, d)| c < end && start < d),
             }));
         }
     }
     out
 }
 
-/// Günün takvim blokları (raporla aynı hesap) ve projeleri; projesi olmayan bloklar atlanır.
+/// Günün takvim blokları (raporla aynı hesap).
 fn day_blocks(
     sessions: &[Session],
     classes: &[crate::classify::Classification],
     day_start: DateTime<Utc>,
     day_end: DateTime<Utc>,
-) -> Vec<(DateTime<Utc>, DateTime<Utc>, String)> {
+) -> Vec<crate::blocks::WorkBlock> {
     let mut items: Vec<crate::blocks::Activity> = sessions
         .iter()
         .zip(classes)
@@ -622,14 +688,11 @@ fn day_blocks(
         })
         .collect();
     items.sort_by_key(|i| i.start);
-    crate::blocks::analyze(&items)
-        .blocks
-        .into_iter()
-        .filter_map(|b| Some((b.start, b.end, b.project_id?)))
-        .collect()
+    crate::blocks::analyze(&items).blocks
 }
 
 /// Parçalardan `sheet`'e bağlı projelerin iş kaydı önerileri; başlangıca göre sıralı.
+/// Gönderilmemiş parçalar ([`Piece::sent`]) yokmuş gibidir.
 /// `saved` proje başına kaydedilmiş (silinmişler dahil) satırların aralıklarıdır, satır satır:
 /// bu süre yeniden önerilmez. Kaydedilmiş satırın artığı `MIN_REMAINDER`'dan kısaysa önerilmez:
 /// satır kaydedilirken süren işin birkaç dakikası (satıra `MERGE_GAP`'ten yakın oturumlar) ya da
@@ -723,7 +786,7 @@ pub fn propose(
     let none: Vec<Interval> = Vec::new();
     let mut parts: Vec<(DateTime<Utc>, DateTime<Utc>, &Piece, bool)> = pieces
         .iter()
-        .filter(|p| sheet.includes(&p.project))
+        .filter(|p| p.sent && sheet.includes(&p.project))
         .flat_map(|p| {
             let left = cuts
                 .get(p.project.as_str())
@@ -778,7 +841,7 @@ pub fn propose(
     {
         let mut sessions: Vec<&Piece> = pieces
             .iter()
-            .filter(|p| p.meeting.is_none() && sheet.includes(&p.project))
+            .filter(|p| p.sent && p.meeting.is_none() && sheet.includes(&p.project))
             .collect();
         sessions.sort_by_key(|p| p.start);
         let mut open: HashMap<&str, (usize, DateTime<Utc>)> = HashMap::new();

@@ -71,6 +71,10 @@ pub struct WorkBlock {
     /// `Store::report_for_device`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<BlockDevice>,
+    /// Projesi bir zaman çizelgesine bağlıysa blok oraya gönderildi mi
+    /// ([`crate::timesheet::Sent`]; `Store::build_report`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent: Option<bool>,
 }
 
 /// Bir takvim bloğundaki süre, bilgisayar başına.
@@ -297,6 +301,7 @@ impl Builder {
             switches: self.switches,
             top_apps: apps,
             devices: Vec::new(),
+            sent: None,
         }
     }
 }

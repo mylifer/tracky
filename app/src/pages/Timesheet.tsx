@@ -78,9 +78,10 @@ import { ClosePanel } from "./timesheet/ClosePanel";
 import { DayCard } from "./timesheet/DayCard";
 
 /**
- * Zaman çizelgesi: seçili firmanın çizelgesine bağlı projelere atanan süreden iş kayıtları.
- * Raporda projeye atanan süre burada hemen satır olur; düzenlenen satır kaydedilir, sonradan
- * atanan iş yeni satır olarak eklenir. Satırlar seçilip birleştirilir ya da gönderilir.
+ * Zaman çizelgesi: seçili firmanın çizelgesine bağlı projelerin takvimde gönderilen
+ * bloklarından (ve projesi belli toplantılardan) iş kayıtları. Gönderilen bloğun satırı blok
+ * değiştikçe değişir; düzenlenen satır kaydedilir, sonradan atanan iş yeni satır olarak eklenir.
+ * Satırlar seçilip birleştirilir ya da gönderilir.
  */
 export default function Timesheet({
   onOpenDay,

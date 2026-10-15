@@ -37,7 +37,7 @@ fn only_new_or_changed_tables_are_refetched() {
     // Eski tek özetten geçiş: yalnızca yeni tablo ve yeni ayar eklenen ayarlar baştan çekilir.
     let first = tables_to_refetch(|_| None, true);
     let refetch: Vec<&str> = first.iter().filter(|r| r.2).map(|r| r.0).collect();
-    assert_eq!(refetch, ["settings", "calls"]);
+    assert_eq!(refetch, ["settings", "calls", "timesheet_marks"]);
     assert_eq!(first.len(), TABLES.len());
     // Kayıtlıyla aynıysa hiçbir şey; biri değişmişse yalnızca o.
     let stored = |name: &str| current.get(name).cloned();
@@ -348,8 +348,9 @@ fn own_rows_are_not_pulled_back() {
     let safari = session("Safari", 30);
     lock(&b).upsert_session(&safari).unwrap();
     run(&b, &mut remote, "u1").unwrap();
-    // Varsayılan kategoriler B'de de aynı; yalnızca yeni oturum uygulanır.
-    assert_eq!(run(&a, &mut remote, "u1").unwrap().pulled, 1);
+    // Varsayılan kategoriler B'de de aynı; yalnızca yeni oturum ve B'nin blokları seçerek
+    // göndermeye geçtiği an uygulanır.
+    assert_eq!(run(&a, &mut remote, "u1").unwrap().pulled, 2);
     assert_eq!(totals(&a), vec![("Safari".to_string(), 30)]);
 
     // A, B'nin oturumunu silerse silme B'ye ulaşır, A'ya geri gelmez.
