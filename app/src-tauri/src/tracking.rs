@@ -125,9 +125,26 @@ fn prove_call_detection(store: &tracky_core::Store) -> bool {
 /// Son gözlemde girdi olmadan geçen süre (saniye); video ya da görüşme sürerken 0. Güncelleme
 /// kimse bilgisayar başında değilken kurulsun diye ([`crate::updater`]).
 static IDLE_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// [`IDLE_SECS`]'in ölçüldüğü an (unix saniye).
+static IDLE_SEEN_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// Bundan eski ölçüm bilinmiyor sayılır (0): uykudan uyanınca ilk gözleme kadar uykudan önceki
+/// boşluk, takip bir platform çağrısında takılınca da eski değer okunmasın.
+const IDLE_FRESH_SECS: i64 = 5;
 
 pub fn idle_seconds() -> u64 {
-    IDLE_SECS.load(std::sync::atomic::Ordering::Relaxed)
+    use std::sync::atomic::Ordering::Relaxed;
+    let age = Utc::now().timestamp() - IDLE_SEEN_AT.load(Relaxed);
+    if (0..=IDLE_FRESH_SECS).contains(&age) {
+        IDLE_SECS.load(Relaxed)
+    } else {
+        0
+    }
+}
+
+fn record_idle(secs: u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    IDLE_SECS.store(secs, Relaxed);
+    IDLE_SEEN_AT.store(Utc::now().timestamp(), Relaxed);
 }
 
 /// Takibi çalıştırır ([`run`]). Takip beklenmedik bir hatayla (panik) çökerse günlüğe yazılır
@@ -264,7 +281,7 @@ fn run(
 
         // Platform çağrıları kilit dışında: yanıt vermeyen bir uygulama arayüzü kilitlemesin.
         let observation = tracker.observe();
-        IDLE_SECS.store(observation.idle(), std::sync::atomic::Ordering::Relaxed);
+        record_idle(observation.idle());
         let shared = app.state::<Shared>();
         let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
         let now = Utc::now();
@@ -809,12 +826,22 @@ pub fn format_duration(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        day_summary_body, format_duration, unexported_body, week_start, week_summary_body,
+        IDLE_SEEN_AT, day_summary_body, format_duration, idle_seconds, record_idle,
+        unexported_body, week_start, week_summary_body,
     };
     use chrono::{Local, NaiveDate, TimeZone, Utc};
     use tracky_core::report::Bucket;
     use tracky_core::report::DayBucket;
     use tracky_core::{Goals, Report, Tag, TagKind};
+
+    #[test]
+    fn a_stale_idle_reading_does_not_count() {
+        record_idle(700);
+        assert_eq!(idle_seconds(), 700);
+        // Uykudan önceki (ya da takılan takibin) ölçümü.
+        IDLE_SEEN_AT.fetch_sub(3600, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(idle_seconds(), 0);
+    }
 
     #[test]
     fn formats_durations() {
