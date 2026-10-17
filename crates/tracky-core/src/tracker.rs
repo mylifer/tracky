@@ -205,6 +205,13 @@ impl<P: ActivityProvider> Tracker<P> {
             .tick_with_clocks(now, self.clocks(), obs.window, obs.idle);
         self.settle(store, before, closed, &mut outcome);
         outcome.changed = self.engine.current().map(|s| s.id) != before;
+        // Boşta eşiği doldu: son girdiden sonra kapanmış oturumlar da son girdide biter.
+        for cut in self.engine.take_cuts() {
+            if let Err(e) = store.cut_session(&cut.id, cut.ended_at) {
+                outcome.error = Some(format!("kayıt kısaltılamadı: {e}"));
+            }
+            outcome.changed = true;
+        }
         if let Some(away) = self.engine.take_away() {
             save(store, &away, &mut outcome);
             outcome.changed = true;
@@ -459,6 +466,47 @@ mod tests {
                 .any(|s| s.started_at == t0 && s.duration() == Duration::seconds(9)),
             "{sessions:?}"
         );
+    }
+
+    #[test]
+    fn titles_changing_while_away_are_not_counted_as_work() {
+        let store = Store::open_in_memory().unwrap();
+        // Son girdi 9. saniyede; başlık 60. ve 120. saniyede girdi olmadan değişir (şarkı),
+        // 400. saniyede kullanıcı döner.
+        let n = 405;
+        let title = |i: usize| match i {
+            0..60 => "Şarkı 1",
+            60..120 => "Şarkı 2",
+            _ => "Şarkı 3",
+        };
+        let windows = (0..n).map(|i| {
+            Some(ActiveWindow {
+                title: title(i).into(),
+                ..win("Spotify").unwrap()
+            })
+        });
+        let idles: VecDeque<u64> = (0..n as u64)
+            .map(|i| if (10..400).contains(&i) { i - 9 } else { 0 })
+            .collect();
+        let mut tracker = Tracker::new(
+            Script(windows.collect(), idles),
+            EngineConfig::default(),
+            PrivacySettings::default(),
+        );
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        for i in 0..n {
+            tracker.tick(&store, t0 + Duration::seconds(i as i64));
+        }
+        let all = store.sessions_between(t0, t0 + Duration::hours(1)).unwrap();
+        let spans: Vec<_> = all
+            .iter()
+            .map(|s| {
+                let at = |t: DateTime<Utc>| (t - t0).num_seconds();
+                (s.is_idle(), at(s.started_at), at(s.ended_at))
+            })
+            .collect();
+        // Çalışma son girdide biter; boşta kaydıyla çakışmaz.
+        assert_eq!(spans, [(false, 0, 9), (true, 9, 400), (false, 400, 404)]);
     }
 
     #[test]

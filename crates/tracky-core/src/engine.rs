@@ -1,4 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
+use uuid::Uuid;
 
 use crate::model::{ActiveWindow, Session};
 
@@ -50,6 +51,20 @@ pub struct Engine {
     last_elapsed: Option<std::time::Duration>,
     /// Girdisiz izlemenin başladığı an (son girdi); bkz. [`Engine::set_passive`].
     passive_since: Option<DateTime<Utc>>,
+    /// Son girdiden sonra kapanan oturumlar (pencere ya da başlık girdi olmadan değişti: şarkı,
+    /// sekme bildirimi, kendiliğinden açılan pencere). Kullanıcı dönmeden boşta eşiği dolarsa
+    /// süren oturum gibi bunlar da son girdide kesilir.
+    unconfirmed: Vec<Session>,
+    /// Kesilen, önceden kapanmış oturumlar; bkz. [`Engine::take_cuts`].
+    cuts: Vec<Cut>,
+}
+
+/// Boşta eşiği dolunca geri alınan süre: son girdiden sonra kapanmış oturumun girdisiz kısmı.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cut {
+    pub id: Uuid,
+    /// Yeni bitiş (son girdi); `None`: kalan kısım en kısa oturumdan kısa, oturum silinir.
+    pub ended_at: Option<DateTime<Utc>>,
 }
 
 /// Duvar saatinden bağımsız saatler (süreç başından beri): aradaki boşluğun ne olduğunu ayırır.
@@ -109,6 +124,8 @@ impl Engine {
             last_uptime: None,
             last_elapsed: None,
             passive_since: None,
+            unconfirmed: Vec::new(),
+            cuts: Vec::new(),
         }
     }
 
@@ -129,12 +146,19 @@ impl Engine {
         self.away.take()
     }
 
+    /// Daha önce kapanıp döndürülmüş, boşta eşiği dolunca son girdide kesilen oturumları alır
+    /// (her biri bir kez döner); kaydedilmiş hallerine uygulanmalı.
+    pub fn take_cuts(&mut self) -> Vec<Cut> {
+        std::mem::take(&mut self.cuts)
+    }
+
     /// Süren boşluğu kayıt üretmeden unutur (örn. takip duraklatıldı); sonraki boşluk
     /// `now`'dan önce başlamış sayılmaz. Sonraki gözleme kadarki ara da uyku sayılmaz
     /// (duraklatılmışken uyuyan makine boşta kaydı üretmesin).
     pub fn forget_away(&mut self, now: DateTime<Utc>) {
         self.away_since = None;
         self.away = None;
+        self.unconfirmed.clear();
         self.away_floor = Some(now);
         self.last_tick = None;
         self.last_uptime = None;
@@ -192,6 +216,11 @@ impl Engine {
         self.last_tick = Some(now);
         self.last_uptime = clocks.uptime;
         self.last_elapsed = clocks.elapsed;
+        if !matches!(gap, Gap::None) {
+            // Uykuda son görülen ana kadarki süre sayılır (süren oturum gibi); saat atladıysa
+            // önceki anlar bu saatle karşılaştırılamaz.
+            self.unconfirmed.clear();
+        }
         let closed = match gap {
             // Makine uyuduysa son görülen andan sonrası sayılmaz; kullanıcı o andan beri
             // uzakta. Açık oturum olmasa da (hariç tutulan uygulama, pencere yok) son
@@ -290,13 +319,48 @@ impl Engine {
         // `Duration::seconds` ve `now - idle` taşmasın diye bir yılla sınırlanır.
         const MAX_IDLE_SECONDS: u64 = 365 * 24 * 3600;
         let idle = Duration::seconds(idle_seconds.min(MAX_IDLE_SECONDS) as i64);
+        let last_input = now - idle;
         if idle >= self.config.idle_threshold {
             // Boşluk son girdiden itibaren başlar; o ana kadar kullanıcı oradaydı.
-            self.mark_away(now - idle);
-            return self.close_at(Some(now - idle));
+            self.mark_away(last_input);
+            self.cut_unconfirmed(last_input);
+            return self.close_at(Some(last_input));
         }
         // Kullanıcı başında: uzaktaysa son girdiyle geri döndü.
-        self.end_away(now - idle);
+        self.end_away(last_input);
+        // Son girdiden önce biten oturumlar kesinleşti.
+        self.unconfirmed.retain(|s| s.ended_at > last_input);
+        let closed = self.observe_window(now, window, idle);
+        if let Some(s) = &closed
+            && s.ended_at > last_input
+        {
+            self.unconfirmed.push(s.clone());
+        }
+        closed
+    }
+
+    /// Son girdiden (`at`) sonra kapanmış oturumları `at`'te keser: kullanıcı o andan beri
+    /// uzaktaydı, girdi olmadan değişen pencerede geçen süre çalışma değildir.
+    fn cut_unconfirmed(&mut self, at: DateTime<Utc>) {
+        for s in std::mem::take(&mut self.unconfirmed) {
+            if s.ended_at <= at {
+                continue;
+            }
+            let keep = at - s.started_at >= self.config.min_session;
+            self.cuts.push(Cut {
+                id: s.id,
+                ended_at: keep.then_some(at),
+            });
+        }
+    }
+
+    /// Kullanıcı başındayken gözlemlenen pencere; kapanan oturum.
+    fn observe_window(
+        &mut self,
+        now: DateTime<Utc>,
+        window: Option<ActiveWindow>,
+        idle: Duration,
+    ) -> Option<Session> {
         let Some(window) = window else {
             return self.close_at(Some(now));
         };
@@ -648,6 +712,71 @@ mod tests {
         assert!(away.is_idle());
         assert_eq!((away.started_at, away.ended_at), (t(10), t(600)));
         assert!(e.take_away().is_none(), "bir kez döner");
+    }
+
+    #[test]
+    fn windows_changing_without_input_are_cut_at_the_last_input() {
+        // Son girdi 10. saniyede; sonra başlık girdi olmadan değişir (şarkı, sekme bildirimi),
+        // 190. saniyede boşta eşiği dolar.
+        let mut e = recording_away(180);
+        let mut steps: Vec<_> = (0..=10)
+            .map(|s| (s, win("Spotify", "Şarkı 1"), 0))
+            .collect();
+        steps.extend((11..60).map(|s| (s, win("Spotify", "Şarkı 1"), (s - 10) as u64)));
+        steps.extend((60..120).map(|s| (s, win("Spotify", "Şarkı 2"), (s - 10) as u64)));
+        steps.extend((120..=190).map(|s| (s, win("Firefox", "(1) Gelen"), (s - 10) as u64)));
+        let closed = run(&mut e, &steps);
+        fn span(s: &Session) -> (&str, DateTime<Utc>, DateTime<Utc>) {
+            (s.title.as_str(), s.started_at, s.ended_at)
+        }
+        assert_eq!(
+            closed.iter().map(span).collect::<Vec<_>>(),
+            [("Şarkı 1", t(0), t(60)), ("Şarkı 2", t(60), t(120))]
+        );
+        assert!(e.current().is_none());
+        // Kaydedilmiş oturumlar son girdide kesilir; tamamı sonra olan silinir.
+        assert_eq!(
+            e.take_cuts(),
+            [
+                Cut {
+                    id: closed[0].id,
+                    ended_at: Some(t(10))
+                },
+                Cut {
+                    id: closed[1].id,
+                    ended_at: None
+                },
+            ]
+        );
+        assert!(e.take_cuts().is_empty(), "bir kez döner");
+        e.tick(t(600), win("Firefox", "(1) Gelen"), 0);
+        let away = e.take_away().expect("boşta kaydı");
+        assert_eq!((away.started_at, away.ended_at), (t(10), t(600)));
+
+        // Arada girdi olduysa ondan önce biten oturum kesinleşir.
+        let mut e = recording_away(180);
+        let mut steps: Vec<_> = (0..=10)
+            .map(|s| (s, win("Spotify", "Şarkı 1"), 0))
+            .collect();
+        steps.extend((11..60).map(|s| (s, win("Spotify", "Şarkı 1"), (s - 10) as u64)));
+        steps.extend((60..70).map(|s| (s, win("Spotify", "Şarkı 2"), (s - 10) as u64)));
+        steps.extend((70..=250).map(|s| (s, win("Spotify", "Şarkı 2"), (s - 70) as u64)));
+        let closed = run(&mut e, &steps);
+        assert_eq!(closed.len(), 2);
+        assert_eq!(span(&closed[1]), ("Şarkı 2", t(60), t(70)));
+        assert!(e.take_cuts().is_empty());
+
+        // Uyku: son görülen ana kadarki süre sayılır (süren oturum gibi), kesilmez.
+        let mut e = recording_away(180);
+        let mut steps: Vec<_> = (0..=10)
+            .map(|s| (s, win("Spotify", "Şarkı 1"), 0))
+            .collect();
+        steps.extend((11..60).map(|s| (s, win("Spotify", "Şarkı 1"), (s - 10) as u64)));
+        steps.extend((60..=61).map(|s| (s, win("Spotify", "Şarkı 2"), (s - 10) as u64)));
+        steps.push((1000, win("Spotify", "Şarkı 2"), 990));
+        let closed = run(&mut e, &steps);
+        assert_eq!(span(&closed[1]), ("Şarkı 2", t(60), t(61)));
+        assert!(e.take_cuts().is_empty());
     }
 
     #[test]

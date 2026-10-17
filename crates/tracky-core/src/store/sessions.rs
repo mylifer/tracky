@@ -190,6 +190,21 @@ impl Store {
         Ok(())
     }
 
+    /// Kaydedilmiş oturumu `end` anında bitirir (`None`: siler): boşta eşiği dolunca son
+    /// girdiden sonraki süre çalışma sayılmaz ([`crate::engine::Cut`]). Silinmiş ya da zaten
+    /// daha önce biten oturum değişmez.
+    pub fn cut_session(&self, id: &Uuid, end: Option<DateTime<Utc>>) -> Result<()> {
+        let Some(end) = end else {
+            return self.delete_session(id);
+        };
+        self.conn.execute(
+            "UPDATE sessions SET ended_at = ?2, updated_at = MAX(?3, updated_at + 1)
+             WHERE id = ?1 AND deleted_at IS NULL AND started_at < ?2 AND ended_at > ?2",
+            params![id.to_string(), ms(end), ms(Utc::now())],
+        )?;
+        Ok(())
+    }
+
     /// `[from, to)` ile kesişen oturumlara elle kategori verir (`None`: kurallara
     /// dön). Takvimdeki bir blok bu oturumlardan oluşur. Değişen satır sayısı.
     pub fn set_category_between(
