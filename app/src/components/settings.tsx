@@ -86,7 +86,8 @@ export function ToggleRow({
 }) {
   return (
     <SettingRow label={label} hint={hint}>
-      <Switch checked={checked} onCheckedChange={onChange} />
+      {/* Ekran okuyucu anahtarın neyi açıp kapattığını duysun. */}
+      <Switch checked={checked} onCheckedChange={onChange} aria-label={typeof label === "string" ? label : undefined} />
     </SettingRow>
   );
 }
