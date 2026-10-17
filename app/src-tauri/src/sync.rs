@@ -159,31 +159,7 @@ fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
         auth = refresh(app, &client, &auth)?;
     }
     let store = &app.state::<Shared>().store;
-    // Eski sürümün tanımayıp atladığı satırlar (yeni alan, yeni ayar) imleç geçtiği için bir
-    // daha çekilmezdi: bir tablonun eşitlenen şekli değişince o tabloyu baştan çek (her
-    // sürümde değil, bütün tabloları değil).
-    {
-        let store = lock(store);
-        let legacy = store
-            .setting::<String>(CURSOR_VERSION_KEY)
-            .ok()
-            .flatten()
-            .is_some_and(|v| v == tracky_core::sync::legacy_fingerprint());
-        let stored = |table: &str| {
-            store
-                .setting::<String>(&format!("{TABLE_SHAPE_PREFIX}{table}"))
-                .ok()
-                .flatten()
-        };
-        for (table, shape, refetch) in tracky_core::sync::tables_to_refetch(stored, legacy) {
-            if refetch {
-                store.forget_sync_cursor(table).map_err(|e| e.to_string())?;
-            }
-            store
-                .save_setting(&format!("{TABLE_SHAPE_PREFIX}{table}"), &shape)
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    prepare_tables(&lock(store)).map_err(|e| e.to_string())?;
     let attempt = |auth: &AuthSession| {
         tracky_core::sync::run(store, &mut client.remote(auth), &auth.user_id)
             .map_err(|e| e.to_string())
@@ -194,6 +170,34 @@ fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
         other => other,
     };
     result.map(Some)
+}
+
+/// Eski sürümün tanımayıp atladığı satırlar (yeni alan, yeni ayar) imleç geçtiği için bir daha
+/// çekilmezdi: bir tablonun eşitlenen şekli değişince o tabloyu baştan çek (her sürümde değil,
+/// bütün tabloları değil). Baştan çekilen tablolar döner.
+fn prepare_tables(
+    store: &tracky_core::Store,
+) -> Result<Vec<&'static str>, tracky_core::StoreError> {
+    let legacy = store
+        .setting::<String>(CURSOR_VERSION_KEY)
+        .ok()
+        .flatten()
+        .is_some_and(|v| v == tracky_core::sync::legacy_fingerprint());
+    let stored = |table: &str| {
+        store
+            .setting::<String>(&format!("{TABLE_SHAPE_PREFIX}{table}"))
+            .ok()
+            .flatten()
+    };
+    let mut refetched = Vec::new();
+    for (table, shape, refetch) in tracky_core::sync::tables_to_refetch(stored, legacy) {
+        if refetch {
+            store.forget_sync_cursor(table)?;
+            refetched.push(table);
+        }
+        store.save_setting(&format!("{TABLE_SHAPE_PREFIX}{table}"), &shape)?;
+    }
+    Ok(refetched)
 }
 
 /// Jetonu yeniler ve kaydeder. Bu arada kullanıcı çıkış yaptıysa ya da başka
@@ -230,6 +234,38 @@ fn migration_hint(message: String) -> String {
     }
 }
 
+/// Başarılı eşitlemenin iletisi: sayılar, sunucuda eksik şema ve geride kalan bilgisayarlar.
+fn summary_message(summary: &SyncSummary, outdated: Option<String>) -> String {
+    let mut m = if summary.skipped > 0 {
+        format!(
+            "{} gönderildi, {} alındı; {} kayıt bu sürümde okunamadığı için atlandı (Kum'u güncelle)",
+            summary.pushed, summary.pulled, summary.skipped
+        )
+    } else {
+        format!("{} gönderildi, {} alındı", summary.pushed, summary.pulled)
+    };
+    if summary.settings_unavailable {
+        m += ". Ayarlar eşitlenmedi: Supabase'de \
+              supabase/migrations/0008_settings.sql dosyasını çalıştır";
+    }
+    if summary.timesheet_unavailable {
+        m += ". Zaman çizelgesi satırları eşitlenmedi: Supabase'de \
+              supabase/migrations/0010_timesheet_entries.sql dosyasını çalıştır";
+    }
+    if summary.timesheet_outdated {
+        m += ". Zaman çizelgesi satırlarının durumu eşitlenmedi: Supabase'de \
+              supabase/migrations/0011_timesheet_state.sql dosyasını çalıştır";
+    }
+    if summary.outdated_schema {
+        m += ". Proje arşivi ve bütçeler eşitlenmedi: Supabase'de \
+              supabase/migrations/0007_archive_budget.sql dosyasını çalıştır";
+    }
+    if let Some(names) = outdated {
+        m += &format!(". {names} eski sürümde: o bilgisayarda Kum'u güncelle");
+    }
+    m
+}
+
 /// Son iki haftada kullanılmış, bu bilgisayardan eski sürümdeki bilgisayarların adları.
 fn outdated_devices(app: &AppHandle) -> Option<String> {
     let devices = lock(&app.state::<Shared>().store).known_devices().ok()?;
@@ -253,36 +289,7 @@ fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) -> bool 
         Ok(Some(summary)) => LastSync {
             at: Utc::now(),
             ok: true,
-            message: {
-                let mut m = if summary.skipped > 0 {
-                    format!(
-                        "{} gönderildi, {} alındı; {} kayıt bu sürümde okunamadığı için atlandı (Kum'u güncelle)",
-                        summary.pushed, summary.pulled, summary.skipped
-                    )
-                } else {
-                    format!("{} gönderildi, {} alındı", summary.pushed, summary.pulled)
-                };
-                if summary.settings_unavailable {
-                    m += ". Ayarlar eşitlenmedi: Supabase'de \
-                          supabase/migrations/0008_settings.sql dosyasını çalıştır";
-                }
-                if summary.timesheet_unavailable {
-                    m += ". Zaman çizelgesi satırları eşitlenmedi: Supabase'de \
-                          supabase/migrations/0010_timesheet_entries.sql dosyasını çalıştır";
-                }
-                if summary.timesheet_outdated {
-                    m += ". Zaman çizelgesi satırlarının durumu eşitlenmedi: Supabase'de \
-                          supabase/migrations/0011_timesheet_state.sql dosyasını çalıştır";
-                }
-                if summary.outdated_schema {
-                    m += ". Proje arşivi ve bütçeler eşitlenmedi: Supabase'de \
-                          supabase/migrations/0007_archive_budget.sql dosyasını çalıştır";
-                }
-                if let Some(names) = outdated_devices(app) {
-                    m += &format!(". {names} eski sürümde: o bilgisayarda Kum'u güncelle");
-                }
-                m
-            },
+            message: summary_message(&summary, outdated_devices(app)),
             summary: Some(summary),
         },
         Err(message) => LastSync {
@@ -539,4 +546,97 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
         .name("kum-sync".into())
         .spawn(move || run(handle, rx))
         .map(drop)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracky_core::Store;
+
+    #[test]
+    fn only_tables_whose_shape_changed_are_refetched() {
+        let store = Store::open_in_memory().unwrap();
+        // İlk eşitleme: her tablo baştan çekilir, şekilleri kaydedilir.
+        let first = prepare_tables(&store).unwrap();
+        assert!(first.contains(&"sessions") && first.contains(&"settings"));
+        store
+            .save_setting("sync_cursor:sessions", &"2026-10-01T00:00:00Z")
+            .unwrap();
+        // Şekil aynıysa hiçbir tablonun imleci silinmez.
+        assert!(prepare_tables(&store).unwrap().is_empty());
+        assert!(
+            store
+                .setting::<String>("sync_cursor:sessions")
+                .unwrap()
+                .is_some()
+        );
+        // Bir tablonun şekli değişince yalnızca o.
+        store
+            .save_setting(&format!("{TABLE_SHAPE_PREFIX}sessions"), &"eski")
+            .unwrap();
+        assert_eq!(prepare_tables(&store).unwrap(), ["sessions"]);
+        assert!(
+            store
+                .setting::<String>("sync_cursor:sessions")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_single_legacy_summary_keeps_existing_cursors() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_setting(CURSOR_VERSION_KEY, &tracky_core::sync::legacy_fingerprint())
+            .unwrap();
+        store
+            .save_setting("sync_cursor:sessions", &"2026-10-01T00:00:00Z")
+            .unwrap();
+        // 0.9.44'ün tek özetiyle eşitlenmiş tablolar baştan çekilmez; sonradan eklenenler çekilir.
+        let refetched = prepare_tables(&store).unwrap();
+        assert!(!refetched.contains(&"sessions"), "{refetched:?}");
+        assert!(refetched.contains(&"timesheet_marks"), "{refetched:?}");
+        assert!(
+            store
+                .setting::<String>("sync_cursor:sessions")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_message_names_what_to_do() {
+        let ok = SyncSummary {
+            pushed: 3,
+            pulled: 2,
+            ..Default::default()
+        };
+        assert_eq!(summary_message(&ok, None), "3 gönderildi, 2 alındı");
+        let behind = summary_message(&ok, Some("MacBook Air".into()));
+        assert!(behind.ends_with("MacBook Air eski sürümde: o bilgisayarda Kum'u güncelle"));
+        let skipped = SyncSummary {
+            skipped: 4,
+            settings_unavailable: true,
+            ..ok
+        };
+        let m = summary_message(&skipped, None);
+        assert!(
+            m.contains("4 kayıt bu sürümde okunamadığı için atlandı"),
+            "{m}"
+        );
+        assert!(m.contains("0008_settings.sql"), "{m}");
+    }
+
+    #[test]
+    fn missing_migrations_are_named() {
+        assert!(
+            migration_hint("new row violates check constraint \"rules_field_check\"".into())
+                .contains("0006_domain_rules.sql")
+        );
+        assert!(
+            migration_hint("relation \"clients\" does not exist".into())
+                .contains("0005_clients.sql")
+        );
+        assert_eq!(migration_hint("ağ hatası".into()), "ağ hatası");
+    }
 }
