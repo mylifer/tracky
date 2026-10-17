@@ -8,9 +8,11 @@ import re
 import subprocess
 import sys
 
-SHOWN = re.compile(r"^(feat|fix|perf)(\([^)]*\))?!?:\s*(.+)$")
+SHOWN = re.compile(r"^(feat|fix|perf)(?:\(([^)]*)\))?!?:\s*(.+)$")
 # Türkçe büyük harf: i → İ, ı → I.
 UPPER = {"i": "İ", "ı": "I"}
+# Kapsamın yazılışı (commit'te küçük harf).
+SCOPES = {"macos": "macOS", "windows": "Windows", "ci": "CI"}
 
 
 def git(*args: str) -> str:
@@ -39,7 +41,10 @@ def notes(tag: str) -> str:
     for subject in git("log", "--no-merges", "--reverse", "--pretty=%s", span).splitlines():
         m = SHOWN.match(subject.strip())
         if m:
-            line = f"- {capitalize(m.group(3).strip())}"
+            scope, text = m.group(2), m.group(3).strip()
+            if scope:
+                text = f"{SCOPES.get(scope, capitalize(scope))}: {text}"
+            line = f"- {capitalize(text)}"
             if line not in lines:
                 lines.append(line)
     return "\n".join(lines) if lines else "- Küçük düzeltmeler ve iyileştirmeler"
