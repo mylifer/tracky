@@ -1,6 +1,7 @@
 //! Outlook takvimi: yayımlanan .ics bağlantısı arka planda okunur, toplantılar zaman
 //! çizelgesi önerilerine girer. Son okunan dosya diske de yazılır; çevrim dışı açılışta
-//! toplantılar yine görünür. Bağlantı yalnızca bu cihazın ayarlarında tutulur.
+//! toplantılar yine görünür. Bağlantı eşitlenen bir ayardır: başka bilgisayarda değişince ya da
+//! kaldırılınca burada da hemen yeniden okunur ([`on_synced_settings`]).
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -42,6 +43,8 @@ pub enum CalendarCommand {
 pub struct CalendarState {
     tx: Mutex<Sender<CalendarCommand>>,
     calendar: Mutex<Option<Arc<Calendar>>>,
+    /// Bellekteki takvimin bağlantısı (eşitlemeyle gelen bağlantıyla karşılaştırılır).
+    source: Mutex<Option<String>>,
     last: Mutex<Option<LastFetch>>,
     /// Son başarılı okuma; açılışta önbellek dosyasının zamanı.
     last_ok: Mutex<Option<DateTime<Utc>>>,
@@ -154,10 +157,18 @@ fn retry_after(failures: usize) -> Duration {
 /// Bağlantıdan okur, ayrıştırır, önbelleğe yazar. Hata durumunda eski takvim kalır. Bağlantı
 /// yoksa ya da okunduysa `true`.
 fn refresh(app: &AppHandle) -> bool {
+    let state = app.state::<CalendarState>();
     let Some(url) = saved_url(app) else {
+        // Bağlantı başka bilgisayarda kaldırıldı (eşitlenen ayar): eski takvimin toplantıları
+        // önerilere girmeye devam etmesin.
+        let update = lock(&state.update);
+        if saved_url(app).is_none() && lock(&state.source).is_some() {
+            forget(app);
+            drop(update);
+            let _ = app.emit("calendar", status(app));
+        }
         return true;
     };
-    let state = app.state::<CalendarState>();
     let result = fetch(&url).map(|text| {
         let cal = Calendar::parse(&text);
         (text, cal)
@@ -176,6 +187,7 @@ fn refresh(app: &AppHandle) -> bool {
             }
             let n = cal.len();
             *lock(&state.calendar) = Some(Arc::new(cal));
+            *lock(&state.source) = Some(url.clone());
             if failing {
                 log_info!("takvim yeniden okundu ({n} etkinlik)");
             }
@@ -249,8 +261,9 @@ fn run(app: AppHandle, rx: Receiver<CalendarCommand>) {
         let state = app.state::<CalendarState>();
         let _update = lock(&state.update);
         // Ayrıştırma sürerken takvim kaldırıldıysa geri yazılmasın.
-        if saved_url(&app).is_some() {
+        if let Some(url) = saved_url(&app) {
             *lock(&state.calendar) = Some(Arc::new(cal));
+            *lock(&state.source) = Some(url);
             *lock(&state.last_ok) = saved_at;
         }
     }
@@ -269,6 +282,7 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
     app.manage(CalendarState {
         tx: Mutex::new(tx),
         calendar: Mutex::new(None),
+        source: Mutex::new(None),
         last: Mutex::new(None),
         last_ok: Mutex::new(None),
         update: Mutex::new(()),
@@ -278,6 +292,28 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
         .name("kum-calendar".into())
         .spawn(move || run(handle, rx))
         .map(drop)
+}
+
+/// Eşitlemeyle ayarlar geldikten sonra: bağlantı başka bilgisayarda değiştiyse ya da
+/// kaldırıldıysa takvim hemen yeniden okunur (yoksa sıradaki okumaya kadar, kaldırıldıysa
+/// yeniden açılışa kadar eski takvimin toplantıları önerilirdi).
+pub fn on_synced_settings(app: &AppHandle) {
+    let state = app.state::<CalendarState>();
+    if saved_url(app) != *lock(&state.source) {
+        let _ = lock(&state.tx).send(CalendarCommand::Now);
+    }
+}
+
+/// Takvimi bellekten ve diskten kaldırır. Çağıran [`CalendarState::update`] kilidini tutar.
+fn forget(app: &AppHandle) {
+    let state = app.state::<CalendarState>();
+    *lock(&state.calendar) = None;
+    *lock(&state.source) = None;
+    *lock(&state.last) = None;
+    *lock(&state.last_ok) = None;
+    if let Some(path) = cache_path(app) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 pub fn shutdown(app: &AppHandle) {
@@ -307,7 +343,7 @@ pub async fn set_calendar_url(app: AppHandle, url: Option<String>) -> CmdResult<
             }
             *lock(&state.last_ok) = Some(Utc::now());
             lock(&app.state::<Shared>().store)
-                .save_setting(URL_KEY, &Some(url))
+                .save_setting(URL_KEY, &Some(&url))
                 .map_err(|e| e.to_string())?;
             *lock(&state.last) = Some(LastFetch {
                 at: Utc::now(),
@@ -315,18 +351,14 @@ pub async fn set_calendar_url(app: AppHandle, url: Option<String>) -> CmdResult<
                 message: format!("{} etkinlik", cal.len()),
             });
             *lock(&state.calendar) = Some(Arc::new(cal));
+            *lock(&state.source) = Some(url);
         }
         None => {
             let _update = lock(&state.update);
             lock(&app.state::<Shared>().store)
                 .save_setting(URL_KEY, &None::<String>)
                 .map_err(|e| e.to_string())?;
-            *lock(&state.calendar) = None;
-            *lock(&state.last) = None;
-            *lock(&state.last_ok) = None;
-            if let Some(path) = cache_path(&app) {
-                let _ = std::fs::remove_file(path);
-            }
+            forget(&app);
         }
     }
     let status = status(&app);

@@ -143,6 +143,7 @@ pub(crate) fn reload_synced_settings(app: &AppHandle) {
         let _ = tx.send(Command::SetGoals(goals));
     }
     apply_theme(app, &theme);
+    calendar::on_synced_settings(app);
 }
 
 /// Görünüm tercihini kaydeder ve pencereye uygular.
