@@ -9,6 +9,8 @@ serde_json = "1.0.151"
 thiserror = "2.0.21"
 tracky-core = { version = "0.1.0", path = "../tracky-core" }
 ureq = { version = "3.4.2", features = ["json"] }
+# Supabase Realtime (öteki bilgisayarın dürtmesi); TLS kökleri ureq'inkiyle aynı.
+tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 tiny_http = "0.12.0"

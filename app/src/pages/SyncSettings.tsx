@@ -151,7 +151,7 @@ export default function SyncSettings() {
             hint={
               status.last
                 ? `${status.last.ok ? "Son eşitleme" : "Son deneme"} ${formatTime(new Date(status.last.at))} · ${status.last.message}`
-                : "Henüz eşitlenmedi · her 5 dakikada bir otomatik eşitlenir"
+                : "Henüz eşitlenmedi · düzenlemeler birkaç saniyede, geri kalanı 5 dakikada bir eşitlenir"
             }
           >
             <Badge variant={status.last && !status.last.ok ? "destructive" : "success"}>

@@ -4,6 +4,8 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod realtime;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracky_core::sync::Remote;
@@ -52,7 +54,12 @@ pub struct AuthSession {
 
 impl AuthSession {
     pub fn needs_refresh(&self) -> bool {
-        now_secs() + REFRESH_MARGIN_SECS >= self.expires_at
+        self.expires_within(REFRESH_MARGIN_SECS)
+    }
+
+    /// Jeton `secs` saniye içinde bitiyor mu?
+    pub fn expires_within(&self, secs: u64) -> bool {
+        now_secs() + secs >= self.expires_at
     }
 }
 
@@ -139,6 +146,29 @@ pub struct SupabaseRemote<'a> {
 impl SupabaseRemote<'_> {
     fn rest(&self, table: &str) -> String {
         format!("{}/rest/v1/{table}", self.client.config.base())
+    }
+
+    /// Öteki bilgisayarları dürter: düzenleme gönderildi, hemen eşitlesinler
+    /// ([`realtime`]). `writer` bu açılışın kimliği (kendi dürtmesini duyan eşitlemez).
+    pub fn nudge(&self, writer: &str) -> std::result::Result<(), String> {
+        let mut req = self
+            .client
+            .agent
+            .post(self.rest(realtime::NUDGES))
+            .query("on_conflict", "user_id")
+            .header("apikey", &self.client.config.anon_key)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.session.access_token),
+            )
+            .header("Prefer", "resolution=merge-duplicates,return=minimal");
+        if let Some(schema) = self.client.config.profile() {
+            req = req.header("Content-Profile", schema);
+        }
+        // Zamanı sunucu yazar (tetikleyici); aynı yazanın art arda dürtmesi de duyulur.
+        let body = json!({ "user_id": self.session.user_id, "writer": writer });
+        let mut resp = req.send_json(body).map_err(|e| e.to_string())?;
+        self.check(&mut resp)
     }
 
     fn check(

@@ -6,6 +6,7 @@
 //! derlenen varsayılan proje kullanılır: yeni cihazda yalnızca giriş yapmak yeter.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
@@ -41,15 +42,96 @@ const TICK: Duration = Duration::from_secs(30);
 const FOCUS_AFTER: Duration = Duration::from_secs(60);
 /// Bu kadar süredir eşitlenemiyorsa menü çubuğunda uyarı gösterilir.
 const WARN_AFTER: Duration = Duration::from_secs(15 * 60);
+/// Düzenlemeden bu kadar sonra eşitlenir: art arda düzenlemeler tek eşitlemede gider.
+const SOON: Duration = Duration::from_secs(4);
+/// Realtime bağlantısı koparsa yeniden bağlanmadan önce bekleme: üst üste koptukça uzar.
+const LISTEN_RETRY: Duration = Duration::from_secs(5);
+const LISTEN_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
+/// Bundan uzun süren bağlantı sağlam sayılır: koparsa bekleme baştan başlar.
+const LISTEN_STABLE: Duration = Duration::from_secs(60);
+/// Realtime dinlerken erişim jetonu bu kadar kala yenilenir (kanal jeton bitince kapanır).
+const LISTEN_REFRESH_SECS: u64 = 5 * 60;
 /// Eşitleme günlüğü (veri klasöründe); bu boyutu aşınca `.1` uzantısına taşınır.
 const LOG_FILE: &str = "sync.log";
 const LOG_MAX_BYTES: u64 = 512 * 1024;
 
 pub enum SyncCommand {
     Now,
+    /// Bir düzenleme yapıldı: birkaç saniye içinde eşitle ve öteki bilgisayarları dürt.
+    Soon,
     /// Pencere odaklandı: son deneme yeterince eskiyse eşitle.
     Focus,
     Shutdown,
+}
+
+/// Eşitlenen veriyi değiştiren komutlar: biri çalışınca birkaç saniye içinde eşitlenir ve
+/// öteki bilgisayarlar dürtülür ([`SyncCommand::Soon`]); yoksa değişiklik sıradaki 5 dakikalık
+/// eşitlemeyi beklerdi. Yalnızca okuyan ya da bu bilgisayara özgü olan komutlar yok.
+const EDIT_COMMANDS: &[&str] = &[
+    "accept_category_suggestion",
+    "accept_project_suggestion",
+    "add_manual_entry",
+    "add_rule",
+    "answer_meeting",
+    "archive_project",
+    "assign_app_category",
+    "assign_meeting",
+    "assign_unassigned",
+    "assign_window",
+    "connect_sheet",
+    "delete_client",
+    "delete_range",
+    "delete_rule",
+    "delete_sheet_row",
+    "delete_tag",
+    "delete_timesheet_entry",
+    "disconnect_sheet",
+    "dismiss_rule_suggestion",
+    "dismiss_suggestion",
+    "dismiss_timesheet_entry",
+    "export_timesheet",
+    "ignore_unassigned",
+    "import_timesheet_template",
+    "merge_timesheet_entries",
+    "refresh_timesheet_entries",
+    "remove_block_from_timesheet",
+    "remove_timesheet",
+    "rename_device",
+    "resend_block_to_timesheet",
+    "reset_timesheet_day",
+    "resize_block",
+    "restore_hidden_entries",
+    "restore_ignored_meetings",
+    "restore_sheet_row",
+    "save_ai_settings",
+    "save_client",
+    "save_goals",
+    "save_privacy",
+    "save_sheet_row",
+    "save_tag",
+    "save_timesheet_config",
+    "save_timesheet_entry",
+    "send_block_to_timesheet",
+    "set_calendar_url",
+    "set_client_budget",
+    "set_day_closed",
+    "set_project_budget",
+    "set_project_client",
+    "set_range_category",
+    "set_range_project",
+    "set_theme",
+    "unarchive_project",
+    "undismiss_timesheet_entries",
+    "undo",
+    "undo_last_export",
+    "unmerge_timesheet_entries",
+];
+
+/// Komut eşitlenen veriyi değiştiriyorsa birkaç saniye içinde eşitlenir.
+pub fn after_command(app: &AppHandle, command: &str) {
+    if EDIT_COMMANDS.contains(&command) {
+        let _ = lock(&app.state::<SyncWorker>().tx).send(SyncCommand::Soon);
+    }
 }
 
 pub struct SyncWorker {
@@ -60,6 +142,8 @@ pub struct SyncWorker {
     pub gate: Mutex<()>,
     /// Kesintisiz başarısızlıkların başladığı an (başarılı eşitlemede sıfırlanır).
     pub failing_since: Mutex<Option<DateTime<Utc>>>,
+    /// Kapanıyor: Realtime dinleyicisi bağlantıyı kapatıp çıkar.
+    pub stopping: AtomicBool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,8 +233,9 @@ fn status(app: &AppHandle) -> SyncStatus {
     }
 }
 
-/// Bir kez eşitler; gerekirse oturumu yeniler. Giriş yoksa `Ok(None)`.
-fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
+/// Bir kez eşitler; gerekirse oturumu yeniler. Giriş yoksa `Ok(None)`. `nudge`: bir düzenleme
+/// için eşitleniyor; bir şey gönderildiyse öteki bilgisayarlar dürtülür ([`listen`]).
+fn sync_once(app: &AppHandle, nudge: bool) -> Result<Option<SyncSummary>, String> {
     let (Some(config), Some(mut auth)) = (config(app), load_auth(app)) else {
         return Ok(None);
     };
@@ -166,9 +251,19 @@ fn sync_once(app: &AppHandle) -> Result<Option<SyncSummary>, String> {
     };
     let result = match attempt(&auth) {
         // Jeton beklenenden önce geçersiz kaldıysa bir kez yenileyip tekrar dene.
-        Err(e) if e.contains("[401]") => attempt(&refresh(app, &client, &auth)?),
+        Err(e) if e.contains("[401]") => {
+            auth = refresh(app, &client, &auth)?;
+            attempt(&auth)
+        }
         other => other,
     };
+    if nudge && result.as_ref().is_ok_and(|s| s.pushed > 0) {
+        let writer = lock(store).instance_id().to_string();
+        // Dürtülemezse (0017 çalıştırılmamış) öteki bilgisayar 5 dakika içinde yine eşitler.
+        if let Err(e) = client.remote(&auth).nudge(&writer) {
+            log_line(app, &format!("dürtülemedi: {e}"));
+        }
+    }
     result.map(Some)
 }
 
@@ -200,9 +295,22 @@ fn prepare_tables(
     Ok(refetched)
 }
 
+/// Yenilemeler sırayla: yenileme jetonu tek kullanımlık, eşitleme ile Realtime dinleyicisi
+/// aynı jetonu iki kez harcamasın.
+static REFRESHING: Mutex<()> = Mutex::new(());
+
 /// Jetonu yeniler ve kaydeder. Bu arada kullanıcı çıkış yaptıysa ya da başka
-/// hesapla girdiyse yazmaz (yoksa çıkış yapan kullanıcı sessizce geri girerdi).
+/// hesapla girdiyse yazmaz (yoksa çıkış yapan kullanıcı sessizce geri girerdi). Öteki iş
+/// parçacığı aynı oturumu az önce yenilediyse onun jetonu kullanılır.
 fn refresh(app: &AppHandle, client: &Client, auth: &AuthSession) -> Result<AuthSession, String> {
+    let _turn = lock(&REFRESHING);
+    if let Some(stored) = load_auth(app)
+        && stored.user_id == auth.user_id
+        && stored.refresh_token != auth.refresh_token
+        && !stored.needs_refresh()
+    {
+        return Ok(stored);
+    }
     let fresh = client.refresh(auth).map_err(|e| e.to_string())?;
     // Karşılaştırma ve kayıt tek kilitte: arada gelen bir çıkış ezilmesin.
     let shared = app.state::<Shared>();
@@ -331,26 +439,35 @@ pub fn run(app: AppHandle, rx: Receiver<SyncCommand>) {
     );
     let mut due = after(FIRST);
     let mut last_attempt: Option<DateTime<Utc>> = None;
+    // Düzenlemeden sonraki eşitlemenin zamanı: ilk düzenlemeden en geç `SOON` sonra (art arda
+    // düzenlemeler bekletmez, birlikte gider).
+    let mut soon: Option<DateTime<Utc>> = None;
     loop {
         // Saat geri alındıysa sıradaki eşitleme geri alınan süre kadar ötelenmesin.
         due = due.min(after(INTERVAL));
-        let wait = (due - Utc::now()).to_std().unwrap_or_default().min(TICK);
+        let next = soon.map_or(due, |s| s.min(due));
+        let wait = (next - Utc::now()).to_std().unwrap_or_default().min(TICK);
         let go = match rx.recv_timeout(wait) {
             Ok(SyncCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(SyncCommand::Now) => true,
+            Ok(SyncCommand::Soon) => {
+                soon.get_or_insert_with(|| after(SOON));
+                false
+            }
             Ok(SyncCommand::Focus) => {
                 // Açılıştaki ilk eşitleme ([`FIRST`]) öne çekilmez.
                 last_attempt.is_some_and(|t| elapsed(t) >= FOCUS_AFTER)
             }
-            Err(RecvTimeoutError::Timeout) => Utc::now() >= due,
+            Err(RecvTimeoutError::Timeout) => Utc::now() >= next,
         };
         if !go {
             continue;
         }
+        let nudge = soon.take().is_some();
         let ok = {
             let worker = app.state::<SyncWorker>();
             let _gate = lock(&worker.gate);
-            record(&app, sync_once(&app))
+            record(&app, sync_once(&app, nudge))
         };
         last_attempt = Some(Utc::now());
         due = after(if ok { INTERVAL } else { RETRY });
@@ -527,9 +644,75 @@ pub fn on_focus(app: &AppHandle) {
     let _ = lock(&app.state::<SyncWorker>().tx).send(SyncCommand::Focus);
 }
 
-/// Kapanışta döngüyü durdurur.
+/// Kapanışta döngüyü ve Realtime dinleyicisini durdurur.
 pub fn shutdown(app: &AppHandle) {
-    let _ = lock(&app.state::<SyncWorker>().tx).send(SyncCommand::Shutdown);
+    let worker = app.state::<SyncWorker>();
+    worker.stopping.store(true, Ordering::Release);
+    let _ = lock(&worker.tx).send(SyncCommand::Shutdown);
+}
+
+/// Öteki bilgisayarların dürtmelerini dinler (Supabase Realtime): biri düzenlemesini gönderince
+/// burada hemen eşitlenir. Giriş yoksa bekler; bağlantı koparsa giderek uzayan aralıklarla
+/// yeniden bağlanır. Dinlenemezse eşitleme yine 5 dakikada bir sürer.
+fn listen(app: AppHandle) {
+    let stopping = || app.state::<SyncWorker>().stopping.load(Ordering::Acquire);
+    let mut wait = LISTEN_RETRY;
+    let mut reported: Option<String> = None;
+    while !stopping() {
+        let (Some(config), Some(auth)) = (config(&app), load_auth(&app)) else {
+            std::thread::sleep(TICK);
+            continue;
+        };
+        let own = lock(&app.state::<Shared>().store).instance_id().to_string();
+        let user = auth.user_id.clone();
+        let client = Client::new(config.clone());
+        // Jeton dinlerken de tazelenir; oturum kapanır ya da başka hesaba geçilirse dinleme biter.
+        let mut token = || {
+            let current = load_auth(&app).filter(|a| a.user_id == user)?;
+            if !current.expires_within(LISTEN_REFRESH_SECS) {
+                return Some(current.access_token);
+            }
+            refresh(&app, &client, &current)
+                .ok()
+                .map(|a| a.access_token)
+                .or(Some(current.access_token))
+        };
+        let started = std::time::Instant::now();
+        let result = tracky_sync::realtime::listen(tracky_sync::realtime::Listen {
+            config: &config,
+            user_id: &auth.user_id,
+            token: &mut token,
+            stop: &stopping,
+            on_nudge: &mut |writer: &str| {
+                if writer != own {
+                    sync_now(app.clone());
+                }
+            },
+        });
+        match result {
+            Ok(()) => {
+                reported = None;
+                wait = LISTEN_RETRY;
+            }
+            Err(e) => {
+                // Aynı hata her denemede günlüğe yazılmaz.
+                if reported.as_deref() != Some(e.as_str()) {
+                    log_line(&app, &format!("anında eşitleme dinlenemiyor: {e}"));
+                    reported = Some(e);
+                }
+                wait = if started.elapsed() >= LISTEN_STABLE {
+                    LISTEN_RETRY
+                } else {
+                    (wait * 2).min(LISTEN_RETRY_MAX)
+                };
+            }
+        }
+        // Kapanış bekletilmesin: kısa adımlarla bekle.
+        let until = std::time::Instant::now() + wait;
+        while !stopping() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
 }
 
 /// Senkronizasyon döngüsünü başlatır.
@@ -540,11 +723,16 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
         last: Mutex::new(None),
         gate: Mutex::new(()),
         failing_since: Mutex::new(None),
+        stopping: AtomicBool::new(false),
     });
     let handle = app.handle().clone();
     std::thread::Builder::new()
         .name("kum-sync".into())
-        .spawn(move || run(handle, rx))
+        .spawn(move || run(handle, rx))?;
+    let handle = app.handle().clone();
+    std::thread::Builder::new()
+        .name("kum-realtime".into())
+        .spawn(move || listen(handle))
         .map(drop)
 }
 
@@ -602,6 +790,24 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn edit_commands_are_registered_commands() {
+        // Yazım hatası olan ad hiçbir zaman eşitlemeyi tetiklemezdi.
+        let handler = include_str!("lib.rs");
+        for name in EDIT_COMMANDS {
+            let entry = format!("{name},");
+            assert!(
+                handler.lines().map(str::trim).any(|l| l == entry
+                    || l.strip_suffix(entry.as_str())
+                        .is_some_and(|p| p.ends_with("::"))),
+                "{name} kayıtlı bir komut değil"
+            );
+        }
+        let mut sorted = EDIT_COMMANDS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted, EDIT_COMMANDS, "liste alfabetik kalsın");
     }
 
     #[test]

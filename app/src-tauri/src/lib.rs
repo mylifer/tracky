@@ -491,6 +491,20 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Komutu çalıştırır; eşitlenen veriyi değiştiren komuttan sonra birkaç saniye içinde eşitlenir
+/// ([`sync::after_command`]).
+fn with_sync_soon(
+    handler: impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        let command = invoke.message.command().to_string();
+        let app = invoke.message.webview().app_handle().clone();
+        let handled = handler(invoke);
+        sync::after_command(&app, &command);
+        handled
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -507,7 +521,7 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec![HIDDEN_ARG]),
         ))
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(with_sync_soon(tauri::generate_handler![
             applog::log_client,
             applog::diagnostics,
             applog::reveal_log,
@@ -641,7 +655,7 @@ pub fn run() {
             updater::set_auto_update,
             updater::whats_new,
             updater::dismiss_whats_new,
-        ])
+        ]))
         .setup(setup);
     // macOS: "Küçült" (⌘M) pencereyi Dock'a değil Kum'un simgesine alır (dock.rs).
     #[cfg(target_os = "macos")]

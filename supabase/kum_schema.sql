@@ -1,5 +1,5 @@
 -- Kum'u başka bir uygulamanın Supabase projesinde, ayrı "kum" şemasında kurar (ücretsiz plandaki
--- proje sınırına takılmamak için). 0001–0016 göçlerinin "kum" şemasına uyarlanmış hâlidir;
+-- proje sınırına takılmamak için). 0001–0017 göçlerinin "kum" şemasına uyarlanmış hâlidir;
 -- SQL Editor'da bir kez çalıştırın, tekrar çalıştırmak zararsızdır. Ardından Project Settings →
 -- Data API → Exposed schemas listesine "kum" ekleyin ve Kum'da Ayarlar → Senkronizasyon →
 -- Şema alanına "kum" yazın. Diğer uygulamanın tablolarına ve ayarlarına dokunmaz.
@@ -289,6 +289,34 @@ drop policy if exists "kendi satırları" on kum.timesheet_marks;
 create policy "kendi satırları" on kum.timesheet_marks for all to authenticated
     using (user_id = (select auth.uid()))
     with check (user_id = (select auth.uid()));
+
+-- ===== 0017_sync_nudges.sql =====
+-- Anında eşitleme: düzenlemesini gönderen bilgisayar dürter, ötekiler Realtime ile duyar.
+create table if not exists kum.sync_nudges (
+    user_id uuid primary key default auth.uid() references auth.users (id) on delete cascade,
+    writer  uuid not null,
+    at      timestamptz not null default now()
+);
+-- Dürtmenin zamanı sunucunun saatidir.
+create or replace function kum.sync_nudges_touch() returns trigger
+    language plpgsql set search_path = '' as $$
+begin
+    new.at := now();
+    return new;
+end $$;
+drop trigger if exists sync_nudges_touch on kum.sync_nudges;
+create trigger sync_nudges_touch before insert or update on kum.sync_nudges
+    for each row execute function kum.sync_nudges_touch();
+alter table kum.sync_nudges enable row level security;
+drop policy if exists "kendi satırı" on kum.sync_nudges;
+create policy "kendi satırı" on kum.sync_nudges for all to authenticated
+    using (user_id = (select auth.uid()))
+    with check (user_id = (select auth.uid()));
+do $$
+begin
+    alter publication supabase_realtime add table kum.sync_nudges;
+exception when duplicate_object then null;
+end $$;
 
 -- Erişim: oturum açmış kullanıcılar (satır güvenliğiyle yalnız kendi satırları) ve sunucu rolü.
 -- (0009) authenticated'a yalnızca okuma ve yazma: TRUNCATE satır güvenliğini atlar.

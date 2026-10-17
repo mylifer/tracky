@@ -131,6 +131,12 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       (turuncu, varsayılan) ya da Kobalt (mavi); seçilen simge çalışırken macOS'ta Dock'ta, ⌘⇥'de ve Hakkında'da,
       Windows'ta pencerede ve görev çubuğunda görünür. Paketin simgesi (Finder, kısayollar) imza ve ona bağlı
       Erişilebilirlik izni bozulmasın diye Kum kalır. Seçim cihaza özgüdür (`app_icon`, eşitlenmez)
+- [x] 56. Anında eşitleme: eşitlenen veriyi değiştiren bir komuttan en geç 4 saniye sonra eşitlenir ve
+      bir şey gönderildiyse öteki bilgisayarlar dürtülür (`sync_nudges`, `supabase/migrations/0017`);
+      onlar Supabase Realtime ile duyup hemen eşitler. Realtime'a ulaşılamazsa eşitleme 5 dakikada bir sürer
+- [x] 57. Güncellemeler bilgisayar başında kimse yokken (10 dk girdi yok; video, görüşme ve zaman çizelgesi
+      aktarımı sürmüyor) kendiliğinden kurulur; Ayarlar → Hakkında'dan kapatılır. Kurulan sürümün notları
+      (sürümün feat/fix commit'lerinden) ilk açılışta kenar çubuğunda "Yenilikler" kartında
 
 ## Yapı
 
@@ -284,6 +290,8 @@ Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birl
    bilgisayarda ayrıca girilir.
    `0009_harden_grants.sql` tablo yetkilerini daraltır (anon rolünün hiçbir yetkisi kalmaz); Kum'un
    çalışması için gerekmez ama önerilir.
+   `0017_sync_nudges.sql` anında eşitlemeyi açar (dürtme tablosu ve Realtime yayını); çalıştırılmazsa
+   değişiklikler öteki bilgisayara en geç 5 dakikada gider.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.
