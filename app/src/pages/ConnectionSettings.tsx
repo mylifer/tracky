@@ -10,6 +10,20 @@ import { friendlyError } from "../lib/feedback";
 import { CONNECTIONS_SECTION } from "./settingsSections";
 
 const timeFmt = new Intl.DateTimeFormat("tr-TR", { hour: "2-digit", minute: "2-digit" });
+const dayTimeFmt = new Intl.DateTimeFormat("tr-TR", {
+  day: "numeric",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/** Son başarılı okuma: bugünse saati, değilse günü ve saati. */
+function sinceFmt(iso: string) {
+  const at = new Date(iso);
+  return at.toDateString() === new Date().toDateString()
+    ? `${timeFmt.format(at)}'de`
+    : `${dayTimeFmt.format(at)} tarihinde`;
+}
 
 /** Ayarlar → Bağlantılar: toplantıların geldiği takvim ve çizelge tablolarını okuyan Google hesabı. */
 export function ConnectionsSettings() {
@@ -104,7 +118,9 @@ export function CalendarConnect() {
           {last
             ? `${last.ok ? "Okundu" : "Okunamadı"} ${timeFmt.format(new Date(last.at))}: ${last.message}`
             : `${status.events} etkinlik`}
-          {" · 15 dakikada bir yenilenir. Projesi bulunamayan toplantılar zaman çizelgesinde gün kartında atanır."}
+          {last && !last.ok
+            ? ` · Birkaç dakika içinde yeniden denenecek.${status.lastOk ? ` Toplantılar ${sinceFmt(status.lastOk)} okunan takvimden.` : ""}`
+            : " · 15 dakikada bir yenilenir. Projesi bulunamayan toplantılar zaman çizelgesinde gün kartında atanır."}
           {status.ignored > 0 && (
             <>
               {" "}

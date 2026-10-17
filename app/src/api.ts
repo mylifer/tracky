@@ -342,6 +342,8 @@ export type CalendarStatus = {
   url: string | null;
   events: number;
   last: { at: string; ok: boolean; message: string } | null;
+  /** Son başarılı okuma; okunamıyorsa toplantılar bu andaki takvimden. */
+  lastOk: string | null;
   /** Yoksayılan toplantı serisi sayısı. */
   ignored: number;
 };

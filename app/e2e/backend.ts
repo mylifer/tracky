@@ -322,7 +322,7 @@ const update: UpdateStatus = {
   error: null,
 };
 
-const calendar: CalendarStatus = { url: null, events: 0, last: null, ignored: 0 };
+const calendar: CalendarStatus = { url: null, events: 0, last: null, lastOk: null, ignored: 0 };
 
 type Args = Record<string, unknown>;
 type Handler = (args: Args) => unknown;
