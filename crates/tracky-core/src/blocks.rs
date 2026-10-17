@@ -5,6 +5,10 @@
 //!   (bir mesaja bakmak gibi) bloğun içinde kalır. Aynı projeye atanmış iş kategorisi
 //!   değişse de, arada `timesheet::MERGE_GAP`'i geçmeyen boşluk olsa da tek bloktur:
 //!   zaman çizelgesindeki satır gibi.
+//! - **Projeye göre bölme:** bloğun projesinden (yarısını kaplayan; yoksa projesiz) başka
+//!   projeye atanmış, en az `SWITCH_MIN` süren kısım kategorisi aynı olsa da ayrı bloktur
+//!   ([`split_projects`]). O projenin kısımları arasındaki `MERGE_GAP`'i geçmeyen atanmamış
+//!   süre o blokta kalır; bloğun projesindeki atanmamış süre bloğun kendisidir.
 //! - **Elle bölme:** blok kısaltılınca kesilen kısım silinmez; o anda başlayan dilim
 //!   ([`Activity::block_start`]) önceki bloğa katılmaz, yeni blok başlatır.
 //! - **Mola:** iki blok arasındaki `BREAK_GAP`–`LONG_GAP` arası boşluk (gece gibi
@@ -122,7 +126,7 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
             if gap >= BREAK_GAP && gap < LONG_GAP {
                 breaks += gap.num_seconds();
             }
-            blocks.push(current.take().expect("blok var").finish());
+            close(current.take().expect("blok var"), &mut blocks, &mut breaks);
             current = Some(Builder::new(item));
             continue;
         }
@@ -135,7 +139,7 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
             if gap < LONG_GAP {
                 breaks += gap.num_seconds();
             }
-            blocks.push(current.take().expect("blok var").finish());
+            close(current.take().expect("blok var"), &mut blocks, &mut breaks);
             current = Some(Builder::new(item));
             continue;
         }
@@ -149,7 +153,7 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
         pending.push(item);
         let away: Duration = pending.iter().map(|p| p.end - p.start).sum();
         if away >= SWITCH_MIN {
-            blocks.push(current.take().expect("blok var").finish());
+            close(current.take().expect("blok var"), &mut blocks, &mut breaks);
             let mut next = Builder::new(pending[0]);
             for p in &pending[1..] {
                 next.add(p);
@@ -163,7 +167,7 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
         for p in pending {
             b.add(p);
         }
-        blocks.push(b.finish());
+        close(b, &mut blocks, &mut breaks);
     }
 
     // Bağlam değişimi: mola olmadan bir uygulamadan diğerine her geçiş.
@@ -195,6 +199,121 @@ pub fn merge(days: Vec<WorkStats>) -> WorkStats {
     }
 }
 
+/// Bloğu kapatır ([`Builder::finish`]); projeye göre bölünen parçalar arasındaki boşluk da
+/// bloklar arası boşluk gibi mola sayılır.
+fn close(b: Builder, blocks: &mut Vec<WorkBlock>, breaks: &mut i64) {
+    let parts = b.finish();
+    for w in parts.windows(2) {
+        let gap = w[1].start - w[0].end;
+        if gap >= BREAK_GAP && gap < LONG_GAP {
+            *breaks += gap.num_seconds();
+        }
+    }
+    blocks.extend(parts);
+}
+
+/// Bloğun dilimleri (sıralı), bloğun projesinden (`project`) başka projeye atanmış en az
+/// `SWITCH_MIN` süren kısımlarından bölünmüş. Daha kısa araya girmeler bölmez. Aynı projenin
+/// kısımları arasındaki atanmamış süre, `MERGE_GAP`'i geçmiyorsa ve kısmın en az yarısı yine
+/// o projede kalıyorsa o kısımdadır (aradaki boşlukta olduğu gibi). Bölünecek bir şey yoksa
+/// tek parça döner.
+fn split_projects<'s>(
+    items: &[&'s Activity<'s>],
+    project: Option<&str>,
+) -> Vec<Vec<&'s Activity<'s>>> {
+    struct Run<'s> {
+        project: Option<&'s str>,
+        items: Vec<&'s Activity<'s>>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        /// Dilimlerin süresi (aradaki boşluklar hariç).
+        length: Duration,
+        /// Bunun `project`'e atanmış kısmı.
+        owned: Duration,
+    }
+    impl<'s> Run<'s> {
+        fn new(i: &'s Activity<'s>) -> Self {
+            Self {
+                project: i.project,
+                items: vec![i],
+                start: i.start,
+                end: i.end,
+                length: i.end - i.start,
+                owned: i.end - i.start,
+            }
+        }
+        fn absorb(&mut self, other: Run<'s>) {
+            if other.project == self.project {
+                self.owned += other.owned;
+            }
+            self.items.extend(other.items);
+            self.end = self.end.max(other.end);
+            self.length += other.length;
+        }
+        /// Kısmın ağırlığı: başka projenin kısmıysa o projede geçen süre.
+        fn weight(&self) -> Duration {
+            if self.project.is_some() {
+                self.owned
+            } else {
+                self.length
+            }
+        }
+    }
+
+    // Aynı projeli ardışık dilimler.
+    let mut runs: Vec<Run> = Vec::new();
+    for &i in items {
+        match runs.last_mut() {
+            Some(r) if r.project == i.project => r.absorb(Run::new(i)),
+            _ => runs.push(Run::new(i)),
+        }
+    }
+    // Bloğun projesi dışında bir proje yoksa bölünecek bir şey yok.
+    let foreign = |p: Option<&'s str>| p.filter(|p| Some(*p) != project);
+    if runs.iter().all(|r| foreign(r.project).is_none()) {
+        return vec![items.to_vec()];
+    }
+
+    // Aynı projeye dönülen araya girmeler o projenin kısmına katılır.
+    let mut joined: Vec<Run> = Vec::new();
+    for r in runs {
+        if let [.., prev, mid] = joined.as_slice()
+            && prev.project == r.project
+            && (mid.length < SWITCH_MIN
+                || (r.project.is_some()
+                    && mid.project.is_none()
+                    && r.start - prev.end <= crate::timesheet::MERGE_GAP
+                    && (prev.owned + r.owned) * 2 >= prev.length + mid.length + r.length))
+        {
+            let mid = joined.pop().expect("araya giren var");
+            let prev = joined.last_mut().expect("önceki var");
+            prev.absorb(mid);
+            prev.absorb(r);
+            continue;
+        }
+        joined.push(r);
+    }
+
+    // Bloğun projesi ve atanmamış süre bir arada kalır; kalan kısa kısımlar komşusuna katılır.
+    let mut parts: Vec<Run> = Vec::new();
+    for mut r in joined {
+        r.project = foreign(r.project);
+        let first = parts.len() == 1;
+        match parts.last_mut() {
+            Some(p) if r.weight() < SWITCH_MIN || p.project == r.project => p.absorb(r),
+            // Blok kısa bir kısımla başladıysa o kısım ardından gelene katılır.
+            Some(p) if first && p.weight() < SWITCH_MIN => {
+                let head = std::mem::replace(p, r);
+                p.items.splice(0..0, head.items);
+                p.start = head.start;
+                p.length += head.length;
+            }
+            _ => parts.push(r),
+        }
+    }
+    parts.into_iter().map(|p| p.items).collect()
+}
+
 fn per_hour_x10(switches: u32, active_seconds: i64) -> u32 {
     if active_seconds <= 0 {
         return 0;
@@ -202,7 +321,7 @@ fn per_hour_x10(switches: u32, active_seconds: i64) -> u32 {
     (f64::from(switches) * 36_000.0 / active_seconds as f64).round() as u32
 }
 
-struct Builder {
+struct Builder<'s> {
     /// Bloğun kategorisi (ilk dilimden; başka kategoriden açılırsa baskın olan).
     category: Option<String>,
     /// Bloğa en son eklenen projeli dilimin projesi.
@@ -218,10 +337,12 @@ struct Builder {
     projects: HashMap<String, i64>,
     /// Uygulama adı -> (süre, ilk görülen uygulama kimliği).
     apps: HashMap<String, (i64, String)>,
+    /// Projeye göre bölmek için ([`split_projects`]).
+    items: Vec<&'s Activity<'s>>,
 }
 
-impl Builder {
-    fn new(item: &Activity) -> Self {
+impl<'s> Builder<'s> {
+    fn new(item: &'s Activity<'s>) -> Self {
         let mut b = Self {
             category: item.category.map(str::to_string),
             project: None,
@@ -233,12 +354,13 @@ impl Builder {
             categories: HashMap::new(),
             projects: HashMap::new(),
             apps: HashMap::new(),
+            items: Vec::new(),
         };
         b.add(item);
         b
     }
 
-    fn add(&mut self, item: &Activity) {
+    fn add(&mut self, item: &'s Activity<'s>) {
         let ms = (item.end - item.start.max(self.end))
             .num_milliseconds()
             .max(0);
@@ -260,6 +382,7 @@ impl Builder {
             .entry(item.app_name.to_string())
             .or_insert_with(|| (0, item.app_id.to_string()))
             .0 += ms;
+        self.items.push(item);
     }
 
     fn dominant(&self) -> Option<String> {
@@ -269,18 +392,40 @@ impl Builder {
             .and_then(|(c, _)| c.clone())
     }
 
-    fn finish(self) -> WorkBlock {
+    /// Bloğun en az yarısını kaplayan proje.
+    fn project_id(&self) -> Option<String> {
+        self.projects
+            .iter()
+            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+            .filter(|(_, ms)| **ms * 2 >= self.active && **ms > 0)
+            .map(|(p, _)| p.clone())
+    }
+
+    /// Blok; başka projeye atanmış kısımları ayrı bloklar olur ([`split_projects`]).
+    fn finish(self) -> Vec<WorkBlock> {
+        let parts = split_projects(&self.items, self.project_id().as_deref());
+        if parts.len() < 2 {
+            return vec![self.block()];
+        }
+        parts
+            .into_iter()
+            .map(|part| {
+                let mut b = Builder::new(part[0]);
+                for i in &part[1..] {
+                    b.add(i);
+                }
+                b.block()
+            })
+            .collect()
+    }
+
+    fn block(self) -> WorkBlock {
+        let project_id = self.project_id();
         let category_id = self
             .categories
             .into_iter()
             .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
             .and_then(|(c, _)| c);
-        let project_id = self
-            .projects
-            .into_iter()
-            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
-            .filter(|(_, ms)| *ms * 2 >= self.active && *ms > 0)
-            .map(|(p, _)| p);
         let mut apps: Vec<(String, (i64, String))> = self.apps.into_iter().collect();
         apps.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(&b.0)));
         let apps: Vec<BlockApp> = apps
@@ -358,18 +503,28 @@ mod tests {
         assert_eq!(s.break_seconds, 0);
     }
 
+    fn p(mut x: Activity<'static>, project: Option<&'static str>) -> Activity<'static> {
+        x.project = project;
+        x
+    }
+
+    fn spans(s: &WorkStats) -> Vec<(DateTime<Utc>, DateTime<Utc>, Option<&str>)> {
+        s.blocks
+            .iter()
+            .map(|b| (b.start, b.end, b.project_id.as_deref()))
+            .collect()
+    }
+
     #[test]
     fn block_project_needs_half_of_the_block() {
-        let p = |mut x: Activity<'static>, project| {
-            x.project = project;
-            x
-        };
         let items = [
             p(a("Code", Some("dev"), 0, 30), Some("kum")),
             p(a("Code", Some("dev"), 30, 50), None),
-            p(a("Code", Some("dev"), 100, 110), Some("kum")),
-            p(a("Code", Some("dev"), 110, 130), Some("x")),
-            p(a("Code", Some("dev"), 130, 160), None),
+            // Kısa kısımlar bölmez; blokta yarıya ulaşmayan proje bloğun projesi değildir.
+            p(a("Code", Some("dev"), 100, 102), Some("kum")),
+            p(a("Code", Some("dev"), 102, 110), None),
+            p(a("Code", Some("dev"), 110, 112), Some("kum")),
+            p(a("Code", Some("dev"), 112, 120), None),
         ];
         let s = analyze(&items);
         let projects: Vec<_> = s.blocks.iter().map(|b| b.project_id.as_deref()).collect();
@@ -377,11 +532,77 @@ mod tests {
     }
 
     #[test]
+    fn assigned_part_leaves_the_block() {
+        // Projesiz bir gecenin ortasında projeye atanmış oyun (kategorisi aynı).
+        let items = [
+            a("Firefox", None, 0, 30),
+            p(a("Game", None, 30, 60), Some("lol")),
+            a("Firefox", None, 60, 62), // kısa araya girme
+            p(a("Game", None, 62, 80), Some("lol")),
+            a("Launcher", None, 80, 85), // projenin kısımları arasında atanmamış süre
+            p(a("Game", None, 85, 90), Some("lol")),
+            a("Firefox", None, 90, 150),
+        ];
+        let s = analyze(&items);
+        assert_eq!(
+            spans(&s),
+            [
+                (t(0), t(30), None),
+                (t(30), t(90), Some("lol")),
+                (t(90), t(150), None),
+            ]
+        );
+        assert_eq!(s.blocks[1].active_seconds, 60 * 60);
+        assert_eq!(s.break_seconds, 0);
+    }
+
+    #[test]
+    fn other_project_leaves_a_project_block() {
+        let items = [
+            p(a("Code", Some("dev"), 0, 40), Some("kum")),
+            a("Code", Some("dev"), 40, 55), // bloğun projesinde atanmamış süre: blokta kalır
+            p(a("Code", Some("dev"), 55, 100), Some("kum")),
+            p(a("Code", Some("dev"), 100, 102), Some("x")), // kısa: bölmez
+            p(a("Code", Some("dev"), 102, 140), Some("kum")),
+            p(a("Code", Some("dev"), 140, 160), Some("x")),
+            p(a("Code", Some("dev"), 160, 200), Some("kum")),
+        ];
+        let s = analyze(&items);
+        assert_eq!(
+            spans(&s),
+            [
+                (t(0), t(140), Some("kum")),
+                (t(140), t(160), Some("x")),
+                (t(160), t(200), Some("kum")),
+            ]
+        );
+    }
+
+    #[test]
+    fn mostly_unassigned_run_does_not_leave_as_project() {
+        // Arada uzun atanmamış süre: proje kısmına katılırsa kısmın çoğu projesiz olurdu.
+        let items = [
+            a("Firefox", None, 0, 30),
+            p(a("Game", None, 30, 34), Some("lol")),
+            a("Firefox", None, 34, 46),
+            p(a("Game", None, 46, 50), Some("lol")),
+            a("Firefox", None, 50, 80),
+        ];
+        let s = analyze(&items);
+        assert_eq!(
+            spans(&s),
+            [
+                (t(0), t(30), None),
+                (t(30), t(34), Some("lol")),
+                (t(34), t(46), None),
+                (t(46), t(50), Some("lol")),
+                (t(50), t(80), None),
+            ]
+        );
+    }
+
+    #[test]
     fn same_project_joins_categories_and_short_gaps() {
-        let p = |mut x: Activity<'static>, project| {
-            x.project = project;
-            x
-        };
         let items = [
             p(a("Code", Some("dev"), 0, 20), Some("kum")),
             p(a("Slack", Some("comm"), 20, 40), Some("kum")), // başka kategori, aynı proje
@@ -390,13 +611,8 @@ mod tests {
             p(a("Slack", Some("comm"), 90, 100), None),       // projesiz başka kategori: yeni blok
         ];
         let s = analyze(&items);
-        let spans: Vec<_> = s
-            .blocks
-            .iter()
-            .map(|b| (b.start, b.end, b.project_id.as_deref()))
-            .collect();
         assert_eq!(
-            spans,
+            spans(&s),
             [
                 (t(0), t(60), Some("kum")),
                 (t(80), t(90), Some("kum")),
