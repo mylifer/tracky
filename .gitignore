@@ -1,6 +1,8 @@
 /target
 node_modules/
 dist/
+app/test-results/
+app/playwright-report/
 *.db
 *.db-journal
 .DS_Store

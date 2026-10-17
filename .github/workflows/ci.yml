@@ -68,6 +68,26 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: app
         run: npm test
+      # Arayüz sahte arka uçla tarayıcıda (e2e/): Windows'taki WebView2 gibi Chromium, macOS'taki
+      # WKWebView gibi WebKit.
+      - name: Uçtan uca testler (Chromium)
+        if: runner.os == 'Linux'
+        working-directory: app
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test --project=chromium
+      - name: Uçtan uca testler (WebKit)
+        if: runner.os == 'macOS'
+        working-directory: app
+        run: |
+          npx playwright install webkit
+          npx playwright test --project=webkit
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure() && runner.os != 'Windows'
+        with:
+          name: e2e-${{ runner.os }}
+          path: app/playwright-report
+          if-no-files-found: ignore
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       # Çalışma alanında özellikler birleşir; çekirdeğin depo olmadan derlendiğini ayrıca denetle.
