@@ -978,10 +978,12 @@ const TIMESHEET_MERGE: Merge = Merge {
     fallback_to_updated: true,
 };
 
-/// Oturumun durumu: elle atama ve silinme. İçerik (saatler, başlık) son yazandan gelir; süren
-/// oturumu takip eden cihaz onu uzatmaya devam eder.
+/// Oturumun durumu: elle atama, silinme ve başlangıç (bölmede öne alınır). İçerik (bitiş,
+/// başlık) son yazandan gelir; süren oturumu takip eden cihaz onu uzatmaya devam eder, başka
+/// cihazda bölündüğünü görmeden gönderdiği eski başlangıç bölmeyi geri almaz.
 const SESSION_MERGE: Merge = Merge {
     state: &[
+        "started_at",
         "category_id",
         "project_id",
         "block_from",

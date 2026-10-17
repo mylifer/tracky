@@ -1,4 +1,3 @@
-use super::sessions::FOREIGN_LIVE_WINDOW_MS;
 use super::*;
 use crate::classify::{Classifier, TagKind};
 use crate::classify::{Client, DEFAULT_CATEGORIES, Rule, RuleField, Tag};
@@ -401,7 +400,9 @@ fn assign_app_category_replaces_existing_rule() {
 }
 
 #[test]
-fn edits_refuse_another_devices_live_session() {
+fn another_devices_live_session_can_be_edited() {
+    // Eşitleme bölmeyi ve atamayı durum olarak taşır (sync::SESSION_MERGE): öteki bilgisayarın
+    // süren oturumu da düzenlenir; uzattığı satır değişikliği ezmez (sync testleri).
     let now = Utc::now();
     let mut live = session("Code", None, 0, 0);
     live.started_at = now - chrono::Duration::hours(1);
@@ -410,13 +411,6 @@ fn edits_refuse_another_devices_live_session() {
         now - chrono::Duration::minutes(30),
         now - chrono::Duration::minutes(20),
     );
-
-    // Kendi cihazının süren oturumu düzenlenebilir.
-    let own = Store::open_in_memory().unwrap();
-    own.upsert_session(&live).unwrap();
-    assert_eq!(own.delete_between(from, to).unwrap(), 1);
-
-    // Başka cihazınki reddedilir ve hiçbir şey bölünmez.
     let store = Store::open_in_memory().unwrap();
     store.upsert_session(&live).unwrap();
     store
@@ -426,22 +420,27 @@ fn edits_refuse_another_devices_live_session() {
             params![Uuid::new_v4().to_string()],
         )
         .unwrap();
-    for result in [
-        store.set_category_between(from, to, None),
-        store.set_project_between(from, to, None),
-        store.delete_between(from, to),
-    ] {
-        assert!(matches!(result, Err(StoreError::ForeignLiveSession)));
-    }
-    assert_eq!(store.sessions_between(from, to).unwrap().len(), 1);
-
-    // Bittikten (pencere geçtikten) sonra düzenlenebilir.
-    let ended = ms(now) - FOREIGN_LIVE_WINDOW_MS - 1;
-    store
-        .conn()
-        .execute("UPDATE sessions SET ended_at = ?1", params![ended])
-        .unwrap();
+    let project = store.accept_project_suggestion("Portal").unwrap();
+    assert_eq!(
+        store
+            .set_project_between(from, to, Some(&project.id))
+            .unwrap(),
+        1
+    );
+    let parts = store.sessions_between(live.started_at, now).unwrap();
+    assert_eq!(parts.len(), 3);
+    assert_eq!(
+        parts
+            .iter()
+            .filter(|s| s.project_id.as_deref() == Some(project.id.as_str()))
+            .count(),
+        1
+    );
     assert_eq!(store.delete_between(from, to).unwrap(), 1);
+    assert_eq!(
+        store.sessions_between(live.started_at, now).unwrap().len(),
+        2
+    );
 }
 
 #[test]

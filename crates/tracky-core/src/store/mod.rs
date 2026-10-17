@@ -40,13 +40,6 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("geçersiz kayıt: {0}")]
     Invalid(String),
-    /// Aralıkta başka bilgisayarda süren bir oturum var: o bilgisayar oturumu kaydetmeye
-    /// devam ettiği için buradaki değişiklik ilk eşitlemede ezilirdi.
-    #[error(
-        "Bu aralıkta diğer bilgisayarda şu an süren bir oturum var; değişiklik eşitlemede \
-         kaybolurdu. Oturum bittikten birkaç dakika sonra tekrar dene."
-    )]
-    ForeignLiveSession,
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;

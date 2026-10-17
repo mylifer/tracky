@@ -1393,3 +1393,94 @@ fn computer_versions_reach_the_other_device() {
         ]
     );
 }
+
+/// İki bilgisayarda oturumların sıralı aralıkları ve projeleri (çakışma varsa görünür).
+fn pieces(store: &Mutex<Store>) -> Vec<(i64, i64, Option<String>)> {
+    let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+    let mut out: Vec<(i64, i64, Option<String>)> = lock(store)
+        .sessions_between(t0, t0 + Duration::hours(1))
+        .unwrap()
+        .into_iter()
+        .map(|s| {
+            (
+                (s.started_at - t0).num_seconds(),
+                (s.ended_at - t0).num_seconds(),
+                s.project_id,
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn splitting_a_session_the_other_device_is_still_tracking_does_not_double_count() {
+    let a = Mutex::new(Store::open_in_memory().unwrap());
+    let b = Mutex::new(Store::open_in_memory().unwrap());
+    let mut remote = FakeRemote::default();
+    let mut s = session("Figma", 600);
+    lock(&a).upsert_session(&s).unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+    let project = lock(&b).accept_project_suggestion("Trumore").unwrap();
+    let t0 = s.started_at;
+    pause();
+    // B, A'nın süren oturumunun ortasını projeye atar: oturum bölünür.
+    lock(&b)
+        .set_project_between(
+            t0 + Duration::seconds(100),
+            t0 + Duration::seconds(200),
+            Some(&project.id),
+        )
+        .unwrap();
+    // A bunu görmeden oturumu uzatır ve önce A eşitler (eski başlangıçla).
+    pause();
+    s.ended_at += Duration::seconds(60);
+    lock(&a).upsert_session(&s).unwrap();
+    for _ in 0..3 {
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+    }
+    let want = vec![
+        (0, 100, None),
+        (100, 200, Some(project.id.clone())),
+        (200, 660, None),
+    ];
+    assert_eq!(pieces(&a), want);
+    assert_eq!(pieces(&b), want);
+    // A takibe devam eder: kuyruk parçası uzar, baş parçalar geri gelmez.
+    pause();
+    s.ended_at += Duration::seconds(60);
+    lock(&a).upsert_session(&s).unwrap();
+    for _ in 0..2 {
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+    }
+    assert_eq!(pieces(&b).last(), Some(&(200, 720, None)));
+    assert_eq!(pieces(&a), pieces(&b));
+}
+
+#[test]
+fn deleting_part_of_a_session_the_other_device_is_tracking_stays_deleted() {
+    let a = Mutex::new(Store::open_in_memory().unwrap());
+    let b = Mutex::new(Store::open_in_memory().unwrap());
+    let mut remote = FakeRemote::default();
+    let mut s = session("Figma", 600);
+    lock(&a).upsert_session(&s).unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+    let t0 = s.started_at;
+    pause();
+    lock(&b)
+        .delete_between(t0, t0 + Duration::seconds(300))
+        .unwrap();
+    pause();
+    s.ended_at += Duration::seconds(60);
+    lock(&a).upsert_session(&s).unwrap();
+    for _ in 0..3 {
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+    }
+    assert_eq!(pieces(&a), [(300, 660, None)]);
+    assert_eq!(pieces(&b), [(300, 660, None)]);
+}

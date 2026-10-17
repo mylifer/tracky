@@ -53,11 +53,6 @@ fn in_scope(n: usize) -> String {
     )
 }
 
-/// Başka cihazın oturumu, bitişi bu kadar yakın olduğu sürece "sürüyor" sayılır. Cihazlar
-/// 5 dakikada bir eşitlediği için buradaki kopya o cihazın gerçek durumundan ~10 dakika
-/// geride olabilir.
-pub(super) const FOREIGN_LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;
-
 impl Store {
     /// Oturumu ekler ya da (devam eden oturumun periyodik kaydında) günceller.
     pub fn upsert_session(&self, s: &Session) -> Result<()> {
@@ -218,7 +213,6 @@ impl Store {
         if let Some(id) = category_id {
             self.require_tag(id, TagKind::Category)?;
         }
-        self.ensure_no_foreign_live(from, to)?;
         let (apps, titles) = scope_params(scope)?;
         let tx = self.savepoint()?;
         self.split_at(from, to)?;
@@ -259,7 +253,6 @@ impl Store {
         if let Some(id) = project_id.filter(|id| *id != crate::classify::NO_PROJECT) {
             self.require_tag(id, TagKind::Project)?;
         }
-        self.ensure_no_foreign_live(from, to)?;
         let (apps, titles) = scope_params(scope)?;
         let tx = self.savepoint()?;
         self.split_at(from, to)?;
@@ -294,7 +287,6 @@ impl Store {
         to: DateTime<Utc>,
         scope: Option<&EditScope>,
     ) -> Result<usize> {
-        self.ensure_no_foreign_live(from, to)?;
         let (apps, titles) = scope_params(scope)?;
         let tx = self.savepoint()?;
         self.split_at(from, to)?;
@@ -380,7 +372,6 @@ impl Store {
     /// `[from, to)` içinde başlayan ilk çalışma oturumundan yeni takvim bloğu başlatır
     /// ([`Session::block_from`]); `from`'u aşan oturum önce bölünür. Değişen satır sayısı.
     fn mark_block_start(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
-        self.ensure_no_foreign_live(from, to)?;
         self.split_at(from, to)?;
         let Some(first) = self
             .sessions_between(from, to)?
@@ -469,34 +460,6 @@ impl Store {
         Ok(n)
     }
 
-    /// Aralıkta başka cihazın hâlâ sürüyor olabilecek oturumu varsa düzenlemeyi reddeder.
-    /// O cihaz süren oturumu birkaç saniyede bir yeniden kaydeder; satırın tamamı son
-    /// yazanla eşitlendiği için buradaki bölme, silme ya da atama geri alınırdı.
-    /// Elle eklenen kayıtlar ve boşta kayıtları sürmez (bitince bir kez yazılır), kapsam dışıdır.
-    fn ensure_no_foreign_live(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<()> {
-        let live: bool = self.conn.query_row(
-            &format!(
-                "SELECT EXISTS (SELECT 1 FROM sessions
-                 WHERE deleted_at IS NULL AND {OVERLAPS}
-                   AND device_id != ?3 AND ended_at > ?4
-                   AND substr(app_id, 1, length(?5)) != ?5 AND app_id != ?6)"
-            ),
-            params![
-                ms(from),
-                ms(to),
-                self.device_id.to_string(),
-                ms(Utc::now()) - FOREIGN_LIVE_WINDOW_MS,
-                format!("{MANUAL_APP_ID}/"),
-                IDLE_APP_ID,
-            ],
-            |r| r.get(0),
-        )?;
-        if live {
-            return Err(StoreError::ForeignLiveSession);
-        }
-        Ok(())
-    }
-
     /// `[from, to)` sınırını aşan oturumları sınırlarda böler; sonra aralıkla
     /// kesişen her oturum tamamen aralığın içindedir. Asıl kimlik en son parçada
     /// kalır: süren oturumu takip eden motor doğru satırı uzatmaya devam eder.
@@ -538,8 +501,12 @@ impl Store {
                     params![id, Uuid::new_v4().to_string(), a, b, now],
                 )?;
             }
+            // Başlangıç durum gibi eşitlenir (sync::SESSION_MERGE): oturumu başka cihaz takip
+            // ediyorsa onun uzattığı satır bu bölmeyi geri almaz.
             self.conn.execute(
-                "UPDATE sessions SET started_at = ?2, ended_at = ?3, updated_at = MAX(?4, updated_at + 1)
+                "UPDATE sessions SET started_at = ?2, ended_at = ?3,
+                     state_at = CASE WHEN started_at != ?2 THEN ?4 ELSE state_at END,
+                     updated_at = MAX(?4, updated_at + 1)
                  WHERE id = ?1",
                 params![id, keep_start, keep_end, now],
             )?;

@@ -11,11 +11,10 @@ use chrono::{DateTime, Duration, Utc};
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-use super::sessions::{FOREIGN_LIVE_WINDOW_MS, OVERLAPS};
+use super::sessions::OVERLAPS;
 use super::{Result, Store, StoreError, from_ms, ms};
 use crate::classify::{Classifier, NO_PROJECT, Rule, TagKind};
 use crate::inbox::{self, RulePreview, Unassigned};
-use crate::model::{IDLE_APP_ID, MANUAL_APP_ID};
 
 /// Yoksayılan atanmamış süre grupları (`site:…`, `app:…`).
 const IGNORED_UNASSIGNED_KEY: &str = "ignored_unassigned";
@@ -182,8 +181,9 @@ impl Store {
         Ok(())
     }
 
-    /// Oturumlara elle proje verir (`None`: kurallara döner). Başka bilgisayarda süren oturuma
-    /// dokunulmaz (o bilgisayar satırı yeniden yazıp değişikliği ezerdi). Değişen satır sayısı.
+    /// Oturumlara elle proje verir (`None`: kurallara döner). Başka bilgisayarda süren oturum da
+    /// atanır: atama durum olarak eşitlenir, o bilgisayarın uzattığı satır onu ezmez
+    /// ([`crate::sync`]). Değişen satır sayısı.
     pub fn set_project_for(&self, ids: &[Uuid], project_id: Option<&str>) -> Result<usize> {
         if let Some(id) = project_id.filter(|id| *id != NO_PROJECT) {
             self.require_tag(id, TagKind::Project)?;
@@ -194,18 +194,8 @@ impl Store {
         for id in ids {
             n += self.conn.execute(
                 "UPDATE sessions SET project_id = ?2, state_at = ?3, updated_at = MAX(?3, updated_at + 1)
-                 WHERE id = ?1 AND deleted_at IS NULL AND project_id IS NOT ?2
-                   AND NOT (device_id != ?4 AND ended_at > ?5
-                            AND substr(app_id, 1, length(?6)) != ?6 AND app_id != ?7)",
-                params![
-                    id.to_string(),
-                    project_id,
-                    now,
-                    self.device_id.to_string(),
-                    now - FOREIGN_LIVE_WINDOW_MS,
-                    format!("{MANUAL_APP_ID}/"),
-                    IDLE_APP_ID,
-                ],
+                 WHERE id = ?1 AND deleted_at IS NULL AND project_id IS NOT ?2",
+                params![id.to_string(), project_id, now],
             )?;
         }
         // Raporda bilerek atanan süre, projenin silinmiş satırında kalsa da yeniden önerilir.
