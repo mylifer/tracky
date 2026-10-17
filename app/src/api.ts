@@ -110,7 +110,20 @@ export type DeviceTotal = { id: string; name: string; os: string; model: string;
  * `model`: "Mac Studio", "MacBook Pro" ...; `icon`: "Bu Mac Hakkında" görseli (`data:` adresi).
  * Bilinmiyorsa boş.
  */
-export type KnownDevice = { id: string; name: string; os: string; model: string; icon: string; current: boolean };
+export type KnownDevice = {
+  id: string;
+  name: string;
+  os: string;
+  model: string;
+  icon: string;
+  current: boolean;
+  /** Kum sürümü; bilinmiyorsa (0.9.74'ten eski) boş. */
+  version: string;
+  /** Bu bilgisayarın kaydettiği son süre (ISO). */
+  lastSeen: string | null;
+  /** Son iki haftada kullanılmış ve bu bilgisayardan eski sürümde. */
+  outdated: boolean;
+};
 /** Çalışma blokları ve molalar. */
 export type WorkStats = {
   activeSeconds: number;

@@ -408,6 +408,13 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     ) {
         log_error!("bilgisayar adı kaydedilemedi: {e}");
     }
+    // Öteki bilgisayarlar bu bilgisayarın geride kaldığını görsün; güncellemeden sonra eski
+    // sürümün okuyamadığı satırlar yeniden çekilsin.
+    match store.record_app_version(env!("CARGO_PKG_VERSION")) {
+        Ok(true) => log_info!("sürüm kaydedildi: {}", env!("CARGO_PKG_VERSION")),
+        Ok(false) => {}
+        Err(e) => log_error!("sürüm kaydedilemedi: {e}"),
+    }
 
     if store.setting::<bool>(AUTOSTART_INIT_KEY)?.is_none() {
         if let Err(e) = app.autolaunch().enable() {

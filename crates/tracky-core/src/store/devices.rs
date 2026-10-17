@@ -18,7 +18,7 @@ use crate::report::Report;
 /// kendi satırını yazar, ad başka bilgisayardan da değiştirilebilir).
 pub const DEVICE_KEY_PREFIX: &str = "device:";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub name: String,
     /// `macos`, `windows` ...
@@ -34,6 +34,10 @@ pub struct DeviceInfo {
     /// "Bu Mac Hakkında"daki görsel (`data:image/png;base64,...`); bilinmiyorsa boş.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
+    /// Kum sürümü ("0.9.74"); sürümünü yazmayan (0.9.74'ten eski) bilgisayarda boş. Eski
+    /// sürüm kaydı yeniden yazarken bu alanı düşürür; bilgisayar her açılışta yeniden yazar.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
 }
 
 /// Kayıtlı bir bilgisayar (ayarlarda listelemek ve yeniden adlandırmak için).
@@ -46,6 +50,26 @@ pub struct KnownDevice {
     pub model: String,
     pub icon: String,
     pub current: bool,
+    /// Kum sürümü; bilinmiyorsa (0.9.74'ten eski) boş.
+    pub version: String,
+    /// Bu bilgisayarın kaydettiği son süre.
+    pub last_seen: Option<DateTime<Utc>>,
+    /// Son [`OUTDATED_ACTIVE_DAYS`] günde kullanılmış ve bu bilgisayardan eski sürümde: eşitlenen
+    /// yeni bilgileri okuyamaz, o bilgisayarda da güncellenmeli.
+    pub outdated: bool,
+}
+
+/// Bundan uzun süredir kayıt yapmayan bilgisayarın sürümü uyarı sayılmaz (artık kullanılmıyor).
+pub const OUTDATED_ACTIVE_DAYS: i64 = 14;
+
+/// `a` sürümü `b`'den eski mi? Sürümü bilinmeyen (boş) en eskidir; sayı olmayan parça 0 sayılır.
+pub fn older_version(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    match (a.trim(), b.trim()) {
+        (_, "") => false,
+        ("", _) => true,
+        (a, b) => parts(a) < parts(b),
+    }
 }
 
 impl Store {
@@ -80,10 +104,26 @@ impl Store {
                 name: name.into(),
                 os: os.into(),
                 model: model.into(),
-                calls_from: None,
                 icon: icon.into(),
+                ..DeviceInfo::default()
             },
         )
+    }
+
+    /// Bu bilgisayarın Kum sürümünü kaydına yazar: öteki bilgisayarlar geride kalanı görür
+    /// ([`KnownDevice::outdated`]). Sürüm değiştiyse eski sürümün okuyamayıp atladığı satırların
+    /// tabloları bir sonraki eşitlemede baştan çekilir ([`crate::sync::refetch_skipped`]).
+    /// [`Store::register_device`]'dan sonra çağrılır; sürüm değişti mi döner.
+    pub fn record_app_version(&self, version: &str) -> Result<bool> {
+        let key = format!("{DEVICE_KEY_PREFIX}{}", self.device_id);
+        let mut info = self.setting::<DeviceInfo>(&key)?.unwrap_or_default();
+        if info.version == version {
+            return Ok(false);
+        }
+        info.version = version.into();
+        self.save_setting(&key, &info)?;
+        crate::sync::refetch_skipped(self)?;
+        Ok(true)
     }
 
     /// Bir bilgisayarın adını değiştirir (bu ya da başka bir bilgisayar).
@@ -98,37 +138,53 @@ impl Store {
         let mut info = self
             .resolve_names(&[id.to_string()])?
             .remove(id)
-            .unwrap_or_else(|| DeviceInfo {
-                name: String::new(),
-                os: String::new(),
-                model: String::new(),
-                calls_from: None,
-                icon: String::new(),
-            });
+            .unwrap_or_default();
         info.name = name.into();
         self.save_setting(&key, &info)
     }
 
     /// Kayıtlı bilgisayarlar ve kaydı olmayan ama oturumu bulunanlar (tahmini adla).
     pub fn known_devices(&self) -> Result<Vec<KnownDevice>> {
-        let ids: Vec<String> = self
+        self.known_devices_at(Utc::now())
+    }
+
+    fn known_devices_at(&self, now: DateTime<Utc>) -> Result<Vec<KnownDevice>> {
+        let seen: HashMap<String, i64> = self
             .conn
-            .prepare("SELECT DISTINCT device_id FROM sessions WHERE deleted_at IS NULL")?
-            .query_map([], |r| r.get(0))?
+            .prepare(
+                "SELECT device_id, MAX(ended_at) FROM sessions WHERE deleted_at IS NULL
+                 GROUP BY device_id",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
-        let mut ids: HashSet<String> = ids.into_iter().collect();
+        let mut ids: HashSet<String> = seen.keys().cloned().collect();
         ids.extend(self.device_names()?.into_keys());
-        ids.insert(self.device_id.to_string());
+        let own = self.device_id.to_string();
+        ids.insert(own.clone());
         let names = self.resolve_names(&ids.into_iter().collect::<Vec<_>>())?;
+        let mine = names
+            .get(&own)
+            .map(|i| i.version.clone())
+            .unwrap_or_default();
+        let active_since = now - chrono::Duration::days(OUTDATED_ACTIVE_DAYS);
         let mut out: Vec<KnownDevice> = names
             .into_iter()
-            .map(|(id, info)| KnownDevice {
-                current: id == self.device_id.to_string(),
-                id,
-                name: info.name,
-                os: info.os,
-                model: info.model,
-                icon: info.icon,
+            .map(|(id, info)| {
+                let current = id == own;
+                let last_seen = seen.get(&id).map(|ms| super::from_ms(*ms));
+                KnownDevice {
+                    outdated: !current
+                        && last_seen.is_some_and(|t| t >= active_since)
+                        && older_version(&info.version, &mine),
+                    current,
+                    id,
+                    name: info.name,
+                    os: info.os,
+                    model: info.model,
+                    icon: info.icon,
+                    version: info.version,
+                    last_seen,
+                }
             })
             .collect();
         out.sort_by(|a, b| b.current.cmp(&a.current).then(a.name.cmp(&b.name)));
@@ -170,9 +226,7 @@ impl Store {
                     DeviceInfo {
                         name: default_name(os).into(),
                         os: os.into(),
-                        model: String::new(),
-                        calls_from: None,
-                        icon: String::new(),
+                        ..DeviceInfo::default()
                     }
                 }
             };
@@ -418,5 +472,59 @@ mod tests {
         let devices = store.known_devices().unwrap();
         assert_eq!(devices[0].model, "Mac Studio");
         assert_eq!(devices[0].icon, "data:image/png;base64,AA==");
+    }
+
+    #[test]
+    fn versions_compare_by_number() {
+        assert!(older_version("0.9.9", "0.9.10"));
+        assert!(older_version("0.9.73", "0.10.0"));
+        assert!(older_version("", "0.9.74"));
+        assert!(!older_version("0.9.74", "0.9.74"));
+        assert!(!older_version("1.0.0", "0.9.74"));
+        // Bu bilgisayarın sürümü bilinmiyorsa kimse eski sayılmaz.
+        assert!(!older_version("", ""));
+        assert!(!older_version("0.9.1", ""));
+    }
+
+    #[test]
+    fn a_computer_in_use_on_an_older_version_is_outdated() {
+        let store = Store::open_in_memory().unwrap();
+        store.register_device("Mac", "macos", "", "").unwrap();
+        store.record_app_version("0.9.74").unwrap();
+        store.upsert_session(&session("code", 0, 600)).unwrap();
+        const OLD: &str = "00000000-0000-4000-8000-0000000000bb";
+        const UNKNOWN: &str = "00000000-0000-4000-8000-0000000000cc";
+        for (id, name, version) in [
+            (WIN, "PC", "0.9.74"),
+            (OLD, "Air", "0.9.70"),
+            (UNKNOWN, "Eski", ""),
+        ] {
+            let info = DeviceInfo {
+                name: name.into(),
+                os: "macos".into(),
+                version: version.into(),
+                ..DeviceInfo::default()
+            };
+            store
+                .save_setting(&format!("{DEVICE_KEY_PREFIX}{id}"), &info)
+                .unwrap();
+            foreign(&store, &session("code", 600, 1200), id);
+        }
+        let outdated = |now| -> Vec<String> {
+            store
+                .known_devices_at(now)
+                .unwrap()
+                .into_iter()
+                .filter(|d| d.outdated)
+                .map(|d| d.name)
+                .collect()
+        };
+        assert_eq!(outdated(t(86_400)), ["Air", "Eski"]);
+        // Haftalardır kullanılmayan bilgisayar uyarı sayılmaz.
+        assert!(outdated(t(30 * 86_400)).is_empty());
+        let mine = store.known_devices().unwrap().remove(0);
+        assert!(mine.current && !mine.outdated);
+        assert_eq!(mine.version, "0.9.74");
+        assert_eq!(mine.last_seen, Some(t(600)));
     }
 }

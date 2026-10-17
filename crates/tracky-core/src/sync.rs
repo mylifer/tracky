@@ -315,6 +315,9 @@ const MAX_BATCHES: usize = 200;
 const CURSOR_OVERLAP_SECS: i64 = 60;
 /// Satırı sunucuda son yazan cihazın sütunu (supabase/migrations/0003).
 const WRITER: &str = "writer";
+/// Bu sürümün okuyamayıp atladığı satırları olan tablolar (`sync_skipped:<tablo>`): imleç
+/// onları geçti, sürüm değişince tablo baştan çekilir ([`refetch_skipped`]).
+const SKIPPED_PREFIX: &str = "sync_skipped:";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct SyncSummary {
@@ -680,6 +683,10 @@ fn pull_pages(
         None => None,
     };
     let mut since = cursor.as_deref().map(overlap);
+    // İmleç yok: tablo baştan çekiliyor (ilk eşitleme ya da şekli değişti). Yereldekiyle aynı
+    // `updated_at`'li satır sunucudaki haliyle alınır: bu cihazın eski sürümü onu çekerken
+    // tanımadığı sütunları düşürmüştü, sunucudaki tam haldir.
+    let refetch = cursor.is_none();
     let (mut total, mut skipped) = (0, 0);
     let mut drained = false;
     for _ in 0..max_batches {
@@ -703,7 +710,7 @@ fn pull_pages(
             // Tek işlem: bin satır için bin ayrı diske yazma yerine bir tane.
             let tx = store.conn().unchecked_transaction()?;
             for row in &rows {
-                match apply_remote(&store, table, row) {
+                match apply_remote(&store, table, row, refetch) {
                     Ok(n) => total += n,
                     Err(e) if is_unappliable(&e) => skipped += 1,
                     Err(e) => return Err(e),
@@ -728,6 +735,9 @@ fn pull_pages(
         // Sayfa sınırında aynı sunucu zamanlı satırlar bölünebilir: sonraki sayfa sınırın
         // kendisini de kapsar (zaten uygulanan satırlar yeniden uygulanınca değişmez).
         since = Some(just_before(&newest));
+    }
+    if skipped > 0 {
+        lock(store).save_setting(&format!("{SKIPPED_PREFIX}{}", table.name), &true)?;
     }
     // Yalnızca her şey çekildiyse (son sayfa kısa ya da boş) imleç baştaki en yeni zamana
     // atlar. Parti sınırına takıldıysa imleç son çekilen sayfada kalır; kalanı sonraki
@@ -823,8 +833,30 @@ fn bump(store: &Store, table: &Table, rows: &[Pending]) -> Result<(), SyncError>
     Ok(())
 }
 
+/// Eski sürümün okuyamayıp atladığı satırları olan tabloların imleçlerini siler: sonraki
+/// eşitleme onları baştan çeker ve bu sürüm okuyabildiklerini uygular. Sürüm değişince
+/// çağrılır ([`Store::record_app_version`]); aynı sürümde her açılışta yeniden çekmez.
+pub fn refetch_skipped(store: &Store) -> Result<Vec<String>, crate::store::StoreError> {
+    let mut tables = Vec::new();
+    for t in TABLES {
+        let key = format!("{SKIPPED_PREFIX}{}", t.name);
+        if store.setting::<bool>(&key)?.unwrap_or(false) {
+            store.forget_sync_cursor(t.name)?;
+            store.save_setting(&key, &false)?;
+            tables.push(t.name.to_string());
+        }
+    }
+    Ok(tables)
+}
+
 /// Uzak satırı yerelde uygular; yerel sürüm daha yeniyse dokunmaz. Değişen satır sayısı.
-fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, SyncError> {
+/// `refetch`: tablo baştan çekiliyor, aynı `updated_at`'li farklı satırda sunucudaki kazanır.
+fn apply_remote(
+    store: &Store,
+    table: &Table,
+    row: &Value,
+    refetch: bool,
+) -> Result<usize, SyncError> {
     let mut obj = row
         .as_object()
         .ok_or_else(|| SyncError::Invalid(row.to_string()))?
@@ -877,7 +909,7 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
     }
     let names: Vec<&str> = cols.iter().map(|c| table.local(c.0)).collect();
     if let Some(merge) = merge
-        && let Some(n) = merge_row(store, table.name, merge, &names, &values)?
+        && let Some(n) = merge_row(store, table.name, merge, &names, &values, refetch)?
     {
         return Ok(n);
     }
@@ -890,10 +922,26 @@ fn apply_remote(store: &Store, table: &Table, row: &Value) -> Result<usize, Sync
         .chain(std::iter::once(&"synced_at"))
         .map(|n| format!("{n} = excluded.{n}"))
         .collect();
+    // Baştan çekmede aynı zamanlı satır da alınır, ama yalnızca bir sütunu farklıysa (yoksa
+    // her baştan çekme binlerce aynı satırı "alındı" sayardı).
+    let tie = if refetch {
+        let differs: Vec<String> = names
+            .iter()
+            .skip(1)
+            .map(|n| format!("excluded.{n} IS NOT {t}.{n}", t = table.name))
+            .collect();
+        format!(
+            " OR (excluded.updated_at = {t}.updated_at AND ({}))",
+            differs.join(" OR "),
+            t = table.name
+        )
+    } else {
+        String::new()
+    };
     let sql = format!(
         "INSERT INTO {t} ({cols}, synced_at) VALUES ({ph})
          ON CONFLICT ({key}) DO UPDATE SET {up}
-         WHERE excluded.updated_at > {t}.updated_at",
+         WHERE excluded.updated_at > {t}.updated_at{tie}",
         t = table.name,
         key = table.key,
         cols = names.join(", "),
@@ -953,13 +1001,15 @@ const SESSION_MERGE: Merge = Merge {
 ///   dondurmuşsa ([`Merge::frozen`]) içerik de ondan.
 ///
 /// Sonuç gelen satırdan farklıysa satır kirli kalır ve birleşmiş hali geri gönderilir; böylece
-/// sunucu ve öteki cihaz da aynı sonuca varır.
+/// sunucu ve öteki cihaz da aynı sonuca varır. `refetch`: iki zaman da eşitse gelen kazanır
+/// ([`apply_remote`]).
 fn merge_row(
     store: &Store,
     table: &str,
     merge: &Merge,
     names: &[&str],
     incoming: &[SqlValue],
+    refetch: bool,
 ) -> Result<Option<usize>, SyncError> {
     let at = |name: &str| names.iter().position(|n| *n == name).expect("tablo sütunu");
     let local: Option<Vec<SqlValue>> = store
@@ -989,13 +1039,15 @@ fn merge_row(
         })
     };
     let (is, ls) = (state_at(incoming, iu), state_at(&local, lu));
-    let state_in = (is, iu) > (ls, lu);
+    let tie = refetch && (is, iu) == (ls, lu);
+    let state_in = (is, iu) > (ls, lu) || tie;
     let frozen = |row: &[SqlValue]| merge.frozen.iter().any(|c| row[at(c)] != SqlValue::Null);
-    let content_in = match is.cmp(&ls) {
-        std::cmp::Ordering::Greater if frozen(incoming) => true,
-        std::cmp::Ordering::Less if frozen(&local) => false,
-        _ => iu > lu,
-    };
+    let content_in = tie
+        || match is.cmp(&ls) {
+            std::cmp::Ordering::Greater if frozen(incoming) => true,
+            std::cmp::Ordering::Less if frozen(&local) => false,
+            _ => iu > lu,
+        };
     let merged: Vec<SqlValue> = names
         .iter()
         .enumerate()
@@ -1019,6 +1071,17 @@ fn merge_row(
             .filter(|(_, n)| !matches!(**n, "created_at" | "updated_at"))
             .all(|(i, _)| merged[i] == row[i])
     };
+    if iu == lu && same(incoming) && same(&local) {
+        // Aynı sürüm (baştan çekmede binlerce satır): yalnızca eşitlenmiş sayılır.
+        store.conn().execute(
+            &format!(
+                "UPDATE {table} SET synced_at = ?2
+                 WHERE id = ?1 AND (synced_at IS NULL OR synced_at < ?2)"
+            ),
+            rusqlite::params![incoming[at("id")], iu],
+        )?;
+        return Ok(Some(0));
+    }
     let (updated, synced) = if same(incoming) && iu >= lu {
         // Gelen satır olduğu gibi geçerli: eşitlenmiş sayılır.
         (iu, Some(iu))

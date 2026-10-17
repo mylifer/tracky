@@ -1242,3 +1242,153 @@ fn server_without_settings_table_still_syncs_the_rest() {
     run(&a, &mut remote, "u1").unwrap();
     assert!(remote.rows["settings"].contains_key("theme"));
 }
+
+/// Eski sürüm satırı çekerken tanımadığı sütunu düşürmüş gibi: yerel değeri değiştirir, satırın
+/// zamanına dokunmaz.
+fn drop_locally(store: &Mutex<Store>, sql: &str, id: &str) {
+    assert_eq!(lock(store).conn().execute(sql, [id]).unwrap(), 1);
+}
+
+#[test]
+fn refetching_restores_what_an_old_version_dropped() {
+    let a = Mutex::new(Store::open_in_memory().unwrap());
+    let b = Mutex::new(Store::open_in_memory().unwrap());
+    let mut remote = FakeRemote::default();
+    let video = Session {
+        passive: true,
+        ..session("Firefox", 60)
+    };
+    lock(&a).upsert_session(&video).unwrap();
+    lock(&a).upsert_session(&session("Code", 30)).unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+    // A'nın değiştirdiği etiket (B'nin kendi yazdığı satırları çekmez, öteki bilgisayarınkini çeker).
+    let tag = Tag {
+        name: "Kod".into(),
+        ..lock(&a).tags().unwrap()[0].clone()
+    };
+    pause();
+    lock(&a).upsert_tag(&tag, 0).unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+    // B'nin eski sürümü girdisiz izlemeyi ve etiketin bir alanını tanımadan aldı.
+    drop_locally(
+        &b,
+        "UPDATE sessions SET passive = 0 WHERE id = ?1",
+        &video.id.to_string(),
+    );
+    drop_locally(&b, "UPDATE tags SET name = 'eski' WHERE id = ?1", &tag.id);
+    let passive = |store: &Mutex<Store>| {
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        lock(store)
+            .sessions_between(t0, t0 + Duration::hours(1))
+            .unwrap()
+            .iter()
+            .any(|s| s.passive)
+    };
+    let name = |store: &Mutex<Store>| {
+        lock(store)
+            .tags()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == tag.id)
+            .unwrap()
+            .name
+    };
+
+    // Olağan eşitlemede eşit zamanlı satır yerinde kalır (iki cihaz birbirini ezip durmasın).
+    run(&b, &mut remote, "u1").unwrap();
+    assert!(!passive(&b));
+    assert_eq!(name(&b), "eski");
+
+    // Güncellenen sürümde şekil değişti, tablolar baştan çekilir: sunucudaki tam hal gelir.
+    lock(&b).forget_sync_cursor("sessions").unwrap();
+    lock(&b).forget_sync_cursor("tags").unwrap();
+    let summary = run(&b, &mut remote, "u1").unwrap();
+    assert!(passive(&b));
+    assert_eq!(name(&b), tag.name);
+    // Aynı kalan satırlar alınmış sayılmaz; düzeltilen satırlar geri gönderilmez.
+    assert_eq!(summary.pulled, 2, "{summary:?}");
+    assert_eq!(run(&b, &mut remote, "u1").unwrap().pushed, 0);
+    assert!(passive(&a));
+}
+
+#[test]
+fn rows_an_old_version_skipped_are_pulled_after_the_update() {
+    let a = Mutex::new(Store::open_in_memory().unwrap());
+    let b = Mutex::new(Store::open_in_memory().unwrap());
+    let mut remote = FakeRemote::default();
+    run(&a, &mut remote, "u1").unwrap();
+    lock(&b).record_app_version("0.9.73").unwrap();
+    // Yeni bir sürümün yazdığı, B'nin bu sürümünün okuyamadığı satır.
+    let mut bad = remote.rows["tags"].values().next().unwrap().clone();
+    let id = Uuid::new_v4().to_string();
+    bad["id"] = Value::String(id.clone());
+    bad["color"] = Value::from(42);
+    remote.push("tags", &[bad]).unwrap();
+    assert_eq!(run(&b, &mut remote, "u1").unwrap().skipped, 1);
+    let has = |store: &Mutex<Store>| lock(store).tags().unwrap().iter().any(|t| t.id == id);
+    assert!(!has(&b));
+    // İmleç sonraki satırlarla ilerler; atlanan satır her çalıştırmanın geri payından çıkar.
+    remote.clock += 10;
+    let renamed = Tag {
+        name: "Kod".into(),
+        ..lock(&a).tags().unwrap()[0].clone()
+    };
+    pause();
+    lock(&a).upsert_tag(&renamed, 0).unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+
+    // Satır sunucuda aynı (imleç onu geçti); güncellenen sürüm onu okuyabilir hale geldi.
+    remote.rows.get_mut("tags").unwrap().get_mut(&id).unwrap()["color"] = Value::from(3);
+    run(&b, &mut remote, "u1").unwrap();
+    assert!(
+        !has(&b),
+        "aynı sürümde atlanan tablo her seferinde baştan çekilmez"
+    );
+    assert!(!lock(&b).record_app_version("0.9.73").unwrap());
+    assert!(lock(&b).record_app_version("0.9.74").unwrap());
+    run(&b, &mut remote, "u1").unwrap();
+    assert!(has(&b));
+    // Okunan satırdan sonra işaret kalmaz: bir sonraki sürümde yeniden çekilmez.
+    assert!(lock(&b).record_app_version("0.9.75").unwrap());
+    assert!(
+        lock(&b)
+            .setting::<String>("sync_cursor:tags")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn computer_versions_reach_the_other_device() {
+    let a = Mutex::new(Store::open_in_memory().unwrap());
+    let b = Mutex::new(Store::open_in_memory().unwrap());
+    let mut remote = FakeRemote::default();
+    lock(&a)
+        .register_device("Mac Studio", "macos", "", "")
+        .unwrap();
+    lock(&a).record_app_version("0.9.74").unwrap();
+    lock(&b)
+        .register_device("Ofis PC", "windows", "", "")
+        .unwrap();
+    lock(&b).record_app_version("0.9.70").unwrap();
+    for _ in 0..2 {
+        run(&a, &mut remote, "u1").unwrap();
+        run(&b, &mut remote, "u1").unwrap();
+    }
+    let versions: Vec<(String, String)> = lock(&a)
+        .known_devices()
+        .unwrap()
+        .into_iter()
+        .map(|d| (d.name, d.version))
+        .collect();
+    assert_eq!(
+        versions,
+        [
+            ("Mac Studio".to_string(), "0.9.74".to_string()),
+            ("Ofis PC".to_string(), "0.9.70".to_string())
+        ]
+    );
+}

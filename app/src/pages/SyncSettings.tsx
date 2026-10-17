@@ -7,6 +7,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { formatTime } from "../lib/dates";
+import { cn } from "../lib/utils";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { friendlyError, toast } from "../lib/feedback";
 
@@ -196,11 +197,18 @@ function Devices() {
     }
   }
 
+  const outdated = devices.filter((d) => d.outdated);
   return (
     <SettingBlock
       label="Bilgisayarlar"
       hint="Takvimde bloğun hangi bilgisayardan geldiği ve bilgisayar filtresi bu adlarla görünür. Ad diğer bilgisayarlara da eşitlenir."
     >
+      {outdated.length > 0 && (
+        <p role="status" className="mb-2 max-w-md text-xs text-amber-700 dark:text-amber-400">
+          {outdated.map((d) => d.name).join(", ")} eski sürümde. Bu bilgisayarın eşitlediği yeni bilgileri okuyamaz; o
+          bilgisayarda menü çubuğundan Kum'u güncelle. Güncellenince atladıklarını yeniden çeker.
+        </p>
+      )}
       <ul className="max-w-md space-y-1.5">
         {devices.map((d) => (
           <li key={`${d.id}:${d.name}`} className="flex items-center gap-2">
@@ -219,10 +227,16 @@ function Devices() {
                 }
               }}
             />
-            <span className="w-28 shrink-0 text-xs text-muted-foreground">
+            <span className="w-28 shrink-0 text-xs leading-tight text-muted-foreground">
               {d.current
                 ? "Bu bilgisayar"
                 : d.model || (d.os === "windows" ? "Windows" : d.os === "macos" ? "Mac" : "")}
+              <span
+                className={cn("block tabular-nums", d.outdated && "text-amber-700 dark:text-amber-400")}
+                title={d.outdated ? "Bu bilgisayardan eski sürüm" : undefined}
+              >
+                {d.version ? `Sürüm ${d.version}` : d.outdated ? "Eski sürüm" : ""}
+              </span>
             </span>
           </li>
         ))}

@@ -230,6 +230,17 @@ fn migration_hint(message: String) -> String {
     }
 }
 
+/// Son iki haftada kullanılmış, bu bilgisayardan eski sürümdeki bilgisayarların adları.
+fn outdated_devices(app: &AppHandle) -> Option<String> {
+    let devices = lock(&app.state::<Shared>().store).known_devices().ok()?;
+    let names: Vec<String> = devices
+        .into_iter()
+        .filter(|d| d.outdated)
+        .map(|d| d.name)
+        .collect();
+    (!names.is_empty()).then(|| names.join(", "))
+}
+
 /// Sonucu kaydeder ve bildirir; başarısız olduysa `false` (yakında yeniden denenir).
 fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) -> bool {
     let last = match result {
@@ -266,6 +277,9 @@ fn record(app: &AppHandle, result: Result<Option<SyncSummary>, String>) -> bool 
                 if summary.outdated_schema {
                     m += ". Proje arşivi ve bütçeler eşitlenmedi: Supabase'de \
                           supabase/migrations/0007_archive_budget.sql dosyasını çalıştır";
+                }
+                if let Some(names) = outdated_devices(app) {
+                    m += &format!(". {names} eski sürümde: o bilgisayarda Kum'u güncelle");
                 }
                 m
             },
