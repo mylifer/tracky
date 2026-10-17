@@ -1310,3 +1310,25 @@ fn running_session_resumes_after_its_block_is_deleted() {
     assert_eq!(back.len(), 1);
     assert_eq!(back[0].started_at, from_ms(deleted_at));
 }
+
+#[test]
+fn only_this_computers_calls_prove_the_microphone_signal() {
+    use crate::calls::Call;
+    let store = Store::open_in_memory().unwrap();
+    assert!(!store.has_own_calls().unwrap());
+    let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+    let call = Call {
+        id: Uuid::new_v4(),
+        app_id: r"C:\Program Files\WindowsApps\MSTeams_x64__8wekyb3d8bbwe\ms-teams.exe".into(),
+        started_at: t0,
+        ended_at: t0 + chrono::Duration::minutes(30),
+    };
+    store.upsert_call(&call).unwrap();
+    assert!(store.has_own_calls().unwrap());
+    // Başka bilgisayarın görüşmesi bu bilgisayarın sinyalini kanıtlamaz.
+    store
+        .conn()
+        .execute("UPDATE calls SET device_id = 'öteki'", [])
+        .unwrap();
+    assert!(!store.has_own_calls().unwrap());
+}

@@ -83,6 +83,15 @@ impl Store {
         Ok(())
     }
 
+    /// Bu bilgisayar en az bir görüşme kaydetti mi (mikrofon sinyali burada çalışıyor mu)?
+    pub fn has_own_calls(&self) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM calls WHERE device_id = ?1 AND deleted_at IS NULL)",
+            params![self.device_id.to_string()],
+            |r| r.get(0),
+        )?)
+    }
+
     /// `[from, to)` boyunca kullanılan (boşta olmayan oturumu olan) bilgisayarların hepsi o
     /// andan önce görüşmeleri kaydetmeye başlamış mı? Hiç oturum yoksa yargılanamaz (`false`).
     pub fn calls_monitored(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<bool> {

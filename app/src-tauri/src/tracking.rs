@@ -91,13 +91,34 @@ const BUDGETS_EVERY: u32 = 600;
 
 /// Bu bilgisayarın görüşmeleri kaydedip kaydetmediğini işler (mikrofonu kullanan uygulama
 /// macOS'ta güç beyanlarından, Windows'ta gizlilik kaydından okunur): kaydetmeyen bilgisayarda
-/// geçen toplantı yargılanmaz.
-fn mark_call_detection(app: &AppHandle, privacy: &PrivacySettings) {
-    let on = cfg!(any(target_os = "macos", windows)) && privacy.detect_calls;
+/// geçen toplantı yargılanmaz. Windows'ta sinyal bu bilgisayarda bir görüşmede görülene kadar
+/// yargılanmaz (okuma çalışmıyorsa toplantılar yanlışlıkla "katılmadın" sayılmasın); o zamana
+/// kadar `true` döner, görüşme görülünce [`prove_call_detection`] açar.
+fn mark_call_detection(app: &AppHandle, privacy: &PrivacySettings) -> bool {
     let shared = app.state::<Shared>();
     let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
-    if let Err(e) = store.set_call_detection(on) {
+    let wanted = cfg!(any(target_os = "macos", windows)) && privacy.detect_calls;
+    let proven = cfg!(target_os = "macos") || store.has_own_calls().unwrap_or(false);
+    if let Err(e) = store.set_call_detection(wanted && proven) {
         log_error!("görüşme kaydı durumu yazılamadı: {e}");
+    }
+    wanted && !proven
+}
+
+/// İlk görüşme kaydedildiyse görüşme kaydını açar ([`mark_call_detection`]); açtıysa `true`.
+fn prove_call_detection(store: &tracky_core::Store) -> bool {
+    if !store.has_own_calls().unwrap_or(false) {
+        return false;
+    }
+    match store.set_call_detection(true) {
+        Ok(()) => {
+            log_info!("görüşme algılama bu bilgisayarda çalışıyor; toplantı katılımı yargılanır");
+            true
+        }
+        Err(e) => {
+            log_error!("görüşme kaydı durumu yazılamadı: {e}");
+            false
+        }
     }
 }
 
@@ -109,7 +130,7 @@ pub fn run(
     mut pause_until: Option<DateTime<Utc>>,
     rx: Receiver<Command>,
 ) {
-    mark_call_detection(&app, &privacy);
+    let mut awaiting_call = mark_call_detection(&app, &privacy);
     let mut tracker = Tracker::new(
         tracky_platform::provider(),
         EngineConfig::default(),
@@ -147,7 +168,7 @@ pub fn run(
         let mut force = false;
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(Command::SetPrivacy(p)) => {
-                mark_call_detection(&app, &p);
+                awaiting_call = mark_call_detection(&app, &p);
                 tracker.set_privacy(p);
             }
             Ok(Command::SetGoals(g)) => goals = g,
@@ -180,6 +201,9 @@ pub fn run(
         let now = Utc::now();
         let outcome = tracker.record(&store, now, observation);
         ticks = ticks.wrapping_add(1);
+        if awaiting_call && ticks.is_multiple_of(LIMITS_EVERY) && prove_call_detection(&store) {
+            awaiting_call = false;
+        }
         if !force
             && !outcome.changed
             && outcome.error.is_none()
