@@ -26,6 +26,7 @@ import { Button } from "./ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { UpdateCard } from "./UpdateCard";
+import { WhatsNewCard } from "./WhatsNewCard";
 
 const REPORTS: { id: Mode; label: string; icon: ReactNode }[] = [
   { id: "day", label: "Gün", icon: <CalendarDays /> },
@@ -188,6 +189,7 @@ export function Sidebar({
         </NavSection>
       </nav>
       <div className="space-y-2 p-2.5">
+        <WhatsNewCard />
         <UpdateCard status={update} onStatus={onUpdate} />
         <LiveCard tracking={tracking} dailyHours={dailyHours} onToggle={onTogglePause} />
       </div>

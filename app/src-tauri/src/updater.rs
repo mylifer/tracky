@@ -1,6 +1,7 @@
 //! Otomatik güncelleme: GitHub Releases'taki `latest.json`'u denetler, yeni
-//! sürümü arka planda indirir (imzası eklenti tarafından doğrulanır), kurulumu
-//! kullanıcı onayıyla yapar (Windows'ta kurulum uygulamayı kapattığı için).
+//! sürümü arka planda indirir (imzası eklenti tarafından doğrulanır). Kurulum ya elle
+//! (kenar çubuğu, menü çubuğu) ya da kimse bilgisayar başında değilken kendiliğinden yapılır:
+//! birden çok bilgisayar aynı sürümde kalsın. Kurulan sürümün notları ilk açılışta gösterilir.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +27,17 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Windows'ta kurulumdan hemen önce takip ve arka plan işleri durduruldu.
 static STOPPED_FOR_INSTALL: AtomicBool = AtomicBool::new(false);
+/// Hazır güncelleme bu kadar süre girdi olmadan geçince (video, görüşme yokken) kurulur.
+const AUTO_INSTALL_IDLE_SECS: u64 = 10 * 60;
+/// "Güncellemeleri kendiliğinden kur" (bu bilgisayarın ayarı; yoksa açık).
+const AUTO_KEY: &str = "auto_update";
+/// Kurulan sürümün notları; o sürüm ilk açıldığında gösterilir.
+const WHATS_NEW_KEY: &str = "whats_new";
+/// Sürümlerin dosyaları (`tauri.conf.json`'daki güncelleme adresiyle aynı depo): kurulumdan
+/// önce notu kaydedilmemiş sürümün notu o sürümün `latest.json`'undan okunur.
+const RELEASES: &str = "https://github.com/mylifer/tracky/releases/download";
+/// Notu yazılmamış eski sürümlerin sabit metni: gösterilmez.
+const PLACEHOLDER_NOTES: &str = "Güncellemeler uygulama içinden otomatik indirilir.";
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +51,18 @@ pub struct UpdateStatus {
     pub checking: bool,
     pub last_checked: Option<DateTime<Utc>>,
     pub error: Option<String>,
+    /// Hazır güncelleme boşta kendiliğinden kurulur.
+    pub auto: bool,
+}
+
+/// Kurulan sürümün notları ("Yenilikler").
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct WhatsNew {
+    pub version: String,
+    pub notes: String,
+    /// Kullanıcı kapattı.
+    #[serde(default)]
+    pub seen: bool,
 }
 
 #[derive(Default)]
@@ -48,10 +72,19 @@ pub struct UpdateState {
     pending: Mutex<Option<(Update, Vec<u8>)>>,
 }
 
+fn auto_enabled(app: &AppHandle) -> bool {
+    lock(&app.state::<crate::tracking::Shared>().store)
+        .setting::<bool>(AUTO_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or(true)
+}
+
 pub fn start(app: &tauri::App) {
     app.manage(UpdateState {
         status: Mutex::new(UpdateStatus {
             current: app.package_info().version.to_string(),
+            auto: auto_enabled(app.handle()),
             ..Default::default()
         }),
         pending: Mutex::new(None),
@@ -66,6 +99,7 @@ pub fn start(app: &tauri::App) {
                 if last.is_none_or(|t| Utc::now() - t >= INTERVAL) {
                     tauri::async_runtime::block_on(check_and_download(&handle));
                 }
+                install_when_away(&handle);
                 std::thread::sleep(TICK);
             }
         });
@@ -212,6 +246,15 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     let Some((update, bytes)) = lock(&app.state::<UpdateState>().pending).take() else {
         return Err("Kurulacak güncelleme yok".into());
     };
+    // Yeni sürüm ilk açıldığında notları gösterilsin.
+    save_whats_new(
+        app,
+        &WhatsNew {
+            version: update.version.clone(),
+            notes: update.body.clone().unwrap_or_default(),
+            seen: false,
+        },
+    );
     if let Err(e) = update.install(bytes) {
         // İndirilen paket gitti: "hazır" görünmesin, bir sonraki denetim yeniden indirsin.
         let msg = message(e);
@@ -231,6 +274,103 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     // kapanmakta olan eskisine devredip çıkabilir. `request_restart` olağan kapanıştan geçer.
     app.request_restart();
     Ok(())
+}
+
+/// Hazır güncellemeyi kimse bilgisayar başında değilken kurar: ayar açık, yeterince uzun süre
+/// girdi yok (video ve görüşme girdi sayılır), zaman çizelgesi aktarılmıyor.
+fn install_when_away(app: &AppHandle) {
+    let state = app.state::<UpdateState>();
+    let (ready, version) = {
+        let status = lock(&state.status);
+        (status.ready, status.available.clone().unwrap_or_default())
+    };
+    if !ready
+        || crate::tracking::idle_seconds() < AUTO_INSTALL_IDLE_SECS
+        || !auto_enabled(app)
+        || crate::timesheet::export::not_exporting().is_err()
+    {
+        return;
+    }
+    log_info!("güncelleme boştayken kendiliğinden kuruluyor: {version}");
+    if let Err(e) = install(app) {
+        log_error!("güncelleme kendiliğinden kurulamadı: {e}");
+    }
+}
+
+/// Bu sürümün notları: kurulumdan önce kaydedildiyse oradan, yoksa (elle kurulum, önceki
+/// sürümden güncelleme) sürümün `latest.json`'undan bir kez okunur. Kapatıldıysa ya da not
+/// yoksa `None`.
+#[tauri::command]
+pub async fn whats_new(app: AppHandle) -> Option<WhatsNew> {
+    let current = app.package_info().version.to_string();
+    let saved = saved_whats_new(&app).filter(|w| w.version == current);
+    let entry = match saved {
+        Some(w) => w,
+        None => {
+            let version = current.clone();
+            let notes = tauri::async_runtime::spawn_blocking(move || release_notes(&version))
+                .await
+                .ok()
+                .flatten()?;
+            let w = WhatsNew {
+                version: current,
+                notes,
+                seen: false,
+            };
+            save_whats_new(&app, &w);
+            w
+        }
+    };
+    (!entry.seen && !entry.notes.trim().is_empty() && entry.notes.trim() != PLACEHOLDER_NOTES)
+        .then_some(entry)
+}
+
+#[tauri::command]
+pub fn dismiss_whats_new(app: AppHandle) {
+    if let Some(mut w) = saved_whats_new(&app) {
+        w.seen = true;
+        save_whats_new(&app, &w);
+    }
+}
+
+fn saved_whats_new(app: &AppHandle) -> Option<WhatsNew> {
+    lock(&app.state::<crate::tracking::Shared>().store)
+        .setting::<WhatsNew>(WHATS_NEW_KEY)
+        .ok()
+        .flatten()
+}
+
+fn save_whats_new(app: &AppHandle, w: &WhatsNew) {
+    if let Err(e) =
+        lock(&app.state::<crate::tracking::Shared>().store).save_setting(WHATS_NEW_KEY, w)
+    {
+        log_error!("sürüm notları kaydedilemedi: {e}");
+    }
+}
+
+/// Sürümün notları (o sürümün yayınındaki `latest.json`); okunamazsa `None`.
+fn release_notes(version: &str) -> Option<String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(CHECK_TIMEOUT))
+        .build()
+        .into();
+    let json: serde_json::Value = agent
+        .get(&format!("{RELEASES}/v{version}/latest.json"))
+        .call()
+        .ok()?
+        .body_mut()
+        .read_json()
+        .ok()?;
+    Some(json.get("notes")?.as_str()?.to_string())
+}
+
+/// "Güncellemeleri kendiliğinden kur" ayarı.
+#[tauri::command]
+pub fn set_auto_update(app: AppHandle, enabled: bool) -> Result<UpdateStatus, String> {
+    lock(&app.state::<crate::tracking::Shared>().store)
+        .save_setting(AUTO_KEY, &enabled)
+        .map_err(|e| e.to_string())?;
+    Ok(set(&app, |s| s.auto = enabled))
 }
 
 /// `a`, `b`'den yeni mi (semver; çözülemezse metin farkı yeni sayılır).

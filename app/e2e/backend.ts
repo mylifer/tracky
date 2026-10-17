@@ -320,6 +320,7 @@ const update: UpdateStatus = {
   checking: false,
   lastChecked: at("13:00"),
   error: null,
+  auto: true,
 };
 
 const calendar: CalendarStatus = { url: null, events: 0, last: null, lastOk: null, ignored: 0 };
@@ -364,6 +365,13 @@ const handlers: Record<string, Handler> = {
   get_ai_settings: () => ({ enabled: false, hasKey: false, keyHint: null, model: "claude" }),
   backup_status: () => ({ dir: "/tmp/yedek", last: null, damage: null, files: [] }),
   client_report: (a) => clientReport(a.month as string),
+  whats_new: () => ({
+    version: "0.9.75",
+    notes:
+      "- Güncellemeler bilgisayar başında değilken kendiliğinden kurulur\n- Düzenlemeler öteki bilgisayara hemen gider",
+  }),
+  dismiss_whats_new: () => null,
+  set_auto_update: (a) => ({ ...update, auto: a.enabled as boolean }),
   preview_rule: () => ({
     matchedSeconds: 1800,
     gainedSeconds: 1800,

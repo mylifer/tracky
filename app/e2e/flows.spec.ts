@@ -29,3 +29,20 @@ test("Zaman çizelgesi: çekirdeğe göre süren satır toplu gönderime girmez"
   await app.emit("sync", null);
   await expect(waiting("Gönderilmemiş satırlar")).toContainText("2");
 });
+
+test("Yenilikler: kurulan sürümün notları bir kez gösterilir, kapatılır", async ({ app, page }) => {
+  const card = page.getByRole("region", { name: "Kum 0.9.75 yenilikleri" });
+  await expect(card).toContainText("Güncellemeler bilgisayar başında değilken kendiliğinden kurulur");
+  await card.getByRole("button", { name: "Yenilikleri kapat" }).click();
+  await expect(card).toHaveCount(0);
+  expect(await app.calls("dismiss_whats_new")).toHaveLength(1);
+});
+
+test("Ayarlar: güncellemeleri kendiliğinden kurma kapatılabilir", async ({ app, page }) => {
+  await app.open("Ayarlar");
+  const toggle = page.getByRole("switch", { name: "Güncellemeleri kendiliğinden kur" });
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  expect((await app.calls("set_auto_update"))[0].args).toEqual({ enabled: false });
+});

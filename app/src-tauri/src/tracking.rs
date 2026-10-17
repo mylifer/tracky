@@ -122,6 +122,14 @@ fn prove_call_detection(store: &tracky_core::Store) -> bool {
     }
 }
 
+/// Son gözlemde girdi olmadan geçen süre (saniye); video ya da görüşme sürerken 0. Güncelleme
+/// kimse bilgisayar başında değilken kurulsun diye ([`crate::updater`]).
+static IDLE_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn idle_seconds() -> u64 {
+    IDLE_SECS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Takibi çalıştırır ([`run`]). Takip beklenmedik bir hatayla (panik) çökerse günlüğe yazılır
 /// ([`crate::applog::install_panic_hook`]), bir kez bildirilir ve ayarlar yeniden okunup takip
 /// yeniden başlar; yoksa takip sessizce durur ve süre kaybolurdu. Üst üste çökerse bekleme
@@ -256,6 +264,7 @@ fn run(
 
         // Platform çağrıları kilit dışında: yanıt vermeyen bir uygulama arayüzü kilitlemesin.
         let observation = tracker.observe();
+        IDLE_SECS.store(observation.idle(), std::sync::atomic::Ordering::Relaxed);
         let shared = app.state::<Shared>();
         let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
         let now = Utc::now();

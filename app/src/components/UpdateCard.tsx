@@ -46,6 +46,9 @@ export function UpdateCard({ status, onStatus }: { status: UpdateStatus | null; 
           {installing ? "Kuruluyor…" : "Yükle ve yeniden başlat"}
         </Button>
       )}
+      {status.ready && status.auto && !installing && (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">Bilgisayar başında değilken kendiliğinden kurulur.</p>
+      )}
       {failed && (
         <Button
           size="sm"

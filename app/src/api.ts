@@ -538,7 +538,11 @@ export type UpdateStatus = {
   checking: boolean;
   lastChecked: string | null;
   error: string | null;
+  /** Hazır güncelleme bilgisayar başında kimse yokken kendiliğinden kurulur. */
+  auto: boolean;
 };
+/** Kurulan sürümün notları ("Yenilikler"). */
+export type WhatsNew = { version: string; notes: string };
 
 /** Müşteri raporunun kaynağı: zaman çizelgesi satırları ya da takip edilen süre. */
 export type ReportSource = "timesheet" | "tracked";
@@ -799,6 +803,10 @@ export const api = {
   updateStatus: () => invoke<UpdateStatus>("update_status"),
   checkUpdate: () => invoke<UpdateStatus>("check_update"),
   installUpdate: () => invoke<void>("install_update"),
+  setAutoUpdate: (enabled: boolean) => invoke<UpdateStatus>("set_auto_update", { enabled }),
+  /** Bu sürümün notları; kapatıldıysa ya da not yoksa `null`. */
+  whatsNew: () => invoke<WhatsNew | null>("whats_new"),
+  dismissWhatsNew: () => invoke<void>("dismiss_whats_new"),
   onUpdate: (cb: (s: UpdateStatus) => void): Promise<UnlistenFn> =>
     listen<UpdateStatus>("update", (e) => cb(e.payload)),
   /** Menüden, menü çubuğundan ya da bildirimden gelen sayfa isteği ("day", "timesheet", "palette"…). */

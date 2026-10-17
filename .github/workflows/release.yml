@@ -10,8 +10,27 @@ permissions:
   contents: write
 
 jobs:
+  # Sürüm notları: önceki etiketten bu yana feat/fix/perf commit'leri. Uygulama kurulan sürümün
+  # notlarını ilk açılışta "Yenilikler" olarak gösterir (latest.json'daki `notes`).
+  notes:
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.notes.outputs.body }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - id: notes
+        run: |
+          {
+            echo 'body<<NOTES_EOF'
+            python3 .github/scripts/release-notes.py "$GITHUB_REF_NAME"
+            echo 'NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.os }}
+    needs: notes
     strategy:
       fail-fast: false
       matrix:
@@ -72,7 +91,7 @@ jobs:
           projectPath: app
           tagName: ${{ github.ref_name }}
           releaseName: Kum ${{ github.ref_name }}
-          releaseBody: Güncellemeler uygulama içinden otomatik indirilir.
+          releaseBody: ${{ needs.notes.outputs.body }}
           releaseDraft: true
           prerelease: false
           args: --bundles ${{ matrix.bundles }}

@@ -638,6 +638,9 @@ pub fn run() {
             updater::update_status,
             updater::check_update,
             updater::install_update,
+            updater::set_auto_update,
+            updater::whats_new,
+            updater::dismiss_whats_new,
         ])
         .setup(setup);
     // macOS: "Küçült" (⌘M) pencereyi Dock'a değil Kum'un simgesine alır (dock.rs).

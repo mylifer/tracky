@@ -40,6 +40,13 @@ pub struct Observation {
     calls: Option<CallApps>,
 }
 
+impl Observation {
+    /// Son girdiden beri geçen süre (saniye); video ya da görüşme sürerken (girdisiz izleme) 0.
+    pub fn idle(&self) -> u64 {
+        self.idle
+    }
+}
+
 /// Gözlem → gizlilik → motor → depolama hattı. Saniyede bir `tick` çağrılır.
 ///
 /// Platform çağrıları (macOS'ta yanıt vermeyen uygulamada saniyeler sürebilir)

@@ -162,7 +162,7 @@ impl Drop for ExportGuard {
 /// "aktarıldı" işaretler; arada değişen kayıt dosyaya eski haliyle yazılmış ya da hiç
 /// yazılmamışken işaretlenirdi. Depo kilidi tutulurken çağrılmalı (aktarım gönderdiği kayıtları
 /// aynı kilit altında okur).
-pub(super) fn not_exporting() -> CmdResult<()> {
+pub(crate) fn not_exporting() -> CmdResult<()> {
     if EXPORTING.load(Ordering::Acquire) {
         return Err("Zaman çizelgesi aktarılıyor; aktarım bitince tekrar dene.".into());
     }

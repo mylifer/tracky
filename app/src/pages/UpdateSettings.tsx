@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { ErrorText, SettingRow } from "../components/settings";
+import { ErrorText, SettingRow, ToggleRow } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { useUpdate } from "../lib/useUpdate";
 import { friendlyError } from "../lib/feedback";
@@ -54,6 +54,12 @@ export default function UpdateSettings() {
           </Button>
         )}
       </SettingRow>
+      <ToggleRow
+        label="Güncellemeleri kendiliğinden kur"
+        hint="Hazır güncelleme, 10 dakika boyunca bilgisayar başında olmadığında (video ya da görüşme yokken) kurulur ve Kum yeniden açılır. Bütün bilgisayarlar aynı sürümde kalır."
+        checked={status.auto}
+        onChange={(v) => api.setAutoUpdate(v).then(setStatus, (e) => setError(friendlyError(e)))}
+      />
       {(error || (status.ready && status.notes)) && (
         <div className="space-y-1 px-4 py-2.5">
           <ErrorText>{error}</ErrorText>
