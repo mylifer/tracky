@@ -241,7 +241,10 @@ pub async fn connect_sheet(
     });
     config.timesheets[i].sheet_url = Some(url);
     config.timesheets[i].sheet_link = link.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
-    apply_template(&store, config, i, template, new)
+    let imported = apply_template(&store, config, i, template, new)?;
+    // Tablo okunurken komut başında tetiklenen eşitleme geçmiş olabilir.
+    crate::sync::soon(&app);
+    Ok(imported)
 }
 
 /// Çizelgenin Google Sheets bağlantısını kaldırır; kayıtları yeniden Excel dosyasına (seçiliyse)

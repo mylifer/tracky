@@ -130,8 +130,15 @@ const EDIT_COMMANDS: &[&str] = &[
 /// Komut eşitlenen veriyi değiştiriyorsa birkaç saniye içinde eşitlenir.
 pub fn after_command(app: &AppHandle, command: &str) {
     if EDIT_COMMANDS.contains(&command) {
-        let _ = lock(&app.state::<SyncWorker>().tx).send(SyncCommand::Soon);
+        soon(app);
     }
+}
+
+/// Birkaç saniye içinde eşitle ve öteki bilgisayarları dürt. [`after_command`] komut başlarken
+/// çalışır: ağ bekleyen bir komut (takvim okuma, Sheets) [`SOON`]'dan uzun sürerse değişikliği
+/// eşitlemeden sonra yazar; böyle komutlar bitince bunu da çağırır.
+pub fn soon(app: &AppHandle) {
+    let _ = lock(&app.state::<SyncWorker>().tx).send(SyncCommand::Soon);
 }
 
 pub struct SyncWorker {

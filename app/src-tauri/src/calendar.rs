@@ -363,6 +363,8 @@ pub async fn set_calendar_url(app: AppHandle, url: Option<String>) -> CmdResult<
     }
     let status = status(&app);
     let _ = app.emit("calendar", status.clone());
+    // Okuma uzun sürebilir: bağlantı, komut başlarken tetiklenen eşitlemeden sonra kaydedildi.
+    crate::sync::soon(&app);
     Ok(status)
 }
 

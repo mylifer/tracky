@@ -417,6 +417,9 @@ pub async fn export_timesheet(
         log_error!("aktarım kaydı silinemedi: {e}");
     }
     *lock(&LAST_EXPORT) = Some(LastExport { ids, target });
+    // Sheets'e yazmak sürebilir: satırların durumu komut başında tetiklenen eşitlemeden sonra
+    // değişti, öteki bilgisayar aynı satırları göndermesin diye hemen eşitlenir.
+    crate::sync::soon(&app);
     Ok(exported)
 }
 
@@ -502,6 +505,7 @@ pub async fn undo_last_export(app: AppHandle) -> CmdResult<String> {
     lock(&app.state::<Shared>().store)
         .unmark_timesheet_exported(&undone)
         .map_err(err)?;
+    crate::sync::soon(&app);
     Ok(message)
 }
 
