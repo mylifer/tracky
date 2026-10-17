@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { api, type Edited, formatDuration, NO_PROJECT, type Report, type Tag, type WorkBlock } from "../api";
 import { projectShare, type ProjectShare } from "../lib/blockWindows";
@@ -18,6 +18,7 @@ import { friendlyError, notifyChanged, toast, undoable, useChanged } from "../li
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { UNCATEGORIZED, tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
+import { useLatest } from "../lib/latest";
 import { AppIconStack } from "./AppIcon";
 import { BlockDetails } from "./calendar/BlockDetails";
 import { blockLabel } from "./calendar/Block";
@@ -52,17 +53,17 @@ export function ProjectBlocks({ projectIds, showProject = false }: { projectIds:
   const startIso = isoDate(start);
   const [report, setReport] = useState<{ start: string; days: number; data: Report } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const seq = useRef(0);
+  const begin = useLatest();
 
   const load = useCallback(() => {
-    const n = ++seq.current;
+    const current = begin();
     api.report(startIso, days, true).then(
       (data) => {
-        if (n !== seq.current) return;
+        if (!current()) return;
         setReport({ start: startIso, days, data });
         setError(null);
       },
-      (e) => n === seq.current && setError(friendlyError(e)),
+      (e) => current() && setError(friendlyError(e)),
     );
   }, [startIso, days]);
   useEffect(load, [load]);

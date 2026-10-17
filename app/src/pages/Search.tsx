@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FileDown, Search as SearchIcon } from "lucide-react";
 import { api, formatDuration, type SearchResult } from "../api";
 import { ErrorText, Page } from "../components/settings";
@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { addDays, formatDate, isoDate, today } from "../lib/dates";
 import { cn } from "../lib/utils";
+import { useLatest } from "../lib/latest";
 import { friendlyError } from "../lib/feedback";
 
 export const PERIODS = [
@@ -38,10 +39,10 @@ export default function Search({
   const start = useMemo(() => addDays(today(), 1 - state.days), [state.days]);
 
   // Yazarken her tuşta değil, kısa bir duraklamadan sonra ara; geç gelen eski yanıt ezmesin.
-  const seq = useRef(0);
+  const begin = useLatest();
   useEffect(() => {
     const query = state.query.trim();
-    const n = ++seq.current;
+    const current = begin();
     if (!query) {
       setFound(null);
       return;
@@ -50,11 +51,11 @@ export default function Search({
     const id = window.setTimeout(() => {
       api.search(query, isoDate(start), state.days).then(
         (r) => {
-          if (n !== seq.current) return;
+          if (!current()) return;
           setFound({ days, result: r });
           setError(null);
         },
-        (e) => n === seq.current && setError(friendlyError(e)),
+        (e) => current() && setError(friendlyError(e)),
       );
     }, 250);
     return () => window.clearTimeout(id);

@@ -15,6 +15,7 @@ import { tagMap } from "../lib/tags";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { friendlyError, toast, undoable, useChanged } from "../lib/feedback";
 import { cn } from "../lib/utils";
+import { useLatest } from "../lib/latest";
 import { CAL_ZOOM_MIN, clampZoom, stepZoom, useZoomGestures } from "../lib/zoom";
 import { AppList, Legend } from "./Breakdown";
 import AppTimeline from "./AppTimeline";
@@ -115,18 +116,18 @@ export default function ReportView(p: Props) {
   const [entriesOf, setEntriesOf] = useState<{ start: string; days: number; list: EntryView[] | null } | null>(null);
 
   // Her yükleme bir sıra numarası alır; geç gelen eski yanıt (başka dönem) ekranı ezmez.
-  const seq = useRef(0);
+  const begin = useLatest();
   const load = useCallback(() => {
-    const n = ++seq.current;
+    const current = begin();
     const mode = p.mode;
     api.report(p.start, days, timeline, undefined, device).then(
       (r) => {
-        if (n !== seq.current) return;
+        if (!current()) return;
         setLoaded({ mode, report: r });
         setError(null);
       },
       (e) => {
-        if (n !== seq.current) return;
+        if (!current()) return;
         // Önceki dönemin rakamları yeni başlığın altında kalmasın.
         setLoaded(null);
         setError(friendlyError(e));
@@ -141,18 +142,18 @@ export default function ReportView(p: Props) {
     const live = elapsed > 0 && elapsed < +addDays(start, days) - +start;
     const until = live ? new Date(+prevStart + elapsed).toISOString() : undefined;
     api.report(isoDate(prevStart), fullPrev, false, until, device).then(
-      (r) => n === seq.current && setPrevious(r),
-      () => n === seq.current && setPrevious(null),
+      (r) => current() && setPrevious(r),
+      () => current() && setPrevious(null),
     );
     api.unassigned(p.start, days).then(
-      (u) => n === seq.current && setReview({ seconds: u.totalSeconds, idle: u.idleSeconds }),
-      () => n === seq.current && setReview(null),
+      (u) => current() && setReview({ seconds: u.totalSeconds, idle: u.idleSeconds }),
+      () => current() && setReview(null),
     );
     if (mode !== "month") {
       const day = p.start;
       dayEntries(day, days).then(
-        (list) => n === seq.current && setEntriesOf({ start: day, days, list }),
-        () => n === seq.current && setEntriesOf(null),
+        (list) => current() && setEntriesOf({ start: day, days, list }),
+        () => current() && setEntriesOf(null),
       );
     }
   }, [p.start, p.mode, days, timeline, device]);

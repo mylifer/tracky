@@ -23,6 +23,7 @@ import { tagColor, tagInk, UNASSIGNED } from "../lib/tags";
 import { blocked, isStale, needsDetails, running as entryRunning, started } from "../lib/timesheet";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { cn } from "../lib/utils";
+import { useLatest } from "../lib/latest";
 import { defaultDivision, exportNotice, KINDS, num, toRef } from "../pages/timesheet/shared";
 
 /** Bloğun yüksekliği süreyle uzar (dakika başına), kısa işte de okunur, uzun işte sayfayı kaplamaz. */
@@ -149,16 +150,16 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
-  const seq = useRef(0);
+  const begin = useLatest();
   const load = useCallback(async () => {
-    const n = ++seq.current;
+    const current = begin();
     try {
       const list = await fetchSheets(day);
-      if (n !== seq.current) return;
+      if (!current()) return;
       setSheets(list);
       setError(null);
     } catch (e) {
-      if (n === seq.current) setError(friendlyError(e));
+      if (current()) setError(friendlyError(e));
     }
   }, [day]);
   useEffect(() => {
