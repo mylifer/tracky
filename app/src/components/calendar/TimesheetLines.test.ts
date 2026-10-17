@@ -8,6 +8,7 @@ function row(key: string, start: string, hours: number): EntryView {
     id: null,
     exported: false,
     stale: null,
+    openUntil: 0,
     date: "2026-03-02",
     start,
     hours,

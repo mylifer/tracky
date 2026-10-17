@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { ChevronRight, PenLine } from "lucide-react";
 import { type EditScope, formatDuration, NO_PROJECT, type Tag, type WindowSpan } from "../api";
+import { BREAK_GAP_MS } from "../lib/core";
 import { addDays, formatTime, fromWallMs, isoDate, today, wallMs } from "../lib/dates";
 import { tagColor } from "../lib/tags";
 import { detailRows, onlyOther, type MinorBond } from "../lib/minorWindows";
@@ -134,7 +135,7 @@ export function slotMinutes(days: number, zoom: number): number {
 }
 
 /** Şeridin aralıkları arasında bundan kısa boşluk işi bölmez (takvimdeki mola sınırı). */
-const RUN_GAP_MS = 5 * MIN_MS;
+const RUN_GAP_MS = BREAK_GAP_MS;
 
 /**
  * Pencereleri `slotMin` dakikalık dilimlere toplar; dilimin en az üçte biri doluysa dilim

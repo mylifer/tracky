@@ -1,8 +1,5 @@
 import type { BudgetUsage } from "../api";
 
-/** Bütçenin bu oranında uyarılır (çekirdekteki `BUDGET_WARN_RATIO`). */
-export const BUDGET_WARN = 0.8;
-
 const daysFormat = new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 1 });
 
 /** Saniyeyi adam-güne çevirip yazar: "12,5". */
@@ -15,10 +12,9 @@ export function budgetRatio(u: BudgetUsage): number {
   return u.budgetSeconds > 0 ? u.usedSeconds / u.budgetSeconds : 0;
 }
 
-/** Durum: bütçe dolduysa "over", %80'i geçtiyse "near". */
+/** Durum: bütçe dolduysa "over", uyarı eşiğini geçtiyse "near" (eşiğe çekirdek karar verir). */
 export function budgetState(u: BudgetUsage): "ok" | "near" | "over" {
-  const r = budgetRatio(u);
-  return r >= 1 ? "over" : r >= BUDGET_WARN ? "near" : "ok";
+  return u.level === "reached" ? "over" : u.level === "near" ? "near" : "ok";
 }
 
 /**

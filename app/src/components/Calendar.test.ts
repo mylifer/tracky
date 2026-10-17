@@ -120,6 +120,7 @@ describe("çizelge merceği", () => {
     key: details,
     exported: false,
     stale: null,
+    openUntil: 0,
   });
   const spans = sheetSpans([
     row("2026-10-01", "09:00:00", 1, "Toplantı"),

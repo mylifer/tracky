@@ -22,15 +22,38 @@ pub fn day_seconds(day_hours: f64) -> f64 {
     hours * 3600.0
 }
 
-/// Bir proje ya da müşterinin bütçesi ve harcanan süre.
+/// Bir proje ya da müşterinin bütçesi ve harcanan süre. Arayüze eşiğiyle ([`BudgetUsage::level`])
+/// gider: uyarı oranı yalnızca burada.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(into = "UsageView")]
 pub struct BudgetUsage {
     pub id: String,
     pub budget_days: f64,
     pub budget_seconds: i64,
     /// Bugüne kadar yazılan süre (müşteride projelerinin toplamı).
     pub used_seconds: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageView {
+    id: String,
+    budget_days: f64,
+    budget_seconds: i64,
+    used_seconds: i64,
+    level: Option<BudgetLevel>,
+}
+
+impl From<BudgetUsage> for UsageView {
+    fn from(u: BudgetUsage) -> Self {
+        UsageView {
+            level: u.level(),
+            id: u.id,
+            budget_days: u.budget_days,
+            budget_seconds: u.budget_seconds,
+            used_seconds: u.used_seconds,
+        }
+    }
 }
 
 impl BudgetUsage {
@@ -179,6 +202,16 @@ mod tests {
     use super::*;
 
     const DAY: i64 = 8 * 3600;
+
+    #[test]
+    fn usage_reaches_the_ui_with_its_level() {
+        let json = |used| serde_json::to_value(&usage(used).projects[0]).unwrap();
+        assert_eq!(json(8 * DAY)["level"], "near");
+        assert_eq!(json(10 * DAY)["level"], "reached");
+        assert!(json(DAY)["level"].is_null());
+        assert_eq!(json(DAY)["usedSeconds"], DAY);
+        assert_eq!(json(DAY)["budgetDays"], 10.0);
+    }
 
     fn usage(used: i64) -> Budgets {
         budgets(

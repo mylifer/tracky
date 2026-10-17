@@ -20,6 +20,7 @@ function row(projectId: string, hours: number, details = "", kind: EntryKind = "
     key: id,
     exported,
     stale: null,
+    openUntil: 0,
     date: "2026-09-28",
     start: "09:00:00",
     hours,
@@ -104,32 +105,15 @@ describe("toplu gönderim", () => {
     expect(started(at("2026-10-01", "09:00:00"), now)).toBe(false);
   });
 
-  it("süren işi yazılan (yuvarlanmış) saate göre değil işin kendisine göre ayırır", () => {
+  it("süren işe çekirdeğin verdiği bitişe kadar dokunmaz, başlamamış işe hiç", () => {
     const t = (h: number, m: number) => +new Date(2026, 8, 28, h, m);
-    // 09:00'da başlayan, 0,75 saate yuvarlanmış ama 09:00–09:20 ve 09:30–10:00 arasında geçen iş.
-    const live = {
-      ...row("a", 0.75, "x"),
-      id: null,
-      coverage: [
-        [t(9, 0), t(9, 20)],
-        [t(9, 30), t(10, 0)],
-      ] as [number, number][],
-    };
-    // 09:45'te (yazılan bitiş) iş sürüyor.
+    // 09:00'da başlayan satırın işi çekirdeğe göre 10:15'e kadar sürüyor (yazılan saat 0,75).
+    const live = { ...row("a", 0.75, "x"), id: null, openUntil: t(10, 15) };
     expect(running(live, new Date(t(9, 50)))).toBe(true);
-    // Son işten sonra 15 dk dolmadan dönülen iş aynı satıra eklenir: hâlâ sürüyor.
-    expect(running(live, new Date(t(10, 10)))).toBe(true);
-    expect(running(live, new Date(t(10, 16)))).toBe(false);
-    // Kaydedilmiş satıra yeni iş eklenmez: bitişinde biter.
-    const saved = { ...live, id: "s1" };
-    expect(running(saved, new Date(t(10, 1)))).toBe(false);
-    // 0,5 saate yuvarlanmış 09:00–09:20 işi 09:25'te bitmiştir (kaydedilmişse).
-    const short = { ...row("a", 0.5, "x"), coverage: [[t(9, 0), t(9, 20)]] as [number, number][] };
-    expect(running(short, new Date(t(9, 25)))).toBe(false);
-    // Aralığı olmayan (elle eklenen) satır başlangıç + saat kadar sürer.
-    const manual = { ...row("a", 1, "x"), coverage: [] };
-    expect(running(manual, new Date(t(9, 59)))).toBe(true);
-    expect(running(manual, new Date(t(10, 0)))).toBe(false);
+    expect(running(live, new Date(t(10, 14)))).toBe(true);
+    expect(running(live, new Date(t(10, 15)))).toBe(false);
+    // Henüz başlamamış (ileri saatteki) satır sürüyor sayılmaz; toplu gönderimden ayrıca çıkar.
+    expect(running(live, new Date(t(8, 59)))).toBe(false);
   });
 });
 

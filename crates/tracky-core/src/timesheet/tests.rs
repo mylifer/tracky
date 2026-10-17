@@ -872,3 +872,27 @@ fn spans_coalesce() {
     assert_eq!(from_coverage(&to_coverage(&spans)), spans);
     assert_eq!(total(&spans), Duration::minutes(40));
 }
+
+#[test]
+fn a_row_runs_until_its_work_ends_not_its_rounded_hours() {
+    let ms = |m| t(m).timestamp_millis();
+    // 09:00'da başlayan, 0,75 saate yuvarlanmış ama 09:00–09:20 ve 09:30–10:00 arasında geçen iş.
+    let worked = TimesheetEntry {
+        coverage: Some(vec![[ms(0), ms(20)], [ms(30), ms(60)]]),
+        ..entry("a", EntryKind::Working, 9, 0, 0.75)
+    };
+    // Takipten gelen satıra son işinden sonra 15 dk dolmadan dönülen iş eklenir.
+    assert_eq!(worked.open_until(true), t(60) + MERGE_GAP);
+    // Kaydedilmiş satıra yeni iş eklenmez: bitişinde biter (yazılan 09:45'te değil).
+    assert_eq!(worked.open_until(false), t(60));
+    // Aralığı olmayan (elle eklenen) ve aralıkları bilinmeyen (eski) satır başlangıç + saat.
+    let manual = TimesheetEntry {
+        coverage: Some(vec![]),
+        ..entry("a", EntryKind::Working, 9, 0, 1.0)
+    };
+    assert_eq!(manual.open_until(true), t(60));
+    assert_eq!(
+        entry("a", EntryKind::Working, 9, 0, 1.5).open_until(false),
+        t(90)
+    );
+}

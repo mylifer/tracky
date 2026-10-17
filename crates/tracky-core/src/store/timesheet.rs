@@ -68,6 +68,9 @@ pub struct DayRow {
     /// Kaydedildikten sonra işin bir kısmı raporda başka projeye (ya da projesize) alındıysa
     /// projede kalan gerçek süre (saat); satır güncellenmeden aktarılmaz.
     pub stale: Option<f64>,
+    /// İşin sürdüğü sayılan son an (unix ms, [`TimesheetEntry::open_until`]): o zamana kadar
+    /// satır gönderilmez.
+    pub open_until: i64,
     #[serde(flatten)]
     pub entry: TimesheetEntry,
 }
@@ -628,6 +631,7 @@ impl Store {
                 id: Some(s.id),
                 exported: s.exported_at.is_some(),
                 stale,
+                open_until: s.entry.open_until(false).timestamp_millis(),
                 entry: s.entry,
             });
         }
@@ -636,6 +640,7 @@ impl Store {
             id: None,
             exported: false,
             stale: None,
+            open_until: entry.open_until(true).timestamp_millis(),
             entry,
         }));
         rows.sort_by(|a, b| {

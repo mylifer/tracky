@@ -64,7 +64,14 @@ export type RuleField = "app" | "title" | "domain";
 export type Rule = { id: string; tagId: string; field: RuleField; pattern: string };
 export type Client = { id: string; name: string; budgetDays?: number | null };
 /** Proje ya da müşterinin bütçesi ve bugüne kadar harcanan süre. */
-export type BudgetUsage = { id: string; budgetDays: number; budgetSeconds: number; usedSeconds: number };
+export type BudgetUsage = {
+  id: string;
+  budgetDays: number;
+  budgetSeconds: number;
+  usedSeconds: number;
+  /** Eşik (çekirdekteki `BUDGET_WARN_RATIO`'ya göre): %80'i geçti ya da doldu. */
+  level: "near" | "reached" | null;
+};
 export type Budgets = {
   /** Bir adam-günün saati (zaman çizelgesi ayarı; yoksa 8). */
   dayHours: number;
@@ -247,6 +254,11 @@ export type EntryView = TimesheetEntry & {
   exported: boolean;
   /** Takipte değişti: işin bir kısmı raporda başka projeye alınmış; projede kalan süre (saat). */
   stale: number | null;
+  /**
+   * İşin sürdüğü sayılan son an (unix ms; çekirdekteki `TimesheetEntry::open_until`): kapsadığı
+   * son aralığın sonu, canlı satırda `MERGE_GAP` kadar sonrası; elle eklenende başlangıç + saat.
+   */
+  openUntil: number;
 };
 /** Firmanın dosyasındaki (Excel ya da Sheets) bir kayıt satırı. */
 export type FileRow = {

@@ -25,6 +25,7 @@ const entry = (start: string): EntryView => ({
   key: `k-${start}`,
   exported: false,
   stale: null,
+  openUntil: 0,
 });
 
 const day = (entries: EntryView[]): TimesheetDay => ({

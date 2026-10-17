@@ -233,6 +233,24 @@ impl TimesheetEntry {
             .map(from_coverage)
             .unwrap_or_default()
     }
+
+    /// Satırın işinin sürdüğü sayılan son an (henüz gönderilmez). Yazılan saat yuvarlanmıştır:
+    /// bitiş, kapsadığı son takip aralığından. Takipten gelen (`live`, kaydedilmemiş) satıra son
+    /// işinden sonra [`MERGE_GAP`] dolmadan dönülen iş eklenir, o zamana kadar sürüyor sayılır;
+    /// kaydedilmiş satır yalnızca bitişine kadar (ör. süren toplantı). Aralığı olmayan (elle
+    /// eklenen ya da eski) satırda yerel başlangıç + saat.
+    pub fn open_until(&self, live: bool) -> DateTime<Utc> {
+        if let Some(end) = self.spans().iter().map(|s| s.1).max() {
+            return end + if live { MERGE_GAP } else { Duration::zero() };
+        }
+        let start = self
+            .date
+            .and_time(self.start)
+            .and_local_timezone(Local)
+            .earliest()
+            .map_or_else(|| self.date.and_time(self.start).and_utc(), |t| t.to_utc());
+        start + Duration::milliseconds((self.hours * 3_600_000.0).round() as i64)
+    }
 }
 
 /// Saati en yakın çeyrek saate yuvarlar (en az 0,25).

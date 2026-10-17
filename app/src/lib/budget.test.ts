@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { budgetState, burnDown, formatDays, weeksLeft } from "./budget";
 import { activeProjects, archivedProjects } from "./tags";
-import type { Tag } from "../api";
+import type { BudgetUsage, Tag } from "../api";
 
 const DAY = 8 * 3600;
 
@@ -12,11 +12,17 @@ describe("sözleşme bütçesi", () => {
     expect(formatDays(DAY, 0)).toBe("1");
   });
 
-  it("%80'de yaklaştı, %100'de doldu", () => {
-    const u = (used: number) => ({ id: "p", budgetDays: 10, budgetSeconds: 10 * DAY, usedSeconds: used });
-    expect(budgetState(u(7 * DAY))).toBe("ok");
-    expect(budgetState(u(8 * DAY))).toBe("near");
-    expect(budgetState(u(10 * DAY))).toBe("over");
+  it("eşiği çekirdekten alır: yaklaştı, doldu", () => {
+    const u = (level: BudgetUsage["level"]) => ({
+      id: "p",
+      budgetDays: 10,
+      budgetSeconds: 10 * DAY,
+      usedSeconds: 0,
+      level,
+    });
+    expect(budgetState(u(null))).toBe("ok");
+    expect(budgetState(u("near"))).toBe("near");
+    expect(budgetState(u("reached"))).toBe("over");
   });
 
   it("kalan bütçe eğrisi dönemden önceki harcamayı da sayar", () => {
