@@ -22,6 +22,9 @@ pub use imp::SystemProvider;
 
 #[cfg(any(target_os = "macos", windows))]
 mod address;
+// Windows'un görüşme ve izleme sinyallerinin yorumu; her sistemde test edilir.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod signals;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {

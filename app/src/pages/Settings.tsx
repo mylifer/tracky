@@ -128,6 +128,8 @@ export default function Settings({
   const content = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const mac = status.platform === "macos";
+  // Ekranı uyanık tutan video ve görüşmenin mikrofonu macOS ve Windows'ta okunur.
+  const signals = mac || status.platform === "windows";
 
   useEffect(() => {
     // Gizlilik okunamazsa bölüm sessizce kaybolmasın.
@@ -422,15 +424,15 @@ export default function Settings({
                         </Select>
                       </SettingRow>
                     )}
-                    {mac && (
+                    {signals && (
                       <ToggleRow
                         label="İzlerken boşta sayma"
-                        hint="Video oynarken ya da görüntülü görüşmedeyken klavyeye dokunmasan da süre çalışma sayılır (en çok 3 saat). Ekranı açık tutan araçlar (caffeinate, Amphetamine) sayılmaz."
+                        hint={`Video oynarken ya da görüntülü görüşmedeyken klavyeye dokunmasan da süre çalışma sayılır (en çok 3 saat). Ekranı açık tutan araçlar (${mac ? "caffeinate, Amphetamine" : "PowerToys Awake"}) tek başına sayılmaz.`}
                         checked={privacy.count_watching}
                         onChange={(v) => save({ ...privacy, count_watching: v })}
                       />
                     )}
-                    {mac && (
+                    {signals && (
                       <ToggleRow
                         label="Görüşmeleri algıla"
                         hint="Teams, Zoom ya da Meet mikrofonu kullanırken bunun ne zaman olduğu kaydedilir, ses kaydedilmez. Toplantı zaman çizelgesine gerçek süresiyle girer; katılmadığın toplantı girmez."

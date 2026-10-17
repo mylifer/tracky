@@ -89,10 +89,11 @@ const LIMITS_EVERY: u32 = 30;
 /// Sözleşme bütçeleri bu kadar gözlemde bir (~10 dk) denetlenir: tüm geçmiş toplanır.
 const BUDGETS_EVERY: u32 = 600;
 
-/// Bu bilgisayarın görüşmeleri kaydedip kaydetmediğini işler (yalnızca macOS mikrofonu
-/// kullanan uygulamayı söyleyebilir): kaydetmeyen bilgisayarda geçen toplantı yargılanmaz.
+/// Bu bilgisayarın görüşmeleri kaydedip kaydetmediğini işler (mikrofonu kullanan uygulama
+/// macOS'ta güç beyanlarından, Windows'ta gizlilik kaydından okunur): kaydetmeyen bilgisayarda
+/// geçen toplantı yargılanmaz.
 fn mark_call_detection(app: &AppHandle, privacy: &PrivacySettings) {
-    let on = cfg!(target_os = "macos") && privacy.detect_calls;
+    let on = cfg!(any(target_os = "macos", windows)) && privacy.detect_calls;
     let shared = app.state::<Shared>();
     let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
     if let Err(e) = store.set_call_detection(on) {

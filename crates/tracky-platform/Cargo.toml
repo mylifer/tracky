@@ -19,7 +19,11 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 
 [target.'cfg(windows)'.dependencies]
 # Tarayıcı adresi için UI Automation (COM); sürüm Tauri'nin kullandığıyla aynı.
+# Medya oturumları (GSMTC): oynayan video girdisiz izlemeyi boşta saydırmasın.
 windows = { version = "0.62", features = [
+    "Foundation",
+    "Media",
+    "Media_Control",
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_Ole",
@@ -30,6 +34,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_Power",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_WindowsProgramming",

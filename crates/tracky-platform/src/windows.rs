@@ -22,6 +22,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use windows_sys::core::BOOL;
 
 use crate::address::{AddressCache, looks_like_address};
+use crate::signals::{self, ConsentEntry, Process};
 use crate::{Permissions, PlatformError};
 
 /// UWP uygulamalarını barındıran süreç; gerçek uygulama alt penceredir.
@@ -35,6 +36,7 @@ pub struct SystemProvider {
     names: HashMap<String, String>,
     addresses: AddressCache,
     automation: Automation,
+    media: Media,
 }
 
 impl ActivityProvider for SystemProvider {
@@ -107,6 +109,25 @@ impl ActivityProvider for SystemProvider {
         Ok(u64::from(elapsed_ms / 1000))
     }
 
+    /// Bir uygulama ekranı uyanık tutuyor ve bu bir izleme: video oynuyor, tam ekran (video,
+    /// sunum) ya da görüşmede mikrofon açık. Windows ekranı kimin uyanık tuttuğunu söylemez;
+    /// ekranı hep açık tutan araç (PowerToys Awake) tek başına sayılmasın diye ikisi birlikte
+    /// aranır.
+    fn display_kept_awake(&mut self) -> bool {
+        // Ekranı kimse uyanık tutmuyorsa öteki sinyallere (medya, süreçler) hiç bakılmaz.
+        display_required()
+            && (self.media.playing() || foreground_fullscreen() || !microphone_users().is_empty())
+    }
+
+    /// Mikrofonu kullanan uygulamalar (Windows'un gizlilik kaydından). Windows ekranı uyanık
+    /// tutan uygulamayı söylemez: sessize alınmış görüşme mikrofonu açık tuttuğu sürece sayılır.
+    fn call_apps(&mut self) -> tracky_core::platform::CallApps {
+        tracky_core::platform::CallApps {
+            microphone: microphone_users(),
+            display: Vec::new(),
+        }
+    }
+
     /// Uyku ve hazırda bekletmede ilerlemeyen kesme saati (100 ns birimi). Takip bir süre
     /// takılınca (yoğun bir sorgu, yavaş bir pencere) bu saat ilerlemeye devam eder; böylece
     /// gecikme uyku sanılıp aradaki çalışma "Boşta" olmaz.
@@ -121,9 +142,13 @@ impl ActivityProvider for SystemProvider {
 pub fn diagnose() -> String {
     let mut provider = SystemProvider::default();
     format!(
-        "pencere={:?} idle={:?}s",
+        "pencere={:?} idle={:?}s ekran_açık={} medya={} tam_ekran={} mikrofon={:?}",
         provider.active_window(),
-        provider.idle_seconds()
+        provider.idle_seconds(),
+        display_required(),
+        provider.media.playing(),
+        foreground_fullscreen(),
+        microphone_users()
     )
 }
 
@@ -236,6 +261,279 @@ fn process_path(pid: u32) -> Option<String> {
             QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut size);
         CloseHandle(handle);
         (ok != 0).then(|| String::from_utf16_lossy(&buf[..size as usize]))
+    }
+}
+
+/// Mikrofon izinlerinin kaydı (kullanıcının): uygulama başına son kullanımın başı ve sonu.
+const MIC_CONSENT: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
+
+/// Mikrofonu şu an kullanan uygulamalar ([`signals::microphone_users`]). Süreçler yalnızca
+/// kayıtta süren bir kullanım varsa taranır.
+fn microphone_users() -> Vec<String> {
+    let entries = consent_entries();
+    if !entries.iter().any(ConsentEntry::in_use) {
+        return Vec::new();
+    }
+    signals::microphone_users(&entries, &running_processes())
+}
+
+/// Gizlilik kaydındaki mikrofon kullanımları: paketsiz uygulamalar `NonPackaged` altında exe
+/// yoluyla, paketliler paket ailesiyle.
+fn consent_entries() -> Vec<ConsentEntry> {
+    use windows_sys::Win32::System::Registry::HKEY_CURRENT_USER;
+    let Some(root) = RegKey::open(HKEY_CURRENT_USER, MIC_CONSENT) else {
+        return Vec::new();
+    };
+    let entry = |key: &RegKey, name: String, packaged: bool| ConsentEntry {
+        key: name,
+        packaged,
+        start: key.qword("LastUsedTimeStart").unwrap_or(0),
+        stop: key.qword("LastUsedTimeStop").unwrap_or(0),
+    };
+    let mut out = Vec::new();
+    for name in root.subkeys() {
+        let Some(key) = RegKey::open(root.0, &name) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("NonPackaged") {
+            for app in key.subkeys() {
+                if let Some(k) = RegKey::open(key.0, &app) {
+                    out.push(entry(&k, app, false));
+                }
+            }
+        } else {
+            out.push(entry(&key, name, true));
+        }
+    }
+    out
+}
+
+/// Okumak için açılmış kayıt anahtarı; düşünce kapanır.
+struct RegKey(windows_sys::Win32::System::Registry::HKEY);
+
+impl RegKey {
+    fn open(parent: windows_sys::Win32::System::Registry::HKEY, path: &str) -> Option<RegKey> {
+        use windows_sys::Win32::System::Registry::{KEY_READ, RegOpenKeyExW};
+        let path = to_wide(path);
+        let mut key = ptr::null_mut();
+        // SAFETY: Yol NUL ile biten UTF-16; başarıda anahtar bize geçer (Drop kapatır).
+        (unsafe { RegOpenKeyExW(parent, path.as_ptr(), 0, KEY_READ, &mut key) } == 0)
+            .then_some(RegKey(key))
+    }
+
+    /// Alt anahtarların adları.
+    fn subkeys(&self) -> Vec<String> {
+        use windows_sys::Win32::System::Registry::RegEnumKeyExW;
+        let mut out = Vec::new();
+        for i in 0.. {
+            // Anahtar adı en çok 255 karakter.
+            let mut buf = [0u16; 256];
+            let mut len = buf.len() as u32;
+            // SAFETY: Tampon ve boyutu birlikte verilir; isteğe bağlı çıktılar boş.
+            let r = unsafe {
+                RegEnumKeyExW(
+                    self.0,
+                    i,
+                    buf.as_mut_ptr(),
+                    &mut len,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            };
+            if r != 0 {
+                break;
+            }
+            out.push(String::from_utf16_lossy(&buf[..len as usize]));
+        }
+        out
+    }
+
+    /// 64 bitlik değer (REG_QWORD).
+    fn qword(&self, name: &str) -> Option<u64> {
+        use windows_sys::Win32::System::Registry::{REG_QWORD, RegQueryValueExW};
+        let name = to_wide(name);
+        let mut value = 0u64;
+        let mut size = size_of::<u64>() as u32;
+        let mut kind = 0;
+        // SAFETY: Çıktı 8 baytlık değere işaret ediyor, boyutu verildi.
+        let r = unsafe {
+            RegQueryValueExW(
+                self.0,
+                name.as_ptr(),
+                ptr::null(),
+                &mut kind,
+                (&mut value as *mut u64).cast(),
+                &mut size,
+            )
+        };
+        (r == 0 && kind == REG_QWORD).then_some(value)
+    }
+}
+
+impl Drop for RegKey {
+    fn drop(&mut self) {
+        // SAFETY: Anahtar `open` ile açıldı ve bir kez kapatılır.
+        unsafe { windows_sys::Win32::System::Registry::RegCloseKey(self.0) };
+    }
+}
+
+/// Çalışan süreçler: exe yolu ve paketli uygulamada paket ailesi. Açılamayanlar atlanır.
+fn running_processes() -> Vec<Process> {
+    use windows_sys::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
+    use windows_sys::Win32::System::ProcessStatus::K32EnumProcesses;
+    let mut pids = vec![0u32; 4096];
+    let mut needed = 0u32;
+    // SAFETY: Tampon boyutu bayt olarak verilir; `needed` yazılan baytlar.
+    if unsafe {
+        K32EnumProcesses(
+            pids.as_mut_ptr(),
+            (pids.len() * size_of::<u32>()) as u32,
+            &mut needed,
+        )
+    } == 0
+    {
+        return Vec::new();
+    }
+    pids.truncate(needed as usize / size_of::<u32>());
+    let mut out = Vec::new();
+    for pid in pids.into_iter().filter(|p| *p != 0) {
+        // SAFETY: Tutamaç her yolda kapatılır; tamponlar boyutlarıyla verilir.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                continue;
+            }
+            let mut buf = vec![0u16; 1024];
+            let mut size = buf.len() as u32;
+            let path = (QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                buf.as_mut_ptr(),
+                &mut size,
+            ) != 0)
+                .then(|| String::from_utf16_lossy(&buf[..size as usize]));
+            // Paket ailesi en çok 64 karakter; paketsiz süreçte hata döner.
+            let mut family = [0u16; 128];
+            let mut len = family.len() as u32;
+            let family = (GetPackageFamilyName(handle, &mut len, family.as_mut_ptr()) == 0)
+                .then(|| String::from_utf16_lossy(&family[..len.saturating_sub(1) as usize]));
+            CloseHandle(handle);
+            if let Some(path) = path {
+                out.push(Process { path, family });
+            }
+        }
+    }
+    out
+}
+
+/// Bir uygulama ekranın açık kalmasını istiyor mu (video, sunum, görüşme; ya da ekranı hep
+/// açık tutan bir araç)? Sistemin yürütme durumu yönetici izni gerektirmez.
+fn display_required() -> bool {
+    use windows_sys::Win32::System::Power::{
+        CallNtPowerInformation, ES_DISPLAY_REQUIRED, SystemExecutionState,
+    };
+    let mut state = 0u32;
+    // SAFETY: Girdi boş; çıktı 4 baytlık değere işaret ediyor.
+    let status = unsafe {
+        CallNtPowerInformation(
+            SystemExecutionState,
+            ptr::null(),
+            0,
+            (&mut state as *mut u32).cast(),
+            size_of::<u32>() as u32,
+        )
+    };
+    status == 0 && state & ES_DISPLAY_REQUIRED != 0
+}
+
+/// Öndeki pencere bulunduğu ekranın tamamını kaplıyor mu (tam ekran video, sunum)?
+fn foreground_fullscreen() -> bool {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetDesktopWindow, GetShellWindow, GetWindowRect,
+    };
+    // SAFETY: Parametresiz sorgular; çıktı yapıları boyutlarıyla başlatılır.
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() || hwnd == GetDesktopWindow() || hwnd == GetShellWindow() {
+            return false;
+        }
+        let mut window: RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut window) == 0 {
+            return false;
+        }
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = size_of::<MONITORINFO>() as u32;
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return false;
+        }
+        let m = info.rcMonitor;
+        signals::covers(
+            (window.left, window.top, window.right, window.bottom),
+            (m.left, m.top, m.right, m.bottom),
+        )
+    }
+}
+
+/// Sistemin medya oturumları (GSMTC; tarayıcıdaki video da kendini bildirir). Yönetici ilk
+/// kullanımda bir kez istenir.
+#[derive(Default)]
+struct Media {
+    manager: Option<windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager>,
+    tried: bool,
+}
+
+impl std::fmt::Debug for Media {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Media")
+            .field("ready", &self.manager.is_some())
+            .finish()
+    }
+}
+
+impl Media {
+    /// Müzik çalar dışında bir medya oturumu oynuyor mu?
+    fn playing(&mut self) -> bool {
+        use windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status;
+        let Some(manager) = self.manager() else {
+            return false;
+        };
+        let Ok(sessions) = manager.GetSessions() else {
+            return false;
+        };
+        let count = sessions.Size().unwrap_or(0);
+        (0..count).filter_map(|i| sessions.GetAt(i).ok()).any(|s| {
+            let source = s
+                .SourceAppUserModelId()
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            !signals::is_music_app(&source)
+                && s.GetPlaybackInfo()
+                    .and_then(|p| p.PlaybackStatus())
+                    .is_ok_and(|st| st == Status::Playing)
+        })
+    }
+
+    fn manager(
+        &mut self,
+    ) -> Option<&windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager> {
+        use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager as Manager;
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        if !self.tried {
+            self.tried = true;
+            // SAFETY: COM/WinRT bu iş parçacığında başlatılır (zaten başlatıldıysa dönen hata
+            // önemsiz).
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            self.manager = Manager::RequestAsync().and_then(|op| op.join()).ok();
+        }
+        self.manager.as_ref()
     }
 }
 
