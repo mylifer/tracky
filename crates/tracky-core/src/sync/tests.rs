@@ -1319,6 +1319,7 @@ fn rows_an_old_version_skipped_are_pulled_after_the_update() {
     let b = Mutex::new(Store::open_in_memory().unwrap());
     let mut remote = FakeRemote::default();
     run(&a, &mut remote, "u1").unwrap();
+    lock(&b).register_device("Air", "macos", "", "").unwrap();
     lock(&b).record_app_version("0.9.73").unwrap();
     // Yeni bir sürümün yazdığı, B'nin bu sürümünün okuyamadığı satır.
     let mut bad = remote.rows["tags"].values().next().unwrap().clone();

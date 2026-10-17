@@ -116,7 +116,10 @@ impl Store {
     /// [`Store::register_device`]'dan sonra çağrılır; sürüm değişti mi döner.
     pub fn record_app_version(&self, version: &str) -> Result<bool> {
         let key = format!("{DEVICE_KEY_PREFIX}{}", self.device_id);
-        let mut info = self.setting::<DeviceInfo>(&key)?.unwrap_or_default();
+        // Kaydı yoksa (adı yazılamadı) adsız kayıt açılmaz; sürüm bir sonraki açılışta yazılır.
+        let Some(mut info) = self.setting::<DeviceInfo>(&key)? else {
+            return Ok(false);
+        };
         if info.version == version {
             return Ok(false);
         }
@@ -523,6 +526,10 @@ mod tests {
         // Haftalardır kullanılmayan bilgisayar uyarı sayılmaz.
         assert!(outdated(t(30 * 86_400)).is_empty());
         let mine = store.known_devices().unwrap().remove(0);
+        // Kaydı olmayan bilgisayara adsız kayıt açılmaz.
+        let bare = Store::open_in_memory().unwrap();
+        assert!(!bare.record_app_version("0.9.74").unwrap());
+        assert!(bare.known_devices().unwrap()[0].version.is_empty());
         assert!(mine.current && !mine.outdated);
         assert_eq!(mine.version, "0.9.74");
         assert_eq!(mine.last_seen, Some(t(600)));
