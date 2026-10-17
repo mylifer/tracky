@@ -374,6 +374,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&dir)?;
     applog::init(dir.clone());
+    applog::install_panic_hook();
     secrets::init(&dir);
     log_info!(
         "Kum {} açıldı ({} {})",
@@ -469,7 +470,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
     let worker = std::thread::Builder::new()
         .name("kum-tracker".into())
-        .spawn(move || tracking::run(handle, privacy, goals, pause_until, rx))?;
+        .spawn(move || tracking::supervise(handle, privacy, goals, pause_until, rx))?;
     app.manage(Worker {
         tx,
         handle: Mutex::new(Some(worker)),

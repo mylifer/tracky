@@ -122,13 +122,73 @@ fn prove_call_detection(store: &tracky_core::Store) -> bool {
     }
 }
 
+/// Takibi çalıştırır ([`run`]). Takip beklenmedik bir hatayla (panik) çökerse günlüğe yazılır
+/// ([`crate::applog::install_panic_hook`]), bir kez bildirilir ve ayarlar yeniden okunup takip
+/// yeniden başlar; yoksa takip sessizce durur ve süre kaybolurdu. Üst üste çökerse bekleme
+/// uzar (en çok bir dakika); beklerken kapanış isteği gelirse çıkar.
+pub fn supervise(
+    app: AppHandle,
+    privacy: PrivacySettings,
+    goals: Goals,
+    pause_until: Option<DateTime<Utc>>,
+    rx: Receiver<Command>,
+) {
+    let mut start = (privacy, goals, pause_until);
+    let mut crashes = 0u32;
+    loop {
+        let (privacy, goals, pause_until) = start;
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(app.clone(), privacy, goals, pause_until, &rx)
+        }));
+        if run.is_ok() {
+            return;
+        }
+        crashes += 1;
+        log_error!("takip çöktü ({crashes}. kez); yeniden başlatılıyor");
+        if crashes == 1 {
+            let _ = app
+                .notification()
+                .builder()
+                .title("Takip yeniden başlatıldı")
+                .body("Beklenmedik bir hata takibi durdurdu; Kum takibi yeniden başlattı. Ayrıntı: Ayarlar → Sorun giderme.")
+                .show();
+        }
+        let wait = Duration::from_secs(2u64.saturating_pow(crashes.min(6)).min(60));
+        match rx.recv_timeout(wait) {
+            Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
+            // Beklerken gelen ayar ve duraklatma depoya da yazıldı: aşağıda yeniden okunur.
+            _ => {}
+        }
+        start = current_settings(&app);
+    }
+}
+
+/// Depodaki güncel gizlilik, hedef ve süreli duraklatma (takip yeniden başlarken).
+fn current_settings(app: &AppHandle) -> (PrivacySettings, Goals, Option<DateTime<Utc>>) {
+    let shared = app.state::<Shared>();
+    let store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+    let privacy = store.privacy_settings().unwrap_or_default();
+    let goals = store
+        .setting::<Goals>(GOALS_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let pause_until = store
+        .setting::<Option<DateTime<Utc>>>(PAUSE_UNTIL_KEY)
+        .ok()
+        .flatten()
+        .flatten()
+        .filter(|_| privacy.paused);
+    (privacy, goals, pause_until)
+}
+
 /// `rx` kapanana ya da `Shutdown` gelene kadar saniyede bir gözlem yapar.
-pub fn run(
+fn run(
     app: AppHandle,
     privacy: PrivacySettings,
     mut goals: Goals,
     mut pause_until: Option<DateTime<Utc>>,
-    rx: Receiver<Command>,
+    rx: &Receiver<Command>,
 ) {
     let mut awaiting_call = mark_call_detection(&app, &privacy);
     let mut tracker = Tracker::new(

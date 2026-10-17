@@ -45,6 +45,35 @@ pub fn write(level: &str, message: &str) {
     }
 }
 
+/// Yakalanmayan hatayı (panik) iş parçacığının adı, yeri ve yığın iziyle günlüğe yazar;
+/// yoksa arka plandaki bir iş parçacığı (takip, eşitleme) iz bırakmadan dururdu. Önceki kanca
+/// (standart hataya yazan) da çalışır.
+pub fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "bilinmeyen hata".into());
+        let place = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        write(
+            "ÇÖKME",
+            &format!(
+                "{} iş parçacığında: {message} ({place})\n{}",
+                thread.name().unwrap_or("adsız"),
+                std::backtrace::Backtrace::force_capture()
+            ),
+        );
+        previous(info);
+    }));
+}
+
 /// `log_error!("yedek alınamadı: {e}")`
 macro_rules! log_error {
     ($($arg:tt)*) => { $crate::applog::write("HATA", &format!($($arg)*)) };
