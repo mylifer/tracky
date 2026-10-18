@@ -217,7 +217,8 @@ export function Block({
                 ? `${summary}${awayNote}\nShift+tıkla: seç (Shift+A seçilenleri birleştirir)`
                 : `${summary}${awayNote}`
             }
-            aria-label={summary}
+            // Yazı görünüyorsa adı odur (ayrıntı `title`'da); görünmeyen kısa blokta özet.
+            aria-label={label ? undefined : summary}
             aria-pressed={edit?.onPick ? picked : undefined}
             // Shift+tık sayfadaki metni seçmesin.
             onMouseDown={(e) => e.shiftKey && edit?.onPick && e.preventDefault()}

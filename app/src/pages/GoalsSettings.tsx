@@ -76,6 +76,7 @@ export default function GoalsSettings() {
           min={1}
           max={16}
           step={0.5}
+          aria-label="Günlük çalışma hedefi (saat)"
           className="h-7 w-16 text-right tabular"
           value={hours}
           onChange={(e) => setHours(e.target.value)}
@@ -108,7 +109,7 @@ export default function GoalsSettings() {
             value={String(goals.breakAfterMinutes ?? DEFAULT_BREAK)}
             onValueChange={(v) => save({ ...goals, breakAfterMinutes: Number(v) })}
           >
-            <SelectTrigger size="sm" className="w-32">
+            <SelectTrigger size="sm" className="w-32" aria-label="Hatırlatma aralığı">
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">
@@ -133,7 +134,7 @@ export default function GoalsSettings() {
             value={String(goals.daySummaryAt ?? DEFAULT_SUMMARY)}
             onValueChange={(v) => save({ ...goals, daySummaryAt: Number(v) })}
           >
-            <SelectTrigger size="sm" className="w-32">
+            <SelectTrigger size="sm" className="w-32" aria-label="Özet saati">
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">
@@ -164,7 +165,7 @@ export default function GoalsSettings() {
             value={String(goals.exportReminderAt ?? DEFAULT_EXPORT_REMINDER)}
             onValueChange={(v) => save({ ...goals, exportReminderAt: Number(v) })}
           >
-            <SelectTrigger size="sm" className="w-32">
+            <SelectTrigger size="sm" className="w-32" aria-label="Hatırlatma saati">
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">

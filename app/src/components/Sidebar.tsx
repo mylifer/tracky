@@ -235,8 +235,9 @@ function NavItem({
     <button
       onClick={onClick}
       aria-current={active ? "page" : undefined}
-      // Rozet yalnızca bir sayı ya da süre; ekran okuyucu ne olduğunu da duysun.
-      aria-label={label && badge ? `${label}, ${badgeTitle ?? "rozet"}: ${badge}` : undefined}
+      // Rozet yalnızca bir sayı ya da süre: ekran okuyucu adı (görünen ad) ve ardından rozetin ne
+      // olduğunu duyar.
+      aria-description={label && badge ? `${badgeTitle ?? "rozet"}: ${badge}` : undefined}
       title={label}
       className={cn(
         "group/nav relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:transition-colors",
@@ -252,7 +253,7 @@ function NavItem({
       {!!badge && (
         <span
           title={badgeTitle}
-          aria-label={badgeTitle ? `${badgeTitle}: ${badge}` : undefined}
+          aria-hidden
           className={cn(
             "shrink-0 rounded-full px-1.5 text-[10px] leading-4 font-semibold tabular",
             tone === "brand" ? "bg-brand text-white shadow-sm shadow-brand-2/30" : "bg-primary/15 text-primary",

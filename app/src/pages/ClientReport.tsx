@@ -163,7 +163,13 @@ export default function ClientReport() {
         </p>
       ) : report ? (
         <section className="space-y-2">
-          <div className="overflow-x-auto rounded-xl border bg-card shadow-xs">
+          <div
+            className="overflow-x-auto rounded-xl border bg-card shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            role="region"
+            aria-label="Günlük saatler"
+            // Yana kayan tablo klavyeyle de kaydırılabilsin.
+            tabIndex={0}
+          >
             <Matrix report={report} />
           </div>
           <p className="px-1 text-xs text-muted-foreground">

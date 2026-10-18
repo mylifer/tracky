@@ -19,10 +19,10 @@ export class App {
     );
   }
 
-  /** Kenar çubuğundaki sayfa düğmesi (rozetliyse adı "Gözden geçir, …" diye sürer). */
+  /** Kenar çubuğundaki sayfa düğmesi (rozetliyse adı "Gözden geçir 30dk" diye sürer). */
   nav(name: string) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return this.page.getByRole("navigation").getByRole("button", { name: new RegExp(`^${escaped}(,|$)`) });
+    return this.page.getByRole("navigation").getByRole("button", { name: new RegExp(`^${escaped}( |,|$)`) });
   }
 
   /** Kenar çubuğundan sayfaya git. */

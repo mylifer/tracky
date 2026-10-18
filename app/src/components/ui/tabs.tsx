@@ -24,6 +24,9 @@ function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPr
   return (
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
+      // Sekmeler burada görünüm seçici, içerik paneli (TabsContent) yok: var olmayan panele
+      // işaret edilmesin. Panel kullanan yer `aria-controls`'ü kendisi verir.
+      aria-controls={undefined}
       className={cn(
         "inline-flex h-full flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2.5 text-xs font-medium whitespace-nowrap text-foreground/70 transition-[color,box-shadow] focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm dark:data-[state=active]:border-white/5 dark:data-[state=active]:bg-white/12 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className,

@@ -43,7 +43,7 @@ export function WhatsNewCard() {
           <X className="size-3.5" />
         </button>
       </div>
-      <ul className="mt-1.5 space-y-1 pl-6 text-muted-foreground">
+      <ul className="mt-1.5 space-y-1 pl-6 text-foreground/85">
         {shown.map((item) => (
           <li key={item} className="list-disc leading-snug">
             {item}

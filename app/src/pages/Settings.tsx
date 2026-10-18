@@ -247,7 +247,7 @@ export default function Settings({
         >
           {GROUPS.map((g) => (
             <div key={g.title} className="mb-3">
-              <div className="px-2 pb-1 text-[10.5px] font-semibold tracking-wider text-muted-foreground/80 uppercase">
+              <div className="px-2 pb-1 text-[10.5px] font-semibold tracking-wider text-muted-foreground uppercase">
                 {g.title}
               </div>
               {g.sections.map((s) => {
@@ -639,7 +639,11 @@ function AppPicker({
         onRemove={(id) => onChange(selected.filter((s) => s !== id))}
       />
       <Select value="" onValueChange={(v) => v && onChange([...selected, v])} disabled={available.length === 0}>
-        <SelectTrigger size="sm" className="w-56 [&>[data-slot=select-value]]:flex-1">
+        <SelectTrigger
+          size="sm"
+          className="w-56 [&>[data-slot=select-value]]:flex-1"
+          aria-label={`${title}: uygulama ekle`}
+        >
           <Plus className="size-3.5" />
           <SelectValue placeholder="Uygulama ekle…" />
         </SelectTrigger>

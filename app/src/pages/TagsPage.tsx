@@ -297,7 +297,7 @@ function TagItem({
           <span
             className={cn(
               "block truncate text-[11px]",
-              empty ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+              empty ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
             )}
           >
             {ruleSummary(rules)}

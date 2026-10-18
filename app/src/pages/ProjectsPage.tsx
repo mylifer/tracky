@@ -377,22 +377,25 @@ function ProjectCard({
   const total = weekly.reduce((a, b) => a + b, 0);
   const billed = data.billed?.get(p.id);
   return (
+    // Kart fareyle her yerinden açılır; klavye ve ekran okuyucu için açan düğme adıdır (kartın
+    // içinde başka düğme olduğundan kartın kendisi düğme olmaz).
     <div
-      role="button"
-      tabIndex={0}
       onClick={() => onOpen("overview")}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onOpen("overview");
-        }
-      }}
-      className="group flex cursor-default flex-col gap-2.5 rounded-xl border bg-card px-4 py-3.5 text-left shadow-xs transition-colors outline-none hover:border-foreground/15 focus-visible:ring-2 focus-visible:ring-ring/50"
+      className="group flex cursor-default flex-col gap-2.5 rounded-xl border bg-card px-4 py-3.5 text-left shadow-xs transition-colors outline-none hover:border-foreground/15 has-[[data-card-open]:focus-visible]:ring-2 has-[[data-card-open]:focus-visible]:ring-ring/50"
     >
       <div className="flex items-center gap-2">
         <i className="size-2.5 shrink-0 rounded-full" style={{ background: color }} />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{p.name}</span>
+        <button
+          type="button"
+          data-card-open
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen("overview");
+          }}
+          className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold outline-none"
+        >
+          {p.name}
+        </button>
         <button
           type="button"
           className="-my-1 -mr-1.5 grid size-6 place-items-center rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100"
@@ -409,7 +412,7 @@ function ProjectCard({
       <div
         className={cn(
           "-mt-2 truncate text-[11px]",
-          noRules ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+          noRules ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
         )}
       >
         {client?.name ?? NO_CLIENT} · {noRules ? ruleSummary(rules) : `${PERIOD_WORD[period]}`}

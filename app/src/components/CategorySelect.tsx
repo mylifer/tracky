@@ -39,7 +39,7 @@ export function CategorySelect({
       <SelectTrigger
         size="sm"
         className={cn(icon && "[&>[data-slot=select-value]]:flex-1", className)}
-        aria-label={ariaLabel}
+        aria-label={ariaLabel ?? placeholder}
       >
         {icon}
         <SelectValue placeholder={placeholder} />

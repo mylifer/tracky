@@ -118,7 +118,12 @@ export function WeekBoard({ summaries, divisions, dayHours, selected, onSelect, 
       iso === selected ? "bg-accent" : iso === todayIso ? "bg-primary/[0.04]" : isWeekend(iso) && "bg-muted/30",
     );
   return (
-    <section className="overflow-x-auto rounded-xl border bg-card shadow-xs" aria-label="Haftanın özeti">
+    <section
+      className="overflow-x-auto rounded-xl border bg-card shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      aria-label="Haftanın özeti"
+      // Dar pencerede yana kayar: klavyeyle de kaydırılabilsin.
+      tabIndex={0}
+    >
       <div className="min-w-[640px]">
         <div className={cn(grid, "border-b")}>
           <span className="self-end px-4 pb-2 text-[11px] text-muted-foreground">Birim</span>
@@ -189,6 +194,7 @@ export function WeekBoard({ summaries, divisions, dayHours, selected, onSelect, 
                     tabIndex={-1}
                     className={cn(col(s.date), "px-2 py-1.5 text-left text-xs tabular hover:bg-accent/70")}
                     onClick={() => onSelect(s.date)}
+                    aria-label={`${h > 0 ? hoursFmt.format(h) : "Kayıt yok"} · ${division || "birimsiz"} · ${s.date}`}
                   >
                     {h > 0 ? hoursFmt.format(h) : ""}
                   </button>

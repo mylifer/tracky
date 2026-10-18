@@ -382,22 +382,25 @@ function ClientCard({
 }) {
   const projects = activeProjects(r.projects);
   return (
+    // Kart fareyle her yerinden açılır; klavye ve ekran okuyucu için açan düğme adıdır (kartın
+    // içinde başka düğme olduğundan kartın kendisi düğme olmaz).
     <div
-      role="button"
-      tabIndex={0}
       onClick={onEdit}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onEdit();
-        }
-      }}
-      className="group flex cursor-default flex-col gap-2.5 rounded-xl border bg-card px-4 py-3.5 shadow-xs transition-colors outline-none hover:border-foreground/15 focus-visible:ring-2 focus-visible:ring-ring/50"
+      className="group flex cursor-default flex-col gap-2.5 rounded-xl border bg-card px-4 py-3.5 shadow-xs transition-colors outline-none hover:border-foreground/15 has-[[data-card-open]:focus-visible]:ring-2 has-[[data-card-open]:focus-visible]:ring-ring/50"
     >
       <div className="flex items-center gap-2">
         <i className="size-2.5 shrink-0 rounded-full" style={{ background: r.color }} />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{r.name}</span>
+        <button
+          type="button"
+          data-card-open
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit();
+          }}
+          className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold outline-none"
+        >
+          {r.name}
+        </button>
         {onBlocks && (
           <button
             type="button"
@@ -500,7 +503,12 @@ function ClientTable({
   const sum = (f: (r: Row) => number) => rows.reduce((s, r) => s + f(r), 0);
   const anyBilled = rows.some((r) => r.billed !== null);
   return (
-    <div className="overflow-x-auto rounded-xl border bg-card shadow-xs">
+    <div
+      className="overflow-x-auto rounded-xl border bg-card shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      role="region"
+      aria-label="Müşteriler tablosu"
+      tabIndex={0}
+    >
       <table className="w-full min-w-max border-collapse text-xs">
         <thead>
           <tr className="border-b text-[11px] text-muted-foreground">
