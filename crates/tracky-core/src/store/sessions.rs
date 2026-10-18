@@ -375,6 +375,14 @@ impl Store {
                 n += self.join_block(a, b, label, category_id, project_id)?;
             }
         }
+        // Uzatılan kenar da korunur: blok uygulama akışından çıktığı için molasız bitişik iş
+        // ([`crate::blocks::analyze`]) yoksa bloğa karışırdı.
+        if new_from < from {
+            n += self.mark_block_start(new_from, new_to)?;
+        }
+        if new_to > to {
+            n += self.mark_block_start(new_to, new_to + crate::blocks::BREAK_GAP)?;
+        }
         // Bloğun kendi kısmı da katıldığı işin projesine geçer.
         let (a, b) = (from.max(new_from), to.min(new_to));
         if adopted.is_some() && b > a {

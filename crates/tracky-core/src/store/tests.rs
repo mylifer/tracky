@@ -1023,16 +1023,21 @@ fn resize_block_trims_joins_and_fills_gaps() {
         b.iter()
             .all(|s| s.app_name == "B" && s.project_id.as_deref() == p)
     );
+    // Elle çekilen yeni baş korunur: önündeki atanmamış iş molasız bitişik de olsa bloğa katılmaz.
     let all = store.sessions_between(t(0), t(3600)).unwrap();
-    assert!(all.iter().all(|s| s.block_from.is_none()));
-    let report = store.report(t(0), t(3600), &[t(0)], true).unwrap();
     assert!(
-        report
-            .work
-            .blocks
-            .iter()
-            .any(|b| (b.start, b.end) == (t(300), t(3000)))
+        all.iter()
+            .all(|s| s.block_from.is_none()
+                || (s.block_from, s.started_at) == (Some(t(300)), t(300)))
     );
+    let report = store.report(t(0), t(3600), &[t(0)], true).unwrap();
+    let spans: Vec<_> = report
+        .work
+        .blocks
+        .iter()
+        .map(|b| (b.start, b.end))
+        .collect();
+    assert_eq!(spans, [(t(0), t(300)), (t(300), t(3000))]);
 
     // Gelecek ve ters aralık reddedilir.
     let later = Utc::now() + chrono::Duration::hours(1);
@@ -1330,61 +1335,4 @@ fn only_this_computers_calls_prove_the_microphone_signal() {
         .execute("UPDATE calls SET device_id = 'öteki'", [])
         .unwrap();
     assert!(!store.has_own_calls().unwrap());
-}
-
-#[test]
-fn report_lists_calls_merged_and_clipped() {
-    use crate::calls::Call;
-    let store = Store::open_in_memory().unwrap();
-    store
-        .upsert_session(&session("Zoom", None, 0, 300))
-        .unwrap();
-    let call = |app: &str, a: i64, b: i64| Call {
-        id: Uuid::new_v4(),
-        app_id: app.into(),
-        started_at: t(a),
-        ended_at: t(b),
-    };
-    // Yeniden başlatmayla bölünen görüşme tek aralık; aralığın dışına taşan kısım kırpılır.
-    store
-        .upsert_call(&call("com.test.Zoom", -600, 1200))
-        .unwrap();
-    store
-        .upsert_call(&call("com.test.Zoom", 1260, 2400))
-        .unwrap();
-    store
-        .upsert_call(&call("com.test.Zoom", 3000, 3300))
-        .unwrap();
-    store
-        .upsert_call(&call("org.mozilla.firefox", 100, 200))
-        .unwrap();
-    let r = store
-        .report_for_device(t(0), t(3600), &[t(0)], true, None)
-        .unwrap();
-    let got: Vec<_> = r
-        .calls
-        .iter()
-        .map(|c| (c.app_name.as_str(), c.start, c.end, c.browser))
-        .collect();
-    assert_eq!(
-        got,
-        [
-            ("Zoom", t(0), t(2400), false),
-            ("org.mozilla.firefox", t(100), t(200), true),
-            ("Zoom", t(3000), t(3300), false),
-        ]
-    );
-    // Başka bilgisayar seçiliyken bu bilgisayarın görüşmeleri görünmez; zaman çizelgesi
-    // istenmeyen raporda hiç yoktur.
-    let other = store
-        .report_for_device(t(0), t(3600), &[t(0)], true, Some("öteki"))
-        .unwrap();
-    assert!(other.calls.is_empty());
-    assert!(
-        store
-            .report(t(0), t(3600), &[t(0)], false)
-            .unwrap()
-            .calls
-            .is_empty()
-    );
 }

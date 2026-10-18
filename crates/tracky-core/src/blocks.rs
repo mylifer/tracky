@@ -1,10 +1,11 @@
 //! Takvimdeki çalışma blokları, molalar ve bağlam değişimi.
 //!
-//! - **Blok:** aynı kategoride kesintisiz çalışma. `BREAK_GAP`'ten uzun boşluk ya da en
-//!   az `SWITCH_MIN` süren başka kategori yeni blok başlatır; daha kısa araya girmeler
-//!   (bir mesaja bakmak gibi) bloğun içinde kalır. Aynı projeye atanmış iş kategorisi
-//!   değişse de, arada `timesheet::MERGE_GAP`'i geçmeyen boşluk olsa da tek bloktur:
-//!   zaman çizelgesindeki satır gibi.
+//! - **Blok:** kesintisiz çalışma; yalnızca `BREAK_GAP`'ten uzun boşluk (mola) yeni blok
+//!   başlatır. Uygulama ya da kategori değişse de blok sürer: blok uygulama akışından çıkar,
+//!   takvimde en çok süren pencerenin adıyla görünür (Timely gibi; 18 Ekim'de kategori
+//!   değiştikçe bölünen bloklar bir öğleden sonrayı 23 parçaya ayırıyordu). Bloğun projesine
+//!   atanmış iş, arada `timesheet::MERGE_GAP`'i geçmeyen boşluk olsa da aynı bloktur: zaman
+//!   çizelgesindeki satır gibi.
 //! - **Projeye göre bölme:** bloğun projesinden (yarısını kaplayan; yoksa projesiz) başka
 //!   projeye atanmış, en az `SWITCH_MIN` süren kısım kategorisi aynı olsa da ayrı bloktur
 //!   ([`split_projects`]). O projenin kısımları arasındaki `MERGE_GAP`'i geçmeyen atanmamış
@@ -22,7 +23,7 @@ use serde::Serialize;
 
 /// Bu kadar boşluk mola sayılır ve bloğu böler.
 pub const BREAK_GAP: Duration = Duration::minutes(5);
-/// Başka kategoride bu kadar kalınırsa yeni blok başlar.
+/// Bloğun projesinden başka projeye atanmış kısım bu kadar sürerse ayrı blok olur.
 pub const SWITCH_MIN: Duration = Duration::minutes(3);
 /// Bundan uzun boşluk mola değil, günün bitişidir.
 pub const LONG_GAP: Duration = Duration::hours(3);
@@ -108,8 +109,6 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
     let items: Vec<&Activity> = items.iter().filter(|i| i.end > i.start).collect();
     let mut blocks: Vec<WorkBlock> = Vec::new();
     let mut current: Option<Builder> = None;
-    // Bloğun kategorisinden farklı, henüz yeni blok sayılacak kadar uzamamış dilimler.
-    let mut pending: Vec<&Activity> = Vec::new();
     let mut breaks = 0;
 
     for item in items.iter().copied() {
@@ -117,56 +116,21 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
             current = Some(Builder::new(item));
             continue;
         };
-        let last_end = pending.last().map_or(b.end, |p| p.end.max(b.end));
-        let gap = item.start - last_end;
-        if item.block_start {
-            for p in pending.drain(..) {
-                b.add(p);
-            }
-            if gap >= BREAK_GAP && gap < LONG_GAP {
-                breaks += gap.num_seconds();
-            }
-            close(current.take().expect("blok var"), &mut blocks, &mut breaks);
-            current = Some(Builder::new(item));
-            continue;
-        }
-        // Bloğun projesine atanmış iş kategorisi farklı olsa da bloğu sürdürür.
+        let gap = item.start - b.end;
+        // Bloğun projesine atanmış iş `MERGE_GAP`'i geçmeyen boşluktan sonra da bloğu sürdürür.
         let same_project = item.project.is_some() && item.project == b.project.as_deref();
-        if gap >= BREAK_GAP && !(same_project && gap <= crate::timesheet::MERGE_GAP) {
-            for p in pending.drain(..) {
-                b.add(p);
-            }
-            if gap < LONG_GAP {
-                breaks += gap.num_seconds();
-            }
-            close(current.take().expect("blok var"), &mut blocks, &mut breaks);
-            current = Some(Builder::new(item));
-            continue;
-        }
-        if item.category == b.category.as_deref() || same_project {
-            for p in pending.drain(..) {
-                b.add(p);
-            }
+        let rest = gap >= BREAK_GAP && !(same_project && gap <= crate::timesheet::MERGE_GAP);
+        if !item.block_start && !rest {
             b.add(item);
             continue;
         }
-        pending.push(item);
-        let away: Duration = pending.iter().map(|p| p.end - p.start).sum();
-        if away >= SWITCH_MIN {
-            close(current.take().expect("blok var"), &mut blocks, &mut breaks);
-            let mut next = Builder::new(pending[0]);
-            for p in &pending[1..] {
-                next.add(p);
-            }
-            next.category = next.dominant();
-            pending.clear();
-            current = Some(next);
+        if gap >= BREAK_GAP && gap < LONG_GAP {
+            breaks += gap.num_seconds();
         }
+        close(current.take().expect("blok var"), &mut blocks, &mut breaks);
+        current = Some(Builder::new(item));
     }
-    if let Some(mut b) = current {
-        for p in pending {
-            b.add(p);
-        }
+    if let Some(b) = current {
         close(b, &mut blocks, &mut breaks);
     }
 
@@ -322,8 +286,6 @@ fn per_hour_x10(switches: u32, active_seconds: i64) -> u32 {
 }
 
 struct Builder<'s> {
-    /// Bloğun kategorisi (ilk dilimden; başka kategoriden açılırsa baskın olan).
-    category: Option<String>,
     /// Bloğa en son eklenen projeli dilimin projesi.
     project: Option<String>,
     start: DateTime<Utc>,
@@ -344,7 +306,6 @@ struct Builder<'s> {
 impl<'s> Builder<'s> {
     fn new(item: &'s Activity<'s>) -> Self {
         let mut b = Self {
-            category: item.category.map(str::to_string),
             project: None,
             start: item.start,
             end: item.start,
@@ -383,13 +344,6 @@ impl<'s> Builder<'s> {
             .or_insert_with(|| (0, item.app_id.to_string()))
             .0 += ms;
         self.items.push(item);
-    }
-
-    fn dominant(&self) -> Option<String> {
-        self.categories
-            .iter()
-            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
-            .and_then(|(c, _)| c.clone())
     }
 
     /// Bloğun en az yarısını kaplayan proje.
@@ -473,20 +427,21 @@ mod tests {
     }
 
     #[test]
-    fn splits_blocks_on_category_runs_and_breaks() {
+    fn splits_blocks_only_on_breaks() {
         let items = [
             a("Code", Some("dev"), 0, 30),
             a("Slack", Some("comm"), 30, 31), // kısa göz atma: blok içinde kalır
             a("Terminal", Some("dev"), 31, 50),
-            a("Slack", Some("comm"), 50, 58), // 8 dk: yeni blok
+            a("Slack", Some("comm"), 50, 58), // başka kategoride 8 dk: blok sürer
             a("Safari", None, 70, 75),        // 12 dk mola: yeni blok
             a("Code", Some("dev"), 600, 610), // gece boşluğu: mola sayılmaz
         ];
         let s = analyze(&items);
         let cats: Vec<_> = s.blocks.iter().map(|b| b.category_id.as_deref()).collect();
-        assert_eq!(cats, [Some("dev"), Some("comm"), None, Some("dev")]);
+        assert_eq!(cats, [Some("dev"), None, Some("dev")]);
         let first = &s.blocks[0];
-        assert_eq!(first.active_seconds, 50 * 60);
+        assert_eq!((first.start, first.end), (t(0), t(58)));
+        assert_eq!(first.active_seconds, 58 * 60);
         assert_eq!(first.top_apps[0].app_name, "Code");
         assert_eq!(s.break_seconds, 12 * 60);
         // Code→Slack→Terminal→Slack ve Safari→(mola) geçişleri sayılmaz.
@@ -608,16 +563,12 @@ mod tests {
             p(a("Slack", Some("comm"), 20, 40), Some("kum")), // başka kategori, aynı proje
             p(a("Code", Some("dev"), 50, 60), Some("kum")),   // 10 dk boşluk: aynı blok
             p(a("Code", Some("dev"), 80, 90), Some("kum")),   // 20 dk boşluk: yeni blok
-            p(a("Slack", Some("comm"), 90, 100), None),       // projesiz başka kategori: yeni blok
+            p(a("Slack", Some("comm"), 90, 100), None),       // projesiz, molasız: blokta kalır
         ];
         let s = analyze(&items);
         assert_eq!(
             spans(&s),
-            [
-                (t(0), t(60), Some("kum")),
-                (t(80), t(90), Some("kum")),
-                (t(90), t(100), None),
-            ]
+            [(t(0), t(60), Some("kum")), (t(80), t(100), Some("kum"))]
         );
         assert_eq!(s.blocks[0].active_seconds, 50 * 60);
     }

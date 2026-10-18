@@ -695,7 +695,6 @@ export default function ReportView(p: Props) {
                           idle={report.idle}
                           segments={report.timeline}
                           windows={report.windows}
-                          calls={report.calls}
                           tags={tags}
                           meetings={meetings}
                           // Çizelge görünümünde satırlar yanda; takvimde ayrıca sütun olmaz.

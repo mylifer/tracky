@@ -9,9 +9,8 @@ use uuid::Uuid;
 
 use super::devices::DeviceInfo;
 use super::{DEVICE_KEY_PREFIX, Result, Store, from_ms, ms};
-use crate::calls::{CALL_GAP, Call};
-use crate::model::{IDLE_APP_ID, Session};
-use crate::report::CallSpan;
+use crate::calls::Call;
+use crate::model::IDLE_APP_ID;
 
 /// Kullanıcının toplantı katılımı cevapları (eşitlenir): [`crate::attendance::key`] → katıldı mı.
 pub(super) const MEETING_ATTENDANCE_KEY: &str = "meeting_attendance";
@@ -62,56 +61,6 @@ impl Store {
                 ended_at: from_ms(b),
             });
         }
-        Ok(out)
-    }
-
-    /// Raporun görüşmeleri: `[from, to)` aralığına kırpılmış, aynı uygulamanın [`CALL_GAP`]'ten
-    /// yakın parçaları (görüşme süreyle kaydedilir, yeniden başlatmada bölünür) tek aralık.
-    /// `device` verilirse yalnızca o bilgisayarınkiler. Adlar aralığın oturumlarından.
-    pub(super) fn call_spans(
-        &self,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
-        device: Option<&str>,
-        sessions: &[Session],
-    ) -> Result<Vec<CallSpan>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT app_id, started_at, ended_at FROM calls
-             WHERE deleted_at IS NULL AND started_at < ?2 AND ended_at > ?1
-               AND (?3 IS NULL OR device_id = ?3)
-             ORDER BY app_id, started_at",
-        )?;
-        let rows = stmt.query_map(params![ms(from), ms(to), device], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })?;
-        let mut out: Vec<CallSpan> = Vec::new();
-        for row in rows {
-            let (app_id, a, b) = row?;
-            let (start, end) = (from_ms(a).max(from), from_ms(b).min(to));
-            match out.last_mut() {
-                Some(last) if last.app_id == app_id && start <= last.end + CALL_GAP => {
-                    last.end = last.end.max(end);
-                }
-                _ => {
-                    let app_name = sessions
-                        .iter()
-                        .find(|s| s.app_id == app_id)
-                        .map_or_else(|| app_id.clone(), |s| s.app_name.clone());
-                    out.push(CallSpan {
-                        start,
-                        end,
-                        browser: crate::browser::is_browser(&app_id),
-                        app_id,
-                        app_name,
-                    });
-                }
-            }
-        }
-        out.sort_by(|a, b| a.start.cmp(&b.start).then(a.app_id.cmp(&b.app_id)));
         Ok(out)
     }
 

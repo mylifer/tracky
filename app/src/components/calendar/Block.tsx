@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Coffee } from "lucide-react";
 import type { IdleSpan, Tag, WindowSpan, WorkBlock } from "../../api";
 import { api, formatDuration } from "../../api";
@@ -12,11 +12,18 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { HOUR_MS, FULL_LABEL_PX, LABEL_MIN_PX, type ColorLens, HATCH, SNAP_MS, DRAG_MIN_PX } from "./grid";
 import { BlockDetails } from "./BlockDetails";
 import { type SheetSpan, sheetEntryAt } from "./TimesheetLines";
+import { topWindow } from "./windowLanes";
 
 /** Çizelge merceğinde zaman çizelgesinde satırı olmayan bloğun başlığı. */
 const NOT_IN_SHEET = "Çizelgede yok";
 
-function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens, sheet: SheetSpan[]) {
+function blockTitle(
+  b: WorkBlock,
+  tags: Map<string, Tag>,
+  lens: ColorLens,
+  sheet: SheetSpan[],
+  named: ReturnType<typeof topWindow>,
+) {
   const apps = b.topApps.map((a) => a.appName).join(", ");
   if (lens === "sheet") {
     // Başlık, bloğun aralığında zaman çizelgesinde yazan (projesi olan blokta yalnızca o projenin
@@ -31,11 +38,16 @@ function blockTitle(b: WorkBlock, tags: Map<string, Tag>, lens: ColorLens, sheet
   }
   const tag = b.categoryId ? tags.get(b.categoryId) : undefined;
   const project = b.projectId ? tags.get(b.projectId) : undefined;
+  if (lens === "project") {
+    // Renk projeden; projesi olmayan blok taralı ve renksiz.
+    return { color: project ? tagColor(project) : null, title: project?.name ?? UNASSIGNED, apps };
+  }
   return {
-    // Proje merceğinde renk projeden; projesi olmayan blok taralı ve renksiz.
-    color: lens === "project" ? (project ? tagColor(project) : null) : tagColor(tag),
-    // Projeye atanmış blok proje adıyla görünür: atamanın sonucu takvimde hemen fark edilsin.
-    title: project?.name ?? (lens === "project" ? UNASSIGNED : (tag?.name ?? b.topApps[0]?.appName ?? UNCATEGORIZED)),
+    color: tagColor(tag),
+    // Blok uygulama akışından çıkar, en çok süren pencerenin adıyla görünür (Timely gibi);
+    // projesi alt satırda: atamanın sonucu takvimde hemen fark edilsin.
+    title: named?.title ?? b.topApps[0]?.appName ?? tag?.name ?? UNCATEGORIZED,
+    project: project?.name,
     apps,
   };
 }
@@ -100,12 +112,27 @@ export function Block({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [resizing]);
-  const { color: blockColor, title, apps } = blockTitle(b, tags, lens, sheet);
+  const named = useMemo(
+    () => (windows ? topWindow(windows, +new Date(b.start), +new Date(b.end)) : null),
+    [windows, b.start, b.end],
+  );
+  const { color: blockColor, title, project, apps } = blockTitle(b, tags, lens, sheet, named);
+  // Simgelerin ilki adını veren pencerenin uygulaması.
+  const icons = useMemo(
+    () =>
+      named && lens === "category"
+        ? [
+            { appId: named.appId, appName: named.appName },
+            ...b.topApps.filter((a) => a.appId !== named.appId && a.appName !== named.appName),
+          ]
+        : b.topApps,
+    [named, lens, b.topApps],
+  );
   const color = blockColor ?? "var(--c0)";
   const full = height >= FULL_LABEL_PX;
   const label = height >= LABEL_MIN_PX;
   const devices = b.devices?.map((d) => d.name).join(" + ");
-  const summary = `${title} · ${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))} · ${formatDuration(b.activeSeconds)}${devices ? ` · ${devices}` : ""}`;
+  const summary = `${title}${project ? ` · ${project}` : ""} · ${formatTime(new Date(b.start))}–${formatTime(new Date(b.end))} · ${formatDuration(b.activeSeconds)}${devices ? ` · ${devices}` : ""}`;
   const start = +new Date(b.start);
   const end = +new Date(b.end);
   const picked = edit?.picked?.has(b.start) ?? false;
@@ -249,7 +276,7 @@ export function Block({
             {label && (
               <span className={cn("relative flex h-full flex-col", full ? "py-1" : "justify-center")}>
                 <span className="flex min-w-0 items-center gap-1.5">
-                  <AppIconStack apps={b.topApps} size={full ? 14 : 12} max={narrow ? 1 : 3} />
+                  <AppIconStack apps={icons} size={full ? 14 : 12} max={narrow ? 1 : 3} />
                   <span className="truncate text-[11px] leading-tight font-semibold">{title}</span>
                   {!full && !narrow && (
                     <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular">
@@ -259,6 +286,7 @@ export function Block({
                 </span>
                 {full && (
                   <span className="truncate text-[10px] leading-tight text-muted-foreground tabular">
+                    {project && `${project} · `}
                     {formatDuration(b.activeSeconds)} · {formatTime(new Date(b.start))}–{formatTime(new Date(b.end))}
                     {apps && ` · ${apps}`}
                   </span>

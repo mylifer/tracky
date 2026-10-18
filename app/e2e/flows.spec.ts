@@ -3,7 +3,8 @@ import { expect, test } from "./fixtures";
 
 test("Gözden geçir: grup önerilen projeye tek tuşla atanır", async ({ app, page }) => {
   await app.open("Gözden geçir");
-  await expect(page.getByText("Hacker News")).toBeVisible();
+  // Kartın pencere satırı (geçişte önceki sayfanın takviminde de aynı ad görünebilir).
+  await expect(page.getByRole("listitem").filter({ hasText: "Hacker News" })).toBeVisible();
   // 1: ilk seçenek, öncesinde/sonrasında çalışılan proje (Portal).
   await page.keyboard.press("1");
   await expect.poll(async () => (await app.calls("assign_unassigned")).length).toBe(1);
@@ -63,7 +64,6 @@ test("Gün: Pencereler sütunu her pencereyi saatinde gösterir, tıklanan yaln�
   page,
 }) => {
   await app.open("Gün");
-  await expect(page.getByRole("button", { name: /^Zoom görüşmesi\s*45dk\s*11:35–12:20$/ })).toBeVisible();
   await page.getByRole("button", { name: /^portal — api\.ts\s*2sa\s*09:00–11:00$/ }).click();
   const menu = page.getByRole("dialog", { name: "Seçilen aralık" });
   await expect(menu).toContainText("09:00 – 11:00");

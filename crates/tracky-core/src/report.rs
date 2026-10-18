@@ -71,20 +71,6 @@ pub struct IdleSpan {
     pub end: DateTime<Utc>,
 }
 
-/// Bir görüşme ([`crate::calls`]), rapor aralığına kırpılmış: ön plandaki pencereden bağımsız,
-/// onunla eş zamanlı süren aralık.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CallSpan {
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
-    pub app_id: String,
-    /// Oturumlardan bilinen adı; bilinmiyorsa uygulama kimliği.
-    pub app_name: String,
-    /// Görüşme tarayıcıda (Meet, Teams'in web hâli): uygulamanın penceresi görüşmenin kendisi değil.
-    pub browser: bool,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
@@ -105,8 +91,6 @@ pub struct Report {
     pub idle_seconds: i64,
     /// Atanmamış boşta aralıklar (yalnızca zaman çizelgesi istenince).
     pub idle: Vec<IdleSpan>,
-    /// Görüşmeler, başlangıca göre (yalnızca zaman çizelgesi istenince; `Store::report_for_device`).
-    pub calls: Vec<CallSpan>,
     /// Aralıkta çalışılan bilgisayarlar, süreye göre (filtre uygulanmamış; yalnızca birden
     /// çok bilgisayar varsa dolu, `Store::report_for_device`).
     pub devices: Vec<DeviceTotal>,
@@ -295,7 +279,6 @@ pub fn build(
         },
         idle_seconds: idle_ms / 1000,
         idle,
-        calls: Vec::new(),
         devices: Vec::new(),
     }
 }

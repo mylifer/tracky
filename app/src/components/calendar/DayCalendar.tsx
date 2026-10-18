@@ -1,16 +1,6 @@
 import { useMemo } from "react";
 import { AppWindow, CalendarDays, FileSpreadsheet, Shapes, Video } from "lucide-react";
-import type {
-  CalendarMeeting,
-  CallSpan,
-  EditScope,
-  EntryView,
-  IdleSpan,
-  Segment,
-  Tag,
-  WindowSpan,
-  WorkBlock,
-} from "../../api";
+import type { CalendarMeeting, EditScope, EntryView, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../../api";
 import { formatDuration } from "../../api";
 import { addDays, formatTime, fromWallMs } from "../../lib/dates";
 import { UNCATEGORIZED, tagColor } from "../../lib/tags";
@@ -161,8 +151,6 @@ export function placeSessions(
   });
 }
 
-const NO_CALLS: CallSpan[] = [];
-
 /**
  * Gün takvimi: Oturumlar · Zaman çizelgesi satırları (çizelge kuruluysa) · Toplantılar (takvim
  * bağlıysa) · Pencereler (ayrıntı: her pencere ve görüşme kendi saatinde) · Kategori şeridi.
@@ -173,7 +161,6 @@ export function DayCalendar({
   idle = [],
   segments,
   windows,
-  calls = NO_CALLS,
   tags,
   meetings = null,
   entries = null,
@@ -192,8 +179,6 @@ export function DayCalendar({
   segments: Segment[];
   /** Pencere aralıkları: Pencereler sütunu ve bloğa tıklayınca hangi pencerelerde zaman geçtiği. */
   windows?: WindowSpan[];
-  /** Görüşmeler: Pencereler sütununda ön plandaki pencerelerle eş zamanlı. */
-  calls?: CallSpan[];
   tags: Map<string, Tag>;
   /** Takvim toplantıları; `null`: takvim bağlı değil (sütun gösterilmez). */
   meetings?: CalendarMeeting[] | null;
@@ -232,13 +217,12 @@ export function DayCalendar({
       start: new Date(l.start).toISOString(),
       end: new Date(l.end).toISOString(),
     }));
-    return hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans, ...lineSpans, ...calls], hourPx);
-  }, [from, blocks, idle, segments, meetingSpans, lines, calls, hourPx]);
+    return hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans, ...lineSpans], hourPx);
+  }, [from, blocks, idle, segments, meetingSpans, lines, hourPx]);
   const top = topFn(+from, range);
-  const items = useMemo(() => windowItems(windows ?? [], calls, +from, +addDays(from, 1)), [windows, calls, from]);
-  const rail = items.some((i) => i.kind === "call");
+  const items = useMemo(() => windowItems(windows ?? [], +from, +addDays(from, 1)), [windows, from]);
   const [detailRef, detailWidth] = useWidth<HTMLDivElement>();
-  const lanes = laneCount(detailWidth, rail);
+  const lanes = laneCount(detailWidth);
   const { placed, hidden } = useMemo(
     () => placeItems(items, topFn(+from, range), lanes, ITEM_LABEL_PX),
     [items, from, range, lanes],
@@ -249,12 +233,13 @@ export function DayCalendar({
   const showMeetings = meetings !== null;
   const showSheet = entries !== null;
   // Sütunlar: saatler, oturumlar, [çizelge], [toplantılar], pencereler, kategori şeridi.
+  // Bloklar az ve büyük (molada bölünür): yerin çoğu pencerelerin şeritlerine.
   const columns = [
     "40px",
-    "minmax(0,1fr)",
+    "minmax(0,0.8fr)",
     ...(showSheet ? [`${sheetLinesWidth(lines)}px`] : []),
     ...(showMeetings ? ["minmax(0,0.6fr)"] : []),
-    "minmax(0,2fr)",
+    "minmax(0,2.4fr)",
     "14px",
   ];
   const grid = { gridTemplateColumns: columns.join(" ") };
@@ -355,15 +340,7 @@ export function DayCalendar({
         )}
         <div ref={detailRef} className="row-start-1 min-w-0" style={{ gridColumnStart: detail }}>
           <Column range={range}>
-            <WindowItems
-              placed={placed}
-              lanes={lanes}
-              rail={rail}
-              tags={tags}
-              lens={lens}
-              top={top}
-              onSelect={onRange}
-            />
+            <WindowItems placed={placed} lanes={lanes} tags={tags} lens={lens} top={top} onSelect={onRange} />
             <NowLine day={from} range={range} />
           </Column>
         </div>
