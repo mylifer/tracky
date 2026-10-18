@@ -1,0 +1,16 @@
+# cargo audit (CI'da Güvenlik iş akışı): bilinen ve Kum'u etkilemediği denetlenen uyarılar.
+# Yeni bir uyarı ya da buradakilerin etkilediği bir kullanım çıkarsa iş akışı düşer.
+[advisories]
+ignore = [
+    # zip ≤ 8: arşiv çıkarırken sembolik bağ ve izinler (ZipArchive::extract). zip 2.x umya-
+    # spreadsheet'ten (yalnızca kullanıcının seçtiği xlsx okunur/yazılır, extract çağrılmaz),
+    # 4.x tauri-plugin-updater'dan (paket imzası doğrulanmadan açılmaz). Düzeltmesi zip 9: üst
+    # projeler geçince kaldır.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+    # quick-xml < 0.41: kötü niyetli XML ile bellek/CPU tüketimi. Yalnızca umya-spreadsheet ve
+    # kullanıcının kendi zaman çizelgesi dosyası; düzeltmesi umya 3.x'e geçiş.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

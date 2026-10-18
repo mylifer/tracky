@@ -1,0 +1,39 @@
+name: Güvenlik
+
+# Bağımlılıklarda bilinen açıklar: kilit dosyaları değişince ve haftada bir (yeni açıklanan
+# açıklar için). Bilerek yok sayılanlar ve gerekçeleri .cargo/audit.toml'da.
+on:
+  push:
+    paths:
+      - Cargo.lock
+      - app/package-lock.json
+      - .cargo/audit.toml
+      - .github/workflows/guvenlik.yml
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: cargo-audit
+      - name: Rust bağımlılıkları (cargo audit)
+        run: |
+          command -v cargo-audit || cargo install cargo-audit --locked
+          cargo audit
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Arayüz bağımlılıkları (npm audit)
+        working-directory: app
+        run: npm audit --audit-level=high
