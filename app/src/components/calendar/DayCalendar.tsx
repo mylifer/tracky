@@ -1,6 +1,16 @@
 import { useMemo } from "react";
-import { CalendarDays, FileSpreadsheet, Shapes, Video } from "lucide-react";
-import type { CalendarMeeting, EntryView, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../../api";
+import { AppWindow, CalendarDays, FileSpreadsheet, Shapes, Video } from "lucide-react";
+import type {
+  CalendarMeeting,
+  CallSpan,
+  EditScope,
+  EntryView,
+  IdleSpan,
+  Segment,
+  Tag,
+  WindowSpan,
+  WorkBlock,
+} from "../../api";
 import { formatDuration } from "../../api";
 import { addDays, formatTime, fromWallMs } from "../../lib/dates";
 import { UNCATEGORIZED, tagColor } from "../../lib/tags";
@@ -22,6 +32,9 @@ import { Block, IdleBlock } from "./Block";
 import { categoryBuckets } from "./buckets";
 import { type SheetSpan, sheetLines, sheetLinesWidth, TimesheetLines } from "./TimesheetLines";
 import { attendanceLine, isSkipped } from "../../lib/attendance";
+import { useWidth } from "../charts";
+import { ITEM_LABEL_PX, laneCount, WindowItems } from "./WindowColumn";
+import { placeItems, windowItems } from "./windowLanes";
 
 /** Tıklanan anı çevreleyen boşluk: 2 saate kadarsa tamamı, değilse tıklanan çeyrekten 1 saat. */
 export function gapAround(
@@ -148,9 +161,11 @@ export function placeSessions(
   });
 }
 
+const NO_CALLS: CallSpan[] = [];
+
 /**
  * Gün takvimi: Oturumlar · Zaman çizelgesi satırları (çizelge kuruluysa) · Toplantılar (takvim
- * bağlıysa) · Kategori şeridi.
+ * bağlıysa) · Pencereler (ayrıntı: her pencere ve görüşme kendi saatinde) · Kategori şeridi.
  */
 export function DayCalendar({
   from,
@@ -158,6 +173,7 @@ export function DayCalendar({
   idle = [],
   segments,
   windows,
+  calls = NO_CALLS,
   tags,
   meetings = null,
   entries = null,
@@ -174,8 +190,10 @@ export function DayCalendar({
   /** Bilgisayardan uzakta geçen, atanmamış süre. */
   idle?: IdleSpan[];
   segments: Segment[];
-  /** Pencere aralıkları: bloğa tıklayınca hangi pencerelerde zaman geçtiği görünür. */
+  /** Pencere aralıkları: Pencereler sütunu ve bloğa tıklayınca hangi pencerelerde zaman geçtiği. */
   windows?: WindowSpan[];
+  /** Görüşmeler: Pencereler sütununda ön plandaki pencerelerle eş zamanlı. */
+  calls?: CallSpan[];
   tags: Map<string, Tag>;
   /** Takvim toplantıları; `null`: takvim bağlı değil (sütun gösterilmez). */
   meetings?: CalendarMeeting[] | null;
@@ -184,8 +202,11 @@ export function DayCalendar({
   /** Toplantıya tıklanınca (projeye atama menüsü) ve tıklanan nokta. */
   onMeeting?: (m: CalendarMeeting, x: number, y: number) => void;
   onEmpty?: (start: number, end: number) => void;
-  /** Sürükleyerek seçilen aralık (zaman damgası) ve bırakılan nokta. */
-  onRange?: (start: number, end: number, x: number, y: number) => void;
+  /**
+   * Sürükleyerek seçilen aralık (zaman damgası) ve bırakılan nokta; Pencereler sütunundan
+   * seçilince düzenleme yalnızca o pencereye uygulanır (`scope`).
+   */
+  onRange?: (start: number, end: number, x: number, y: number, scope?: EditScope & { label: string }) => void;
   preview?: [number, number] | null;
   /** Bir saatin yüksekliği (yakınlaştırma). */
   hourPx?: number;
@@ -211,24 +232,34 @@ export function DayCalendar({
       start: new Date(l.start).toISOString(),
       end: new Date(l.end).toISOString(),
     }));
-    return hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans, ...lineSpans], hourPx);
-  }, [from, blocks, idle, segments, meetingSpans, lines, hourPx]);
+    return hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans, ...lineSpans, ...calls], hourPx);
+  }, [from, blocks, idle, segments, meetingSpans, lines, calls, hourPx]);
   const top = topFn(+from, range);
+  const items = useMemo(() => windowItems(windows ?? [], calls, +from, +addDays(from, 1)), [windows, calls, from]);
+  const rail = items.some((i) => i.kind === "call");
+  const [detailRef, detailWidth] = useWidth<HTMLDivElement>();
+  const lanes = laneCount(detailWidth, rail);
+  const { placed, hidden } = useMemo(
+    () => placeItems(items, topFn(+from, range), lanes, ITEM_LABEL_PX),
+    [items, from, range, lanes],
+  );
   // 5 dk'lık dilim ancak rahat tıklanacak kadar yüksekse; yoksa 15 dk.
   const step = range.px >= 240 ? 5 : 15;
   const buckets = useMemo(() => categoryBuckets(segments, +from, step), [segments, from, step]);
   const showMeetings = meetings !== null;
   const showSheet = entries !== null;
-  // Sütunlar: saatler, oturumlar, [çizelge], [toplantılar], kategori şeridi.
+  // Sütunlar: saatler, oturumlar, [çizelge], [toplantılar], pencereler, kategori şeridi.
   const columns = [
     "40px",
     "minmax(0,1fr)",
     ...(showSheet ? [`${sheetLinesWidth(lines)}px`] : []),
     ...(showMeetings ? ["minmax(0,0.6fr)"] : []),
+    "minmax(0,2fr)",
     "14px",
   ];
   const grid = { gridTemplateColumns: columns.join(" ") };
   const strip = columns.length;
+  const detail = strip - 1;
 
   return (
     <div>
@@ -244,6 +275,20 @@ export function DayCalendar({
           </span>
         )}
         {showMeetings && <span>Toplantılar</span>}
+        <span
+          className="flex min-w-0 items-center gap-1"
+          title={
+            hidden > 0
+              ? `Sığmayan ${hidden} kısa pencere gizli: yakınlaştırınca ya da pencere genişleyince görünür`
+              : "Her pencere başladığı saatte, gerçekten geçen süresiyle"
+          }
+        >
+          <AppWindow className="size-3 shrink-0" />
+          <span className="truncate">
+            Pencereler
+            {hidden > 0 && <span className="font-normal text-muted-foreground/70"> · {hidden} gizli</span>}
+          </span>
+        </span>
         <span title="Kategori: her aralıkta en çok süren">
           <Shapes className="size-3" />
         </span>
@@ -308,6 +353,20 @@ export function DayCalendar({
             <NowLine day={from} range={range} />
           </Column>
         )}
+        <div ref={detailRef} className="row-start-1 min-w-0" style={{ gridColumnStart: detail }}>
+          <Column range={range}>
+            <WindowItems
+              placed={placed}
+              lanes={lanes}
+              rail={rail}
+              tags={tags}
+              lens={lens}
+              top={top}
+              onSelect={onRange}
+            />
+            <NowLine day={from} range={range} />
+          </Column>
+        </div>
         <div
           className="relative row-start-1"
           style={{ gridColumnStart: strip, height: (range.last - range.first) * range.px }}

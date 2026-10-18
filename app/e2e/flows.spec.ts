@@ -57,3 +57,15 @@ test("Ayarlar: veri denetimi bulguları gösterir ve onarır", async ({ app, pag
   await expect(page.getByText("Sorun bulunmadı.")).toBeVisible();
   expect(await app.calls("repair_data")).toHaveLength(1);
 });
+
+test("Gün: Pencereler sütunu her pencereyi saatinde gösterir, tıklanan yalnızca o pencereyi atar", async ({
+  app,
+  page,
+}) => {
+  await app.open("Gün");
+  await expect(page.getByRole("button", { name: /^Zoom görüşmesi\s*45dk\s*11:35–12:20$/ })).toBeVisible();
+  await page.getByRole("button", { name: /^portal — api\.ts\s*2sa\s*09:00–11:00$/ }).click();
+  const menu = page.getByRole("dialog", { name: "Seçilen aralık" });
+  await expect(menu).toContainText("09:00 – 11:00");
+  await expect(menu).toContainText("Yalnızca Visual Studio Code · portal — api.ts");
+});

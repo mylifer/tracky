@@ -177,10 +177,21 @@ export type Report = {
   idleSeconds: number;
   /** Atanmamış boşta aralıklar (takvimde "Boşta"). */
   idle: IdleSpan[];
+  /** Görüşmeler (gün ve hafta raporunda). */
+  calls: CallSpan[];
   /** Aralıkta çalışılan bilgisayarlar (filtresiz); yalnızca birden çok bilgisayar varsa dolu. */
   devices: DeviceTotal[];
 };
 export type IdleSpan = { start: string; end: string };
+/** Görüşme: mikrofonu kullanan görüşme uygulaması; ön plandaki pencereyle eş zamanlı sürer. */
+export type CallSpan = {
+  start: string;
+  end: string;
+  appId: string;
+  appName: string;
+  /** Tarayıcıdaki görüşme (Meet): tarayıcının pencereleri görüşmenin kendisi değil. */
+  browser: boolean;
+};
 
 /** Proje profili (`get_project_stats`). */
 export type ProjectStats = {

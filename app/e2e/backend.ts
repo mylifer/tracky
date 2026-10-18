@@ -153,6 +153,9 @@ function report(start: string, days: number): Report {
     },
     idleSeconds: 0,
     idle: [],
+    calls: inRange
+      ? [{ start: at("11:35"), end: at("12:20"), appId: "us.zoom.xos", appName: "Zoom", browser: false }]
+      : [],
     devices: [],
   };
 }

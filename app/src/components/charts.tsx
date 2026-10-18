@@ -15,7 +15,7 @@ const hoursFmt = new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 1 });
 export const hours = (secs: number) => hoursFmt.format(secs / 3600);
 
 /** Kapsayıcının genişliği (yeniden boyutlanınca güncellenir). */
-function useWidth<T extends HTMLElement>() {
+export function useWidth<T extends HTMLElement>() {
   const ref = useRef<T>(null);
   const [width, setWidth] = useState(0);
   useLayoutEffect(() => {

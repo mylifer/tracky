@@ -271,6 +271,9 @@ impl Store {
             None => merged_all.clone(),
         };
         let mut report = self.build_report(&sessions, from, to, day_starts, with_timeline)?;
+        if with_timeline {
+            report.calls = self.call_spans(from, to, device, &sessions)?;
+        }
 
         let totals = seconds_by_device(&merged_all, &device_of, from, to);
         if totals.len() < 2 {
