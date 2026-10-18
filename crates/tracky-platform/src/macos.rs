@@ -87,6 +87,44 @@ unsafe extern "C" {
     fn IOPMCopyAssertionsByProcess(assertions_by_pid: *mut CFDictionaryRef) -> i32;
 }
 
+/// `AudioObjectPropertyAddress`
+#[repr(C)]
+struct AudioPropertyAddress {
+    selector: u32,
+    scope: u32,
+    element: u32,
+}
+
+#[link(name = "CoreAudio", kind = "framework")]
+unsafe extern "C" {
+    fn AudioObjectGetPropertyDataSize(
+        object: u32,
+        address: *const AudioPropertyAddress,
+        qualifier_size: u32,
+        qualifier: *const c_void,
+        size: *mut u32,
+    ) -> i32;
+    fn AudioObjectGetPropertyData(
+        object: u32,
+        address: *const AudioPropertyAddress,
+        qualifier_size: u32,
+        qualifier: *const c_void,
+        size: *mut u32,
+        data: *mut c_void,
+    ) -> i32;
+}
+
+/// `kAudioObjectSystemObject`
+const AUDIO_SYSTEM_OBJECT: u32 = 1;
+/// `kAudioObjectPropertyScopeGlobal` ('glob')
+const AUDIO_SCOPE_GLOBAL: u32 = u32::from_be_bytes(*b"glob");
+/// `kAudioHardwarePropertyProcessObjectList` ('prs#'; macOS 14+)
+const AUDIO_PROCESS_LIST: u32 = u32::from_be_bytes(*b"prs#");
+/// `kAudioProcessPropertyPID` ('ppid')
+const AUDIO_PROCESS_PID: u32 = u32::from_be_bytes(*b"ppid");
+/// `kAudioProcessPropertyIsRunningInput` ('piri')
+const AUDIO_PROCESS_RUNNING_INPUT: u32 = u32::from_be_bytes(*b"piri");
+
 /// Ekranın uykuya geçmesini engelleyen güç beyanları (video oynatma, görüntülü görüşme).
 const DISPLAY_ASSERTIONS: &[&str] = &["PreventUserIdleDisplaySleep", "NoDisplaySleepAssertion"];
 /// Ekranı izlemeden bağımsız, sürekli açık tutan araçlar (süreç adı); bunlar izleme sayılmaz.
@@ -246,23 +284,91 @@ fn display_wake_holders() -> Vec<String> {
 }
 
 /// Mikrofonu kullanan ve ekranı uyanık tutan uygulamalar (kimlikleri).
+///
+/// Mikrofon Core Audio'nun süreç başına "giriş çalışıyor" bilgisinden okunur. Güç beyanındaki
+/// `audio-in` yalnızca aygıtın girişi olduğunu söyler: girişi de olan sanal bir çıkış aygıtına
+/// (Boom 3D'nin BoomAudio'su) ses çalan tarayıcı da onu taşır ve saatlerce "görüşmede" sayılırdı
+/// (18 Ekim'de Firefox 8,5 saat). Süreç bilgisi olmayan macOS'ta (14'ten önce) beyana bakılır.
 fn call_signals() -> tracky_core::platform::CallApps {
     let mut out = tracky_core::platform::CallApps::default();
-    for a in power_assertions() {
-        let list = if a.resources.iter().any(|r| r == "audio-in") {
-            &mut out.microphone
-        } else if DISPLAY_ASSERTIONS.contains(&a.kind.as_str()) {
-            &mut out.display
-        } else {
-            continue;
-        };
-        if let Some(id) = a.on_behalf_of.or(a.pid).and_then(app_id_of_pid)
+    let push = |list: &mut Vec<String>, pid: Option<i32>| {
+        if let Some(id) = pid.and_then(app_id_of_pid)
             && !list.contains(&id)
         {
             list.push(id);
         }
+    };
+    let capturing = input_pids();
+    for a in power_assertions() {
+        if DISPLAY_ASSERTIONS.contains(&a.kind.as_str()) {
+            push(&mut out.display, a.on_behalf_of.or(a.pid));
+        } else if capturing.is_none() && a.resources.iter().any(|r| r == "audio-in") {
+            push(&mut out.microphone, a.on_behalf_of.or(a.pid));
+        }
+    }
+    for pid in capturing.unwrap_or_default() {
+        push(&mut out.microphone, Some(pid));
     }
     out
+}
+
+/// Ses girişi (mikrofon) çalışan süreçler; Core Audio süreç listesini vermiyorsa (macOS 14'ten
+/// önce) `None`.
+fn input_pids() -> Option<Vec<i32>> {
+    let address = |selector| AudioPropertyAddress {
+        selector,
+        scope: AUDIO_SCOPE_GLOBAL,
+        element: 0,
+    };
+    let list = address(AUDIO_PROCESS_LIST);
+    let mut size = 0u32;
+    // SAFETY: Adres ve çıktı geçerli; niteleyici yok.
+    if unsafe {
+        AudioObjectGetPropertyDataSize(AUDIO_SYSTEM_OBJECT, &list, 0, ptr::null(), &mut size)
+    } != 0
+    {
+        return None;
+    }
+    let mut objects = vec![0u32; size as usize / size_of::<u32>()];
+    // SAFETY: Tampon `size` bayt; Core Audio yazdığı bayt sayısını `size`'a koyar.
+    if unsafe {
+        AudioObjectGetPropertyData(
+            AUDIO_SYSTEM_OBJECT,
+            &list,
+            0,
+            ptr::null(),
+            &mut size,
+            objects.as_mut_ptr().cast(),
+        )
+    } != 0
+    {
+        return None;
+    }
+    objects.truncate(size as usize / size_of::<u32>());
+    let read = |object: u32, selector: u32| -> Option<u32> {
+        let mut value = 0u32;
+        let mut size = size_of::<u32>() as u32;
+        // SAFETY: Özellik 4 baytlık tamsayı (`pid_t` ya da `UInt32`); tampon o kadar.
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                object,
+                &address(selector),
+                0,
+                ptr::null(),
+                &mut size,
+                (&raw mut value).cast(),
+            )
+        };
+        (status == 0).then_some(value)
+    };
+    Some(
+        objects
+            .into_iter()
+            .filter(|&o| read(o, AUDIO_PROCESS_RUNNING_INPUT).is_some_and(|v| v != 0))
+            .filter_map(|o| read(o, AUDIO_PROCESS_PID).map(|pid| pid as i32))
+            .filter(|&pid| pid > 0)
+            .collect(),
+    )
 }
 
 unsafe extern "C" {
