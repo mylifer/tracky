@@ -26,19 +26,33 @@ const PAGES = [
  */
 const CONTRAST_BASELINE = 55;
 
-/** Sayfa geçiş animasyonu bitsin: yarı saydam öğeler karşıtlıkta yanlış alarm verir. */
-const settle = (page: Page) =>
-  page.waitForFunction(
-    () =>
-      document
+/**
+ * Sayfa durulsun: yarı saydam öğeler karşıtlıkta yanlış alarm verir. Sayfalar ilk açıldıklarında
+ * yüklenir ve verisi sonra gelir; "şu an animasyon yok" yetmez, içerik taramanın ortasında
+ * belirebilir (yavaş CI'da Gözden geçir kartı soluk yakalanıp sayı eşiği aşıyordu). Sayfa 300 ms
+ * boyunca hem geçişsiz (sonsuz animasyonlar sayılmaz: canlı kartın nabzı, yükleme) hem değişmeden
+ * kalınca durulmuş sayılır.
+ */
+const settle = async (page: Page) => {
+  await page.evaluate(() => delete (window as { __settle?: unknown }).__settle);
+  await page.waitForFunction(
+    () => {
+      const w = window as { __settle?: { size: number; since: number } };
+      const moving = document
         .getAnimations()
-        // Sonsuz animasyonlar (canlı kartın nabzı, yükleme) hiç bitmez: yalnızca geçişler beklenir.
-        .every((a) => a.playState !== "running" || a.effect?.getTiming().iterations === Infinity),
-    null,
-    {
-      timeout: 3000,
+        .some((a) => a.playState === "running" && a.effect?.getTiming().iterations !== Infinity);
+      const size = document.body.innerHTML.length;
+      const now = performance.now();
+      if (moving || w.__settle?.size !== size) {
+        w.__settle = { size, since: now };
+        return false;
+      }
+      return now - w.__settle.since >= 300;
     },
+    null,
+    { timeout: 10_000, polling: 100 },
   );
+};
 
 const scan = (page: Page) => new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
 
