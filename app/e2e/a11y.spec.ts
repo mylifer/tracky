@@ -73,6 +73,8 @@ for (const name of PAGES) {
 }
 
 test("erişilebilirlik: karşıtlık sorunları artmaz", async ({ app, page }) => {
+  // Bütün sayfaları gezer; macOS CI'da sayfa başına 2–4 sn (çoğu taramanın kendisi).
+  test.setTimeout(120_000);
   let nodes = 0;
   const where: string[] = [];
   for (const name of PAGES) {
