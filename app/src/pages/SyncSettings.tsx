@@ -158,6 +158,23 @@ export default function SyncSettings() {
               {status.last && !status.last.ok ? "Hata" : "Bağlı"}
             </Badge>
           </SettingRow>
+          {status.realtime && (
+            <SettingRow
+              sub
+              label="Anında eşitleme"
+              hint={
+                status.realtime.connected
+                  ? `Düzenlemeler öteki bilgisayarlara birkaç saniyede gider · ${formatTime(new Date(status.realtime.since))}'den beri bağlı`
+                  : status.realtime.error
+                    ? `Şu an bağlanamıyor (${status.realtime.error}); değişiklikler 5 dakikada bir eşitlenir, kendiliğinden yeniden denenir`
+                    : "Yeniden bağlanıyor…"
+              }
+            >
+              <Badge variant={status.realtime.connected ? "success" : "secondary"}>
+                {status.realtime.connected ? "Açık" : "5 dakikada bir"}
+              </Badge>
+            </SettingRow>
+          )}
           <div className="flex items-center gap-2 px-4 py-2.5">
             <Button variant="outline" size="sm" disabled={busy} onClick={() => run(api.syncNow)}>
               Şimdi eşitle

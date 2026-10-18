@@ -273,6 +273,7 @@ const sync: SyncStatus = {
     ok: true,
     message: "3 gönderildi, 2 alındı. MacBook Air eski sürümde: o bilgisayarda Kum'u güncelle",
   },
+  realtime: { connected: true, since: at("13:00"), error: null },
 };
 
 const privacy: PrivacySettings = {

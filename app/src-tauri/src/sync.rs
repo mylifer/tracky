@@ -152,6 +152,20 @@ pub struct SyncWorker {
     pub failing_since: Mutex<Option<DateTime<Utc>>>,
     /// Kapanıyor: Realtime dinleyicisi bağlantıyı kapatıp çıkar.
     pub stopping: AtomicBool,
+    /// Anında eşitlemenin (Realtime) durumu; giriş yoksa `None`.
+    pub realtime: Mutex<Option<RealtimeStatus>>,
+}
+
+/// Anında eşitlemenin durumu (Ayarlar → Senkronizasyon).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RealtimeStatus {
+    /// Kanala katılındı: öteki bilgisayarların dürtmeleri duyuluyor.
+    pub connected: bool,
+    /// Bu durumun başladığı an.
+    pub since: DateTime<Utc>,
+    /// Bağlanamıyorsa nedeni (değişiklikler 5 dakikada bir eşitlenir).
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,6 +185,7 @@ pub struct SyncStatus {
     schema: Option<String>,
     email: Option<String>,
     last: Option<LastSync>,
+    realtime: Option<RealtimeStatus>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -236,6 +251,10 @@ fn status(app: &AppHandle) -> SyncStatus {
         configured: config.is_some(),
         schema: config.as_ref().and_then(|c| c.schema.clone()),
         url: config.map(|c| c.url),
+        realtime: auth
+            .is_some()
+            .then(|| lock(&app.state::<SyncWorker>().realtime).clone())
+            .flatten(),
         email: auth.map(|a| a.email),
         last: lock(&app.state::<SyncWorker>().last).clone(),
     }
@@ -662,10 +681,32 @@ pub fn shutdown(app: &AppHandle) {
 /// Öteki bilgisayarların dürtmelerini dinler (Supabase Realtime): biri düzenlemesini gönderince
 /// burada hemen eşitlenir. Giriş yoksa bekler; bağlantı koparsa giderek uzayan aralıklarla
 /// yeniden bağlanır. Dinlenemezse eşitleme yine 5 dakikada bir sürer.
+/// Anında eşitlemenin durumunu yazar ve arayüze bildirir (değiştiyse).
+fn set_realtime(app: &AppHandle, connected: bool, error: Option<String>) {
+    {
+        let worker = app.state::<SyncWorker>();
+        let mut current = lock(&worker.realtime);
+        if current
+            .as_ref()
+            .is_some_and(|c| c.connected == connected && c.error == error)
+        {
+            return;
+        }
+        *current = Some(RealtimeStatus {
+            connected,
+            since: Utc::now(),
+            error,
+        });
+    }
+    let _ = app.emit("sync", status(app));
+}
+
 fn listen(app: AppHandle) {
     let stopping = || app.state::<SyncWorker>().stopping.load(Ordering::Acquire);
     let mut wait = LISTEN_RETRY;
     let mut reported: Option<String> = None;
+    // Bu açılışta bir kez bağlandı mı (günlükte ilk bağlanma ve kopmadan sonraki ayrı yazılır).
+    let mut ever_joined = false;
     while !stopping() {
         let (Some(config), Some(auth)) = (config(&app), load_auth(&app)) else {
             std::thread::sleep(TICK);
@@ -696,13 +737,29 @@ fn listen(app: AppHandle) {
                     sync_now(app.clone());
                 }
             },
+            on_joined: &mut || {
+                if reported.take().is_some() {
+                    log_line(&app, "anında eşitleme yeniden bağlandı");
+                } else if !ever_joined {
+                    log_line(&app, "anında eşitleme bağlandı");
+                }
+                ever_joined = true;
+                set_realtime(&app, true, None);
+            },
         });
         match result {
-            Ok(()) => {
-                reported = None;
+            Ok(tracky_sync::realtime::Ended::Stopped) => {
                 wait = LISTEN_RETRY;
             }
+            // Uykudan uyandı: bağlantı ölmüştür, beklemeden yeniden kurulur. Uyanıştan sonraki
+            // ilk eşitleme de öne çekilir (uyurken öteki bilgisayarlar değişmiş olabilir).
+            Ok(tracky_sync::realtime::Ended::Woke) => {
+                set_realtime(&app, false, None);
+                sync_now(app.clone());
+                continue;
+            }
             Err(e) => {
+                set_realtime(&app, false, Some(e.clone()));
                 // Aynı hata her denemede günlüğe yazılmaz.
                 if reported.as_deref() != Some(e.as_str()) {
                     log_line(&app, &format!("anında eşitleme dinlenemiyor: {e}"));
@@ -732,6 +789,7 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
         gate: Mutex::new(()),
         failing_since: Mutex::new(None),
         stopping: AtomicBool::new(false),
+        realtime: Mutex::new(None),
     });
     let handle = app.handle().clone();
     std::thread::Builder::new()

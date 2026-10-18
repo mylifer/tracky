@@ -15,6 +15,7 @@ test("Ayarlar: eski sürümde kalan bilgisayar uyarılır", async ({ app, page }
   await app.open("Ayarlar");
   await expect(page.getByRole("status").filter({ hasText: "MacBook Air eski sürümde" })).toBeVisible();
   await expect(page.getByText("Sürüm 0.9.70")).toBeVisible();
+  await expect(page.getByText(/Düzenlemeler öteki bilgisayarlara birkaç saniyede gider/)).toBeVisible();
   await expect(page.getByText("Sürüm 0.9.74")).toBeVisible();
 });
 

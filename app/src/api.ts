@@ -449,6 +449,8 @@ export type SyncStatus = {
   schema: string | null;
   email: string | null;
   last: LastSync | null;
+  /** Anında eşitleme (Realtime); giriş yoksa ya da henüz denenmediyse `null`. */
+  realtime: { connected: boolean; since: string; error: string | null } | null;
 };
 
 /** Rust tarafında veritabanına bu adlarla kaydedildiği için snake_case. */

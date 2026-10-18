@@ -8,7 +8,7 @@
 
 use std::io::ErrorKind;
 use std::net::TcpStream;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Value, json};
 use tungstenite::stream::MaybeTlsStream;
@@ -23,6 +23,18 @@ const TOPIC: &str = "realtime:kum-nudges";
 const HEARTBEAT: Duration = Duration::from_secs(25);
 /// Okuma bu kadar bekler; arada durdurma, kalp atışı ve jeton denetlenir.
 const POLL: Duration = Duration::from_millis(500);
+/// Duvar saati iki tur arasında bundan çok ilerlediyse bilgisayar uyumuştur (uykuda `Instant`
+/// ilerlemez): bağlantı büyük olasılıkla ölmüştür, hemen yeniden kurulur.
+const WAKE_JUMP: Duration = Duration::from_secs(60);
+
+/// Dinleme neden bitti (hata değil).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    /// Durduruldu ya da oturum kapandı.
+    Stopped,
+    /// Bilgisayar uykudan uyandı: hemen yeniden bağlanılmalı.
+    Woke,
+}
 
 /// Kanaldan gelen, işe yarayan olaylar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +58,8 @@ pub struct Listen<'a> {
     pub stop: &'a dyn Fn() -> bool,
     /// Başka bir açılış dürttü (yazanın kimliği).
     pub on_nudge: &'a mut dyn FnMut(&str),
+    /// Kanala katılındı: dürtmeler artık duyulur.
+    pub on_joined: &'a mut dyn FnMut(),
 }
 
 /// Projenin Realtime adresi: `https://x.supabase.co` → `wss://x.supabase.co/realtime/v1/websocket`.
@@ -135,11 +149,12 @@ fn set_poll(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
     let _ = stream.set_read_timeout(Some(POLL));
 }
 
-/// Bağlanır ve durdurulana ya da oturum kapanana kadar dinler (`Ok`). Bağlantı koparsa ya
-/// da kanal reddedilirse hatayla döner; yeniden bağlanmak çağıranın işidir.
-pub fn listen(l: Listen) -> Result<(), String> {
+/// Bağlanır ve durdurulana, oturum kapanana ya da bilgisayar uykudan uyanana kadar dinler
+/// (`Ok`). Bağlantı koparsa ya da kanal reddedilirse hatayla döner; yeniden bağlanmak
+/// çağıranın işidir.
+pub fn listen(l: Listen) -> Result<Ended, String> {
     let Some(mut token) = (l.token)() else {
-        return Ok(());
+        return Ok(Ended::Stopped);
     };
     let (mut socket, _) =
         tungstenite::connect(socket_url(l.config)).map_err(|e| format!("Realtime: {e}"))?;
@@ -152,11 +167,18 @@ pub fn listen(l: Listen) -> Result<(), String> {
     send(&mut socket, join_message(l.config, l.user_id, &token))?;
     let mut n = 1;
     let mut beat = Instant::now();
+    let mut wall = SystemTime::now();
     loop {
         if (l.stop)() {
             let _ = socket.close(None);
-            return Ok(());
+            return Ok(Ended::Stopped);
         }
+        let now = SystemTime::now();
+        if now.duration_since(wall).unwrap_or_default() > WAKE_JUMP {
+            let _ = socket.close(None);
+            return Ok(Ended::Woke);
+        }
+        wall = now;
         if beat.elapsed() >= HEARTBEAT {
             beat = Instant::now();
             n += 1;
@@ -165,7 +187,7 @@ pub fn listen(l: Listen) -> Result<(), String> {
             match (l.token)() {
                 None => {
                     let _ = socket.close(None);
-                    return Ok(());
+                    return Ok(Ended::Stopped);
                 }
                 Some(fresh) if fresh != token => {
                     token = fresh;
@@ -179,8 +201,9 @@ pub fn listen(l: Listen) -> Result<(), String> {
         match socket.read() {
             Ok(Message::Text(text)) => match parse(&text) {
                 Event::Nudge(writer) => (l.on_nudge)(&writer),
+                Event::Joined => (l.on_joined)(),
                 Event::Failed(why) => return Err(why),
-                Event::Joined | Event::Other => {}
+                Event::Other => {}
             },
             Ok(Message::Close(_)) => return Err("Realtime: sunucu bağlantıyı kapattı".into()),
             Ok(_) => {}
@@ -269,14 +292,17 @@ mod tests {
             schema: None,
         };
         let heard = std::cell::RefCell::new(Vec::<String>::new());
+        let mut joined = 0;
         let result = listen(Listen {
             config: &config,
             user_id: "u1",
             token: &mut || Some("jwt".into()),
             stop: &|| heard.borrow().len() >= 2,
             on_nudge: &mut |w| heard.borrow_mut().push(w.to_string()),
+            on_joined: &mut || joined += 1,
         });
-        assert_eq!(result, Ok(()));
+        assert_eq!(result, Ok(Ended::Stopped));
+        assert_eq!(joined, 1);
         assert_eq!(*heard.borrow(), ["öteki", "bu"]);
         peer.join().unwrap();
     }
@@ -301,9 +327,10 @@ mod tests {
             token: &mut || Some(token.clone()),
             stop: &|| !heard.borrow().is_empty() || start.elapsed() > Duration::from_secs(20),
             on_nudge: &mut |w| heard.borrow_mut().push(w.to_string()),
+            on_joined: &mut || {},
         });
         eprintln!("sonuç: {result:?}, duyulan: {:?}", heard.borrow());
-        assert_eq!(result, Ok(()));
+        assert_eq!(result, Ok(Ended::Stopped));
     }
 
     /// Gerçek projede tam döngü: bir açılış `nudge` ile dürter, dinleyen duyar (ortam
@@ -340,9 +367,10 @@ mod tests {
             token: &mut || Some(session.access_token.clone()),
             stop: &|| !heard.borrow().is_empty() || start.elapsed() > Duration::from_secs(20),
             on_nudge: &mut |w| heard.borrow_mut().push(w.to_string()),
+            on_joined: &mut || {},
         });
         assert_eq!(sender.join().unwrap(), Ok(()));
-        assert_eq!(result, Ok(()));
+        assert_eq!(result, Ok(Ended::Stopped));
         assert_eq!(*heard.borrow(), [writer]);
     }
 
