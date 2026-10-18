@@ -15,6 +15,10 @@ use crate::timesheet::TimesheetConfig;
 pub const CALL_GAP: Duration = Duration::seconds(90);
 /// Süren görüşme bu aralıkla diske yazılır (çökmede en fazla bu kadarı kaybolur).
 const SAVE_EVERY: Duration = Duration::seconds(30);
+/// Bu kadar süre girdi olmadan geçince (ekranı uyanık tutan video ya da görüşme yokken) süren
+/// görüşme biter: gece açık kalan bir sekmenin tuttuğu mikrofon saatlerce görüşme sayılmasın
+/// (12 Ekim'de Firefox 14 saat). Toplantıda görüşme uygulaması ekranı uyanık tutar, sayılmaz.
+pub const CALL_AWAY: Duration = Duration::minutes(30);
 
 /// Bir görüşme aralığı.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -64,12 +68,16 @@ pub fn in_call(signals: &CallApps, config: &TimesheetConfig) -> Vec<String> {
 pub struct CallRecorder {
     current: Option<Call>,
     last_save: Option<DateTime<Utc>>,
+    /// Kullanıcı uzaktayken mikrofonu tutan uygulamalar: mikrofonu bir kez bırakana kadar yeni
+    /// görüşme başlatmazlar (dönünce açık kalan sekme görüşme sayılmasın).
+    stale: Vec<String>,
 }
 
 impl CallRecorder {
-    /// Yoklamanın sonucu: mikrofonu kullanan görüşme uygulamaları (boşsa görüşme yok). Diske
-    /// yazılması gereken görüşmeler (yeni, uzayan ya da biten).
-    pub fn observe(&mut self, now: DateTime<Utc>, apps: &[String]) -> Vec<Call> {
+    /// Yoklamanın sonucu: mikrofonu kullanan görüşme uygulamaları (boşsa görüşme yok) ve son
+    /// girdiden beri geçen süre (girdisiz izlemede 0). Diske yazılması gereken görüşmeler (yeni,
+    /// uzayan ya da biten).
+    pub fn observe(&mut self, now: DateTime<Utc>, apps: &[String], idle_secs: u64) -> Vec<Call> {
         let mut out = Vec::new();
         // Uzun boşluktan sonra süren görüşme son görüldüğü anda bitmiştir; son hâli yazılır.
         if self
@@ -79,7 +87,19 @@ impl CallRecorder {
         {
             out.extend(self.current.take());
         }
-        let Some(app) = apps.first() else {
+        // Mikrofonu bırakan uygulama yeniden görüşme başlatabilir.
+        self.stale.retain(|a| apps.contains(a));
+        if idle_secs >= CALL_AWAY.num_seconds() as u64 {
+            // Kullanıcı uzakta: görüşme son görüldüğü anda biter, mikrofonu tutanlar bayattır.
+            out.extend(self.current.take());
+            for app in apps {
+                if !self.stale.contains(app) {
+                    self.stale.push(app.clone());
+                }
+            }
+            return out;
+        }
+        let Some(app) = apps.iter().find(|a| !self.stale.contains(a)) else {
             return out;
         };
         match &mut self.current {
@@ -141,29 +161,60 @@ mod tests {
         assert!(!is_call_app("com.globaldelight.Boom3D", &config));
     }
 
+    impl CallRecorder {
+        /// Kullanıcı bilgisayar başındayken yoklama.
+        fn observe_at(&mut self, now: DateTime<Utc>, apps: &[String]) -> Vec<Call> {
+            self.observe(now, apps, 0)
+        }
+    }
+
+    #[test]
+    fn a_microphone_left_open_while_away_is_not_a_call() {
+        let away = CALL_AWAY.num_seconds() as u64;
+        let mut r = CallRecorder::default();
+        let firefox = vec!["org.mozilla.firefox".to_string()];
+        let first = r.observe(t(0), &firefox, 0).pop().unwrap();
+        r.observe(t(30), &firefox, 30);
+        // Yarım saattir girdi yok, ekranı uyanık tutan bir şey de yok: görüşme son görüldüğü
+        // anda biter.
+        let ended = r.observe(t(1800), &firefox, away);
+        assert_eq!(ended.len(), 1);
+        assert_eq!((ended[0].id, ended[0].ended_at), (first.id, t(30)));
+        // Gece boyu ve dönünce (girdi var) açık kalan sekme görüşme sayılmaz.
+        assert_eq!(r.observe(t(20_000), &firefox, away + 18_000), []);
+        assert_eq!(r.observe(t(30_000), &firefox, 5), []);
+        assert!(r.finish().is_none());
+        // Mikrofon bir kez bırakılınca yeni görüşme sayılır; uzaktayken bayat olmayan başka
+        // uygulama da.
+        assert_eq!(r.observe(t(30_005), &[], 5), []);
+        let next = r.observe(t(30_010), &firefox, 5).pop().unwrap();
+        assert_ne!(next.id, first.id);
+        assert_eq!(next.started_at, t(30_010));
+    }
+
     #[test]
     fn short_gaps_keep_the_call_and_long_ones_end_it() {
         let mut r = CallRecorder::default();
-        let first = r.observe(t(0), &apps(true)).pop().unwrap();
+        let first = r.observe_at(t(0), &apps(true)).pop().unwrap();
         // Süren görüşme ancak yazma aralığında bir yazılır.
-        assert_eq!(r.observe(t(5), &apps(true)), []);
-        let saved = r.observe(t(30), &apps(true)).pop().unwrap();
+        assert_eq!(r.observe_at(t(5), &apps(true)), []);
+        let saved = r.observe_at(t(30), &apps(true)).pop().unwrap();
         assert_eq!((saved.id, saved.ended_at), (first.id, t(30)));
         // 60 sn mikrofon kapalı: aynı görüşme.
-        assert_eq!(r.observe(t(60), &apps(false)), []);
-        let saved = r.observe(t(90), &apps(true));
+        assert_eq!(r.observe_at(t(60), &apps(false)), []);
+        let saved = r.observe_at(t(90), &apps(true));
         assert_eq!((saved[0].id, saved[0].ended_at), (first.id, t(90)));
         // Uzun boşluk: görüşme son görüldüğü anda biter.
-        assert_eq!(r.observe(t(150), &apps(false)), []);
-        let ended = r.observe(t(200), &apps(false));
+        assert_eq!(r.observe_at(t(150), &apps(false)), []);
+        let ended = r.observe_at(t(200), &apps(false));
         assert_eq!(ended.len(), 1);
         assert_eq!((ended[0].id, ended[0].ended_at), (first.id, t(90)));
-        assert_eq!(r.observe(t(205), &apps(false)), []);
+        assert_eq!(r.observe_at(t(205), &apps(false)), []);
         // Yeni görüşme yeni kimlikle.
-        let next = r.observe(t(300), &apps(true)).pop().unwrap();
+        let next = r.observe_at(t(300), &apps(true)).pop().unwrap();
         assert_ne!(next.id, first.id);
         // Boşluktan sonra hemen yeni görüşme: eskisinin son hâli de yazılır.
-        let both = r.observe(t(500), &apps(true));
+        let both = r.observe_at(t(500), &apps(true));
         assert_eq!(both.len(), 2);
         assert_eq!((both[0].id, both[0].ended_at), (next.id, t(300)));
         assert_eq!(r.finish().map(|c| c.id), Some(both[1].id));

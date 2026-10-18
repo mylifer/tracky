@@ -220,7 +220,7 @@ impl<P: ActivityProvider> Tracker<P> {
         if self.privacy.paused {
             self.engine.forget_away(now);
         }
-        self.record_calls(store, now, obs.calls, &mut outcome);
+        self.record_calls(store, now, obs.calls, obs.idle, &mut outcome);
 
         self.ticks = self.ticks.wrapping_add(1);
         if self.ticks.is_multiple_of(FLUSH_EVERY)
@@ -233,19 +233,21 @@ impl<P: ActivityProvider> Tracker<P> {
     }
 
     /// Görüşme yoklamasını işler; duraklatılınca ya da görüşme kaydı kapatılınca süren görüşme
-    /// son görüldüğü anda biter.
+    /// son görüldüğü anda biter. `idle`: girdisiz izlemeye göre düzeltilmiş boşta süresi; uzun
+    /// süre boştayken görüşme sayılmaz ([`crate::calls::CALL_AWAY`]).
     fn record_calls(
         &mut self,
         store: &Store,
         now: DateTime<Utc>,
         signals: Option<CallApps>,
+        idle: u64,
         outcome: &mut TickOutcome,
     ) {
         let calls = match signals {
             Some(signals) => {
                 let config = store.timesheet_config().unwrap_or_default();
                 self.calls
-                    .observe(now, &crate::calls::in_call(&signals, &config))
+                    .observe(now, &crate::calls::in_call(&signals, &config), idle)
             }
             None if self.privacy.paused || !self.privacy.detect_calls => {
                 self.calls.finish().into_iter().collect()
