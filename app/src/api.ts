@@ -423,6 +423,24 @@ export type BackupStatus = {
 };
 export type PickedBackup = { path: string; sessions: number; lastActivity: string | null };
 
+/** Veri denetimi: kayıtlarda olmaması gerekenler (Ayarlar → Hakkında). */
+export type DataHealth = {
+  /** Aynı bilgisayarda üst üste binen oturumlar (süre iki kez sayılır). */
+  overlaps: {
+    deviceId: string;
+    firstApp: string;
+    secondApp: string;
+    start: string;
+    seconds: number;
+    /** Aktarılmış satırın işinde ya da süren kayıtta değil. */
+    repairable: boolean;
+  }[];
+  /** Bilgisayar başında değilken de süren görüşmeler; `until`'e kısalır. */
+  longCalls: { id: string; appId: string; startedAt: string; endedAt: string; until: string }[];
+  /** Aynı işi kapsayan çizelge satırı çiftleri (kendiliğinden onarılmaz). */
+  doubleRows: { date: string; first: string; second: string; minutes: number }[];
+};
+export type Repaired = { sessions: number; calls: number };
 export type LastSync = { at: string; ok: boolean; message: string };
 export type SyncStatus = {
   configured: boolean;
@@ -797,6 +815,9 @@ export const api = {
   syncNow: () => invoke<void>("sync_now"),
   onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> => listen<SyncStatus>("sync", (e) => cb(e.payload)),
   diagnose: () => invoke<string>("diagnose"),
+  dataHealth: () => invoke<DataHealth>("data_health"),
+  /** Onarılabilen bulguları onarır (önce yedek alınır). */
+  repairData: () => invoke<Repaired>("repair_data"),
   /** Sürüm, izinler, takip/eşitleme durumu ve günlüklerin sonu (panoya kopyalanır). */
   diagnostics: () => invoke<string>("diagnostics"),
   revealLog: () => invoke<void>("reveal_log"),

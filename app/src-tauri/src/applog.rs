@@ -140,6 +140,11 @@ pub fn diagnostics(app: AppHandle) -> String {
             size(crate::backup::DB_FILE),
             size(&format!("{}-wal", crate::backup::DB_FILE)),
         ));
+        let health = crate::lock(&app.state::<crate::tracking::Shared>().store)
+            .health()
+            .map(|h| h.summary())
+            .unwrap_or_else(|e| e.to_string());
+        line(format!("Veri denetimi: {health}"));
         line(String::new());
         line("— kum.log (son 150 satır) —".into());
         line(tail(&dir.join(LOG_FILE), 150));

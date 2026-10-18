@@ -46,3 +46,13 @@ test("Ayarlar: güncellemeleri kendiliğinden kurma kapatılabilir", async ({ ap
   await expect(toggle).not.toBeChecked();
   expect((await app.calls("set_auto_update"))[0].args).toEqual({ enabled: false });
 });
+
+test("Ayarlar: veri denetimi bulguları gösterir ve onarır", async ({ app, page }) => {
+  await app.open("Ayarlar");
+  await page.getByRole("button", { name: "Denetle", exact: true }).click();
+  await expect(page.getByText("2 bulgu, 2 tanesi onarılabilir.")).toBeVisible();
+  await expect(page.getByText(/firefox görüşmesi/)).toBeVisible();
+  await page.getByRole("button", { name: "Onar (2)", exact: true }).click();
+  await expect(page.getByText("Sorun bulunmadı.")).toBeVisible();
+  expect(await app.calls("repair_data")).toHaveLength(1);
+});

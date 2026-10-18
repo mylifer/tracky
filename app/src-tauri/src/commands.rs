@@ -786,3 +786,54 @@ mod tests {
         assert_eq!(file_slug("  ***  "), "arama");
     }
 }
+
+/// Veri denetimi ([`tracky_core::store::Health`]): kayıtlarda olmaması gerekenler.
+#[tauri::command]
+pub async fn data_health(app: AppHandle) -> CmdResult<tracky_core::store::Health> {
+    tauri::async_runtime::spawn_blocking(move || {
+        lock(&app.state::<Shared>().store).health().map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Denetimin onarılabilen bulgularını onarır; önce yedek alınır.
+#[tauri::command]
+pub async fn repair_data(app: AppHandle) -> CmdResult<tracky_core::store::Repaired> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backup = crate::backup::backup_now_inner(&app)?;
+        let done = lock(&app.state::<Shared>().store)
+            .repair_health()
+            .map_err(err)?;
+        log_info!(
+            "veri onarıldı: {} oturum, {} görüşme (önce yedek: {})",
+            done.sessions,
+            done.calls,
+            backup.name
+        );
+        Ok(done)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Açılıştan bir süre sonra veriyi bir kez denetler; sorun varsa günlüğe yazar (Ayarlar →
+/// Hakkında'dan onarılır).
+pub fn check_data_later(app: &AppHandle) {
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("kum-health".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(120));
+            let health = lock(&app.state::<Shared>().store).health();
+            match health {
+                Ok(h) if !h.is_clean() => log_info!(
+                    "veri denetimi: {} ({} onarılabilir)",
+                    h.summary(),
+                    h.repairable()
+                ),
+                Ok(_) => {}
+                Err(e) => log_error!("veri denetlenemedi: {e}"),
+            }
+        });
+}

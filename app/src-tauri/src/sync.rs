@@ -97,6 +97,7 @@ const EDIT_COMMANDS: &[&str] = &[
     "remove_block_from_timesheet",
     "remove_timesheet",
     "rename_device",
+    "repair_data",
     "resend_block_to_timesheet",
     "reset_timesheet_day",
     "resize_block",

@@ -256,7 +256,7 @@ pub fn finish_restore(data_dir: &Path, store: &Store) -> Result<(), Box<dyn std:
 }
 
 /// Yedeği alır, eskileri temizler ve zamanı kaydeder.
-fn backup_now_inner(app: &AppHandle) -> CmdResult<BackupFile> {
+pub(crate) fn backup_now_inner(app: &AppHandle) -> CmdResult<BackupFile> {
     let data = data_dir(app)?;
     let dir = backup_dir(&data);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

@@ -325,6 +325,9 @@ const update: UpdateStatus = {
 
 const calendar: CalendarStatus = { url: null, events: 0, last: null, lastOk: null, ignored: 0 };
 
+/** Veri denetiminin onarımı yapıldı mı (onarımdan sonra denetim temiz döner). */
+let repaired = false;
+
 type Args = Record<string, unknown>;
 type Handler = (args: Args) => unknown;
 
@@ -365,6 +368,35 @@ const handlers: Record<string, Handler> = {
   get_ai_settings: () => ({ enabled: false, hasKey: false, keyHint: null, model: "claude" }),
   backup_status: () => ({ dir: "/tmp/yedek", last: null, damage: null, files: [] }),
   client_report: (a) => clientReport(a.month as string),
+  data_health: () =>
+    repaired
+      ? { overlaps: [], longCalls: [], doubleRows: [] }
+      : {
+          overlaps: [
+            {
+              deviceId: "d-1",
+              firstApp: "org.mozilla.firefox",
+              secondApp: "kum.idle",
+              start: at("11:28"),
+              seconds: 120,
+              repairable: true,
+            },
+          ],
+          longCalls: [
+            {
+              id: "c-1",
+              appId: "org.mozilla.firefox",
+              startedAt: at("23:17", "2026-10-06"),
+              endedAt: at("13:37"),
+              until: at("23:17", "2026-10-06"),
+            },
+          ],
+          doubleRows: [],
+        },
+  repair_data: () => {
+    repaired = true;
+    return { sessions: 1, calls: 1 };
+  },
   whats_new: () => ({
     version: "0.9.75",
     notes:

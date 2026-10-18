@@ -11,6 +11,7 @@ import { AiSettings } from "./AiSettings";
 import { ConnectionsSettings } from "./ConnectionSettings";
 import GoalsSettings from "./GoalsSettings";
 import SyncSettings from "./SyncSettings";
+import DataHealthSettings from "./DataHealthSettings";
 import { AI_SECTION, CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections } from "./TimesheetSettings";
 import UpdateSettings from "./UpdateSettings";
 import BackupSettings from "./BackupSettings";
@@ -533,6 +534,7 @@ export default function Settings({
 
             <SettingsGroup id="hakkinda" title="Hakkında ve destek">
               <UpdateSettings />
+              <DataHealthSettings />
               <SettingRow
                 label="Tanılama"
                 hint="Pencere başlıkları görünmüyorsa çalıştır, 5 saniye boyunca farklı pencerelere geç ve çıkan metni paylaş."

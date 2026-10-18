@@ -481,6 +481,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     backup::start(app)?;
     shortcut::init(app.handle());
     updater::start(app);
+    commands::check_data_later(app.handle());
 
     // Karşılama tamamlanmadıysa ya da izin eksikse pencereyi göster;
     // otomatik başlatmada (--hidden) yalnızca menü çubuğunda kal.
@@ -538,6 +539,8 @@ pub fn run() {
             set_app_icon,
             commands::get_report,
             commands::list_devices,
+            commands::data_health,
+            commands::repair_data,
             commands::rename_device,
             icons::app_icon,
             icons::site_icon,
