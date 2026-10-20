@@ -396,19 +396,24 @@ export function MeetingMenu({
               {attendanceText}
             </p>
           )}
-          {attendance.auto ? (
-            <Button size="sm" variant="outline" className="w-full" onClick={() => answer(isSkipped(attendance))}>
-              {isSkipped(attendance) ? (
-                <>
-                  <Check /> Katıldım
-                </>
-              ) : (
-                <>
-                  <X /> Katılmadım
-                </>
-              )}
-            </Button>
-          ) : (
+          <div className="flex gap-1">
+            {[true, false].map((attended) => {
+              const picked = !attendance.auto && isSkipped(attendance) !== attended;
+              return (
+                <Button
+                  key={String(attended)}
+                  size="sm"
+                  variant={picked ? "secondary" : "outline"}
+                  className="flex-1"
+                  aria-pressed={picked}
+                  onClick={() => answer(attended)}
+                >
+                  {attended ? <Check /> : <X />} {attended ? "Katıldım" : "Katılmadım"}
+                </Button>
+              );
+            })}
+          </div>
+          {!attendance.auto && (
             <Button
               size="sm"
               variant="ghost"
