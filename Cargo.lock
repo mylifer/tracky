@@ -2402,6 +2402,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "tokio",
  "tracky-core",
  "tracky-platform",
  "tracky-sync",

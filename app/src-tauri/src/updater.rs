@@ -25,6 +25,10 @@ const TICK: Duration = Duration::from_secs(60);
 /// bayrağını sonsuza dek açık tutup sonraki tüm denetimleri durdurmasın.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// GitHub yayından hemen sonra paketi kısa süre 500 ile verebiliyor (0.9.83'te görüldü):
+/// indirme bu kadar kez, her seferinde biraz daha bekleyerek denenir.
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// Windows'ta kurulumdan hemen önce takip ve arka plan işleri durduruldu.
 static STOPPED_FOR_INSTALL: AtomicBool = AtomicBool::new(false);
 /// Hazır güncelleme bu kadar süre girdi olmadan geçince (video, görüşme yokken) kurulur.
@@ -145,7 +149,7 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
                 handle.cleanup_before_exit();
             })
             .build()
-            .map_err(message)?
+            .map_err(|e| failed("denetlenemedi", e))?
             .check()
             .await;
         let mut update = match checked {
@@ -163,7 +167,7 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
                 log_info!("güncelleme bu sistem için henüz yok: {e}");
                 return Ok(None);
             }
-            Err(e) => return Err(message(e)),
+            Err(e) => return Err(failed("denetlenemedi", e)),
         };
         let pending = lock(&app.state::<UpdateState>().pending)
             .as_ref()
@@ -186,7 +190,23 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
                 s.ready = false;
             });
         }
-        let bytes = update.download(|_, _| {}, || {}).await.map_err(message)?;
+        let mut attempt = 1;
+        let bytes = loop {
+            match update.download(|_, _| {}, || {}).await {
+                Ok(bytes) => break bytes,
+                Err(
+                    e @ (tauri_plugin_updater::Error::Reqwest(_)
+                    | tauri_plugin_updater::Error::Network(_)),
+                ) if attempt < DOWNLOAD_ATTEMPTS => {
+                    log_info!(
+                        "güncelleme indirilemedi ({attempt}. deneme), yeniden deneniyor: {e}"
+                    );
+                    tokio::time::sleep(RETRY_DELAY * attempt).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(failed("indirilemedi", e)),
+            }
+        };
         Ok(Some((update, bytes)))
     }
     .await;
@@ -214,14 +234,11 @@ async fn check_and_download(app: &AppHandle) -> UpdateStatus {
                 }
             })
         }
-        Err(e) => {
-            log_error!("güncelleme denetlenemedi: {e}");
-            set(app, |s| {
-                s.checking = false;
-                s.last_checked = Some(Utc::now());
-                s.error = Some(e);
-            })
-        }
+        Err(e) => set(app, |s| {
+            s.checking = false;
+            s.last_checked = Some(Utc::now());
+            s.error = Some(e);
+        }),
     }
 }
 
@@ -257,7 +274,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     );
     if let Err(e) = update.install(bytes) {
         // İndirilen paket gitti: "hazır" görünmesin, bir sonraki denetim yeniden indirsin.
-        let msg = message(e);
+        let msg = failed("kurulamadı", e);
         set(app, |s| {
             s.ready = false;
             s.available = None;
@@ -381,12 +398,22 @@ fn is_newer(a: &str, b: &str) -> bool {
     }
 }
 
+/// Hatanın aslını günlüğe yazar (arayüzdeki metin ayrıntıyı gizler), gösterilecek metni döndürür.
+fn failed(what: &str, e: tauri_plugin_updater::Error) -> String {
+    log_error!("güncelleme {what}: {e}");
+    message(e)
+}
+
 /// Güncelleyici hatasını kullanıcıya gösterilecek Türkçe metne çevirir.
 fn message(e: tauri_plugin_updater::Error) -> String {
     use tauri_plugin_updater::Error as E;
     match e {
-        E::Reqwest(_) | E::Network(_) => {
+        E::Reqwest(_) => {
             "Güncelleme sunucusuna ulaşılamadı. İnternet bağlantını denetleyip tekrar dene.".into()
+        }
+        // Sunucu yanıt verdi ama paketi vermedi (ör. GitHub'ın geçici 500 hatası).
+        E::Network(_) => {
+            "Güncelleme sunucusu paketi şu an vermiyor; birkaç dakika sonra kendiliğinden yeniden denenir.".into()
         }
         E::Minisign(_) | E::Base64(_) | E::SignatureUtf8(_) => {
             "İndirilen güncellemenin imzası doğrulanamadı; kurulmadı.".into()
