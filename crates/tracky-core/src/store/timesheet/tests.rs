@@ -1104,7 +1104,7 @@ fn blocks_before_opting_in_stay_in_the_timesheet() {
 }
 
 #[test]
-fn meetings_enter_without_sending() {
+fn meetings_enter_without_sending_and_a_sent_block_comes_first() {
     let store = Store::open_in_memory().unwrap();
     project(&store, "togg", "Togg");
     opt_in_at(&store, -60);
@@ -1113,7 +1113,7 @@ fn meetings_enter_without_sending() {
     let meetings = [Meeting {
         uid: "plan".into(),
         start: t(60),
-        end: t(90),
+        end: t(120),
         subject: "Haftalık plan".into(),
         online: true,
         ..Meeting::default()
@@ -1133,15 +1133,23 @@ fn meetings_enter_without_sending() {
     };
     assert_eq!(
         day_rows(),
-        [(false, "10:00".into(), 30, "Haftalık plan".into())]
+        [(false, "10:00".into(), 60, "Haftalık plan".into())]
     );
+    // Bilerek gönderilen blok tek satırdır: içine düşen toplantı süresi bloğun, toplantının
+    // yalnızca dışında kalan kısmı toplantının satırı.
     send(&store, 0, 90, Some("togg"));
     assert_eq!(
         day_rows(),
         [
-            (false, "09:00".into(), 60, "Loyalty".into()),
-            (false, "10:00".into(), 30, "Haftalık plan".into())
+            (false, "09:00".into(), 90, "Loyalty".into()),
+            (false, "10:30".into(), 30, "Haftalık plan".into())
         ]
+    );
+    // Çizelgeden çıkan bloğun yerinde toplantı yeniden bütün.
+    remove(&store, 0, 90, Some("togg"));
+    assert_eq!(
+        day_rows(),
+        [(false, "10:00".into(), 60, "Haftalık plan".into())]
     );
 }
 

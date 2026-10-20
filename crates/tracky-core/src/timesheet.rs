@@ -567,15 +567,26 @@ impl Sent {
 
     /// `[start, end)` bloğu gönderildi mi?
     pub fn block(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> bool {
-        let touches = |spans: &[Interval]| spans.iter().any(|&(a, b)| a < end && start < b);
-        touches(&self.spans) || (start < self.before && !touches(&self.off))
+        self.chosen(start, end) || (start < self.before && !touches(&self.off, start, end))
     }
+
+    /// `[start, end)` bloğu "Zaman çizelgesine gönder" ile bilerek gönderildi mi (seçerek
+    /// göndermeden önceki iş değil)?
+    pub fn chosen(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> bool {
+        touches(&self.spans, start, end)
+    }
+}
+
+fn touches(spans: &[Interval], start: DateTime<Utc>, end: DateTime<Utc>) -> bool {
+    spans.iter().any(|&(a, b)| a < end && start < b)
 }
 
 /// Günün zaman çizelgesine giren süresi: projesi belli toplantılar ([`meeting_project`]) ve
 /// oturumlar, `day_start`–`day_end` (yerel gün) sınırına kırpılmış. Üst üste binen
 /// toplantılarda ortak süre ilkine yazılır; toplantı süresince takip edilen iş toplantının
-/// kaydında sayılır (aynı saat iki kez yazılmasın).
+/// kaydında sayılır (aynı saat iki kez yazılmasın). Bilerek gönderilen ([`Sent::chosen`])
+/// projeli bloğun içinde ise blok önce gelir: toplantının yalnızca bloğun dışında kalan kısmı
+/// toplantının kaydıdır.
 ///
 /// Takvimdeki blok zaman çizelgesindeki satırdır: projesi olan bloğun ([`crate::blocks`])
 /// içindeki atanmamış süre de o projenin işidir (takvimde bloğun süresine girer). Başka projeye
@@ -607,6 +618,19 @@ pub fn pieces_with(
     (day_start, day_end): Interval,
     sent: &Sent,
 ) -> Vec<Piece> {
+    let classes: Vec<_> = sessions.iter().map(|s| classifier.classify(s)).collect();
+    let all = day_blocks(sessions, &classes, day_start, day_end);
+    let sent_blocks: Vec<Interval> = all
+        .iter()
+        .filter(|b| sent.block(b.start, b.end))
+        .map(|b| (b.start, b.end))
+        .collect();
+    // Bilerek gönderilen blok çizelgede kendi satırıdır: içine düşen toplantı süresi bloğundur.
+    let chosen: Vec<Interval> = all
+        .iter()
+        .filter(|b| b.project_id.is_some() && sent.chosen(b.start, b.end))
+        .map(|b| (b.start, b.end))
+        .collect();
     let mut sorted: Vec<&(Meeting, String)> = meetings.iter().collect();
     sorted.sort_by_key(|(m, _)| (m.start, m.end));
     let mut covered: Vec<Interval> = Vec::new();
@@ -616,8 +640,9 @@ pub fn pieces_with(
         if span.1 <= span.0 {
             continue;
         }
-        let parts = covered.iter().fold(vec![span], |p, &c| subtract(p, c));
-        covered.push(span);
+        let outside = chosen.iter().fold(vec![span], |p, &c| subtract(p, c));
+        let parts = covered.iter().fold(outside.clone(), |p, &c| subtract(p, c));
+        covered.extend(outside);
         let kind = if m.online {
             EntryKind::Online
         } else {
@@ -634,13 +659,6 @@ pub fn pieces_with(
             sent: true,
         }));
     }
-    let classes: Vec<_> = sessions.iter().map(|s| classifier.classify(s)).collect();
-    let all = day_blocks(sessions, &classes, day_start, day_end);
-    let sent_blocks: Vec<Interval> = all
-        .iter()
-        .filter(|b| sent.block(b.start, b.end))
-        .map(|b| (b.start, b.end))
-        .collect();
     let blocks: Vec<(DateTime<Utc>, DateTime<Utc>, String)> = all
         .into_iter()
         .filter_map(|b| Some((b.start, b.end, b.project_id?)))
