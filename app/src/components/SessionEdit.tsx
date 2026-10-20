@@ -319,7 +319,8 @@ export function MeetingMenu({
   const suggestedName = suggestion ? projects.find((p) => p.id === suggestion.projectId)?.name : undefined;
 
   const attendance = m.attendance;
-  const attendanceText = attendanceLine(m, attendance);
+  // Projesiz toplantı çizelgeye girmez: "çizelgeye … girer" demesin; cevap yine verilebilir.
+  const attendanceText = m.projectId ? attendanceLine(m, attendance) : null;
   // Katılım cevabı (`null`: geri al, Kum karar versin).
   function answer(attended: boolean | null) {
     if (!attendance) return;
@@ -384,7 +385,7 @@ export function MeetingMenu({
           </span>
         </div>
       )}
-      {attendance && m.projectId && +a < Date.now() && (
+      {attendance && +a < Date.now() && (
         <div className="space-y-1">
           {attendanceText && (
             <p
