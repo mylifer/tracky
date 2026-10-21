@@ -288,6 +288,87 @@ impl Store {
         Ok(n)
     }
 
+    /// Takvim bloğunu (`[from, to)`) projeye atar ([`Self::set_project_between`]); bloklar
+    /// birleşmez: aynı projeye atanan ardışık bloklar tek blok (tek çizelge satırı) olmaz,
+    /// bloğun projesi bloklardaki çoğunluğu değiştirince komşu blok yanındaki işi yutmaz.
+    /// Atamadan sonra kaybolan blok başlangıcı elle bölmeyle ([`Session::block_from`]) geri
+    /// getirilip yeniden denenir; gerekmeyen yere bölme konmaz. Bloklar uzatılarak birleşir
+    /// ([`Self::resize_block`]). `day_starts` bloğun günlerinin yerel sınırları (son öğe son
+    /// günün bitişi). Değişen satır sayısı.
+    pub fn set_block_project(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        project_id: Option<&str>,
+        day_starts: &[DateTime<Utc>],
+    ) -> Result<usize> {
+        let Some((&end, days @ [first, ..])) = day_starts.split_last() else {
+            return self.set_project_in(from, to, project_id, None);
+        };
+        let blocks = || -> Result<Vec<(DateTime<Utc>, DateTime<Utc>)>> {
+            let report = self.report(*first, end, days, true)?;
+            Ok(report
+                .work
+                .blocks
+                .iter()
+                .map(|b| (b.start, b.end))
+                .collect())
+        };
+        let before = blocks()?;
+        let mut marks: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::new();
+        loop {
+            let tx = self.savepoint()?;
+            let mut n = 0;
+            for &(a, b) in &marks {
+                n += self.mark_block_start(a, b)?;
+            }
+            n += self.set_project_in(from, to, project_id, None)?;
+            let after = blocks()?;
+            let lost = before
+                .iter()
+                .find(|b| !marks.contains(b) && !after.iter().any(|a| a.0 == b.0));
+            match lost {
+                // Denemeden vazgeçilir (`tx` geri alınır), bölmeyle yeniden denenir.
+                Some(&b) => marks.push(b),
+                None => {
+                    tx.commit()?;
+                    return Ok(n);
+                }
+            }
+        }
+    }
+
+    /// `[from, to)` ile kesişen takvim blokları ve onlara molasız ya da `MERGE_GAP`'i geçmeyen
+    /// boşlukla bağlı bloklar (aralıkları, sıralı): bunlardan birinin projesi değişince
+    /// yalnızca bunların sınırları kayabilir ([`crate::blocks::analyze`]), yani
+    /// [`Self::set_block_project`] yalnızca bunları böler (geri alma bunları kapsamalı).
+    /// `day_starts` [`Self::set_block_project`]'teki gibi.
+    pub fn linked_blocks(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        day_starts: &[DateTime<Utc>],
+    ) -> Result<Vec<(DateTime<Utc>, DateTime<Utc>)>> {
+        let Some((&end, days @ [first, ..])) = day_starts.split_last() else {
+            return Ok(Vec::new());
+        };
+        let blocks = self.report(*first, end, days, true)?.work.blocks;
+        let hit = |b: &crate::blocks::WorkBlock| b.start < to && b.end > from;
+        let (Some(mut lo), Some(mut hi)) =
+            (blocks.iter().position(hit), blocks.iter().rposition(hit))
+        else {
+            return Ok(Vec::new());
+        };
+        let joined = |i: usize| blocks[i + 1].start - blocks[i].end <= crate::timesheet::MERGE_GAP;
+        while lo > 0 && joined(lo - 1) {
+            lo -= 1;
+        }
+        while hi + 1 < blocks.len() && joined(hi) {
+            hi += 1;
+        }
+        Ok(blocks[lo..=hi].iter().map(|b| (b.start, b.end)).collect())
+    }
+
     /// `[from, to)` içindeki süreyi yumuşak siler; sınırı aşan oturumların dışarıda
     /// kalan kısmı korunur. Silinen satır sayısı.
     pub fn delete_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
@@ -393,23 +474,31 @@ impl Store {
     }
 
     /// `[from, to)` içinde başlayan ilk çalışma oturumundan yeni takvim bloğu başlatır
-    /// ([`Session::block_from`]); `from`'u aşan oturum önce bölünür. Değişen satır sayısı.
+    /// ([`Session::block_from`]); `from`'u aşan oturum önce bölünür. O anda başlayan bütün
+    /// çalışma oturumları işaretlenir: üst üste binen oturumlardan (bölünen oturumun parçası
+    /// gibi) hangisi öne geçerse geçsin ([`crate::model::merge_devices`]) blok orada başlar.
+    /// Değişen satır sayısı.
     fn mark_block_start(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
         self.split_at(from, to)?;
-        let Some(first) = self
+        let sessions: Vec<Session> = self
             .sessions_between(from, to)?
             .into_iter()
-            .find(|s| s.started_at >= from && s.counts_as_work())
-        else {
+            .filter(|s| s.started_at >= from && s.counts_as_work())
+            .collect();
+        let Some(at) = sessions.first().map(|s| s.started_at) else {
             return Ok(0);
         };
         let now = ms(Utc::now());
-        Ok(self.conn.execute(
-            "UPDATE sessions SET block_from = started_at, state_at = ?2,
-                 updated_at = MAX(?2, updated_at + 1)
-             WHERE id = ?1",
-            params![first.id.to_string(), now],
-        )?)
+        let mut n = 0;
+        for s in sessions.iter().take_while(|s| s.started_at == at) {
+            n += self.conn.execute(
+                "UPDATE sessions SET block_from = started_at, state_at = ?2,
+                     updated_at = MAX(?2, updated_at + 1)
+                 WHERE id = ?1",
+                params![s.id.to_string(), now],
+            )?;
+        }
+        Ok(n)
     }
 
     /// `(from, to)` içindeki elle bölmeleri kaldırır (aralığın başındaki kalır): aralık tek

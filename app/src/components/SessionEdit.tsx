@@ -509,7 +509,7 @@ export function BlockActions({
       <ProjectAssign
         value={projectId}
         projects={projects}
-        onChange={(id) => run(() => undoable(api.setRangeProject(start, end, id), projectMessage(projects, id)))}
+        onChange={(id) => run(() => undoable(api.setBlockProject(start, end, id), projectMessage(projects, id)))}
       />
       <div className="flex items-center gap-2">
         <CategorySelect

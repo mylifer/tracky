@@ -428,6 +428,18 @@ pub(crate) fn parse_time(s: &str) -> CmdResult<DateTime<Utc>> {
         .map_err(|e| format!("geçersiz zaman {s}: {e}"))
 }
 
+/// `[from, to)` aralığının günlerinin yerel sınırları; son öğe son günün bitişi. Gece yarısında
+/// biten aralığın bitiş günü katılmaz.
+pub(crate) fn local_days(from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Utc>> {
+    let day = |t: DateTime<Utc>| t.with_timezone(&Local).date_naive();
+    let last = day(to - chrono::Duration::milliseconds(1)).max(day(from));
+    day(from)
+        .iter_days()
+        .take_while(|d| *d <= last + Days::new(1))
+        .map(local_midnight)
+        .collect()
+}
+
 /// `[start, end)` aralığında geri alınabilir bir düzenleme: önce durum saklanır.
 fn range_edit(
     app: &AppHandle,
@@ -479,6 +491,33 @@ pub async fn set_range_project(
     })?;
     if edited.changed > 0 {
         let (from, to) = (parse_time(&start)?, parse_time(&end)?);
+        edited.suggestion =
+            crate::edits::rule_suggestion_after(&app, project_id.as_deref(), from, to, None);
+    }
+    Ok(edited)
+}
+
+/// Takvim bloğunu projeye atar; `None` kurallara döndürür. Bloklar birleşmez: aynı projeye
+/// atanan ardışık bloklar ayrı kalır ([`tracky_core::Store::set_block_project`]).
+#[tauri::command]
+pub async fn set_block_project(
+    app: AppHandle,
+    start: String,
+    end: String,
+    project_id: Option<String>,
+) -> CmdResult<Edited> {
+    let (from, to) = (parse_time(&start)?, parse_time(&end)?);
+    let days = local_days(from, to);
+    // Geri alma, atamayla bölünebilecek bağlı blokları da kapsar.
+    let (a, z) = lock(&app.state::<Shared>().store)
+        .linked_blocks(from, to, &days)
+        .map_err(err)?
+        .into_iter()
+        .fold((from, to), |(a, z), (x, y)| (a.min(x), z.max(y)));
+    let mut edited = range_edit(&app, &a.to_rfc3339(), &z.to_rfc3339(), |s, _, _| {
+        s.set_block_project(from, to, project_id.as_deref(), &days)
+    })?;
+    if edited.changed > 0 {
         edited.suggestion =
             crate::edits::rule_suggestion_after(&app, project_id.as_deref(), from, to, None);
     }

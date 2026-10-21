@@ -1269,7 +1269,7 @@ fn step(
             b.project_id
         )
     };
-    let done: Option<(String, Result<(), String>)> = match rng.below(17) {
+    let done: Option<(String, Result<(), String>)> = match rng.below(18) {
         0 => pick_open(rng).map(|(_, r)| {
             let mut e = r.entry.clone();
             match rng.below(3) {
@@ -1577,6 +1577,26 @@ fn step(
                 }
             })
         }
+        // Takvimde bloğu projeye ata: hiçbir blok komşusuyla birleşmez (her blok başı kalır).
+        17 => (!blocks.is_empty()).then(|| {
+            let b = rng.pick(&blocks);
+            let p = *rng.pick(&targets);
+            let res = store
+                .set_block_project(b.start, b.end, (!p.is_empty()).then_some(p), &[from, to])
+                .map_err(|e| e.to_string())
+                .and_then(|_| {
+                    let after = day_blocks(store, date);
+                    let lost: Vec<_> = blocks
+                        .iter()
+                        .filter(|b| !after.iter().any(|a| a.start == b.start))
+                        .map(|b| hm(b.start))
+                        .collect();
+                    lost.is_empty()
+                        .then_some(())
+                        .ok_or(format!("birleşen bloklar: {lost:?}"))
+                });
+            (block_label(&format!("ata {p:?}"), b), res)
+        }),
         _ => (!sent.is_empty()).then(|| {
             let (_, r) = *rng.pick(&sent);
             let id = r.id.clone().unwrap();

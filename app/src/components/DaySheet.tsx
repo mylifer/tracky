@@ -410,7 +410,7 @@ function Row({
       ? run(() => api.assignMeeting(l.meeting.uid, id))
       : run(() =>
           undoable(
-            api.setRangeProject(new Date(l.from).toISOString(), new Date(l.to).toISOString(), id),
+            api.setBlockProject(new Date(l.from).toISOString(), new Date(l.to).toISOString(), id),
             `${tags.get(id)?.name ?? "Projeye"} atandı`,
           ),
         );

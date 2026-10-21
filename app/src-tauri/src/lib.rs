@@ -563,6 +563,7 @@ pub fn run() {
             commands::get_suggestions,
             commands::search,
             commands::set_range_project,
+            commands::set_block_project,
             edits::undo,
             edits::label_undo,
             edits::undo_history,

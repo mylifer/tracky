@@ -794,6 +794,9 @@ export const api = {
   rangeApps: (start: string, end: string) => invoke<UsageTotal[]>("range_apps", { start, end }),
   setRangeProject: (start: string, end: string, projectId: string | null, scope: EditScope | null = null) =>
     invoke<Edited>("set_range_project", { start, end, projectId, scope }),
+  /** Takvim bloğunu projeye atar; bloklar birleşmez: aynı projeye atanan ardışık bloklar ayrı kalır. */
+  setBlockProject: (start: string, end: string, projectId: string | null) =>
+    invoke<Edited>("set_block_project", { start, end, projectId }),
   privacy: () => invoke<PrivacySettings>("get_privacy"),
   savePrivacy: (settings: PrivacySettings) => invoke<PrivacySettings>("save_privacy", { settings }),
   defaultExcludedUrls: () => invoke<string[]>("default_excluded_urls"),

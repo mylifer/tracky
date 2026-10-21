@@ -113,6 +113,7 @@ const EDIT_COMMANDS: &[&str] = &[
     "save_timesheet_config",
     "save_timesheet_entry",
     "send_block_to_timesheet",
+    "set_block_project",
     "set_calendar_url",
     "set_client_budget",
     "set_day_closed",

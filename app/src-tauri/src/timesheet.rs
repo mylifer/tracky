@@ -360,14 +360,7 @@ fn block_days(
         crate::commands::parse_time(start)?,
         crate::commands::parse_time(end)?,
     );
-    let day = |t: chrono::DateTime<Utc>| t.with_timezone(&chrono::Local).date_naive();
-    // Gece yarısında biten bloğun bitiş günü katılmaz.
-    let last = day(to - chrono::Duration::milliseconds(1)).max(day(from));
-    let day_starts: Vec<_> = day(from)
-        .iter_days()
-        .take_while(|d| *d <= last + Days::new(1))
-        .map(local_midnight)
-        .collect();
+    let day_starts = crate::commands::local_days(from, to);
     let meetings = crate::calendar::meetings(app, day_starts[0], day_starts[day_starts.len() - 1]);
     Ok(((from, to), day_starts, meetings))
 }

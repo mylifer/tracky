@@ -1054,6 +1054,79 @@ fn resize_block_trims_joins_and_fills_gaps() {
 }
 
 #[test]
+fn blocks_assigned_to_the_same_project_stay_apart() {
+    // 21 Ekim gecesi: projesiz "Driver Experience" bloğunun hemen ardından Trumore'a düşen
+    // "Charging" bloğu, 7 dk moladan sonra projesiz iş. Bloklar yalnızca projeleri farklı
+    // olduğu için ayrıydı.
+    let setup = || {
+        let store = Store::open_in_memory().unwrap();
+        let tr = store.accept_project_suggestion("Trumore").unwrap().id;
+        store
+            .upsert_session(&session("Figma", None, 0, 10_800))
+            .unwrap();
+        store
+            .upsert_session(&session("Figma", None, 10_800, 14_700))
+            .unwrap();
+        store
+            .upsert_session(&session("Firefox", None, 15_120, 17_820))
+            .unwrap();
+        store
+            .set_project_between(t(10_800), t(14_700), Some(&tr))
+            .unwrap();
+        (store, tr)
+    };
+    let days = [t(0), t(86_400)];
+    let blocks = |store: &Store| -> Vec<_> {
+        let report = store.report(t(0), t(86_400), &[t(0)], true).unwrap();
+        report
+            .work
+            .blocks
+            .iter()
+            .map(|b| (b.start, b.end, b.project_id.clone()))
+            .collect()
+    };
+
+    // Aralık ataması eskisi gibi: aynı projedeki işle tek blok olur.
+    let (store, tr) = setup();
+    store
+        .set_project_between(t(0), t(10_800), Some(&tr))
+        .unwrap();
+    assert_eq!(blocks(&store)[0].1, t(14_700));
+
+    // Blok ataması: blok ve komşuları yerinde kalır.
+    let (store, tr) = setup();
+    let p = Some(tr.as_str());
+    let before = blocks(&store);
+    assert_eq!(before.len(), 3);
+    store.set_block_project(t(0), t(10_800), p, &days).unwrap();
+    assert_eq!(
+        blocks(&store),
+        [
+            (t(0), t(10_800), Some(tr.clone())),
+            (t(10_800), t(14_700), Some(tr.clone())),
+            (t(15_120), t(17_820), None),
+        ]
+    );
+    // Moladan sonraki blok da aynı projeye atanınca `MERGE_GAP` köprüsüyle birleşmez.
+    store
+        .set_block_project(t(15_120), t(17_820), p, &days)
+        .unwrap();
+    let after: Vec<_> = blocks(&store).into_iter().map(|(a, b, _)| (a, b)).collect();
+    assert_eq!(
+        after,
+        before.iter().map(|&(a, b, _)| (a, b)).collect::<Vec<_>>()
+    );
+    // Zaman çizelgesinde de ayrı satırlar: elle bölmeler bloklarla aynı yerde.
+    let marks: Vec<_> = store
+        .sessions_between(t(0), t(86_400))
+        .unwrap()
+        .into_iter()
+        .filter_map(|s| s.block_from)
+        .collect();
+    assert_eq!(marks, [t(10_800), t(15_120)]);
+}
+
+#[test]
 fn scoped_range_edits_touch_only_the_chosen_app_or_window() {
     let store = Store::open_in_memory().unwrap();
     store.upsert_session(&session("A", None, 0, 600)).unwrap();
