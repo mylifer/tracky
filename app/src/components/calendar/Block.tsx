@@ -11,7 +11,7 @@ import { useEdit } from "../SessionEdit";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { HOUR_MS, FULL_LABEL_PX, LABEL_MIN_PX, type ColorLens, HATCH, SNAP_MS, DRAG_MIN_PX } from "./grid";
 import { BlockDetails } from "./BlockDetails";
-import { type SheetSpan, sheetEntryAt } from "./TimesheetLines";
+import { linkHover, type SheetSpan, sheetEntryAt, unsentKey } from "./TimesheetLines";
 import { topWindow } from "./windowLanes";
 
 /** Çizelge merceğinde zaman çizelgesinde satırı olmayan bloğun başlığı. */
@@ -117,6 +117,13 @@ export function Block({
     [windows, b.start, b.end],
   );
   const { color: blockColor, title, project, apps } = blockTitle(b, tags, lens, sheet, named);
+  // Zaman çizelgesi sütunundaki karşılığı (satırı ya da gönderilmemiş bloğun kesikli kartı):
+  // üstüne gelince ikisi birlikte işaretlenir.
+  const sheetKey = useMemo(
+    () =>
+      b.sent === false ? unsentKey(b) : sheetEntryAt(sheet, +new Date(b.start), +new Date(b.end), b.projectId)?.key,
+    [b, sheet],
+  );
   // Simgelerin ilki adını veren pencerenin uygulaması.
   const icons = useMemo(
     () =>
@@ -231,7 +238,11 @@ export function Block({
               "absolute inset-x-0.5 overflow-hidden rounded-[5px] border-l-[3px] px-1.5 text-left transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:ring-2 data-[state=open]:ring-[var(--cat)] dark:hover:brightness-125",
               resize && "opacity-50",
               picked && "ring-2 ring-primary ring-offset-1 ring-offset-card",
+              "data-[linked]:ring-2 data-[linked]:ring-primary",
             )}
+            data-sheet-key={sheetKey}
+            onPointerEnter={(e) => linkHover(e.currentTarget, sheetKey, true)}
+            onPointerLeave={(e) => linkHover(e.currentTarget, sheetKey, false)}
             style={{
               top,
               height,

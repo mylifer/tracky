@@ -20,7 +20,7 @@ import {
 } from "./grid";
 import { Block, IdleBlock } from "./Block";
 import { categoryBuckets } from "./buckets";
-import { type SheetSpan, sheetLines, sheetLinesWidth, TimesheetLines } from "./TimesheetLines";
+import { type SheetSpan, sheetItems, SheetColumn } from "./TimesheetLines";
 import { attendanceLine, isSkipped } from "../../lib/attendance";
 import { useWidth } from "../charts";
 import { ITEM_LABEL_PX, laneCount, WindowItems } from "./WindowColumn";
@@ -211,14 +211,14 @@ export function DayCalendar({
       return end > start ? [{ m, start: new Date(start).toISOString(), end: new Date(end).toISOString() }] : [];
     });
   }, [meetings, from]);
-  const lines = useMemo(() => (entries ? sheetLines(entries, from) : []), [entries, from]);
+  const sheetPlaced = useMemo(() => (entries ? sheetItems(entries, blocks, from) : null), [entries, blocks, from]);
   const range = useMemo(() => {
-    const lineSpans = lines.map((l) => ({
+    const sheetSpans = (sheetPlaced?.items ?? []).map((l) => ({
       start: new Date(l.start).toISOString(),
       end: new Date(l.end).toISOString(),
     }));
-    return hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans, ...lineSpans], hourPx);
-  }, [from, blocks, idle, segments, meetingSpans, lines, hourPx]);
+    return hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans, ...sheetSpans], hourPx);
+  }, [from, blocks, idle, segments, meetingSpans, sheetPlaced, hourPx]);
   const top = topFn(+from, range);
   const items = useMemo(() => windowItems(windows ?? [], +from, +addDays(from, 1)), [windows, from]);
   const [detailRef, detailWidth] = useWidth<HTMLDivElement>();
@@ -231,13 +231,14 @@ export function DayCalendar({
   const step = range.px >= 240 ? 5 : 15;
   const buckets = useMemo(() => categoryBuckets(segments, +from, step), [segments, from, step]);
   const showMeetings = meetings !== null;
-  const showSheet = entries !== null;
+  const showSheet = sheetPlaced !== null;
   // Sütunlar: saatler, oturumlar, [çizelge], [toplantılar], pencereler, kategori şeridi.
-  // Bloklar az ve büyük (molada bölünür): yerin çoğu pencerelerin şeritlerine.
+  // Bloklar az ve büyük (molada bölünür): yerin çoğu pencerelerin şeritlerine; çizelge satırları
+  // bloklarla aynı genişlikte (açıklama okunsun).
   const columns = [
     "40px",
     "minmax(0,0.8fr)",
-    ...(showSheet ? [`${sheetLinesWidth(lines)}px`] : []),
+    ...(showSheet ? ["minmax(0,0.8fr)"] : []),
     ...(showMeetings ? ["minmax(0,0.6fr)"] : []),
     "minmax(0,2.4fr)",
     "14px",
@@ -247,7 +248,7 @@ export function DayCalendar({
   const detail = strip - 1;
 
   return (
-    <div>
+    <div data-sheet-root>
       <div
         className="sticky top-(--cal-head) z-20 grid gap-x-2 bg-card pb-2 text-[11px] font-medium text-muted-foreground"
         style={grid}
@@ -255,8 +256,12 @@ export function DayCalendar({
         <span />
         <span>Oturumlar</span>
         {showSheet && (
-          <span className="flex justify-center" title="Zaman çizelgesi satırları">
-            <FileSpreadsheet className="size-3" />
+          <span
+            className="flex min-w-0 items-center gap-1"
+            title="Her satır yazıldığı aralıkta: başlangıç saatinden yazılan saat kadar. Kesikli: gönderilmemiş blok"
+          >
+            <FileSpreadsheet className="size-3 shrink-0" />
+            <span className="truncate">Zaman çizelgesi</span>
           </span>
         )}
         {showMeetings && <span>Toplantılar</span>}
@@ -316,13 +321,11 @@ export function DayCalendar({
           <Preview range={preview} top={top} />
           <NowLine day={from} range={range} />
         </Column>
-        {showSheet && (
-          <div
-            className="relative col-start-3 row-start-1 rounded-sm bg-muted/40"
-            style={{ height: (range.last - range.first) * range.px }}
-          >
-            <TimesheetLines lines={lines} tags={tags} top={top} />
-          </div>
+        {sheetPlaced && (
+          <Column range={range} className="col-start-3 row-start-1">
+            <SheetColumn items={sheetPlaced.items} lanes={sheetPlaced.lanes} tags={tags} top={top} />
+            <NowLine day={from} range={range} />
+          </Column>
         )}
         {showMeetings && (
           <Column range={range} className={cn("row-start-1", showSheet ? "col-start-4" : "col-start-3")}>

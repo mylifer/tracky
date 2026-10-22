@@ -722,6 +722,7 @@ export default function ReportView(p: Props) {
                           hourPx={HOUR_PX * calZoom}
                           lens={calLens}
                           sheet={sheet}
+                          entries={entries}
                         />
                       )}
                     </EditContext.Provider>

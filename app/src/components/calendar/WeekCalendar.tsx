@@ -1,14 +1,17 @@
 import { useMemo } from "react";
-import type { IdleSpan, Tag, WindowSpan, WorkBlock } from "../../api";
+import type { EntryView, IdleSpan, Tag, WindowSpan, WorkBlock } from "../../api";
 import { formatDuration } from "../../api";
 import { addDays, fromWallMs, isoDate, today } from "../../lib/dates";
 import { cn } from "../../lib/utils";
 import { HOUR_PX, type ColorLens, hourRange, topFn, HourRail, Column, NowLine } from "./grid";
 import { Block, IdleBlock } from "./Block";
 import { gapAround, Preview, placeSessions } from "./DayCalendar";
-import type { SheetSpan } from "./TimesheetLines";
+import { type SheetSpan, SHEET_STRIP_PX, sheetItems, SheetStrip } from "./TimesheetLines";
 
-/** Hafta takvimi: her gün bir sütun, bloklar kategori (ya da proje) renginde. */
+/**
+ * Hafta takvimi: her gün bir sütun, bloklar kategori (ya da proje) renginde. Çizelge kuruluysa
+ * her günün yanında zaman çizelgesi şeridi (satırlar yazıldıkları aralıkta, saatleriyle).
+ */
 export function WeekCalendar({
   from,
   blocks,
@@ -23,6 +26,7 @@ export function WeekCalendar({
   hourPx = HOUR_PX,
   lens = "category",
   sheet = [],
+  entries = null,
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -38,15 +42,26 @@ export function WeekCalendar({
   lens?: ColorLens;
   /** Zaman çizelgesi satırlarının aralıkları: çizelge merceğinde blokların başlığı ve rengi. */
   sheet?: SheetSpan[];
+  /** Haftanın zaman çizelgesi satırları (bütün çizelgeler); `null`: çizelge yok (şerit gösterilmez). */
+  entries?: EntryView[] | null;
 }) {
-  const range = useMemo(() => hourRange(from, [...blocks, ...idle], hourPx, 7), [from, blocks, idle, hourPx]);
+  const sheetDays = useMemo(
+    () => (entries ? Array.from({ length: 7 }, (_, i) => sheetItems(entries, blocks, addDays(from, i))) : null),
+    [entries, blocks, from],
+  );
+  const range = useMemo(() => {
+    const sheetSpans = (sheetDays ?? []).flatMap((d) =>
+      d.items.map((l) => ({ start: new Date(l.start).toISOString(), end: new Date(l.end).toISOString() })),
+    );
+    return hourRange(from, [...blocks, ...idle, ...sheetSpans], hourPx, 7);
+  }, [from, blocks, idle, sheetDays, hourPx]);
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
   const weekday = new Intl.DateTimeFormat("tr-TR", { weekday: "short" });
   const grid = "grid grid-cols-[40px_repeat(7,minmax(0,1fr))] gap-x-1";
   const now = today();
 
   return (
-    <div>
+    <div data-sheet-root>
       <div className={cn(grid, "sticky top-(--cal-head) z-20 bg-card pb-2")}>
         <span />
         {days.map((d, i) => {
@@ -81,11 +96,12 @@ export function WeekCalendar({
           const dayStart = +d;
           const dayEnd = +addDays(d, 1);
           const top = topFn(dayStart, range);
-          return (
+          const placed = sheetDays?.[i];
+          const column = (
             <Column
               key={i}
               range={range}
-              className={cn(+d === +now && "bg-primary/[0.04]")}
+              className={cn(placed ? "min-w-0 flex-1" : +d === +now && "bg-primary/[0.04]")}
               onEmpty={
                 onEmpty &&
                 ((offset) => {
@@ -123,6 +139,18 @@ export function WeekCalendar({
               <Preview range={preview && preview[0] >= dayStart && preview[0] < dayEnd ? preview : null} top={top} />
               <NowLine day={d} range={range} />
             </Column>
+          );
+          if (!placed) return column;
+          return (
+            <div key={i} className={cn("flex min-w-0", +d === +now && "bg-primary/[0.04]")}>
+              {column}
+              <div
+                className="relative shrink-0 border-l border-dashed border-border"
+                style={{ width: SHEET_STRIP_PX, height: (range.last - range.first) * range.px }}
+              >
+                <SheetStrip items={placed.items} lanes={placed.lanes} tags={tags} top={top} />
+              </div>
+            </div>
           );
         })}
       </div>
