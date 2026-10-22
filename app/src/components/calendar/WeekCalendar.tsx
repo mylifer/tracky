@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { EntryView, IdleSpan, Tag, WindowSpan, WorkBlock } from "../../api";
+import type { CalendarMeeting, EntryView, IdleSpan, Tag, WindowSpan, WorkBlock } from "../../api";
 import { formatDuration } from "../../api";
 import { addDays, fromWallMs, isoDate, today } from "../../lib/dates";
 import { cn } from "../../lib/utils";
@@ -7,6 +7,7 @@ import { HOUR_PX, type ColorLens, hourRange, topFn, HourRail, Column, NowLine } 
 import { Block, IdleBlock } from "./Block";
 import { gapAround, Preview, placeSessions } from "./DayCalendar";
 import { type SheetSpan, SHEET_STRIP_PX, sheetItems, SheetStrip } from "./TimesheetLines";
+import { snapTargets } from "./snap";
 
 /**
  * Hafta takvimi: her gün bir sütun, bloklar kategori (ya da proje) renginde. Çizelge kuruluysa
@@ -27,6 +28,7 @@ export function WeekCalendar({
   lens = "category",
   sheet = [],
   entries = null,
+  meetings = null,
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -44,6 +46,8 @@ export function WeekCalendar({
   sheet?: SheetSpan[];
   /** Haftanın zaman çizelgesi satırları (bütün çizelgeler); `null`: çizelge yok (şerit gösterilmez). */
   entries?: EntryView[] | null;
+  /** Haftanın takvim toplantıları: gösterilmez, blok kenarı sürüklenirken sınırlarına yapışır. */
+  meetings?: CalendarMeeting[] | null;
 }) {
   const sheetDays = useMemo(
     () => (entries ? Array.from({ length: 7 }, (_, i) => sheetItems(entries, blocks, addDays(from, i))) : null),
@@ -56,6 +60,13 @@ export function WeekCalendar({
     return hourRange(from, [...blocks, ...idle, ...sheetSpans], hourPx, 7);
   }, [from, blocks, idle, sheetDays, hourPx]);
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
+  const snapDays = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, i) =>
+        snapTargets(meetings ?? [], windows ?? [], +addDays(from, i), +addDays(from, i + 1)),
+      ),
+    [meetings, windows, from],
+  );
   const weekday = new Intl.DateTimeFormat("tr-TR", { weekday: "short" });
   const grid = "grid grid-cols-[40px_repeat(7,minmax(0,1fr))] gap-x-1";
   const now = today();
@@ -129,6 +140,7 @@ export function WeekCalendar({
                     lens={lens}
                     sheet={sheet}
                     windows={windows}
+                    snaps={snapDays[i]}
                     top={t}
                     height={height}
                     hourPx={range.px}

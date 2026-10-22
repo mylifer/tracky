@@ -69,3 +69,29 @@ test("Gün: Pencereler sütunu her pencereyi saatinde gösterir, tıklanan yaln�
   await expect(menu).toContainText("09:00 – 11:00");
   await expect(menu).toContainText("Yalnızca Visual Studio Code · portal — api.ts");
 });
+
+test("Gün: blok kenarı uzun uygulama kullanımının sınırına yapışır, ⌥ basılıyken yapışmaz", async ({ app, page }) => {
+  await app.open("Gün");
+  // Safari 11:00–11:30; Visual Studio Code 12:30'da yeniden başlıyor.
+  const block = page.getByRole("button", { name: "Hacker News 30dk", exact: true });
+  const box = (await block.boundingBox())!;
+  const hourPx = (box.height + 2) * 2;
+  const x = box.x + box.width / 2;
+  await page.mouse.move(x, box.y + box.height - 2);
+  await page.mouse.down();
+  // 12:26'ya çekilen bitiş dilime (12:25) değil, kümenin başına (12:30) oturur.
+  const y = box.y + box.height - 2 + (56 / 60) * hourPx;
+  await page.mouse.move(x, y, { steps: 6 });
+  await expect(page.getByText("11:00 – 12:30")).toBeVisible();
+  await expect(page.locator("[data-snap=app]")).toHaveText("Visual Studio Code · başı");
+  await page.keyboard.down("Alt");
+  await page.mouse.move(x, y + 1);
+  await expect(page.getByText("11:00 – 12:25")).toBeVisible();
+  await expect(page.locator("[data-snap]")).toHaveCount(0);
+  await page.keyboard.up("Alt");
+  await page.mouse.move(x, y);
+  await expect(page.getByText("11:00 – 12:30")).toBeVisible();
+  await page.mouse.up();
+  const [call] = await app.calls("resize_block");
+  expect(new Date(call.args.newEnd as string).toISOString()).toBe(new Date("2026-10-07T12:30:00+03:00").toISOString());
+});

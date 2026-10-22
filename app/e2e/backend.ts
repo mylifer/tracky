@@ -344,6 +344,7 @@ const handlers: Record<string, Handler> = {
   get_unassigned: () => unassigned,
   ignored_unassigned: () => [],
   assign_unassigned: () => ({ changed: 1, undo: 7 }),
+  resize_block: () => ({ changed: 1, undo: 8 }),
   label_undo: () => null,
   undo_history: () => [],
   pending_timesheet_days: () => [],

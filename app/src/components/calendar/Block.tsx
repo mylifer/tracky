@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Coffee } from "lucide-react";
+import { AppWindow, CalendarDays, Coffee } from "lucide-react";
 import type { IdleSpan, Tag, WindowSpan, WorkBlock } from "../../api";
 import { api, formatDuration } from "../../api";
 import { friendlyError, toast, undoable } from "../../lib/feedback";
@@ -13,6 +13,7 @@ import { HOUR_MS, FULL_LABEL_PX, LABEL_MIN_PX, type ColorLens, HATCH, SNAP_MS, D
 import { BlockDetails } from "./BlockDetails";
 import { linkHover, type SheetSpan, sheetEntryAt, unsentKey } from "./TimesheetLines";
 import { topWindow } from "./windowLanes";
+import { type SnapTarget, snapEdge, snapReach } from "./snap";
 
 /** Çizelge merceğinde zaman çizelgesinde satırı olmayan bloğun başlığı. */
 const NOT_IN_SHEET = "Çizelgede yok";
@@ -62,8 +63,11 @@ export function blockLabel(b: WorkBlock, tags: Map<string, Tag>) {
   );
 }
 
-/** Bloğun sürüklenen kenarı ve sürüklemenin durumu (zaman damgaları ms). */
-type Resize = { edge: "start" | "end"; y0: number; from: number; at: number };
+/** Bloğun sürüklenen kenarı ve sürüklemenin durumu (zaman damgaları ms); `snap`: kenarın yapıştığı hedef. */
+type Resize = { edge: "start" | "end"; y0: number; from: number; at: number; snap: SnapTarget | null };
+
+/** Yapışmayı geçici olarak kapatan tuşun adı. */
+const NO_SNAP_KEY = typeof navigator !== "undefined" && /Mac/.test(navigator.platform) ? "⌥" : "Alt";
 
 /** Takvim.app tarzı etkinlik bloğu; tıklayınca ayrıntı açılır, kenarlarından uzatılır. */
 export function Block({
@@ -78,6 +82,7 @@ export function Block({
   sheet = [],
   windows,
   away = [],
+  snaps = [],
 }: {
   b: WorkBlock;
   /** Bloğun içine düşen boşta aralıklar: bloğun süresine sayılmaz, silik taralı şerit olarak çizilir. */
@@ -95,6 +100,8 @@ export function Block({
   lens?: ColorLens;
   /** Zaman çizelgesi satırlarının aralıkları (çizelge merceği). */
   sheet?: SheetSpan[];
+  /** Kenar sürüklenirken yapışılan anlar: toplantıların ve büyük uygulama kümelerinin sınırları. */
+  snaps?: SnapTarget[];
 }) {
   const edit = useEdit();
   const [resize, setResize] = useState<Resize | null>(null);
@@ -180,7 +187,7 @@ export function Block({
           edge === "end" && "items-end",
         )}
         style={{ top: edge === "start" ? top : top + height - 6 }}
-        title="Sürükle: bloğu uzat ya da kısaltarak ikiye böl (zaman çizelgesine yeni aralık gider)"
+        title={`Sürükle: bloğu uzat ya da kısaltarak ikiye böl (zaman çizelgesine yeni aralık gider)\nToplantının ya da uzun uygulama kullanımının sınırına yapışır; ${NO_SNAP_KEY} basılıyken ya da daha öteye çekince yapışmaz`}
         aria-hidden
         onPointerDown={(e) => {
           if (e.button !== 0) return;
@@ -189,25 +196,39 @@ export function Block({
           e.preventDefault();
           e.currentTarget.setPointerCapture(e.pointerId);
           const from = edge === "start" ? start : end;
-          setResize({ edge, y0: e.clientY, from, at: from });
+          setResize({ edge, y0: e.clientY, from, at: from, snap: null });
         }}
         onPointerMove={(e) => {
           if (!resize) return;
           // Başladığı yere dönen sürükleme bloğu değiştirmez.
           if (Math.abs(e.clientY - resize.y0) < DRAG_MIN_PX) {
-            if (resize.at !== resize.from) setResize({ ...resize, at: resize.from });
+            if (resize.at !== resize.from) setResize({ ...resize, at: resize.from, snap: null });
             return;
           }
           const raw = fromWallMs(
             wallMs(resize.from, dayStart) + ((e.clientY - resize.y0) / hourPx) * HOUR_MS,
             dayStart,
           );
+          // Yakındaki toplantı ya da uygulama kümesi sınırı dilimden önce gelir; kenar ondan ancak
+          // biraz daha öteye çekilince (ya da tuş basılıyken) kurtulur.
+          const { pull, release } = snapReach(hourPx);
+          const target = e.altKey
+            ? null
+            : snapEdge(raw, snaps, pull, release, resize.snap, (t) =>
+                resize.edge === "start" ? t <= end - SNAP_MS : t >= start + SNAP_MS && t <= Date.now(),
+              );
+          if (target) {
+            if (target !== resize.snap || resize.at !== target.at)
+              setResize({ ...resize, at: target.at, snap: target });
+            return;
+          }
           const snap = (t: number) => Math.round(t / SNAP_MS) * SNAP_MS;
           const snapped = snap(raw);
           // Kenarın kendi dilimine oturması değişiklik sayılmaz (kenar dilim sınırında değil).
           const at = snapped === snap(resize.from) ? resize.from : snapped;
           setResize({
             ...resize,
+            snap: null,
             at:
               resize.edge === "start"
                 ? Math.min(at, end - SNAP_MS)
@@ -229,6 +250,9 @@ export function Block({
   const [newStart, newEnd] = !resize ? [start, end] : resize.edge === "start" ? [resize.at, end] : [start, resize.at];
   const wall = (t: number) => wallMs(t, dayStart);
   const ghostTop = top + ((wall(newStart) - wall(start)) / HOUR_MS) * hourPx;
+  const snapped = resize?.snap && resize.at !== resize.from ? resize.snap : null;
+  const snapY = resize && top + ((wall(resize.at) - wall(start)) / HOUR_MS) * hourPx;
+  const SnapIcon = snapped?.kind === "meeting" ? CalendarDays : AppWindow;
   return (
     <>
       <Popover>
@@ -325,6 +349,31 @@ export function Block({
           {formatTime(new Date(newStart))} – {formatTime(new Date(newEnd))} ·{" "}
           {formatDuration((newEnd - newStart) / 1000)}
         </span>
+      )}
+      {snapped && snapY !== null && (
+        // Yapışılan sınır: kenarda düz çizgi ve dışa doğru neye yapıştığı. Gün görünümünde etiket
+        // sürüklenirken yandaki sütunun üstüne taşabilir (okunsun); haftada günün sütununda kalır.
+        <>
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 z-30 h-0.5 -translate-y-1/2 rounded-full bg-primary"
+            style={{ top: snapY }}
+          />
+          <span
+            data-snap={snapped.kind}
+            className={cn(
+              "pointer-events-none absolute left-0.5 z-30 flex items-center gap-1 rounded border border-primary/40 bg-popover px-1 py-px text-[10px] leading-tight font-medium text-primary shadow-sm",
+              narrow ? "max-w-[calc(100%-4px)]" : "w-max max-w-72",
+              resize?.edge === "start" ? "-translate-y-[calc(100%+3px)]" : "translate-y-[3px]",
+            )}
+            style={{ top: snapY }}
+          >
+            <SnapIcon className="size-3 shrink-0" />
+            <span className="truncate">
+              {snapped.name} · {snapped.edge === "start" ? "başı" : "sonu"}
+            </span>
+          </span>
+        </>
       )}
     </>
   );

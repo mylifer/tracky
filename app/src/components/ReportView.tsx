@@ -166,10 +166,10 @@ export default function ReportView(p: Props) {
   useTauriEvent(api.onSync, load);
   useChanged(load);
 
-  // Gün takviminde toplantılar; `null`: takvim bağlı değil (sütun gizlenir).
-  // Hangi günün toplantıları olduğu da tutulur: gün değişince yenisi gelene kadar önceki
-  // günün toplantıları yeni güne çizilmesin.
-  const [meetingsOf, setMeetingsOf] = useState<{ start: string; list: CalendarMeeting[] } | null>(null);
+  // Gün takviminde toplantılar (haftada gösterilmez, blok kenarları sınırlarına yapışır);
+  // `null`: takvim bağlı değil (sütun gizlenir). Hangi aralığın toplantıları olduğu da tutulur:
+  // gün değişince yenisi gelene kadar önceki günün toplantıları yeni güne çizilmesin.
+  const [meetingsOf, setMeetingsOf] = useState<{ start: string; days: number; list: CalendarMeeting[] } | null>(null);
   const [calendarOn, setCalendarOn] = useState(false);
   const [calendarRev, setCalendarRev] = useState(0);
   useEffect(() => {
@@ -183,19 +183,19 @@ export default function ReportView(p: Props) {
     setCalendarRev((r) => r + 1);
   });
   useEffect(() => {
-    if (!calendarOn || p.mode !== "day") return setMeetingsOf(null);
+    if (!calendarOn || (p.mode !== "day" && p.mode !== "week")) return setMeetingsOf(null);
     let live = true;
     const start = p.start;
-    api.meetings(start, 1).then(
-      (list) => live && setMeetingsOf({ start, list }),
+    api.meetings(start, days).then(
+      (list) => live && setMeetingsOf({ start, days, list }),
       () => live && setMeetingsOf(null),
     );
     return () => {
       live = false;
     };
-  }, [calendarOn, calendarRev, p.mode, p.start]);
+  }, [calendarOn, calendarRev, p.mode, p.start, days]);
   // `null`: takvim bağlı değil (sütun gizlenir); başka günün listesi gelene kadar boş sütun.
-  const meetings = meetingsOf && (meetingsOf.start === p.start ? meetingsOf.list : []);
+  const meetings = meetingsOf && (meetingsOf.start === p.start && meetingsOf.days === days ? meetingsOf.list : []);
   const entries = entriesOf && (entriesOf.start === p.start && entriesOf.days === days ? entriesOf.list : []);
   const sheet = useMemo(() => sheetSpans(entries ?? []), [entries]);
 
@@ -723,6 +723,7 @@ export default function ReportView(p: Props) {
                           lens={calLens}
                           sheet={sheet}
                           entries={entries}
+                          meetings={meetings}
                         />
                       )}
                     </EditContext.Provider>

@@ -25,6 +25,7 @@ import { attendanceLine, isSkipped } from "../../lib/attendance";
 import { useWidth } from "../charts";
 import { ITEM_LABEL_PX, laneCount, WindowItems } from "./WindowColumn";
 import { placeItems, windowItems } from "./windowLanes";
+import { snapTargets } from "./snap";
 
 /** Tıklanan anı çevreleyen boşluk: 2 saate kadarsa tamamı, değilse tıklanan çeyrekten 1 saat. */
 export function gapAround(
@@ -220,6 +221,10 @@ export function DayCalendar({
     return hourRange(from, [...blocks, ...idle, ...segments, ...meetingSpans, ...sheetSpans], hourPx);
   }, [from, blocks, idle, segments, meetingSpans, sheetPlaced, hourPx]);
   const top = topFn(+from, range);
+  const snaps = useMemo(
+    () => snapTargets(meetings ?? [], windows ?? [], +from, +addDays(from, 1)),
+    [meetings, windows, from],
+  );
   const items = useMemo(() => windowItems(windows ?? [], +from, +addDays(from, 1)), [windows, from]);
   const [detailRef, detailWidth] = useWidth<HTMLDivElement>();
   const lanes = laneCount(detailWidth);
@@ -311,6 +316,7 @@ export function DayCalendar({
                 lens={lens}
                 sheet={sheet}
                 windows={windows}
+                snaps={snaps}
                 top={t}
                 height={height}
                 hourPx={range.px}
