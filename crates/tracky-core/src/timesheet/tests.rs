@@ -736,6 +736,56 @@ fn calendar_meetings_become_entries_and_replace_tracked_time() {
 }
 
 #[test]
+fn a_sent_block_in_an_attended_meeting_is_named_after_it() {
+    let (classifier, names, config, sheet) = setup();
+    // 09:00–10:00 Zoom'da (Trumore'a atanmış), 10:00–10:30 Figma: tek blok, gönderildi.
+    let sessions = [
+        s("us.zoom.xos", "Zoom Meeting", 0, 60, Some("tru")),
+        s("Figma", "Trumore Loyalty UI/UX — Figma", 60, 90, None),
+    ];
+    let sent = Sent {
+        spans: vec![(t(0), t(90))],
+        off: Vec::new(),
+        before: t(-600),
+    };
+    let rows = |meetings: &[(Meeting, String)], held: &[Meeting]| -> Vec<(i64, String)> {
+        let p = pieces_with(
+            &sessions,
+            meetings,
+            held,
+            &classifier,
+            &config,
+            (t(-540), t(900)),
+            &sent,
+        );
+        propose(&p, &names, &sheet, &HashMap::new())
+            .into_iter()
+            .map(|e| ((e.worked() * 60.0).round() as i64, e.details))
+            .collect()
+    };
+    let weekly = meeting("w", "Trumore haftalık", 0, 60, true);
+    // Projesi belli toplantı bloğun içinde kalır: satır bloğun, adı toplantının.
+    assert_eq!(
+        rows(
+            &[(weekly.clone(), "tru".into())],
+            std::slice::from_ref(&weekly)
+        ),
+        [(90, "Trumore haftalık".to_string())]
+    );
+    // Projesi olmayan toplantı da (katılındıysa) bloğa adını verir.
+    assert_eq!(
+        rows(&[], std::slice::from_ref(&weekly)),
+        [(90, "Trumore haftalık".to_string())]
+    );
+    // Bloğun ucuna değen toplantı ad vermez: açıklama pencerelerden.
+    let late = meeting("l", "Akşam toplantısı", 85, 120, true);
+    assert_eq!(
+        rows(&[], &[late]),
+        [(90, "Trumore Loyalty UI/UX".to_string())]
+    );
+}
+
+#[test]
 fn meeting_project_prefers_assignment_then_rules() {
     let (classifier, _, _, _) = setup();
     let m = meeting("seri", "Trumore weekly", 0, 30, true);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Attendance, Meeting } from "../api";
-import { attendanceLine, isAdjusted, isSkipped } from "./attendance";
+import type { Attendance, CalendarMeeting, Meeting } from "../api";
+import { attendanceLine, blockMeeting, isAdjusted, isSkipped } from "./attendance";
 
 const at = (h: number, m = 0) => new Date(2026, 9, 5, h, m).toISOString();
 const meeting: Meeting = {
@@ -46,5 +46,37 @@ describe("attendance", () => {
     expect(attendanceLine(meeting, early)).toBe("Görüşme 09:58–10:35 · çizelgeye 10:00–10:35 girer");
     const answered = { ...base, status: "attended" as const, auto: false };
     expect(attendanceLine(meeting, answered)).toBe("Katıldın olarak işaretlendi");
+  });
+});
+
+describe("blockMeeting", () => {
+  const ms = (h: number, m = 0) => +new Date(2026, 9, 5, h, m);
+  const cal = (over: Partial<CalendarMeeting> = {}): CalendarMeeting => ({
+    ...meeting,
+    projectId: null,
+    ignored: false,
+    attendance: base,
+    ...over,
+  });
+
+  it("names a block after the attended meeting it holds", () => {
+    expect(blockMeeting([cal()], ms(9, 55), ms(11, 10))?.subject).toBe("Haftalık");
+    // Toplantı uzun bloğun içinde kalsa da adını verir.
+    expect(blockMeeting([cal()], ms(8), ms(13))?.subject).toBe("Haftalık");
+  });
+
+  it("ignores skipped, ignored and edge-touching meetings", () => {
+    expect(blockMeeting([cal({ attendance: { ...base, status: "skipped" } })], ms(10), ms(11))).toBeNull();
+    expect(blockMeeting([cal({ ignored: true })], ms(10), ms(11))).toBeNull();
+    // Yarısı blokta: blok başka işle sürüyor, toplantı ad vermez.
+    expect(blockMeeting([cal()], ms(9), ms(10, 30))).toBeNull();
+  });
+
+  it("uses the time the call actually took and picks the longest", () => {
+    // Görüşme 10:40'ta bitti: 10:30–11:30 bloğunda yalnızca 10 dk'sı var.
+    const early = cal({ attendance: { ...base, end: at(10, 40) } });
+    expect(blockMeeting([early], ms(10, 30), ms(11, 30))).toBeNull();
+    const other = cal({ uid: "b", subject: "Demo", start: at(10, 30), end: at(12), attendance: null });
+    expect(blockMeeting([cal(), other], ms(10), ms(12))?.subject).toBe("Demo");
   });
 });

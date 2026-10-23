@@ -1154,6 +1154,46 @@ fn meetings_enter_without_sending_and_a_sent_block_comes_first() {
 }
 
 #[test]
+fn a_sent_block_takes_the_name_of_an_attended_meeting() {
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    opt_in_at(&store, -60);
+    work(&store, "Loyalty", 0, 90, Some("togg"));
+    let togg = sheet("togg", &["togg"]);
+    // Projesi olmayan toplantı: çizelgeye kendisi girmez, saatindeki bloğa adını verir.
+    let meetings = [Meeting {
+        uid: "musteri".into(),
+        start: t(10),
+        end: t(70),
+        subject: "Müşteri görüşmesi".into(),
+        online: true,
+        ..Meeting::default()
+    }];
+    let ctx = store.timesheet_context().unwrap();
+    let day_rows = || {
+        let pieces = store
+            .timesheet_pieces(&ctx, t(-540), t(900), &meetings)
+            .unwrap();
+        short(
+            &store
+                .timesheet_day(&ctx, &togg, day(), &pieces)
+                .unwrap()
+                .rows,
+        )
+    };
+    send(&store, 0, 90, Some("togg"));
+    assert_eq!(
+        day_rows(),
+        [(false, "09:00".into(), 90, "Müşteri görüşmesi".into())]
+    );
+    // Katılınmayan toplantı ad vermez.
+    store
+        .answer_meeting(&crate::attendance::key(&meetings[0]), Some(false))
+        .unwrap();
+    assert_eq!(day_rows(), [(false, "09:00".into(), 90, "Loyalty".into())]);
+}
+
+#[test]
 fn sending_again_brings_back_a_deleted_row() {
     let store = Store::open_in_memory().unwrap();
     project(&store, "togg", "Togg");

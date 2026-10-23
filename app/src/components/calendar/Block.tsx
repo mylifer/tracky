@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppWindow, CalendarDays, Coffee } from "lucide-react";
-import type { IdleSpan, Tag, WindowSpan, WorkBlock } from "../../api";
+import type { CalendarMeeting, IdleSpan, Tag, WindowSpan, WorkBlock } from "../../api";
 import { api, formatDuration } from "../../api";
+import { blockMeeting } from "../../lib/attendance";
 import { friendlyError, toast, undoable } from "../../lib/feedback";
 import { formatTime, fromWallMs, wallMs } from "../../lib/dates";
 import { UNASSIGNED, UNCATEGORIZED, tagColor } from "../../lib/tags";
@@ -24,6 +25,7 @@ function blockTitle(
   lens: ColorLens,
   sheet: SheetSpan[],
   named: ReturnType<typeof topWindow>,
+  meeting: CalendarMeeting | null,
 ) {
   const apps = b.topApps.map((a) => a.appName).join(", ");
   if (lens === "sheet") {
@@ -45,9 +47,10 @@ function blockTitle(
   }
   return {
     color: tagColor(tag),
-    // Blok uygulama akışından çıkar, en çok süren pencerenin adıyla görünür (Timely gibi);
-    // projesi alt satırda: atamanın sonucu takvimde hemen fark edilsin.
-    title: named?.title ?? b.topApps[0]?.appName ?? tag?.name ?? UNCATEGORIZED,
+    // Katılınan toplantının saatindeki blok toplantının adıyla görünür; değilse uygulama akışından
+    // çıkar, en çok süren pencerenin adıyla (Timely gibi). Projesi alt satırda: atamanın sonucu
+    // takvimde hemen fark edilsin.
+    title: meeting?.subject.trim() || (named?.title ?? b.topApps[0]?.appName ?? tag?.name ?? UNCATEGORIZED),
     project: project?.name,
     apps,
   };
@@ -81,6 +84,7 @@ export function Block({
   lens = "category",
   sheet = [],
   windows,
+  meetings,
   away = [],
   snaps = [],
 }: {
@@ -95,6 +99,8 @@ export function Block({
   /** Bloğun gününün başı: sürükleme ızgara gibi duvar saatiyle hesaplanır (yaz saati günleri). */
   dayStart: number;
   windows?: WindowSpan[];
+  /** Takvim toplantıları: katılınan toplantının saatindeki blok onun adını alır. */
+  meetings?: CalendarMeeting[];
   /** Dar sütun (hafta): tek satırlık blokta süre yer kaplamasın, başlık okunsun. */
   narrow?: boolean;
   lens?: ColorLens;
@@ -123,7 +129,11 @@ export function Block({
     () => (windows ? topWindow(windows, +new Date(b.start), +new Date(b.end)) : null),
     [windows, b.start, b.end],
   );
-  const { color: blockColor, title, project, apps } = blockTitle(b, tags, lens, sheet, named);
+  const meeting = useMemo(
+    () => (meetings ? blockMeeting(meetings, +new Date(b.start), +new Date(b.end)) : null),
+    [meetings, b.start, b.end],
+  );
+  const { color: blockColor, title, project, apps } = blockTitle(b, tags, lens, sheet, named, meeting);
   // Zaman çizelgesi sütunundaki karşılığı (satırı ya da gönderilmemiş bloğun kesikli kartı):
   // üstüne gelince ikisi birlikte işaretlenir.
   const sheetKey = useMemo(
@@ -131,16 +141,16 @@ export function Block({
       b.sent === false ? unsentKey(b) : sheetEntryAt(sheet, +new Date(b.start), +new Date(b.end), b.projectId)?.key,
     [b, sheet],
   );
-  // Simgelerin ilki adını veren pencerenin uygulaması.
+  // Simgelerin ilki adını veren pencerenin uygulaması (adı toplantıdansa bloğun sırası).
   const icons = useMemo(
     () =>
-      named && lens === "category"
+      named && !meeting && lens === "category"
         ? [
             { appId: named.appId, appName: named.appName },
             ...b.topApps.filter((a) => a.appId !== named.appId && a.appName !== named.appName),
           ]
         : b.topApps,
-    [named, lens, b.topApps],
+    [named, meeting, lens, b.topApps],
   );
   const color = blockColor ?? "var(--c0)";
   const full = height >= FULL_LABEL_PX;

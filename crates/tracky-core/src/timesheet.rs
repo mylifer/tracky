@@ -540,6 +540,9 @@ pub struct Piece {
     /// Parçanın takvim bloğu zaman çizelgesine gönderildi ([`Sent`]); toplantıda her zaman.
     /// Gönderilmeyen parça öneri olmaz.
     pub sent: bool,
+    /// Oturumun takvim bloğu katılınan toplantının saatinde ([`named_by`]): bloğun satırının
+    /// açıklaması yalnızca toplantının konusudur, pencere başlıkları değil.
+    pub meeting_name: Option<String>,
 }
 
 /// Zaman çizelgesine gönderilen takvim blokları: yalnızca bunların işi (ve projesi belli
@@ -586,7 +589,8 @@ fn touches(spans: &[Interval], start: DateTime<Utc>, end: DateTime<Utc>) -> bool
 /// toplantılarda ortak süre ilkine yazılır; toplantı süresince takip edilen iş toplantının
 /// kaydında sayılır (aynı saat iki kez yazılmasın). Bilerek gönderilen ([`Sent::chosen`])
 /// projeli bloğun içinde ise blok önce gelir: toplantının yalnızca bloğun dışında kalan kısmı
-/// toplantının kaydıdır.
+/// toplantının kaydıdır. Satırı katılınan toplantının saatinde olan blok toplantının adını
+/// taşır ([`named_by`]).
 ///
 /// Takvimdeki blok zaman çizelgesindeki satırdır: projesi olan bloğun ([`crate::blocks`])
 /// içindeki atanmamış süre de o projenin işidir (takvimde bloğun süresine girer). Başka projeye
@@ -599,9 +603,11 @@ pub fn pieces(
     day_start: DateTime<Utc>,
     day_end: DateTime<Utc>,
 ) -> Vec<Piece> {
+    let held: Vec<Meeting> = meetings.iter().map(|(m, _)| m.clone()).collect();
     pieces_with(
         sessions,
         meetings,
+        &held,
         classifier,
         config,
         (day_start, day_end),
@@ -610,9 +616,12 @@ pub fn pieces(
 }
 
 /// [`pieces`]; oturumların parçası, takvim bloğu `sent`'te gönderilmişse gönderilmiştir.
+/// `held` katılınan (yoksayılmamış, projesi belli olsun olmasın) toplantılardır: içinde
+/// geçtikleri bloğun satırına adını verirler ([`named_by`]).
 pub fn pieces_with(
     sessions: &[Session],
     meetings: &[(Meeting, String)],
+    held: &[Meeting],
     classifier: &Classifier,
     config: &TimesheetConfig,
     (day_start, day_end): Interval,
@@ -657,11 +666,17 @@ pub fn pieces_with(
             meeting: Some(i),
             block_start: false,
             sent: true,
+            meeting_name: None,
         }));
     }
-    let blocks: Vec<(DateTime<Utc>, DateTime<Utc>, String)> = all
+    /// Projeli blok: başı, sonu, projesi ve (katılınan toplantının saatindeyse) adı.
+    type ProjectBlock = (DateTime<Utc>, DateTime<Utc>, String, Option<String>);
+    let blocks: Vec<ProjectBlock> = all
         .into_iter()
-        .filter_map(|b| Some((b.start, b.end, b.project_id?)))
+        .filter_map(|b| {
+            let name = named_by(held, (b.start, b.end), &covered);
+            Some((b.start, b.end, b.project_id?, name))
+        })
         .collect();
     for (s, class) in sessions.iter().zip(&classes) {
         let (a, b) = (s.started_at.max(day_start), s.ended_at.min(day_end));
@@ -674,7 +689,7 @@ pub fn pieces_with(
             None if s.project_id.as_deref() == Some(crate::classify::NO_PROJECT) => continue,
             None => blocks
                 .iter()
-                .filter_map(|(c, d, p)| {
+                .filter_map(|(c, d, p, _)| {
                     let (x, y) = (a.max(*c), b.min(*d));
                     (y > x).then(|| (x, y, p.clone()))
                 })
@@ -684,20 +699,47 @@ pub fn pieces_with(
         let title = clean_title(&s.title, &s.app_name);
         for (a, b, project) in owned {
             let parts = covered.iter().fold(vec![(a, b)], |p, &c| subtract(p, c));
-            out.extend(parts.into_iter().map(|(start, end)| Piece {
-                project: project.clone(),
-                kind,
-                start,
-                end,
-                title: title.clone(),
-                meeting: None,
-                block_start: crate::blocks::Activity::starts_block(s, start),
-                // Oturum tek bir bloğun içindedir: parçası o bloğun durumunu alır.
-                sent: sent_blocks.iter().any(|&(c, d)| c < end && start < d),
+            out.extend(parts.into_iter().map(|(start, end)| {
+                Piece {
+                    project: project.clone(),
+                    kind,
+                    start,
+                    end,
+                    title: title.clone(),
+                    meeting: None,
+                    block_start: crate::blocks::Activity::starts_block(s, start),
+                    // Oturum tek bir bloğun içindedir: parçası o bloğun durumunu alır.
+                    sent: sent_blocks.iter().any(|&(c, d)| c < end && start < d),
+                    // Bloğun adı yalnızca o bloğun projesinin satırına gider.
+                    meeting_name: blocks
+                        .iter()
+                        .find(|(c, d, p, _)| *c < end && start < *d && *p == project)
+                        .and_then(|(_, _, _, name)| name.clone()),
+                }
             }));
         }
     }
     out
+}
+
+/// `block`'a adını veren toplantılar: bloğun satırına giren (kendi kaydına yazılmayan, `covered`
+/// dışındaki) süresi toplantının ya da bloğun yarısından çok olanlar; bloğun ucuna değen ya da
+/// yarısı bloğun dışında kalan toplantı ad vermez. Birden çoksa açıklama gibi bloktaki süreleriyle özetlenir ([`describe`]); yoksa `None`.
+pub fn named_by(held: &[Meeting], (start, end): Interval, covered: &[Interval]) -> Option<String> {
+    let mut titles: HashMap<String, Duration> = HashMap::new();
+    for m in held {
+        let (a, b) = (m.start.max(start), m.end.min(end));
+        if b <= a {
+            continue;
+        }
+        let inside = total(&covered.iter().fold(vec![(a, b)], |p, &c| subtract(p, c)));
+        if inside * 2 <= (m.end - m.start).min(end - start) {
+            continue;
+        }
+        *titles.entry(m.subject.clone()).or_insert(Duration::zero()) += inside;
+    }
+    let name = describe(titles);
+    (!name.is_empty()).then_some(name)
 }
 
 /// Günün takvim blokları (raporla aynı hesap).
@@ -752,6 +794,9 @@ pub fn propose(
         end: DateTime<Utc>,
         worked: Duration,
         titles: HashMap<String, Duration>,
+        /// Katılınan toplantının saatindeki blokların adları ([`Piece::meeting_name`]): varsa
+        /// açıklama yalnızca bunlardır.
+        names: HashMap<String, Duration>,
         spans: Vec<Interval>,
         /// Parçalarından biri kaydedilmiş bir satırca kısaltıldı.
         trimmed: bool,
@@ -767,6 +812,7 @@ pub fn propose(
                 end: at,
                 worked: Duration::zero(),
                 titles: HashMap::new(),
+                names: HashMap::new(),
                 spans: Vec::new(),
                 trimmed: false,
             }
@@ -784,6 +830,9 @@ pub fn propose(
                     .titles
                     .entry(p.title.clone())
                     .or_insert(Duration::zero()) += b - a;
+            }
+            if let Some(name) = &p.meeting_name {
+                *self.names.entry(name.clone()).or_insert(Duration::zero()) += b - a;
             }
             self.spans.push((a, b));
         }
@@ -938,7 +987,12 @@ pub fn propose(
                 .and_then(|m| m.party.clone())
                 .filter(|p| !p.trim().is_empty())
                 .unwrap_or_else(|| sheet.default_party.clone());
-            let details = describe(r.titles);
+            // Toplantının saatindeki blok toplantının adını taşır (pencereler değil).
+            let details = describe(if r.names.is_empty() {
+                r.titles
+            } else {
+                r.names
+            });
             // Hazır açıklama yalnızca boş kalan açıklamayı doldurur: başlıklardan çıkan metin
             // (iş anahtarı, belge adı) projenin genel metninden daha bilgilendiricidir; boş
             // satır ise aktarılamaz. Doldurulan metin elle değiştirilebilir.

@@ -316,6 +316,7 @@ export function DayCalendar({
                 lens={lens}
                 sheet={sheet}
                 windows={windows}
+                meetings={meetings ?? undefined}
                 snaps={snaps}
                 top={t}
                 height={height}

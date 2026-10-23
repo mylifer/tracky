@@ -565,13 +565,29 @@ impl Store {
             })
             .collect();
         // Katılınmayan toplantı çıkar, süresi görüşmeye göre düzelir.
-        let known = attendance::apply(known, &self.meeting_attendance(&ctx.config, meetings)?);
+        let att = self.meeting_attendance(&ctx.config, meetings)?;
+        let known = attendance::apply(known, &att);
+        // Projesi olmayan (yoksayılmamış) toplantı da katılındıysa saatindeki bloğun adıdır.
+        let open: Vec<(Meeting, String)> = meetings
+            .iter()
+            .filter(|m| {
+                timesheet::meeting_project(m, &ctx.classifier, &ctx.assigned)
+                    == MeetingProject::Unassigned
+            })
+            .map(|m| (m.clone(), String::new()))
+            .collect();
+        let held: Vec<Meeting> = known
+            .iter()
+            .chain(&attendance::apply(open, &att))
+            .map(|(m, _)| m.clone())
+            .collect();
         let sessions = self.merged_sessions_between(from, to)?;
         let sent = self.timesheet_sent(from, to)?;
         Ok(TimesheetPieces {
             pieces: timesheet::pieces_with(
                 &sessions,
                 &known,
+                &held,
                 &ctx.classifier,
                 &ctx.config,
                 (from, to),

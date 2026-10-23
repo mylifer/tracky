@@ -140,6 +140,7 @@ export function WeekCalendar({
                     lens={lens}
                     sheet={sheet}
                     windows={windows}
+                    meetings={meetings ?? undefined}
                     snaps={snapDays[i]}
                     top={t}
                     height={height}
