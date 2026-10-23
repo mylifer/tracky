@@ -1,3 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/tracky-core", "crates/tracky-platform", "crates/tracky-probe", "app/src-tauri", "crates/tracky-sync", "crates/tracky-xlsx"]
+
+# target/ klasörünün şişmesini azaltmak için: debug derlemelerinde
+# kendi kodumuz için yalnızca satır bilgisi, bağımlılıklar için hiç debug bilgisi.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
