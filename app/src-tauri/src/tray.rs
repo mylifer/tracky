@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
 
 use crate::tracking::{Current, Status, format_duration};
@@ -108,8 +108,20 @@ pub fn create(app: &AppHandle, autostart: bool) -> tauri::Result<()> {
         .icon_as_template(true)
         .tooltip("Kum")
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        // Windows'ta alışılmış davranış: menü sağ tıkla açılır, çift tık pencereyi açar.
+        // Sol tık menüyü açsaydı ilk tık menüyü açar, ikinci tık onu kapatır ve çift tık
+        // hiç algılanmazdı.
+        .show_menu_on_left_click(cfg!(not(windows)))
         .on_menu_event(on_menu_event)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                crate::show_main_window(tray.app_handle());
+            }
+        })
         .build(app)?;
 
     *app.state::<TrayItems>()
