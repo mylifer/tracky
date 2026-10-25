@@ -281,8 +281,13 @@ iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
 Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birleşik rapor için:
 
 1. [supabase.com](https://supabase.com) üzerinde ücretsiz bir proje oluştur.
-2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0009_…`) çalıştır.
-   Önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli. `0003_writer.sql`
+2. Şemayı kur. **Kendiliğinden (önerilen):** GitHub deposunda *Settings → Secrets and variables →
+   Actions → Secrets* altına `SUPABASE_DB_URL` adıyla Supabase'in **Connect → Session pooler** bağlantı
+   adresini (veritabanı şifresiyle) ekle. `Supabase` iş akışı (`.github/workflows/supabase.yml`)
+   `supabase/` değişikliği varsayılan branch'e girince, her sürüm etiketinde ve *Actions → Supabase → Run
+   workflow* ile uygulanmamış göçleri uygular (`public.kum_migrations`'a yazar; `kum` şemasında kuruluysa
+   `kum_schema.sql`'i yeniden çalıştırır). **Elle:** **SQL Editor**'da `supabase/migrations/` altındaki
+   dosyaları sırayla çalıştır; önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli. `0003_writer.sql`
    cihazların kendi gönderdiklerini geri indirmesini önler; çalıştırılmazsa eşitleme eskisi gibi sürer.
    `0004_session_project.sql` elle verilen projeleri eşitler; Kum 0.4'ten itibaren gereklidir.
    `0005_clients.sql` müşterileri ve projelerin müşterisini eşitler; Kum 0.6'dan itibaren gereklidir.

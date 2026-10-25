@@ -1,0 +1,82 @@
+name: Supabase
+
+# Eşitleme şemasındaki değişiklikleri (supabase/) Supabase projesine kendiliğinden uygular:
+# varsayılan branch'e push'landığında, sürüm etiketinde (uygulama yeni tabloları kullanmadan önce) ve
+# elle (Actions → Supabase → Run workflow). Bağlantı `SUPABASE_DB_URL` deposu sırrından gelir
+# (Supabase → Connect → Session pooler bağlantı adresi, şifresiyle); tanımlı değilse iş atlanır.
+#
+# Şema kendiliğinden anlaşılır:
+# - `kum` şemasında kuruluysa (başka uygulamanın projesi) `supabase/kum_schema.sql` baştan çalıştırılır;
+#   dosya tekrar çalıştırılabilir.
+# - Değilse `supabase/migrations/` altındaki uygulanmamış dosyalar sırayla, her biri tek işlemde
+#   uygulanır ve `public.kum_migrations`'a yazılır. İlk çalıştırmada kayıt olmadığı için hepsi yeniden
+#   çalışır; göçlerin hepsi tekrar çalıştırılabilir.
+on:
+  push:
+    paths:
+      - "supabase/**"
+      - ".github/workflows/supabase.yml"
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Aynı anda iki uygulama aynı göçü iki kez yazmasın.
+concurrency:
+  group: supabase-migrate
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    # Başka branch'lerdeki gözden geçirilmemiş göçler uygulanmaz.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref_name == github.event.repository.default_branch ||
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Göçleri uygula
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_DB_URL}" ]; then
+            echo "::notice::SUPABASE_DB_URL sırrı tanımlı değil; göçler uygulanmadı."
+            exit 0
+          fi
+          export PGCONNECT_TIMEOUT=20
+          q() { psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -X -q -t -A "$@"; }
+
+          if [ "$(q -c "select to_regclass('kum.sessions') is not null")" = "t" ]; then
+            echo "kum şeması bulundu: supabase/kum_schema.sql uygulanıyor"
+            q -1 -f supabase/kum_schema.sql
+            echo "::notice::kum_schema.sql uygulandı."
+            exit 0
+          fi
+
+          q -c "create table if not exists public.kum_migrations (
+                    name       text primary key,
+                    applied_at timestamptz not null default now()
+                );
+                revoke all on public.kum_migrations from anon, authenticated;"
+          applied=0
+          for file in $(ls supabase/migrations/*.sql | sort); do
+            name="$(basename "$file")"
+            # Ad SQL'e olduğu gibi girer: yalnızca `0018_block_links.sql` biçimi kabul edilir.
+            if ! [[ "$name" =~ ^[0-9]{4}_[a-z0-9_]+\.sql$ ]]; then
+              echo "::error::Geçersiz göç adı: $name"
+              exit 1
+            fi
+            if [ "$(q -c "select count(*) from public.kum_migrations where name = '$name'")" != "0" ]; then
+              continue
+            fi
+            echo "Uygulanıyor: $name"
+            {
+              cat "$file"
+              printf "\ninsert into public.kum_migrations (name) values ('%s');\n" "$name"
+            } | q -1 -f -
+            applied=$((applied + 1))
+          done
+          echo "::notice::$applied göç uygulandı."
