@@ -1,11 +1,16 @@
 //! Takvimdeki çalışma blokları, molalar ve bağlam değişimi.
 //!
-//! - **Blok:** kesintisiz çalışma; yalnızca `BREAK_GAP`'ten uzun boşluk (mola) yeni blok
-//!   başlatır. Uygulama ya da kategori değişse de blok sürer: blok uygulama akışından çıkar,
+//! - **Blok:** kesintisiz çalışma; `BREAK_GAP`'ten uzun boşluk (mola) yeni blok başlatır.
+//!   Anlık uygulama ya da kategori geçişleri bloğu bölmez: blok uygulama akışından çıkar,
 //!   takvimde en çok süren pencerenin adıyla görünür (Timely gibi; 18 Ekim'de kategori
 //!   değiştikçe bölünen bloklar bir öğleden sonrayı 23 parçaya ayırıyordu). Bloğun projesine
 //!   atanmış iş, arada `timesheet::MERGE_GAP`'i geçmeyen boşluk olsa da aynı bloktur: zaman
 //!   çizelgesindeki satır gibi.
+//! - **Konuya göre bölme:** bir iş bitip mola vermeden başka türde işe geçilince, yeni iş en az
+//!   `CONTEXT_MIN` sürerse ayrı bloktur ([`split_contexts`]): oyun bitip tarayıcıda 10 dk
+//!   gezinmek, Figma'dan sonra 10 dk video izlemek. Tür kategoridir (Figma→Photoshop ikisi de
+//!   tasarım: aynı blok), kategorisiz kullanımda uygulamadır. `EXCURSION_MAX`'tan kısa ara
+//!   verip aynı işe dönülürse ara o işin içindedir; aynı projeye atanmış kısımlar bölünmez.
 //! - **Projeye göre bölme:** bloğun projesinden (yarısını kaplayan; yoksa projesiz) başka
 //!   projeye atanmış, en az `SWITCH_MIN` süren kısım kategorisi aynı olsa da ayrı bloktur
 //!   ([`split_projects`]). O projenin kısımları arasındaki `MERGE_GAP`'i geçmeyen atanmamış
@@ -27,6 +32,10 @@ pub const BREAK_GAP: Duration = Duration::minutes(5);
 pub const SWITCH_MIN: Duration = Duration::minutes(3);
 /// Bundan uzun boşluk mola değil, günün bitişidir.
 pub const LONG_GAP: Duration = Duration::hours(3);
+/// Bir iş bittikten sonra başka türde iş bu kadar sürerse ayrı blok olur ([`split_contexts`]).
+pub const CONTEXT_MIN: Duration = Duration::minutes(5);
+/// Bundan kısa ara verip aynı türde işe dönülürse ara o işin içinde kalır ([`split_contexts`]).
+pub const EXCURSION_MAX: Duration = Duration::minutes(10);
 
 /// Analize giren tek bir zaman dilimi (aralığa kırpılmış).
 #[derive(Debug, Clone)]
@@ -278,6 +287,136 @@ fn split_projects<'s>(
     parts.into_iter().map(|p| p.items).collect()
 }
 
+/// Dilimin türü: kategorisi, kategorisizse uygulaması.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Context<'s> {
+    Category(&'s str),
+    App(&'s str),
+}
+
+impl<'s> Context<'s> {
+    fn of(i: &Activity<'s>) -> Self {
+        i.category.map_or(Self::App(i.app_name), Self::Category)
+    }
+}
+
+/// Dilimlerin süresi (aradaki boşluklar ve çakışmalar hariç).
+fn active_length(items: &[&Activity]) -> Duration {
+    let mut total = Duration::zero();
+    let mut end: Option<DateTime<Utc>> = None;
+    for i in items {
+        let from = end.map_or(i.start, |e| i.start.max(e));
+        if i.end > from {
+            total += i.end - from;
+        }
+        end = Some(end.map_or(i.end, |e| e.max(i.end)));
+    }
+    total
+}
+
+/// Dilimlerin en az yarısına atanmış proje.
+fn main_project<'s>(items: &[&Activity<'s>]) -> Option<&'s str> {
+    let mut by: HashMap<&str, Duration> = HashMap::new();
+    let mut total = Duration::zero();
+    for i in items {
+        let d = i.end - i.start;
+        total += d;
+        if let Some(p) = i.project {
+            *by.entry(p).or_insert_with(Duration::zero) += d;
+        }
+    }
+    by.into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+        .filter(|(_, d)| *d * 2 >= total && *d > Duration::zero())
+        .map(|(p, _)| p)
+}
+
+/// Bloğun dilimleri (sıralı), türü ([`Context`]) değişip yeni türde en az `CONTEXT_MIN`
+/// süren işlerden bölünmüş. Daha kısa geçişler bölmez: önceki işe dönülürse onun, dönülmezse
+/// ardından gelen işin içindedir. `EXCURSION_MAX`'tan kısa ara verip aynı türe dönülürse ara
+/// (ne kadar sürerse sürsün tek türde olsa da) o türün işindedir. Aynı projeye atanmış ardışık
+/// işler bölünmez. Bölünecek bir şey yoksa tek parça döner.
+fn split_contexts<'s>(items: &[&'s Activity<'s>]) -> Vec<Vec<&'s Activity<'s>>> {
+    struct Run<'s> {
+        context: Context<'s>,
+        items: Vec<&'s Activity<'s>>,
+        end: DateTime<Utc>,
+    }
+
+    // Aynı türdeki ardışık dilimler; kısa aradan sonra dönülen türe ara da katılır.
+    let mut runs: Vec<Run> = Vec::new();
+    for &i in items {
+        let context = Context::of(i);
+        if let Some(last) = runs.last_mut()
+            && last.context == context
+        {
+            last.items.push(i);
+            last.end = last.end.max(i.end);
+            continue;
+        }
+        let back = runs
+            .iter()
+            .rposition(|r| r.context == context)
+            .filter(|&j| i.start - runs[j].end < EXCURSION_MAX);
+        if let Some(j) = back {
+            let between: Vec<Run> = runs.drain(j + 1..).collect();
+            let r = &mut runs[j];
+            for b in between {
+                r.items.extend(b.items);
+                r.end = r.end.max(b.end);
+            }
+            r.items.push(i);
+            r.end = r.end.max(i.end);
+            continue;
+        }
+        runs.push(Run {
+            context,
+            items: vec![i],
+            end: i.end,
+        });
+    }
+    if runs.len() < 2 {
+        return vec![items.to_vec()];
+    }
+
+    // En az `CONTEXT_MIN` süren işler parçaları başlatır; kısa geçişler ardından gelen işe,
+    // en sondakiler önceki işe katılır.
+    let mut parts: Vec<(Context, Vec<&Activity>)> = Vec::new();
+    let mut pending: Vec<&Activity> = Vec::new();
+    for r in runs {
+        if active_length(&r.items) < CONTEXT_MIN {
+            pending.extend(r.items);
+            continue;
+        }
+        match parts.last_mut() {
+            Some((c, p)) if *c == r.context => {
+                p.append(&mut pending);
+                p.extend(r.items);
+            }
+            _ => {
+                pending.extend(r.items);
+                parts.push((r.context, std::mem::take(&mut pending)));
+            }
+        }
+    }
+    match parts.last_mut() {
+        Some((_, p)) => p.append(&mut pending),
+        None => return vec![items.to_vec()],
+    }
+
+    // Aynı projenin ardışık işleri tek bloktur.
+    let mut out: Vec<Vec<&Activity>> = Vec::new();
+    for (_, p) in parts {
+        match out.last_mut() {
+            Some(prev) if main_project(prev).is_some_and(|x| main_project(&p) == Some(x)) => {
+                prev.extend(p);
+            }
+            _ => out.push(p),
+        }
+    }
+    out
+}
+
 fn per_hour_x10(switches: u32, active_seconds: i64) -> u32 {
     if active_seconds <= 0 {
         return 0;
@@ -355,9 +494,13 @@ impl<'s> Builder<'s> {
             .map(|(p, _)| p.clone())
     }
 
-    /// Blok; başka projeye atanmış kısımları ayrı bloklar olur ([`split_projects`]).
+    /// Blok; başka projeye atanmış kısımları ([`split_projects`]) ve başka türde süren işler
+    /// ([`split_contexts`]) ayrı bloklar olur.
     fn finish(self) -> Vec<WorkBlock> {
-        let parts = split_projects(&self.items, self.project_id().as_deref());
+        let parts: Vec<Vec<&Activity>> = split_projects(&self.items, self.project_id().as_deref())
+            .into_iter()
+            .flat_map(|part| split_contexts(&part))
+            .collect();
         if parts.len() < 2 {
             return vec![self.block()];
         }
@@ -427,21 +570,21 @@ mod tests {
     }
 
     #[test]
-    fn splits_blocks_only_on_breaks() {
+    fn splits_blocks_on_breaks_and_lasting_context_changes() {
         let items = [
             a("Code", Some("dev"), 0, 30),
             a("Slack", Some("comm"), 30, 31), // kısa göz atma: blok içinde kalır
             a("Terminal", Some("dev"), 31, 50),
-            a("Slack", Some("comm"), 50, 58), // başka kategoride 8 dk: blok sürer
+            a("Slack", Some("comm"), 50, 58), // iş bitti, başka kategoride 8 dk: yeni blok
             a("Safari", None, 70, 75),        // 12 dk mola: yeni blok
             a("Code", Some("dev"), 600, 610), // gece boşluğu: mola sayılmaz
         ];
         let s = analyze(&items);
         let cats: Vec<_> = s.blocks.iter().map(|b| b.category_id.as_deref()).collect();
-        assert_eq!(cats, [Some("dev"), None, Some("dev")]);
+        assert_eq!(cats, [Some("dev"), Some("comm"), None, Some("dev")]);
         let first = &s.blocks[0];
-        assert_eq!((first.start, first.end), (t(0), t(58)));
-        assert_eq!(first.active_seconds, 58 * 60);
+        assert_eq!((first.start, first.end), (t(0), t(50)));
+        assert_eq!(first.active_seconds, 50 * 60);
         assert_eq!(first.top_apps[0].app_name, "Code");
         assert_eq!(s.break_seconds, 12 * 60);
         // Code→Slack→Terminal→Slack ve Safari→(mola) geçişleri sayılmaz.
@@ -563,14 +706,100 @@ mod tests {
             p(a("Slack", Some("comm"), 20, 40), Some("kum")), // başka kategori, aynı proje
             p(a("Code", Some("dev"), 50, 60), Some("kum")),   // 10 dk boşluk: aynı blok
             p(a("Code", Some("dev"), 80, 90), Some("kum")),   // 20 dk boşluk: yeni blok
-            p(a("Slack", Some("comm"), 90, 100), None),       // projesiz, molasız: blokta kalır
+            p(a("Slack", Some("comm"), 90, 92), None),        // projesiz kısa geçiş: blokta kalır
+            p(a("Code", Some("dev"), 92, 100), Some("kum")),
+            p(a("Slack", Some("comm"), 100, 110), None), // iş bitti, projesiz 10 dk: yeni blok
         ];
         let s = analyze(&items);
         assert_eq!(
             spans(&s),
-            [(t(0), t(60), Some("kum")), (t(80), t(100), Some("kum"))]
+            [
+                (t(0), t(60), Some("kum")),
+                (t(80), t(100), Some("kum")),
+                (t(100), t(110), None),
+            ]
         );
         assert_eq!(s.blocks[0].active_seconds, 50 * 60);
+    }
+
+    fn cats(s: &WorkStats) -> Vec<(DateTime<Utc>, DateTime<Utc>, Option<&str>)> {
+        s.blocks
+            .iter()
+            .map(|b| (b.start, b.end, b.category_id.as_deref()))
+            .collect()
+    }
+
+    #[test]
+    fn game_then_browsing_are_separate_blocks() {
+        // Kategorisiz: tür uygulamadır.
+        let items = [
+            a("League of Legends", None, 0, 35),
+            a("Firefox", None, 35, 47),
+        ];
+        let s = analyze(&items);
+        let names: Vec<_> = s
+            .blocks
+            .iter()
+            .map(|b| b.top_apps[0].app_name.as_str())
+            .collect();
+        assert_eq!(names, ["League of Legends", "Firefox"]);
+        assert_eq!((s.blocks[1].start, s.blocks[1].end), (t(35), t(47)));
+        assert_eq!(s.break_seconds, 0);
+        assert_eq!(s.switches, 1);
+    }
+
+    #[test]
+    fn game_assigned_to_a_project_still_ends() {
+        // Oyun projeye atanmış, sonraki gezinme atanmamış: bloğun projesi oyunun olsa da
+        // gezinme ayrı bloktur.
+        let items = [
+            p(a("League of Legends", None, 0, 35), Some("lol")),
+            a("Firefox", None, 35, 45),
+        ];
+        let s = analyze(&items);
+        assert_eq!(
+            spans(&s),
+            [(t(0), t(35), Some("lol")), (t(35), t(45), None)]
+        );
+    }
+
+    #[test]
+    fn same_category_flows_together_other_kinds_split() {
+        let items = [
+            a("Figma", Some("design"), 0, 30),
+            a("Photoshop", Some("design"), 30, 50), // aynı tür: aynı blok
+            a("Slack", Some("comm"), 50, 52),       // kısa geçiş
+            a("YouTube", Some("fun"), 52, 62),      // iş bitti, 10 dk video: yeni blok
+        ];
+        let s = analyze(&items);
+        // Kısa geçiş, dönülmeyen işin değil ardından gelen işin parçasıdır.
+        assert_eq!(
+            cats(&s),
+            [(t(0), t(50), Some("design")), (t(50), t(62), Some("fun"))]
+        );
+    }
+
+    #[test]
+    fn short_excursions_stay_in_the_flow() {
+        let items = [
+            a("Code", Some("dev"), 0, 30),
+            a("Firefox", None, 30, 38), // 8 dk belgelere bakıp koda dönüş: blokta kalır
+            a("Code", Some("dev"), 38, 60),
+            a("Slack", Some("comm"), 60, 63), // birbirini izleyen kısa geçişler bölmez
+            a("Firefox", None, 63, 66),
+            a("Code", Some("dev"), 66, 90),
+            a("YouTube", Some("fun"), 90, 102), // 12 dk ara: dönülse de başka iştir
+            a("Code", Some("dev"), 102, 130),
+        ];
+        let s = analyze(&items);
+        assert_eq!(
+            cats(&s),
+            [
+                (t(0), t(90), Some("dev")),
+                (t(90), t(102), Some("fun")),
+                (t(102), t(130), Some("dev")),
+            ]
+        );
     }
 
     #[test]

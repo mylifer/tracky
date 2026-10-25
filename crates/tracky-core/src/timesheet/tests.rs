@@ -162,7 +162,7 @@ fn a_split_block_is_two_rows() {
     let sessions = [
         s("Figma", "Trumore Loyalty — Figma", 0, 60, None),
         after,
-        s("Slack", "#genel", 120, 125, None), // atanmamış: bölünen ikinci bloğa girer
+        s("Slack", "#genel", 120, 123, None), // atanmamış kısa geçiş: bölünen ikinci bloğa girer
     ];
     let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
     let rows: Vec<_> = got
@@ -174,7 +174,7 @@ fn a_split_block_is_two_rows() {
             )
         })
         .collect();
-    assert_eq!(rows, [("09:00".to_string(), 60), ("10:00".to_string(), 65)]);
+    assert_eq!(rows, [("09:00".to_string(), 60), ("10:00".to_string(), 63)]);
 }
 
 #[test]
