@@ -328,7 +328,9 @@ akışları sertifikayı geçici bir anahtar zincirine aktarıp paketi onunla im
 ad-hoc imzaya döner. Klasörü yedekle: sertifika değişirse kullanıcılar izni bir kez daha verir.
 
 1. `app/src-tauri/tauri.conf.json`, `app/package.json` ve `app/src-tauri/Cargo.toml` içindeki sürümü artır.
-2. Commit'le, sonra etiketle ve push'la: `git tag v0.3.0 && git push origin v0.3.0`
+2. Commit'le ve push'la. Sürümün etiketi yoksa ve en son sürümden yeniyse `Sürüm` iş akışı
+   `v0.3.0` etiketini kendisi oluşturur (hangi daldan push'landığı fark etmez). Elle etiketlemek de
+   olur: `git tag v0.3.0 && git push origin v0.3.0`
 3. İş akışı Mac/Windows paketlerini imzalar ve `latest.json` ile birlikte yayınlanmış bir
    Release'e yükler.
 
