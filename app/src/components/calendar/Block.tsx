@@ -162,9 +162,9 @@ export function Block({
   const picked = edit?.picked?.has(b.start) ?? false;
   const awayMs = away.reduce((n, s) => n + (+new Date(s.end) - +new Date(s.start)), 0);
   const awayNote =
-    awayMs > 0
+    (awayMs > 0
       ? `\nİçinde ${formatDuration(awayMs / 1000)} boşta (taralı)${b.projectId ? ": projenin sayılır" : ""}`
-      : "";
+      : "") + learnedNote(b.learned);
 
   /** Bloğu yeni aralığa getirir: zaman çizelgesine bu aralık gider. */
   async function commit(newStart: number, newEnd: number) {
@@ -387,6 +387,13 @@ export function Block({
       )}
     </>
   );
+}
+
+/** Blok öğrenilmiş bir düzeltmeyle şekillendiyse açıklaması (`title` satırı). */
+export function learnedNote(learned: WorkBlock["learned"]): string {
+  if (learned === "split") return "\nBuradan bölmeyi önceki düzeltmelerinden öğrendim";
+  if (learned === "join") return "\nBu işleri bir arada tutmayı önceki düzeltmelerinden öğrendim";
+  return "";
 }
 
 /**

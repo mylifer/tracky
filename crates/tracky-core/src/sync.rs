@@ -92,7 +92,7 @@ pub const SYNCED_SETTINGS: &[&str] = &[
 
 /// Parça parça şekle ([`table_fingerprints`]) geçilmeden önce eklenmiş tablo ve ayarlar:
 /// [`legacy_fingerprint`] bunlarsız hesaplanır.
-const AFTER_LEGACY_TABLES: &[&str] = &["calls", "timesheet_marks"];
+const AFTER_LEGACY_TABLES: &[&str] = &["calls", "timesheet_marks", "block_links"];
 const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance", "closed_days"];
 /// Parça parça şekle geçildikten sonra eklenen sütunlar: [`legacy_fingerprint`] bunlarsız.
 const AFTER_LEGACY_COLUMNS: &[&str] = &["passive"];
@@ -273,10 +273,36 @@ const TABLES: &[Table] = &[
         only: None,
         prefix: None,
     },
+    // Takvim düzeltmelerinden öğrenilen tür çiftleri (store::links): öteki bilgisayarda da
+    // bloklar aynı bölünür. Sunucuda tablo yoksa (0018 öncesi) eşitlemenin geri kalanı sürer.
+    Table {
+        name: "block_links",
+        cols: &[
+            ("id", Col::Text),
+            ("a", Col::Text),
+            ("b", Col::Text),
+            ("kind", Col::Text),
+            ("started_at", Col::Time),
+            ("ended_at", Col::Time),
+            ("created_at", Col::Time),
+            ("updated_at", Col::Time),
+            ("deleted_at", Col::OptTime),
+        ],
+        optional: &[],
+        key: "id",
+        only: None,
+        prefix: None,
+    },
 ];
 
 /// Sonradan eklenen tablolar: sunucuda yoksa yalnızca onlar eşitlenmez, gerisi sürer.
-const LATE_TABLES: &[&str] = &["settings", "timesheet_entries", "calls", "timesheet_marks"];
+const LATE_TABLES: &[&str] = &[
+    "settings",
+    "timesheet_entries",
+    "calls",
+    "timesheet_marks",
+    "block_links",
+];
 
 impl Table {
     /// Sunucudaki sütunun yereldeki adı.
@@ -442,6 +468,8 @@ impl SyncSummary {
             "calls" => {}
             // Gönderilen bloklar eşitlenmezse her bilgisayar yalnızca kendi gönderdiklerini görür.
             "timesheet_marks" => {}
+            // Öğrenilen tür çiftleri eşitlenmezse her bilgisayar yalnızca kendi düzeltmelerinden öğrenir.
+            "block_links" => {}
             _ => self.timesheet_unavailable = true,
         }
     }

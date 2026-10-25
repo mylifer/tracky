@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::sessions::OVERLAPS;
 use super::{Result, Store, StoreError, from_ms, ms};
-use crate::classify::{Classifier, NO_PROJECT, Rule, TagKind};
+use crate::classify::{NO_PROJECT, Rule, TagKind};
 use crate::inbox::{self, RulePreview, Unassigned};
 
 /// Yoksayılan atanmamış süre grupları (`site:…`, `app:…`).
@@ -159,6 +159,8 @@ impl Store {
                     params![id, now],
                 )?;
             }
+            // Düzenlemenin öğrettiği blok sınırları da geri alınır.
+            self.forget_block_links(snap.at, (start, end))?;
         }
         for r in &snap.rows {
             self.conn.execute(
@@ -221,7 +223,7 @@ impl Store {
     /// `[from, to)` aralığının atanmamış süresi, gruplanmış.
     pub fn unassigned(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Unassigned> {
         let sessions = self.merged_sessions_with_idle_between(from, to)?;
-        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let classifier = self.classifier()?;
         let ignored: HashSet<String> = self.ignored_unassigned()?.into_iter().collect();
         Ok(inbox::unassigned(
             &sessions,
@@ -240,7 +242,7 @@ impl Store {
         key: &str,
         title: Option<&str>,
     ) -> Result<Vec<Uuid>> {
-        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let classifier = self.classifier()?;
         let mut ids: Vec<Uuid> = self
             .merged_sessions_between(from, to)?
             .into_iter()

@@ -398,7 +398,7 @@ impl Store {
 
     /// Toplantıları projesine göre ayırır: (projesi belli olanlar, hiçbir projeye düşmeyenler).
     pub fn classify_meetings(&self, meetings: &[Meeting]) -> Result<SplitMeetings> {
-        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let classifier = self.classifier()?;
         let assigned = self.meeting_assignments()?;
         let (mut known, mut unassigned) = (Vec::new(), Vec::new());
         for m in meetings {
@@ -467,7 +467,7 @@ impl Store {
     pub fn timesheet_context(&self) -> Result<TimesheetContext> {
         let tags = self.tags()?;
         Ok(TimesheetContext {
-            classifier: Classifier::new(&tags, &self.rules()?),
+            classifier: self.classifier_for(&tags)?,
             names: tags
                 .into_iter()
                 .filter(|t| t.kind == TagKind::Project)

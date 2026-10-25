@@ -11,6 +11,9 @@
 //!   gezinmek, Figma'dan sonra 10 dk video izlemek. Tür kategoridir (Figma→Photoshop ikisi de
 //!   tasarım: aynı blok), kategorisiz kullanımda uygulamadır. `EXCURSION_MAX`'tan kısa ara
 //!   verip aynı işe dönülürse ara o işin içindedir; aynı projeye atanmış kısımlar bölünmez.
+//! - **Öğrenme:** kullanıcı takvimde iki türü birbirinden ayırdıysa ya da birleştirdiyse
+//!   ([`Links`]) o çift için eşik kayar: birleştirilen türler aynı iştir, ayrılan türler
+//!   `LEARNED_MIN` sürünce ayrı bloktur.
 //! - **Projeye göre bölme:** bloğun projesinden (yarısını kaplayan; yoksa projesiz) başka
 //!   projeye atanmış, en az `SWITCH_MIN` süren kısım kategorisi aynı olsa da ayrı bloktur
 //!   ([`split_projects`]). O projenin kısımları arasındaki `MERGE_GAP`'i geçmeyen atanmamış
@@ -36,6 +39,10 @@ pub const LONG_GAP: Duration = Duration::hours(3);
 pub const CONTEXT_MIN: Duration = Duration::minutes(5);
 /// Bundan kısa ara verip aynı türde işe dönülürse ara o işin içinde kalır ([`split_contexts`]).
 pub const EXCURSION_MAX: Duration = Duration::minutes(10);
+/// Kullanıcının ayırdığı tür çiftinde yeni tür bu kadar sürerse ayrı blok olur ([`Links`]).
+pub const LEARNED_MIN: Duration = Duration::minutes(2);
+/// Bir çiftin öğrenilmesi için gereken aynı yönde düzeltme sayısı ([`Links::from_signals`]).
+pub const LEARN_SIGNALS: usize = 2;
 
 /// Analize giren tek bir zaman dilimi (aralığa kırpılmış).
 #[derive(Debug, Clone)]
@@ -89,6 +96,122 @@ pub struct WorkBlock {
     /// ([`crate::timesheet::Sent`]; `Store::build_report`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sent: Option<bool>,
+    /// Blok kullanıcının düzeltmelerinden öğrenilen bir tür çiftiyle mi şekillendi ([`Links`]):
+    /// `Split` ise başı öğrenilmiş bölmedir, `Join` ise içinde öğrenilmiş birleştirme var.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learned: Option<Link>,
+}
+
+/// Kullanıcının iki tür için takvimde yaptığı düzeltme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Link {
+    /// Bloğu öteki türün üstüne uzattı: ikisi aynı iştir.
+    Join,
+    /// Bloğu iki türün arasından böldü: ikisi ayrı iştir.
+    Split,
+}
+
+impl Link {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Join => "join",
+            Self::Split => "split",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "join" => Some(Self::Join),
+            "split" => Some(Self::Split),
+            _ => None,
+        }
+    }
+}
+
+/// Tür anahtarı ([`Context`]): kategorisi, kategorisizse uygulama adı. Öğrenilen çiftler bu
+/// anahtarla saklanır.
+pub fn context_key(category: Option<&str>, app_name: &str) -> String {
+    match category {
+        Some(c) => format!("category:{c}"),
+        None => format!("app:{app_name}"),
+    }
+}
+
+/// Kullanıcının düzeltmelerinden öğrenilen tür çiftleri (sırasız): her çiftin hükmü en son
+/// düzeltmesinin yönüdür, o yönde en az `LEARN_SIGNALS` düzeltme varsa ve öteki yönden az
+/// değilse. Böylece tek bir ters düzeltme öğrenileni askıya alır.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Links(HashMap<(String, String), Link>);
+
+impl Links {
+    /// `signals` (a, b, yön) düzeltmeler, eskiden yeniye sıralı.
+    pub fn from_signals<I, S>(signals: I) -> Self
+    where
+        I: IntoIterator<Item = (S, S, Link)>,
+        S: Into<String>,
+    {
+        #[derive(Default)]
+        struct Votes {
+            join: usize,
+            split: usize,
+            last: Option<Link>,
+        }
+        let mut votes: HashMap<(String, String), Votes> = HashMap::new();
+        for (a, b, link) in signals {
+            let (a, b) = (a.into(), b.into());
+            if a == b {
+                continue;
+            }
+            let v = votes.entry(pair(a, b)).or_default();
+            match link {
+                Link::Join => v.join += 1,
+                Link::Split => v.split += 1,
+            }
+            v.last = Some(link);
+        }
+        Self(
+            votes
+                .into_iter()
+                .filter_map(|(k, v)| {
+                    let link = v.last?;
+                    let (mine, other) = match link {
+                        Link::Join => (v.join, v.split),
+                        Link::Split => (v.split, v.join),
+                    };
+                    (mine >= LEARN_SIGNALS && mine >= other).then_some((k, link))
+                })
+                .collect(),
+        )
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// İki anahtarın öğrenilmiş hükmü.
+    pub fn get(&self, a: &str, b: &str) -> Option<Link> {
+        if a == b {
+            return None;
+        }
+        self.0.get(&pair(a.to_string(), b.to_string())).copied()
+    }
+
+    fn between(&self, a: Context, b: Context) -> Option<Link> {
+        if a == b || self.is_empty() {
+            return None;
+        }
+        self.get(&a.key(), &b.key())
+    }
+
+    /// Aynı tür ya da kullanıcının birleştirdiği türler.
+    fn same(&self, a: Context, b: Context) -> bool {
+        a == b || self.between(a, b) == Some(Link::Join)
+    }
+}
+
+fn pair(a: String, b: String) -> (String, String) {
+    if a <= b { (a, b) } else { (b, a) }
 }
 
 /// Bir takvim bloğundaki süre, bilgisayar başına.
@@ -113,8 +236,14 @@ pub struct WorkStats {
     pub blocks: Vec<WorkBlock>,
 }
 
-/// Etkinlikler başlangıca göre sıralı olmalı.
+/// Etkinlikler başlangıca göre sıralı olmalı. Öğrenilmiş tür çifti yokmuş gibi
+/// ([`analyze_with`]).
 pub fn analyze(items: &[Activity]) -> WorkStats {
+    analyze_with(items, &Links::default())
+}
+
+/// [`analyze`]; `links` kullanıcının düzeltmelerinden öğrenilen tür çiftleridir.
+pub fn analyze_with(items: &[Activity], links: &Links) -> WorkStats {
     let items: Vec<&Activity> = items.iter().filter(|i| i.end > i.start).collect();
     let mut blocks: Vec<WorkBlock> = Vec::new();
     let mut current: Option<Builder> = None;
@@ -136,11 +265,16 @@ pub fn analyze(items: &[Activity]) -> WorkStats {
         if gap >= BREAK_GAP && gap < LONG_GAP {
             breaks += gap.num_seconds();
         }
-        close(current.take().expect("blok var"), &mut blocks, &mut breaks);
+        close(
+            current.take().expect("blok var"),
+            links,
+            &mut blocks,
+            &mut breaks,
+        );
         current = Some(Builder::new(item));
     }
     if let Some(b) = current {
-        close(b, &mut blocks, &mut breaks);
+        close(b, links, &mut blocks, &mut breaks);
     }
 
     // Bağlam değişimi: mola olmadan bir uygulamadan diğerine her geçiş.
@@ -174,8 +308,8 @@ pub fn merge(days: Vec<WorkStats>) -> WorkStats {
 
 /// Bloğu kapatır ([`Builder::finish`]); projeye göre bölünen parçalar arasındaki boşluk da
 /// bloklar arası boşluk gibi mola sayılır.
-fn close(b: Builder, blocks: &mut Vec<WorkBlock>, breaks: &mut i64) {
-    let parts = b.finish();
+fn close(b: Builder, links: &Links, blocks: &mut Vec<WorkBlock>, breaks: &mut i64) {
+    let parts = b.finish(links);
     for w in parts.windows(2) {
         let gap = w[1].start - w[0].end;
         if gap >= BREAK_GAP && gap < LONG_GAP {
@@ -298,6 +432,13 @@ impl<'s> Context<'s> {
     fn of(i: &Activity<'s>) -> Self {
         i.category.map_or(Self::App(i.app_name), Self::Category)
     }
+
+    fn key(self) -> String {
+        match self {
+            Self::Category(c) => context_key(Some(c), ""),
+            Self::App(a) => context_key(None, a),
+        }
+    }
 }
 
 /// Dilimlerin süresi (aradaki boşluklar ve çakışmalar hariç).
@@ -334,87 +475,157 @@ fn main_project<'s>(items: &[&Activity<'s>]) -> Option<&'s str> {
 /// Bloğun dilimleri (sıralı), türü ([`Context`]) değişip yeni türde en az `CONTEXT_MIN`
 /// süren işlerden bölünmüş. Daha kısa geçişler bölmez: önceki işe dönülürse onun, dönülmezse
 /// ardından gelen işin içindedir. `EXCURSION_MAX`'tan kısa ara verip aynı türe dönülürse ara
-/// (ne kadar sürerse sürsün tek türde olsa da) o türün işindedir. Aynı projeye atanmış ardışık
-/// işler bölünmez. Bölünecek bir şey yoksa tek parça döner.
-fn split_contexts<'s>(items: &[&'s Activity<'s>]) -> Vec<Vec<&'s Activity<'s>>> {
+/// o türün işindedir. Aynı projeye atanmış ardışık işler bölünmez. Kullanıcının birleştirdiği
+/// türler aynı tür sayılır, ayırdığı türlerde `LEARNED_MIN` yeter ([`Links`]). Her parçanın
+/// yanında öğrenilen bir çiftle mi şekillendiği. Bölünecek bir şey yoksa tek parça döner.
+fn split_contexts<'s>(
+    items: &[&'s Activity<'s>],
+    links: &Links,
+) -> Vec<(Vec<&'s Activity<'s>>, Option<Link>)> {
     struct Run<'s> {
         context: Context<'s>,
         items: Vec<&'s Activity<'s>>,
         end: DateTime<Utc>,
+        /// Birleştirilmiş türlerden katılan dilimler ([`Link::Join`]).
+        joined: Vec<&'s Activity<'s>>,
+    }
+    impl<'s> Run<'s> {
+        fn push(&mut self, i: &'s Activity<'s>, context: Context<'s>) {
+            if context != self.context {
+                self.joined.push(i);
+            }
+            self.items.push(i);
+            self.end = self.end.max(i.end);
+        }
     }
 
-    // Aynı türdeki ardışık dilimler; kısa aradan sonra dönülen türe ara da katılır.
+    // Aynı türdeki ardışık dilimler; kısa aradan sonra dönülen türe ara da katılır, ama
+    // kullanıcının o türden ayırdığı bir tür varsa katılmaz.
     let mut runs: Vec<Run> = Vec::new();
     for &i in items {
         let context = Context::of(i);
         if let Some(last) = runs.last_mut()
-            && last.context == context
+            && links.same(last.context, context)
         {
-            last.items.push(i);
-            last.end = last.end.max(i.end);
+            last.push(i, context);
             continue;
         }
         let back = runs
             .iter()
-            .rposition(|r| r.context == context)
-            .filter(|&j| i.start - runs[j].end < EXCURSION_MAX);
+            .rposition(|r| links.same(r.context, context))
+            .filter(|&j| i.start - runs[j].end < EXCURSION_MAX)
+            .filter(|&j| {
+                runs[j + 1..]
+                    .iter()
+                    .all(|r| links.between(r.context, runs[j].context) != Some(Link::Split))
+            });
         if let Some(j) = back {
             let between: Vec<Run> = runs.drain(j + 1..).collect();
             let r = &mut runs[j];
             for b in between {
                 r.items.extend(b.items);
+                r.joined.extend(b.joined);
                 r.end = r.end.max(b.end);
             }
-            r.items.push(i);
-            r.end = r.end.max(i.end);
+            r.push(i, context);
             continue;
         }
         runs.push(Run {
             context,
             items: vec![i],
             end: i.end,
+            joined: Vec::new(),
         });
     }
+    let learned_join = |r: &[&Activity]| active_length(r) >= CONTEXT_MIN;
     if runs.len() < 2 {
-        return vec![items.to_vec()];
+        let learned = runs
+            .first()
+            .is_some_and(|r| learned_join(&r.joined))
+            .then_some(Link::Join);
+        return vec![(items.to_vec(), learned)];
     }
 
-    // En az `CONTEXT_MIN` süren işler parçaları başlatır; kısa geçişler ardından gelen işe,
-    // en sondakiler önceki işe katılır.
-    let mut parts: Vec<(Context, Vec<&Activity>)> = Vec::new();
+    // Parçaları başlatan işler: en az `CONTEXT_MIN` sürenler, ya da komşusundan ayrıldığı
+    // öğrenilmiş türde en az `LEARNED_MIN` sürenler.
+    let anchors: Vec<Option<Option<Link>>> = runs
+        .iter()
+        .enumerate()
+        .map(|(k, r)| {
+            let length = active_length(&r.items);
+            if length >= CONTEXT_MIN {
+                return Some(None);
+            }
+            let split_from = |n: Option<&Run>| {
+                n.is_some_and(|n| links.between(n.context, r.context) == Some(Link::Split))
+            };
+            (length >= LEARNED_MIN
+                && (split_from(k.checked_sub(1).map(|p| &runs[p])) || split_from(runs.get(k + 1))))
+            .then_some(Some(Link::Split))
+        })
+        .collect();
+
+    // Kısa geçişler ardından gelen işe, en sondakiler önceki işe katılır.
+    struct Part<'s> {
+        context: Context<'s>,
+        items: Vec<&'s Activity<'s>>,
+        joined: Vec<&'s Activity<'s>>,
+        learned: Option<Link>,
+    }
+    let mut parts: Vec<Part> = Vec::new();
     let mut pending: Vec<&Activity> = Vec::new();
-    for r in runs {
-        if active_length(&r.items) < CONTEXT_MIN {
+    for (r, anchor) in runs.into_iter().zip(anchors) {
+        let Some(learned) = anchor else {
             pending.extend(r.items);
             continue;
-        }
+        };
         match parts.last_mut() {
-            Some((c, p)) if *c == r.context => {
-                p.append(&mut pending);
-                p.extend(r.items);
+            Some(p) if links.same(p.context, r.context) => {
+                if p.context != r.context {
+                    p.joined.extend(r.items.iter().copied());
+                }
+                p.items.append(&mut pending);
+                p.items.extend(r.items);
+                p.joined.extend(r.joined);
             }
             _ => {
                 pending.extend(r.items);
-                parts.push((r.context, std::mem::take(&mut pending)));
+                parts.push(Part {
+                    context: r.context,
+                    items: std::mem::take(&mut pending),
+                    joined: r.joined,
+                    // Blok ilk parçayla başlar: onun başı öğrenilmiş bölme değildir.
+                    learned: if parts.is_empty() { None } else { learned },
+                });
             }
         }
     }
     match parts.last_mut() {
-        Some((_, p)) => p.append(&mut pending),
-        None => return vec![items.to_vec()],
+        Some(p) => p.items.append(&mut pending),
+        None => return vec![(items.to_vec(), None)],
     }
 
     // Aynı projenin ardışık işleri tek bloktur.
-    let mut out: Vec<Vec<&Activity>> = Vec::new();
-    for (_, p) in parts {
+    let mut out: Vec<Part> = Vec::new();
+    for p in parts {
         match out.last_mut() {
-            Some(prev) if main_project(prev).is_some_and(|x| main_project(&p) == Some(x)) => {
-                prev.extend(p);
+            Some(prev)
+                if main_project(&prev.items).is_some_and(|x| main_project(&p.items) == Some(x)) =>
+            {
+                prev.items.extend(p.items);
+                prev.joined.extend(p.joined);
             }
             _ => out.push(p),
         }
     }
-    out
+    out.into_iter()
+        .map(|p| {
+            let learned = p
+                .learned
+                .or_else(|| learned_join(&p.joined).then_some(Link::Join));
+            (p.items, learned)
+        })
+        .collect()
 }
 
 fn per_hour_x10(switches: u32, active_seconds: i64) -> u32 {
@@ -496,22 +707,28 @@ impl<'s> Builder<'s> {
 
     /// Blok; başka projeye atanmış kısımları ([`split_projects`]) ve başka türde süren işler
     /// ([`split_contexts`]) ayrı bloklar olur.
-    fn finish(self) -> Vec<WorkBlock> {
-        let parts: Vec<Vec<&Activity>> = split_projects(&self.items, self.project_id().as_deref())
-            .into_iter()
-            .flat_map(|part| split_contexts(&part))
-            .collect();
-        if parts.len() < 2 {
-            return vec![self.block()];
+    fn finish(self, links: &Links) -> Vec<WorkBlock> {
+        let parts: Vec<(Vec<&Activity>, Option<Link>)> =
+            split_projects(&self.items, self.project_id().as_deref())
+                .into_iter()
+                .flat_map(|part| split_contexts(&part, links))
+                .collect();
+        if let [(_, learned)] = parts.as_slice() {
+            let learned = *learned;
+            let mut block = self.block();
+            block.learned = learned;
+            return vec![block];
         }
         parts
             .into_iter()
-            .map(|part| {
+            .map(|(part, learned)| {
                 let mut b = Builder::new(part[0]);
                 for i in &part[1..] {
                     b.add(i);
                 }
-                b.block()
+                let mut block = b.block();
+                block.learned = learned;
+                block
             })
             .collect()
     }
@@ -544,6 +761,7 @@ impl<'s> Builder<'s> {
             top_apps: apps,
             devices: Vec::new(),
             sent: None,
+            learned: None,
         }
     }
 }
@@ -800,6 +1018,79 @@ mod tests {
                 (t(102), t(130), Some("dev")),
             ]
         );
+    }
+
+    fn learned(signals: &[(&str, &str, Link)]) -> Links {
+        Links::from_signals(signals.iter().map(|&(a, b, l)| (a, b, l)))
+    }
+
+    #[test]
+    fn links_need_repeated_corrections_and_the_latest_wins() {
+        use Link::{Join, Split};
+        let (code, web) = ("category:dev", "app:Firefox");
+        assert_eq!(learned(&[(code, web, Join)]).get(code, web), None);
+        let two = learned(&[(code, web, Join), (web, code, Join)]);
+        assert_eq!(two.get(web, code), Some(Join), "sırasız");
+        // Tek ters düzeltme askıya alır; ikincisi yönü çevirir.
+        let undo = [(code, web, Join), (code, web, Join), (code, web, Split)];
+        assert_eq!(learned(&undo).get(code, web), None);
+        let flip = [&undo[..], &[(code, web, Split)]].concat();
+        assert_eq!(learned(&flip).get(code, web), Some(Split));
+        assert!(learned(&[(code, code, Split), (code, code, Split)]).is_empty());
+    }
+
+    #[test]
+    fn learned_join_keeps_the_flow_together() {
+        let items = [
+            a("Code", Some("dev"), 0, 30),
+            a("Firefox", None, 30, 45), // 15 dk: normalde ayrı blok
+            a("Code", Some("dev"), 45, 70),
+        ];
+        assert_eq!(analyze(&items).blocks.len(), 3);
+        let links = learned(&[
+            ("category:dev", "app:Firefox", Link::Join),
+            ("category:dev", "app:Firefox", Link::Join),
+        ]);
+        let s = analyze_with(&items, &links);
+        assert_eq!(cats(&s), [(t(0), t(70), Some("dev"))]);
+        assert_eq!(s.blocks[0].learned, Some(Link::Join));
+    }
+
+    #[test]
+    fn learned_split_needs_only_a_short_switch() {
+        let items = [
+            a("League of Legends", None, 0, 35),
+            a("Firefox", None, 35, 38), // 3 dk: normalde ardından gelen işe katılır
+            a("League of Legends", None, 38, 70),
+        ];
+        let plain = analyze(&items);
+        assert_eq!(plain.blocks.len(), 1);
+        assert_eq!(plain.blocks[0].learned, None);
+        let links = learned(&[
+            ("app:League of Legends", "app:Firefox", Link::Split),
+            ("app:League of Legends", "app:Firefox", Link::Split),
+        ]);
+        let s = analyze_with(&items, &links);
+        let spans: Vec<_> = s
+            .blocks
+            .iter()
+            .map(|b| (b.start, b.end, b.learned))
+            .collect();
+        assert_eq!(
+            spans,
+            [
+                (t(0), t(35), None),
+                (t(35), t(38), Some(Link::Split)),
+                (t(38), t(70), None),
+            ]
+        );
+        // `LEARNED_MIN`'den kısa geçiş yine bölmez.
+        let blink = [
+            a("League of Legends", None, 0, 35),
+            a("Firefox", None, 35, 36),
+            a("League of Legends", None, 36, 70),
+        ];
+        assert_eq!(analyze_with(&blink, &links).blocks.len(), 1);
     }
 
     #[test]

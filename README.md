@@ -137,6 +137,12 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 57. Güncellemeler bilgisayar başında kimse yokken (10 dk girdi yok; video, görüşme ve zaman çizelgesi
       aktarımı sürmüyor) kendiliğinden kurulur; Ayarlar → Hakkında'dan kapatılır. Kurulan sürümün notları
       (sürümün feat/fix commit'lerinden) ilk açılışta kenar çubuğunda "Yenilikler" kartında
+- [x] 58. Akıllı blok sınırları: bir iş bitip mola vermeden başka türde işe (kategori; kategorisizse
+      uygulama) geçilince yeni iş en az 5 dk sürerse ayrı blok olur; 10 dk'dan kısa ara verip aynı işe dönülürse
+      ara blokta kalır. Takvimde bloğu iki türün arasından bölmek ya da bir türün bloğunu ötekinin üstüne
+      uzatmak öğretir: aynı yönde iki düzeltmeden sonra o çift birleştirilir ya da 2 dk'da bölünür, tek ters
+      düzeltme öğrenileni askıya alır. Öğrenilen sınırla şekillenen bloğun ipucunda yazar. Düzeltmeler
+      eşitlenir (`block_links`, `supabase/migrations/0018`)
 
 ## Yapı
 
@@ -148,7 +154,8 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
                           edits.rs (geri alma, atanmamış süre)
   inbox.rs                Atanmamış süreyi gruplama, muhtemel proje, kural önizlemesi
   learn.rs                Elle atamalardan kural önerileri (iş anahtarı, başlıktaki proje, site)
-  blocks.rs               Takvimdeki çalışma blokları, molalar, bağlam değişimi
+  blocks.rs               Takvimdeki çalışma blokları (molada ve süren tür değişiminde bölünür,
+                          düzeltmelerden öğrenir), molalar, bağlam değişimi
   privacy.rs              Gizlilik: duraklatma, hariç uygulamalar, başlık gizleme, adres temizleme
   browser.rs              Tarayıcı tanıma, sekme adı temizleme, gizli pencere tespiti
   platform.rs             Her OS'un uygulayacağı ActivityProvider trait'i
@@ -292,6 +299,8 @@ Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birl
    çalışması için gerekmez ama önerilir.
    `0017_sync_nudges.sql` anında eşitlemeyi açar (dürtme tablosu ve Realtime yayını); çalıştırılmazsa
    değişiklikler öteki bilgisayara en geç 5 dakikada gider.
+   `0018_block_links.sql` takvimde blokları bölüp birleştirerek öğrettiğin tür çiftlerini eşitler;
+   çalıştırılmazsa eşitleme sürer, yalnızca her bilgisayar kendi düzeltmelerinden öğrenir.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.

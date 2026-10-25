@@ -106,6 +106,11 @@ export type WorkBlock = {
   devices?: BlockDevice[];
   /** Projesi bir zaman çizelgesine bağlıysa blok oraya gönderildi mi; bağlı değilse yok. */
   sent?: boolean;
+  /**
+   * Blok takvim düzeltmelerinden öğrenilen bir tür çiftiyle mi şekillendi: `split` başı
+   * öğrenilmiş bölme, `join` içinde öğrenilmiş birleştirme var.
+   */
+  learned?: "join" | "split";
 };
 /** Bloğu çizelgeden çıkarırken gizlenen satırlar ve dosyaya gönderilmiş olduğu için kalanlar. */
 export type Unsent = { hidden: string[]; exported: number };

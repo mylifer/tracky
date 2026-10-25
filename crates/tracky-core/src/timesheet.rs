@@ -628,7 +628,7 @@ pub fn pieces_with(
     sent: &Sent,
 ) -> Vec<Piece> {
     let classes: Vec<_> = sessions.iter().map(|s| classifier.classify(s)).collect();
-    let all = day_blocks(sessions, &classes, day_start, day_end);
+    let all = day_blocks(sessions, &classes, classifier.links(), day_start, day_end);
     let sent_blocks: Vec<Interval> = all
         .iter()
         .filter(|b| sent.block(b.start, b.end))
@@ -746,6 +746,7 @@ pub fn named_by(held: &[Meeting], (start, end): Interval, covered: &[Interval]) 
 fn day_blocks(
     sessions: &[Session],
     classes: &[crate::classify::Classification],
+    links: &crate::blocks::Links,
     day_start: DateTime<Utc>,
     day_end: DateTime<Utc>,
 ) -> Vec<crate::blocks::WorkBlock> {
@@ -766,7 +767,7 @@ fn day_blocks(
         })
         .collect();
     items.sort_by_key(|i| i.start);
-    crate::blocks::analyze(&items).blocks
+    crate::blocks::analyze_with(&items, links).blocks
 }
 
 /// Parçalardan `sheet`'e bağlı projelerin iş kaydı önerileri; başlangıca göre sıralı.

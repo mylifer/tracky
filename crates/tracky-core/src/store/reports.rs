@@ -6,7 +6,6 @@ use chrono::{DateTime, Utc};
 use rusqlite::params;
 
 use super::{Result, Store, UsageTotal};
-use crate::classify::Classifier;
 use crate::model::{IDLE_APP_ID, Session};
 use crate::report::{self, Report};
 
@@ -52,7 +51,7 @@ impl Store {
             .filter(|s| s.ended_at > s.started_at)
             .collect();
         let tags = self.tags()?;
-        let classifier = Classifier::new(&tags, &self.rules()?);
+        let classifier = self.classifier_for(&tags)?;
         Ok(crate::export::sessions_csv(&sessions, &tags, &classifier))
     }
 
@@ -67,7 +66,7 @@ impl Store {
         utc_offset: impl Fn(DateTime<Utc>) -> i32,
     ) -> Result<crate::project_stats::ProjectStats> {
         let sessions = self.merged_sessions_between(from, to)?;
-        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let classifier = self.classifier()?;
         Ok(crate::project_stats::build(
             &sessions,
             &classifier,
@@ -85,7 +84,7 @@ impl Store {
             return Ok(Default::default());
         };
         let sessions = self.merged_sessions_between(*first, *last)?;
-        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let classifier = self.classifier()?;
         Ok(crate::trends::trends(&sessions, &classifier, bounds))
     }
 
@@ -95,7 +94,7 @@ impl Store {
             self.sessions_between(DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC)?;
         sessions.retain(Session::counts_as_work);
         let tags = self.tags()?;
-        let classifier = Classifier::new(&tags, &self.rules()?);
+        let classifier = self.classifier_for(&tags)?;
         Ok(crate::export::sessions_csv(&sessions, &tags, &classifier))
     }
 
@@ -121,7 +120,7 @@ impl Store {
         with_timeline: bool,
     ) -> Result<Report> {
         let tags = self.tags()?;
-        let classifier = Classifier::new(&tags, &self.rules()?);
+        let classifier = self.classifier_for(&tags)?;
         let mut report = report::build(
             sessions,
             &tags,
@@ -182,7 +181,7 @@ impl Store {
         to: DateTime<Utc>,
         pick: fn(crate::classify::Classification) -> Option<String>,
     ) -> Result<HashMap<String, i64>> {
-        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let classifier = self.classifier()?;
         let mut out: HashMap<String, i64> = HashMap::new();
         for s in self.merged_sessions_between(from, to)? {
             let ms = (s.ended_at.min(to) - s.started_at.max(from)).num_milliseconds();

@@ -227,11 +227,14 @@ pub fn build(
         .enumerate()
         .map(|(i, start)| {
             let end = day_starts.get(i + 1).copied().unwrap_or(to);
-            blocks::analyze(&activities(&spans, *start, end))
+            blocks::analyze_with(&activities(&spans, *start, end), classifier.links())
         })
         .collect();
     if per_day.is_empty() {
-        per_day.push(blocks::analyze(&activities(&spans, from, to)));
+        per_day.push(blocks::analyze_with(
+            &activities(&spans, from, to),
+            classifier.links(),
+        ));
     }
 
     let mut apps: Vec<AppBucket> = apps

@@ -1409,3 +1409,142 @@ fn only_this_computers_calls_prove_the_microphone_signal() {
         .unwrap();
     assert!(!store.has_own_calls().unwrap());
 }
+
+/// `day` gününde `(uygulama, başlangıç dk, bitiş dk)` oturumları.
+fn day_of(store: &Store, day: i64, apps: &[(&str, i64, i64)]) {
+    for &(app, a, b) in apps {
+        let base = day * 86_400;
+        store
+            .upsert_session(&session(app, None, base + a * 60, base + b * 60))
+            .unwrap();
+    }
+}
+
+fn day_blocks(store: &Store, day: i64) -> Vec<(i64, i64, Option<crate::blocks::Link>)> {
+    let base = day * 86_400;
+    let report = store
+        .report(t(base), t(base + 86_400), &[t(base)], true)
+        .unwrap();
+    report
+        .work
+        .blocks
+        .iter()
+        .map(|b| {
+            (
+                (b.start - t(base)).num_minutes(),
+                (b.end - t(base)).num_minutes(),
+                b.learned,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn joining_a_neighbor_twice_teaches_the_pair() {
+    use crate::blocks::Link;
+    let store = Store::open_in_memory().unwrap();
+    let pattern = [("Code", 0, 30), ("Firefox", 30, 45), ("Code", 45, 75)];
+    for day in 0..3 {
+        day_of(&store, day, &pattern);
+    }
+    assert_eq!(
+        day_blocks(&store, 2),
+        [(0, 30, None), (30, 45, None), (45, 75, None)]
+    );
+    // İki gün kod bloğunu tarayıcının üstüne uzatır.
+    for day in 0..2 {
+        let base = day * 86_400;
+        store
+            .resize_block(
+                t(base),
+                t(base + 1800),
+                t(base),
+                t(base + 2700),
+                "Code",
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store.block_links().unwrap().get("app:Code", "app:Firefox"),
+        Some(Link::Join)
+    );
+    // Dokunulmamış üçüncü gün de tek blok olur.
+    assert_eq!(day_blocks(&store, 2), [(0, 75, Some(Link::Join))]);
+}
+
+#[test]
+fn splitting_twice_teaches_the_pair_and_one_undo_suspends_it() {
+    use crate::blocks::Link;
+    let store = Store::open_in_memory().unwrap();
+    // 3 dk tarayıcı: kendiliğinden bölünmez.
+    let pattern = [("Game", 0, 35), ("Firefox", 35, 38), ("Game", 38, 70)];
+    for day in 0..4 {
+        day_of(&store, day, &pattern);
+    }
+    assert_eq!(day_blocks(&store, 3), [(0, 70, None)]);
+    for day in 0..2 {
+        let base = day * 86_400;
+        store
+            .resize_block(
+                t(base),
+                t(base + 4200),
+                t(base),
+                t(base + 2100),
+                "Game",
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store.block_links().unwrap().get("app:Game", "app:Firefox"),
+        Some(Link::Split)
+    );
+    assert_eq!(
+        day_blocks(&store, 3),
+        [(0, 35, None), (35, 38, Some(Link::Split)), (38, 70, None)]
+    );
+    // Üçüncü gün öğrenilen bölmeyi uzatarak geri alır: öğrenilen askıya alınır.
+    let base = 2 * 86_400;
+    store
+        .resize_block(
+            t(base),
+            t(base + 2100),
+            t(base),
+            t(base + 2280),
+            "Game",
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        store.block_links().unwrap().get("app:Game", "app:Firefox"),
+        None
+    );
+    assert_eq!(day_blocks(&store, 3), [(0, 70, None)]);
+}
+
+#[test]
+fn undoing_a_resize_forgets_what_it_taught() {
+    let store = Store::open_in_memory().unwrap();
+    day_of(&store, 0, &[("Code", 0, 30), ("Firefox", 30, 45)]);
+    let snap = store.snapshot_range(t(0), t(2700)).unwrap();
+    store
+        .resize_block(t(0), t(1800), t(0), t(2700), "Code", None, None)
+        .unwrap();
+    let count = |store: &Store| -> i64 {
+        store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM block_links WHERE deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count(&store), 1);
+    store.restore_snapshot(&snap).unwrap();
+    assert_eq!(count(&store), 0);
+}

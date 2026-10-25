@@ -37,7 +37,10 @@ fn only_new_or_changed_tables_are_refetched() {
     // Eski tek özetten geçiş: yalnızca yeni tablo ve yeni ayar eklenen ayarlar baştan çekilir.
     let first = tables_to_refetch(|_| None, true);
     let refetch: Vec<&str> = first.iter().filter(|r| r.2).map(|r| r.0).collect();
-    assert_eq!(refetch, ["settings", "calls", "timesheet_marks"]);
+    assert_eq!(
+        refetch,
+        ["settings", "calls", "timesheet_marks", "block_links"]
+    );
     assert_eq!(first.len(), TABLES.len());
     // Kayıtlıyla aynıysa hiçbir şey; biri değişmişse yalnızca o.
     let stored = |name: &str| current.get(name).cloned();

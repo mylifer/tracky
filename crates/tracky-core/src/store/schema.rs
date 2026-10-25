@@ -266,6 +266,27 @@ CREATE INDEX timesheet_marks_started_at ON timesheet_marks (started_at);
 CREATE INDEX timesheet_marks_unsynced ON timesheet_marks (updated_at)
     WHERE synced_at IS NULL OR synced_at < updated_at;
 "#,
+    r#"
+-- Takvim düzeltmelerinden öğrenilen tür çiftleri (store::links; supabase/migrations/0018): kullanıcı
+-- bloğu iki türün arasından böldüyse 'split', bir türün bloğunu ötekinin üstüne uzattıysa 'join'.
+-- Tür anahtarı `category:<kimlik>` ya da `app:<uygulama adı>` (blocks::context_key); aralık
+-- düzenlenen blok (geri alınınca o aralıkta sonradan düşen kayıtlar silinir). Eşitlenir.
+CREATE TABLE block_links (
+    id         TEXT PRIMARY KEY,
+    a          TEXT NOT NULL,
+    b          TEXT NOT NULL,
+    kind       TEXT NOT NULL CHECK (kind IN ('join', 'split')),
+    started_at INTEGER NOT NULL,
+    ended_at   INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    synced_at  INTEGER,
+    CHECK (ended_at >= started_at)
+);
+CREATE INDEX block_links_unsynced ON block_links (updated_at)
+    WHERE synced_at IS NULL OR synced_at < updated_at;
+"#,
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<()> {

@@ -185,6 +185,9 @@ pub struct Classifier {
     categories: std::collections::HashSet<String>,
     /// Var olan projeler: silinmiş bir projeye verilmiş elle atama yok sayılır.
     projects: std::collections::HashSet<String>,
+    /// Takvim düzeltmelerinden öğrenilen tür çiftleri: bloklar bunlarla bölünür
+    /// ([`crate::blocks::analyze_with`]).
+    links: crate::blocks::Links,
 }
 
 impl Classifier {
@@ -232,7 +235,19 @@ impl Classifier {
                 .filter(|t| t.kind == TagKind::Project)
                 .map(|t| t.id.clone())
                 .collect(),
+            links: crate::blocks::Links::default(),
         }
+    }
+
+    /// Blokları öğrenilen tür çiftleriyle bölen sınıflandırıcı.
+    pub fn with_links(mut self, links: crate::blocks::Links) -> Self {
+        self.links = links;
+        self
+    }
+
+    /// Öğrenilen tür çiftleri ([`Self::with_links`]).
+    pub fn links(&self) -> &crate::blocks::Links {
+        &self.links
     }
 
     /// Elle verilen kategori ve proje (hâlâ varsa) kurallardan önce gelir. [`NO_PROJECT`]

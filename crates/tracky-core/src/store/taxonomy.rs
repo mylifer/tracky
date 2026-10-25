@@ -565,7 +565,7 @@ impl Store {
     /// Dönen görüntü geri almak içindir ([`Store::restore_snapshot`]).
     pub fn archive_project(&self, id: &str) -> Result<super::EditSnapshot> {
         self.require_tag(id, TagKind::Project)?;
-        let classifier = crate::classify::Classifier::new(&self.tags()?, &self.rules()?);
+        let classifier = self.classifier()?;
         let ids: Vec<Uuid> = self
             .sessions_between(DateTime::<Utc>::UNIX_EPOCH, DateTime::<Utc>::MAX_UTC)?
             .into_iter()

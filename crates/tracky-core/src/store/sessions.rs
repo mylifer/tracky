@@ -7,7 +7,7 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use super::{Result, Store, StoreError, UsageTotal, from_ms, ms};
-use crate::classify::{Classifier, TagKind};
+use crate::classify::TagKind;
 use crate::model::{IDLE_APP_ID, MANUAL_APP_ID, Session};
 
 /// `[?1, ?2)` ile kesişen oturumlar. Üçüncü koşul sonucu değiştirmez (kesişen her oturum
@@ -405,7 +405,8 @@ impl Store {
     /// kalkar; kaydı olmayan boşluklar (bilgisayar başında olunmayan süre) aynı kategori ve
     /// projede `label` adlı elle kayıtla dolar: zaman çizelgesine bloğun yeni aralığı gider.
     /// Projesi olmayan blok projeli işin üstüne uzarsa o işin projesini alır: iki blok tek
-    /// blok (tek çizelge satırı) olur. Değişen satır sayısı.
+    /// blok (tek çizelge satırı) olur. Kesilen ya da katılan kısmın türü bloğunkinden farklıysa
+    /// düzeltme öğrenilir ([`crate::blocks::Links`]). Değişen satır sayısı.
     #[allow(clippy::too_many_arguments)]
     pub fn resize_block(
         &self,
@@ -433,8 +434,13 @@ impl Store {
             None => self.joined_project(&joined)?,
         };
         let project_id = project_id.or(adopted.as_deref());
+        // Kesilen ve katılan kısmın türü düzenlemeden önce: katılan kısım bloğun kategorisini alır.
+        let links = self.resize_links((from, to), (new_from, new_to))?;
         let tx = self.savepoint()?;
         let mut n = 0;
+        for (a, b, link) in &links {
+            self.record_block_link((a, b, *link), (from.min(new_from), to.max(new_to)))?;
+        }
         if new_from < from || new_to > to {
             n += self.clear_block_starts(new_from, new_to)?;
         }
@@ -516,7 +522,7 @@ impl Store {
     /// [`Self::resize_block`]'ta projesi olmayan bloğa katılan aralıklarda en çok süren proje
     /// ("Projesiz" sayılmaz).
     fn joined_project(&self, ranges: &[(DateTime<Utc>, DateTime<Utc>)]) -> Result<Option<String>> {
-        let classifier = Classifier::new(&self.tags()?, &self.rules()?);
+        let classifier = self.classifier()?;
         let mut by_project: HashMap<String, i64> = HashMap::new();
         for &(from, to) in ranges.iter().filter(|(a, b)| b > a) {
             for s in self.sessions_between(from, to)? {

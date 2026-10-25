@@ -141,7 +141,7 @@ pub fn build(
                 })
             })
             .collect();
-        for b in blocks::analyze(&items).blocks {
+        for b in blocks::analyze_with(&items, classifier.links()).blocks {
             if b.project_id.as_deref() == Some(project) {
                 block_count += 1;
                 focus_ms += b.active_seconds * 1000;

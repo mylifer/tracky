@@ -1,13 +1,15 @@
 //! SQLite depolama. Bu dosyada bağlantı, işlemler ve ayarlar; alt modüllerde şema göçleri
 //! (`schema`), oturumlar ve düzenlemeleri (`sessions`, `edits`), rapor sorguları (`reports`),
 //! yedek ve bütünlük (`files`), veri denetimi (`health`), sınıflandırma (`taxonomy`), zaman
-//! çizelgesi (`timesheet`, gönderilen bloklar `marks`) ve bilgisayarlar (`devices`).
+//! çizelgesi (`timesheet`, gönderilen bloklar `marks`), öğrenilen blok sınırları (`links`) ve
+//! bilgisayarlar (`devices`).
 
 mod calls;
 mod devices;
 mod edits;
 mod files;
 mod health;
+mod links;
 mod marks;
 mod reports;
 mod schema;

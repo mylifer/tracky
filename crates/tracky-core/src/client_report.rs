@@ -282,7 +282,7 @@ impl crate::store::Store {
             ReportSource::Tracked => {
                 let (from, to) = (day_starts[0], day_starts[days.len()]);
                 let sessions = self.merged_sessions_between(from, to)?;
-                let classifier = Classifier::new(&tags, &self.rules()?);
+                let classifier = self.classifier_for(&tags)?;
                 Ok(from_sessions(
                     &sessions,
                     &classifier,
