@@ -191,6 +191,8 @@ describe("gün özeti", () => {
     // Yalnızca dosyada satırı olan gün boş değil; ileri tarihte fark hesaplanmaz.
     const future = summarizeDay(day("2026-10-09", []), [{ hours: 1, division: "a" }], 8, "2026-10-04");
     expect([future.empty, future.hours, future.diff]).toEqual([false, 1, 0]);
+    // Kapatılan gün işaretlenir; bakılacaklar ipucu için korunur.
+    expect([s.closed, summarizeDay(d, [], 8, "2026-10-04", true).closed]).toEqual([false, true]);
   });
 
   it("birim rengi listedeki sırasından", () => {

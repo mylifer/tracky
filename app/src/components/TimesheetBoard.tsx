@@ -1,4 +1,4 @@
-import { CircleCheck, TriangleAlert } from "lucide-react";
+import { CircleCheck, Lock, TriangleAlert } from "lucide-react";
 import { addDays, isoDate, parseIsoDate } from "../lib/dates";
 import { divisionColor, type DaySummary } from "../lib/timesheet";
 import { cn } from "../lib/utils";
@@ -28,6 +28,7 @@ function dayTip(s: DaySummary, dayHours: number) {
     s.empty ? "Kayıt yok" : `${hoursFmt.format(s.hours)} sa`,
     ...s.divisions.map((d) => `${d.division}: ${hoursFmt.format(d.hours)} sa`),
   ];
+  if (s.closed) lines.push("Kapatıldı (gözden geçirildi)");
   if (s.sent) lines.push("Hepsi gönderildi");
   else if (s.unsent) lines.push(`${s.unsent} satır gönderilmedi`);
   if (s.diff)
@@ -38,8 +39,15 @@ function dayTip(s: DaySummary, dayHours: number) {
   return lines.join("\n");
 }
 
-/** Günün durum simgesi: sorun > bekleyen > gönderildi. */
+/** Günün durum simgesi: kapatıldı (yanında bekleyen/gönderildi) > sorun > bekleyen > gönderildi. */
 function StatusMark({ s, compact = false }: { s: DaySummary; compact?: boolean }) {
+  if (s.closed)
+    return (
+      <span className="flex items-center gap-1">
+        <Lock className="size-3 text-success" aria-label="Kapatıldı" />
+        <SendMark s={s} compact />
+      </span>
+    );
   if (s.problems.length || s.diff)
     return (
       <span className="flex items-center gap-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
@@ -47,6 +55,11 @@ function StatusMark({ s, compact = false }: { s: DaySummary; compact?: boolean }
         {!compact && (s.problems.length || "")}
       </span>
     );
+  return <SendMark s={s} compact={compact} />;
+}
+
+/** Gönderim durumu: bekleyen satır sayısı ya da gönderildi. */
+function SendMark({ s, compact }: { s: DaySummary; compact: boolean }) {
   if (s.unsent)
     return (
       <span className="flex items-center gap-1 text-[10px] font-medium text-primary tabular">
@@ -62,7 +75,7 @@ function StatusMark({ s, compact = false }: { s: DaySummary; compact?: boolean }
 /** Günlük saatin doluluğu: tutuyorsa yeşil (gönderildiyse) ya da mavi, sapma varsa sarı. */
 function Fill({ s, dayHours }: { s: DaySummary; dayHours: number }) {
   const pct = Math.min(1, s.hours / (dayHours || 8)) * 100;
-  const tone = s.diff ? "bg-amber-500" : s.sent ? "bg-success" : "bg-primary";
+  const tone = s.diff && !s.closed ? "bg-amber-500" : s.sent ? "bg-success" : "bg-primary";
   return (
     <span className="block h-1 w-full overflow-hidden rounded-full bg-muted">
       <span className={cn("block h-full rounded-full", tone)} style={{ width: `${pct}%` }} />
@@ -246,6 +259,9 @@ export function MonthBoard({ summaries, divisions, dayHours, selected, onSelect,
           <span className="flex items-center gap-1">
             <TriangleAlert className="size-3 text-amber-600 dark:text-amber-400" /> bakılacak
           </span>
+          <span className="flex items-center gap-1">
+            <Lock className="size-3 text-success" /> kapatıldı
+          </span>
         </span>
       </div>
       <div className={cn(grid, "px-0.5 text-[11px] text-muted-foreground")}>
@@ -320,7 +336,11 @@ function MonthCell({
     <button
       className={cn(
         "flex min-h-[78px] flex-col gap-1 rounded-lg border p-1.5 text-left transition-colors hover:border-foreground/25 focus-visible:outline-2 focus-visible:outline-ring",
-        weekend && s.empty ? "border-transparent bg-muted/30" : "bg-card",
+        s.closed
+          ? "border-success/30 bg-success/[0.06]"
+          : weekend && s.empty
+            ? "border-transparent bg-muted/30"
+            : "bg-card",
         selected && "border-primary ring-1 ring-primary",
       )}
       aria-pressed={selected}

@@ -481,6 +481,7 @@ export default function Timesheet({
       outside.filter((r) => r.date === d.date),
       config.dayHours,
       todayIso,
+      closedDays.has(d.date),
     ),
   );
   const dayCard = (d: TimesheetDay, alwaysShow: boolean) => (
