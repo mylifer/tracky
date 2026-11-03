@@ -130,7 +130,7 @@ export function WeekCalendar({
               ).map(({ block, idle: span, away, top: t, height }) =>
                 span ? (
                   <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
-                ) : (
+                ) : block ? (
                   <Block
                     key={block.start}
                     b={block}
@@ -147,7 +147,7 @@ export function WeekCalendar({
                     hourPx={range.px}
                     dayStart={dayStart}
                   />
-                ),
+                ) : null,
               )}
               <Preview range={preview && preview[0] >= dayStart && preview[0] < dayEnd ? preview : null} top={top} />
               <NowLine day={d} range={range} />

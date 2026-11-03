@@ -70,8 +70,29 @@ test("Gün: Pencereler sütunu her pencereyi saatinde gösterir, tıklanan yaln�
   await expect(menu).toContainText("Yalnızca Visual Studio Code · portal — api.ts");
 });
 
+test("Gün: taslak kısa araya girmeyi tek kutuda gösterir, parçalar açılabilir", async ({ app, page }) => {
+  await app.open("Gün");
+  // 09:00–11:00 portal ve ardından 30 dk projesiz Safari: 15 dk eşikte tek taslak.
+  const draft = page.locator("[data-draft]");
+  await expect(draft).toHaveCount(1);
+  await expect(draft).toContainText("2 parça");
+  await expect(page.getByRole("button", { name: "Hacker News 30dk", exact: true })).toHaveCount(0);
+  await draft.click();
+  await expect(page.getByRole("dialog")).toContainText("09:00 – 11:30");
+  await page.getByRole("button", { name: "Parçaları aç" }).click();
+  await expect(draft).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Hacker News 30dk", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Topla" }).click();
+  await expect(draft).toHaveCount(1);
+});
+
 test("Gün: blok kenarı uzun uygulama kullanımının sınırına yapışır, ⌥ basılıyken yapışmaz", async ({ app, page }) => {
   await app.open("Gün");
+  // Kenar sürükleme tek tek bloklarda: taslak kapatılır.
+  await page.getByRole("button", { name: "Taslak eşiği: 15 dk" }).click();
+  await page.getByRole("button", { name: "Ayrıntılı: her blok ayrı" }).click();
+  // Menü kapanırken sürükleme onun üstünde başlamasın.
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   // Safari 11:00–11:30; Visual Studio Code 12:30'da yeniden başlıyor.
   const block = page.getByRole("button", { name: "Hacker News 30dk", exact: true });
   const box = (await block.boundingBox())!;

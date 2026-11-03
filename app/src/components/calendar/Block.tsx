@@ -19,7 +19,7 @@ import { type SnapTarget, snapEdge, snapReach } from "./snap";
 /** Çizelge merceğinde zaman çizelgesinde satırı olmayan bloğun başlığı. */
 const NOT_IN_SHEET = "Çizelgede yok";
 
-function blockTitle(
+export function blockTitle(
   b: WorkBlock,
   tags: Map<string, Tag>,
   lens: ColorLens,
@@ -301,23 +301,7 @@ export function Block({
               edit.onPick(b);
             }}
           >
-            {away.map((s) => {
-              const a = wall(+new Date(s.start)) - wall(start);
-              const z = wall(+new Date(s.end)) - wall(start);
-              return (
-                <span
-                  key={s.start}
-                  aria-hidden
-                  className="pointer-events-none absolute inset-x-0 border-y border-dashed border-muted-foreground/25"
-                  style={{
-                    top: (a / HOUR_MS) * hourPx,
-                    height: Math.max(2, ((z - a) / HOUR_MS) * hourPx),
-                    background: `repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted-foreground) 14%, var(--card)) 0 4px, var(--card) 4px 9px)`,
-                    opacity: 0.75,
-                  }}
-                />
-              );
-            })}
+            <AwayStripes away={away} start={start} dayStart={dayStart} hourPx={hourPx} />
             {label && (
               <span className={cn("relative flex h-full flex-col", full ? "py-1" : "justify-center")}>
                 <span className="flex min-w-0 items-center gap-1.5">
@@ -387,6 +371,38 @@ export function Block({
       )}
     </>
   );
+}
+
+/** Bloğun içine düşen boşta aralıklar: silik taralı şeritler (bloğun başına göre). */
+export function AwayStripes({
+  away,
+  start,
+  dayStart,
+  hourPx,
+}: {
+  away: IdleSpan[];
+  start: number;
+  dayStart: number;
+  hourPx: number;
+}) {
+  const wall = (t: number) => wallMs(t, dayStart);
+  return away.map((s) => {
+    const a = wall(+new Date(s.start)) - wall(start);
+    const z = wall(+new Date(s.end)) - wall(start);
+    return (
+      <span
+        key={s.start}
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 border-y border-dashed border-muted-foreground/25"
+        style={{
+          top: (a / HOUR_MS) * hourPx,
+          height: Math.max(2, ((z - a) / HOUR_MS) * hourPx),
+          background: `repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted-foreground) 14%, var(--card)) 0 4px, var(--card) 4px 9px)`,
+          opacity: 0.75,
+        }}
+      />
+    );
+  });
 }
 
 /**
