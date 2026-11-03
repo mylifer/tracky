@@ -7,7 +7,8 @@
 //!
 //! Takvimdeki blok zaman çizelgesindeki satırdır: raporda (gün, hafta, ay) yapılan atama ve
 //! düzenlemeler doğrudan satırlara yansır. Yalnızca bir projeye düşen süre iş sayılır; projesi
-//! olan bloğun içindeki atanmamış süre de o projenindir. Aynı projedeki ardışık oturumlar
+//! olan bloğun içindeki (birkaç dakikalık, [`crate::blocks::SWITCH_MIN`]'den kısa) atanmamış
+//! süre de o projenindir. Aynı projedeki ardışık oturumlar
 //! (bilgisayarda, uzakta ya da görüşmede), aradaki boşluk `MERGE_GAP`'i geçmedikçe tek kayıt
 //! olur; türü en çok süreninkidir. Kaydın gerçek süresi boşluklar değil, oturumların toplam
 //! süresidir. Firmaya giden saat bu sürenin çeyrek saate
@@ -593,7 +594,8 @@ fn touches(spans: &[Interval], start: DateTime<Utc>, end: DateTime<Utc>) -> bool
 /// taşır ([`named_by`]).
 ///
 /// Takvimdeki blok zaman çizelgesindeki satırdır: projesi olan bloğun ([`crate::blocks`])
-/// içindeki atanmamış süre de o projenin işidir (takvimde bloğun süresine girer). Başka projeye
+/// içinde kalan kısa atanmamış süre de o projenin işidir (takvimde bloğun süresine girer);
+/// daha uzun atanmamış süre zaten ayrı, projesiz bloktur. Başka projeye
 /// ya da projesize atanmış süre bloğun projesine geçmez.
 pub fn pieces(
     sessions: &[Session],
