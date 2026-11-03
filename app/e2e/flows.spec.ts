@@ -1,3 +1,4 @@
+import type { PlanBlock } from "../src/api";
 import { PORTAL, SHEET, TRUMORE } from "./backend";
 import { expect, test } from "./fixtures";
 
@@ -111,6 +112,40 @@ test("Gün: sürüklenen aralık tek tıkla (ya da 1–4 tuşuyla) projeye atan�
   await expect(menu).toHaveCount(0);
   const [call] = await app.calls("set_range_project");
   expect(call.args.projectId).toBe(TRUMORE);
+});
+
+test("Gün planı: taslaklar önerilir, onaylanınca saklanır; kenar sürüklenince blok bölünmez", async ({ app, page }) => {
+  await app.open("Gün");
+  await page.getByRole("button", { name: "Taslak eşiği: 15 dk" }).click();
+  await page.getByRole("button", { name: /Gün planı \(yeni, deneysel\)/ }).click();
+  // 09:00–11:30 Portal (arada 30 dk projesiz Safari bloğun içinde), 12:30–13:50 Trumore.
+  const drafts = page.locator("[data-plan=draft]");
+  await expect(drafts).toHaveCount(2);
+  await expect(drafts.nth(0)).toContainText("Portal");
+  await expect(drafts.nth(1)).toContainText("Trumore");
+
+  await page.getByRole("button", { name: "Günü onayla" }).click();
+  const blocks = page.locator("[data-plan=block]");
+  await expect(blocks).toHaveCount(2);
+  const [saved] = await app.calls("save_plan");
+  expect((saved.args.blocks as PlanBlock[]).map((b) => b.projectId)).toEqual([PORTAL, TRUMORE]);
+  // Onaylanan bloklar oturumlara da yazılır: rapor ve zaman çizelgesi planı izler.
+  expect((saved.args.assign as { projectId: string }[]).map((r) => r.projectId)).toEqual([PORTAL, TRUMORE]);
+
+  // Alt kenar 30 dk aşağı: blok uzar, yeni parça doğmaz.
+  const box = (await blocks.nth(0).boundingBox())!;
+  const hourPx = (box.height + 2) / 2.5;
+  const x = box.x + box.width / 2;
+  await page.mouse.move(x, box.y + box.height - 2);
+  await page.mouse.down();
+  await page.mouse.move(x, box.y + box.height - 2 + hourPx / 2, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => (await app.calls("save_plan")).length).toBe(2);
+  const [, resized] = await app.calls("save_plan");
+  const after = resized.args.blocks as PlanBlock[];
+  expect(after).toHaveLength(2);
+  expect(new Date(after[0].end).toISOString()).toBe(new Date("2026-10-07T12:00:00+03:00").toISOString());
+  expect(after[0].id).toBe((saved.args.blocks as PlanBlock[])[0].id);
 });
 
 test("Gün: blok kenarı uzun uygulama kullanımının sınırına yapışır, ⌥ basılıyken yapışmaz", async ({ app, page }) => {

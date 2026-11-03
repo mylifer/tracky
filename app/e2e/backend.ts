@@ -12,6 +12,7 @@ import type {
   EntryView,
   Goals,
   KnownDevice,
+  PlanBlock,
   PrivacySettings,
   Report,
   SyncStatus,
@@ -338,6 +339,9 @@ const calendar: CalendarStatus = { url: null, events: 0, last: null, lastOk: nul
 /** Veri denetiminin onarımı yapıldı mı (onarımdan sonra denetim temiz döner). */
 let repaired = false;
 
+/** Gün planının kaydedilen blokları (`save_plan` yazar, `get_plan` okur). */
+let plan: PlanBlock[] = [];
+
 type Args = Record<string, unknown>;
 type Handler = (args: Args) => unknown;
 
@@ -355,6 +359,11 @@ const handlers: Record<string, Handler> = {
   assign_unassigned: () => ({ changed: 1, undo: 7 }),
   resize_block: () => ({ changed: 1, undo: 8 }),
   set_range_project: () => ({ changed: 2, undo: 9 }),
+  get_plan: () => plan,
+  save_plan: (a) => {
+    plan = a.blocks as PlanBlock[];
+    return { changed: 1, undo: 10 };
+  },
   label_undo: () => null,
   undo_history: () => [],
   pending_timesheet_days: () => [],

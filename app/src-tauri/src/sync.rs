@@ -107,6 +107,7 @@ const EDIT_COMMANDS: &[&str] = &[
     "save_ai_settings",
     "save_client",
     "save_goals",
+    "save_plan",
     "save_privacy",
     "save_sheet_row",
     "save_tag",
