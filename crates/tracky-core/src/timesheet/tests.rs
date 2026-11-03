@@ -103,8 +103,8 @@ fn a_calendar_block_is_one_row() {
     let (classifier, names, config, sheet) = setup();
     let sessions = [
         s("Figma", "Trumore Loyalty UI/UX — Figma", 0, 50, None),
-        s("Slack", "#genel", 50, 55, None), // atanmamış: bloğun projesine girer
-        s("Figma", "Trumore Loyalty UI/UX — Figma", 55, 80, None),
+        s("Slack", "#genel", 50, 52, None), // kısa atanmamış süre: bloğun projesine girer
+        s("Figma", "Trumore Loyalty UI/UX — Figma", 52, 80, None),
         s("Slack", "#kişisel", 80, 90, Some(NO_PROJECT)), // projesiz: girmez
         s("us.zoom.xos", "Zoom Meeting", 90, 120, Some("tru")), // görüşme: aynı satır
         s("Figma", "Trumore Pitchdeck — Figma", 150, 170, None), // 30 dk boşluk: yeni blok
@@ -162,7 +162,7 @@ fn a_split_block_is_two_rows() {
     let sessions = [
         s("Figma", "Trumore Loyalty — Figma", 0, 60, None),
         after,
-        s("Slack", "#genel", 120, 125, None), // atanmamış: bölünen ikinci bloğa girer
+        s("Slack", "#genel", 120, 125, None), // atanmamış 5 dk: bloğa da satıra da girmez
     ];
     let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
     let rows: Vec<_> = got
@@ -174,7 +174,7 @@ fn a_split_block_is_two_rows() {
             )
         })
         .collect();
-    assert_eq!(rows, [("09:00".to_string(), 60), ("10:00".to_string(), 65)]);
+    assert_eq!(rows, [("09:00".to_string(), 60), ("10:00".to_string(), 60)]);
 }
 
 #[test]
