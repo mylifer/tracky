@@ -1586,9 +1586,11 @@ fn step(
                 .map_err(|e| e.to_string())
                 .and_then(|_| {
                     let after = day_blocks(store, date);
+                    // Birleşen blok: başı artık başka bir bloğun içinde. Başındaki projeye atanmış
+                    // boşta süre projesiz kalınca iş sayılmaz; blok o zaman birleşmeden kısalır.
                     let lost: Vec<_> = blocks
                         .iter()
-                        .filter(|b| !after.iter().any(|a| a.start == b.start))
+                        .filter(|b| after.iter().any(|a| a.start < b.start && b.start < a.end))
                         .map(|b| hm(b.start))
                         .collect();
                     lost.is_empty()
@@ -1672,6 +1674,7 @@ fn lost_work(
     let ctx = store.timesheet_context().unwrap();
     let pieces = store.timesheet_pieces(&ctx, from, to, meetings).unwrap();
     let rows = rows_of(store, date, meetings);
+    let blocks = store.report(from, to, &[from], true).unwrap().work.blocks;
     let mut bad = Vec::new();
     for sheet in &ctx.config.timesheets {
         for m in &sheet.projects {
@@ -1699,10 +1702,52 @@ fn lost_work(
             let left = minus(&work, &coalesce(covered));
             // Satıra girmeyen iş kümeleri (MERGE_GAP'e kadar boşlukla).
             let mut clusters: Vec<Vec<Interval>> = Vec::new();
-            for span in left {
+            for &span in &left {
                 match clusters.last_mut() {
                     Some(c) if span.0 - c.last().unwrap().1 <= MERGE_GAP => c.push(span),
                     _ => clusters.push(vec![span]),
+                }
+            }
+            // Gönderilen blok kendi satırıdır: bloğun işi, aynı bloğa değen kaydedilmiş satır
+            // yoksa (satır kaydedilirken süren işin artığı değilse) kısa da olsa satıra girer.
+            let saved: Vec<Interval> = rows
+                .iter()
+                .filter(|(_, r)| r.id.is_some() && r.entry.project_id == p)
+                .flat_map(|(_, r)| r.entry.spans())
+                .chain(
+                    hidden
+                        .iter()
+                        .filter_map(|id| {
+                            let s = store.timesheet_entry(id).unwrap()?;
+                            (s.entry.project_id == p).then(|| s.entry.spans())
+                        })
+                        .flatten(),
+                )
+                .collect();
+            for b in &blocks {
+                if b.sent != Some(true) || b.project_id.as_deref() != Some(p) {
+                    continue;
+                }
+                let span = [(b.start, b.end)];
+                if !intersect(&saved, &span).is_empty() {
+                    continue;
+                }
+                // Satırlar gibi MERGE_GAP'e kadar boşlukla kümelenir: arada başka projenin uzun
+                // toplantısı kalınca iki yanındaki birkaç dakikalık kırıntı satır olamaz.
+                let mut missing: Vec<Vec<Interval>> = Vec::new();
+                for &x in &intersect(&left, &span) {
+                    match missing.last_mut() {
+                        Some(c) if x.0 - c.last().unwrap().1 <= MERGE_GAP => c.push(x),
+                        _ => missing.push(vec![x]),
+                    }
+                }
+                if let Some(c) = missing.iter().find(|c| total(c) >= MIN_ENTRY) {
+                    bad.push(format!(
+                        "kayıp blok: {p} bloğu {}–{} gönderildi ama {} sn işi satırda değil",
+                        hm(b.start),
+                        hm(b.end),
+                        total(c).num_seconds()
+                    ));
                 }
             }
             for c in clusters {
