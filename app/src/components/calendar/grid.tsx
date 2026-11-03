@@ -22,7 +22,7 @@ export const HATCH =
   "repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted-foreground) 14%, transparent) 0 4px, transparent 4px 9px)";
 
 /** Gösterilen saatler ve bir saatin piksel yüksekliği (yakınlaştırmayla değişir). */
-type Range = { first: number; last: number; px: number };
+export type Range = { first: number; last: number; px: number };
 
 /** Etkinliğe göre gösterilecek saat aralığı (en az 08–18). */
 export function hourRange(from: Date, spans: { start: string; end: string }[], px: number, days = 1): Range {

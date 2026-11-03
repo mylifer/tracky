@@ -637,6 +637,8 @@ pub fn run() {
             commands::delete_range,
             commands::add_manual_entry,
             commands::resize_block,
+            commands::get_plan,
+            commands::save_plan,
             commands::get_privacy,
             commands::save_privacy,
             commands::default_excluded_urls,

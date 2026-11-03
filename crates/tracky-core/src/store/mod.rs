@@ -9,6 +9,7 @@ mod edits;
 mod files;
 mod health;
 mod marks;
+mod plan;
 mod reports;
 mod schema;
 mod sessions;
@@ -28,6 +29,7 @@ pub use edits::EditSnapshot;
 pub use files::BackupInfo;
 pub use health::{DoubleRow, Health, LongCall, Overlap, Repaired};
 pub use marks::Unsent;
+pub use plan::PlanBlock;
 pub use sessions::EditScope;
 pub use taxonomy::TagExtras;
 pub use timesheet::{

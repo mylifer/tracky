@@ -182,6 +182,9 @@ export type Report = {
 };
 export type IdleSpan = { start: string; end: string };
 
+/** Gün planının onaylı bloğu (`get_plan`); `projectId`: proje, `NO_PROJECT` ya da karar yok. */
+export type PlanBlock = { id: string; start: string; end: string; projectId: string | null; note: string };
+
 /** Proje profili (`get_project_stats`). */
 export type ProjectStats = {
   totalSeconds: number;
@@ -795,6 +798,18 @@ export const api = {
     categoryId: string | null,
     projectId: string | null,
   ) => invoke<Edited>("resize_block", { start, end, newStart, newEnd, label, categoryId, projectId }),
+  /** Gün planının aralıktaki onaylı blokları. */
+  getPlan: (start: string, end: string) => invoke<PlanBlock[]>("get_plan", { start, end }),
+  /**
+   * Günün planını kaydeder (aralıktaki bloklar bütün olarak); `assign` aralıklarındaki oturumlar
+   * da o projeye geçer. Geri alınabilir.
+   */
+  savePlan: (
+    start: string,
+    end: string,
+    blocks: PlanBlock[],
+    assign: { start: string; end: string; projectId: string }[],
+  ) => invoke<Edited>("save_plan", { start, end, blocks, assign }),
   /** Aralıktaki oturumlara elle proje; `null` kurallara döndürür. */
   /** Aralıkta kullanılan uygulamalar ("Son süreyi ata" önizlemesi). */
   rangeApps: (start: string, end: string) => invoke<UsageTotal[]>("range_apps", { start, end }),

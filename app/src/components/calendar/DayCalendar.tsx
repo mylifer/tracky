@@ -20,6 +20,7 @@ import {
 } from "./grid";
 import { Block, IdleBlock } from "./Block";
 import { DraftBlock } from "./DraftBlock";
+import { PlanColumn, approveAll, usePlan } from "./PlanColumn";
 import { DRAFT_STEPS, type DraftGroup, draftGroups } from "../../lib/draft";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { categoryBuckets } from "./buckets";
@@ -188,6 +189,8 @@ export function DayCalendar({
   sheet = [],
   draft = 0,
   onDraft,
+  planMode = false,
+  onPlanMode,
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -219,7 +222,11 @@ export function DayCalendar({
   /** Taslak eşiği (dk): kısa araya girmeler ve molalar tek kutuda; 0: her blok ayrı. */
   draft?: number;
   onDraft?: (minutes: number) => void;
+  /** Yeni gün planı (deneysel): Oturumlar yerine saklanan bloklar ve taslaklar. */
+  planMode?: boolean;
+  onPlanMode?: (on: boolean) => void;
 }) {
+  const plan = usePlan(from, windows ?? [], planMode);
   // Taslaklar; "Parçaları aç" denenler (başlangıçlarıyla) bloklarıyla çizilir.
   const groups = useMemo(() => draftGroups(blocks, draft), [blocks, draft]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -303,9 +310,20 @@ export function DayCalendar({
       >
         <span />
         <span className="flex min-w-0 items-center gap-1">
-          <span className="truncate">Oturumlar</span>
-          {onDraft && <DraftMenu value={draft} onChange={onDraft} />}
-          {expanded.size > 0 && (
+          <span className="truncate">{planMode ? "Plan" : "Oturumlar"}</span>
+          {onDraft && <DraftMenu value={draft} onChange={onDraft} plan={planMode} onPlan={onPlanMode} />}
+          {planMode && plan.drafts.length > 0 && (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1 font-medium text-primary hover:bg-accent"
+              title="Günü onayla: taslakların hepsi onaylı blok olur"
+              aria-label="Günü onayla"
+              onClick={() => void plan.save(approveAll(plan), `${plan.drafts.length} taslak onaylandı`)}
+            >
+              Onayla
+            </button>
+          )}
+          {!planMode && expanded.size > 0 && (
             <button
               type="button"
               className="shrink-0 rounded px-1 text-primary hover:bg-accent"
@@ -348,66 +366,79 @@ export function DayCalendar({
         <div className="col-start-1 row-start-1">
           <HourRail range={range} />
         </div>
-        <Column
-          range={range}
-          className="col-start-2 row-start-1"
-          onEmpty={
-            onEmpty &&
-            ((offset) => {
-              const gap = gapAround(fromWallMs(offset, +from), segments, +from);
-              if (gap) onEmpty(...gap);
-            })
-          }
-          onRange={
-            onRange &&
-            ((a, b, x, y) => {
-              hintSeen();
-              onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y);
-            })
-          }
-        >
-          {placeSessions(loose, idle, top, range.px, collapsed).map(
-            ({ block, group, idle: span, away, top: t, height }) =>
-              span ? (
-                <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
-              ) : group ? (
-                <DraftBlock
-                  key={`draft-${group.start}`}
-                  g={group}
-                  away={away}
-                  tags={tags}
-                  lens={lens}
-                  sheet={sheet}
-                  windows={windows}
-                  meetings={meetings ?? undefined}
-                  top={t}
-                  height={height}
-                  hourPx={range.px}
-                  dayStart={+from}
-                  onRange={onRange}
-                  onExpand={() => setExpanded((s) => new Set(s).add(group.start))}
-                />
-              ) : (
-                <Block
-                  key={block.start}
-                  b={block}
-                  away={away}
-                  tags={tags}
-                  lens={lens}
-                  sheet={sheet}
-                  windows={windows}
-                  meetings={meetings ?? undefined}
-                  snaps={snaps}
-                  top={t}
-                  height={height}
-                  hourPx={range.px}
-                  dayStart={+from}
-                />
-              ),
-          )}
-          <Preview range={preview} top={top} />
-          <NowLine day={from} range={range} />
-        </Column>
+        {planMode ? (
+          <PlanColumn
+            range={range}
+            top={top}
+            windows={windows ?? []}
+            tags={tags}
+            plan={plan}
+            className="col-start-2 row-start-1"
+          >
+            <NowLine day={from} range={range} />
+          </PlanColumn>
+        ) : (
+          <Column
+            range={range}
+            className="col-start-2 row-start-1"
+            onEmpty={
+              onEmpty &&
+              ((offset) => {
+                const gap = gapAround(fromWallMs(offset, +from), segments, +from);
+                if (gap) onEmpty(...gap);
+              })
+            }
+            onRange={
+              onRange &&
+              ((a, b, x, y) => {
+                hintSeen();
+                onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y);
+              })
+            }
+          >
+            {placeSessions(loose, idle, top, range.px, collapsed).map(
+              ({ block, group, idle: span, away, top: t, height }) =>
+                span ? (
+                  <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
+                ) : group ? (
+                  <DraftBlock
+                    key={`draft-${group.start}`}
+                    g={group}
+                    away={away}
+                    tags={tags}
+                    lens={lens}
+                    sheet={sheet}
+                    windows={windows}
+                    meetings={meetings ?? undefined}
+                    top={t}
+                    height={height}
+                    hourPx={range.px}
+                    dayStart={+from}
+                    onRange={onRange}
+                    onExpand={() => setExpanded((s) => new Set(s).add(group.start))}
+                  />
+                ) : (
+                  <Block
+                    key={block.start}
+                    b={block}
+                    away={away}
+                    tags={tags}
+                    lens={lens}
+                    sheet={sheet}
+                    windows={windows}
+                    meetings={meetings ?? undefined}
+                    snaps={snaps}
+                    top={t}
+                    height={height}
+                    hourPx={range.px}
+                    dayStart={+from}
+                  />
+                ),
+            )}
+            <Preview range={preview} top={top} />
+            <NowLine day={from} range={range} />
+          </Column>
+        )}
         {sheetPlaced && (
           <Column range={range} className="col-start-3 row-start-1">
             <SheetColumn items={sheetPlaced.items} lanes={sheetPlaced.lanes} tags={tags} top={top} />
@@ -497,7 +528,17 @@ function useDragHint(): [boolean, () => void] {
 }
 
 /** Oturumlar başlığında taslak eşiği: kısa araya girmelerin ne zaman ayrı blok sayılacağı. */
-function DraftMenu({ value, onChange }: { value: number; onChange: (minutes: number) => void }) {
+function DraftMenu({
+  value,
+  onChange,
+  plan = false,
+  onPlan,
+}: {
+  value: number;
+  onChange: (minutes: number) => void;
+  plan?: boolean;
+  onPlan?: (on: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -506,15 +547,36 @@ function DraftMenu({ value, onChange }: { value: number; onChange: (minutes: num
           type="button"
           className="flex shrink-0 items-center gap-0.5 rounded px-1 font-normal text-muted-foreground/80 hover:bg-accent hover:text-foreground"
           title="Taslak: kısa araya girmeler ve molalar tek blokta görünür (bloklar ve zaman çizelgesi değişmez)"
-          aria-label={value > 0 ? `Taslak eşiği: ${value} dk` : "Taslak eşiği: ayrıntılı"}
+          aria-label={plan ? "Görünüm: gün planı" : value > 0 ? `Taslak eşiği: ${value} dk` : "Taslak eşiği: ayrıntılı"}
         >
-          {value > 0 ? `${value} dk` : "Ayrıntılı"}
+          {plan ? "yeni" : value > 0 ? `${value} dk` : "Ayrıntılı"}
           <ChevronDown className="size-3" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64 p-1.5">
+        {onPlan && (
+          <>
+            <button
+              type="button"
+              className="flex w-full items-start justify-between gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+              onClick={() => {
+                onPlan(!plan);
+                setOpen(false);
+              }}
+            >
+              <span>
+                <span className={cn("block", plan && "font-semibold")}>Gün planı (yeni, deneysel)</span>
+                <span className="block text-muted-foreground">
+                  Bloklar saklanır, kendi kendine bölünmez; boşluklar bloğun içinde kalır.
+                </span>
+              </span>
+              {plan && <span aria-hidden>✓</span>}
+            </button>
+            <div className="my-1 border-t" />
+          </>
+        )}
         <p className="px-2 pt-1 pb-1.5 text-xs text-muted-foreground">
-          Bundan kısa araya girmeler ve molalar ayrı blok sayılmaz, tek kutuda görünür.
+          Oturumlar: bundan kısa araya girmeler ve molalar ayrı blok sayılmaz, tek kutuda görünür.
         </p>
         {DRAFT_STEPS.map((m) => (
           <button
@@ -522,15 +584,16 @@ function DraftMenu({ value, onChange }: { value: number; onChange: (minutes: num
             type="button"
             className={cn(
               "flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-accent",
-              m === value && "font-semibold",
+              !plan && m === value && "font-semibold",
             )}
             onClick={() => {
+              if (plan) onPlan?.(false);
               onChange(m);
               setOpen(false);
             }}
           >
             <span>{m === 0 ? "Ayrıntılı: her blok ayrı" : `${m} dakika`}</span>
-            {m === value && <span aria-hidden>✓</span>}
+            {!plan && m === value && <span aria-hidden>✓</span>}
           </button>
         ))}
       </PopoverContent>

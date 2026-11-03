@@ -266,6 +266,24 @@ CREATE INDEX timesheet_marks_started_at ON timesheet_marks (started_at);
 CREATE INDEX timesheet_marks_unsynced ON timesheet_marks (updated_at)
     WHERE synced_at IS NULL OR synced_at < updated_at;
 "#,
+    r#"
+-- Gün planı (store::plan): kullanıcının onayladığı zaman blokları. Ham oturumlardan hesaplanmaz,
+-- yalnızca kullanıcı değiştirince değişir. Henüz eşitlenmez; sütunlar eşitlemeye hazır.
+CREATE TABLE plan_blocks (
+    id         TEXT PRIMARY KEY,
+    started_at INTEGER NOT NULL,
+    ended_at   INTEGER NOT NULL,
+    project_id TEXT,
+    note       TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    synced_at  INTEGER,
+    CHECK (ended_at > started_at)
+);
+CREATE INDEX plan_blocks_started_at ON plan_blocks (started_at);
+CREATE INDEX plan_blocks_unsynced ON plan_blocks (updated_at)
+    WHERE synced_at IS NULL OR synced_at < updated_at;
+"#,
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<()> {

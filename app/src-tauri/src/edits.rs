@@ -42,6 +42,12 @@ pub enum UndoOp {
         id: String,
         previous: Option<DateTime<Utc>>,
     },
+    /// Gün planının `[from, to)` aralığındaki önceki blokları.
+    Plan {
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        blocks: Vec<tracky_core::store::PlanBlock>,
+    },
 }
 
 /// Bir geri alma kaydı.
@@ -211,6 +217,7 @@ fn apply(store: &Store, op: &UndoOp) -> tracky_core::store::Result<()> {
         UndoOp::DeletedRule(rule) => store.restore_rule(rule),
         UndoOp::DeletedTag { id, at } => store.restore_tag(id, *at),
         UndoOp::Archived { id, previous } => store.set_tag_archived_at(id, *previous),
+        UndoOp::Plan { from, to, blocks } => store.replace_plan(*from, *to, blocks).map(|_| ()),
     }
 }
 

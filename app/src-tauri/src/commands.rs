@@ -4,7 +4,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tracky_core::search::SearchResult;
-use tracky_core::store::{EditScope, KnownDevice};
+use tracky_core::store::{EditScope, KnownDevice, PlanBlock};
 use tracky_core::suggest::Suggestions;
 use tracky_core::trends::Trends;
 use tracky_core::{
@@ -495,6 +495,78 @@ pub async fn set_range_project(
             crate::edits::rule_suggestion_after(&app, project_id.as_deref(), from, to, None);
     }
     Ok(edited)
+}
+
+/// Gün planının `[start, end)` aralığındaki blokları.
+#[tauri::command]
+pub async fn get_plan(app: AppHandle, start: String, end: String) -> CmdResult<Vec<PlanBlock>> {
+    let (from, to) = (parse_time(&start)?, parse_time(&end)?);
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    store.plan_between(from, to).map_err(err)
+}
+
+/// Plan kaydedilirken projesi değişen aralık: oturumları da o projeye geçer.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanAssign {
+    start: String,
+    end: String,
+    project_id: Option<String>,
+}
+
+/// Gün planını `[start, end)` için `blocks` yapar ([`tracky_core::Store::replace_plan`]).
+/// `assign` aralıklarındaki oturumlar da o projeye geçer: rapor ve zaman çizelgesi planı izler.
+/// Plan ve oturumlar birlikte geri alınır.
+#[tauri::command]
+pub async fn save_plan(
+    app: AppHandle,
+    start: String,
+    end: String,
+    blocks: Vec<PlanBlock>,
+    assign: Vec<PlanAssign>,
+) -> CmdResult<Edited> {
+    let (from, to) = (parse_time(&start)?, parse_time(&end)?);
+    let ranges = assign
+        .iter()
+        .map(|a| {
+            Ok((
+                parse_time(&a.start)?,
+                parse_time(&a.end)?,
+                a.project_id.clone(),
+            ))
+        })
+        .collect::<CmdResult<Vec<_>>>()?;
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let snap = store.snapshot_range(from, to).map_err(err)?;
+    let (previous, changed) = store
+        .atomic(|s| {
+            let previous = s.replace_plan(from, to, &blocks)?;
+            let mut n = 0;
+            for (a, b, project) in &ranges {
+                if b > a {
+                    n += s.set_project_in(*a, *b, project.as_deref(), None)?;
+                }
+            }
+            Ok((previous, n))
+        })
+        .map_err(err)?;
+    drop(store);
+    Ok(Edited::new(
+        changed.max(1),
+        record(
+            &app,
+            vec![
+                UndoOp::Sessions(snap),
+                UndoOp::Plan {
+                    from,
+                    to,
+                    blocks: previous,
+                },
+            ],
+        ),
+    ))
 }
 
 /// Takvim bloğunu projeye atar; `None` kurallara döndürür. Bloklar birleşmez: aynı projeye
