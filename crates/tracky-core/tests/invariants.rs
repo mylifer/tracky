@@ -1745,8 +1745,13 @@ fn lost_work(
                         .flatten(),
                 )
                 .collect();
+            // Aralığı bilinmeyen eski satır (önceki sürümde kaydedilen ya da aktarılan) projenin o
+            // günkü işinden bilerek düşülür (`without_legacy`): hangi bloğu kapsadığı bilinemez.
+            let legacy = rows.iter().any(|(_, r)| {
+                r.id.is_some() && r.entry.project_id == p && r.entry.coverage.is_none()
+            });
             for b in &blocks {
-                if b.sent != Some(true) || b.project_id.as_deref() != Some(p) {
+                if legacy || b.sent != Some(true) || b.project_id.as_deref() != Some(p) {
                     continue;
                 }
                 let span = [(b.start, b.end)];
