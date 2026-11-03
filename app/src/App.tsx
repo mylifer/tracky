@@ -44,7 +44,7 @@ const ClientReport = lazy(() => import("./pages/ClientReport"));
 const Timesheet = lazy(() => import("./pages/Timesheet"));
 const Review = lazy(() => import("./pages/Review"));
 const Settings = lazy(() => import("./pages/Settings"));
-import { savedStartView } from "./lib/startView";
+import { savedReportDate, saveReportDate, savedStartView } from "./lib/startView";
 import { useTauriEvent } from "./lib/useTauriEvent";
 
 const TITLES: Partial<Record<View, string>> = {
@@ -143,9 +143,13 @@ function Shell({ status, refresh }: { status: AppStatus; refresh: () => void }) 
   // Kenar çubuğu rozetleri (bekleyen öneriler, atanmamış süre, aktarılmamış günler).
   const badges = useSidebarBadges(view);
   const onSuggestions = badges.onSuggestions;
-  const [day, setDay] = useState(isoDate(today()));
-  const [week, setWeek] = useState(isoDate(startOfWeek(today())));
-  const [month, setMonth] = useState(isoDate(startOfMonth(today())));
+  // Son bakılan gün, hafta ve ay; sayfadan çıkıp girince ya da uygulama yeniden açılınca korunur.
+  const [day, setDay] = useState(() => savedReportDate("day") ?? isoDate(today()));
+  const [week, setWeek] = useState(() => savedReportDate("week") ?? isoDate(startOfWeek(today())));
+  const [month, setMonth] = useState(() => savedReportDate("month") ?? isoDate(startOfMonth(today())));
+  useEffect(() => saveReportDate("day", day), [day]);
+  useEffect(() => saveReportDate("week", week), [week]);
+  useEffect(() => saveReportDate("month", month), [month]);
   const [tracking, setTracking] = useState<TrackingStatus>(status.tracking);
   const [update, setUpdate] = useUpdate();
   const [palette, setPalette] = useState(false);
