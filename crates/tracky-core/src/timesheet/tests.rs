@@ -280,6 +280,23 @@ fn work_assigned_later_inside_a_saved_row_is_proposed() {
 }
 
 #[test]
+fn a_short_block_next_to_a_saved_row_is_its_own_row() {
+    let (classifier, names, config, sheet) = setup();
+    // 09:00–10:00 bloğunun satırı kaydedildi; araya başka projenin işi girdi, 10:10–10:20
+    // ayrı bir blok. Kayıtlı satıra 15 dk'dan yakın olsa da onun artığı değil: kendi satırı.
+    let sessions = [
+        s("Figma", "Trumore Loyalty — Figma", 0, 60, None),
+        s("Code", "kum — main.rs", 60, 70, None),
+        s("Figma", "Trumore Loyalty — Figma", 70, 80, None),
+    ];
+    let saved = HashMap::from([("tru".to_string(), vec![vec![(t(0), t(60))]])]);
+    let p = pieces(&sessions, &[], &classifier, &config, t(-540), t(900));
+    let got = propose(&p, &names, &sheet, &saved);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].spans(), vec![(t(70), t(80))]);
+}
+
+#[test]
 fn a_short_meeting_after_a_saved_one_is_still_proposed() {
     let (classifier, names, config, sheet) = setup();
     let first = (
