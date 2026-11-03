@@ -7,7 +7,8 @@
 //!
 //! Takvimdeki blok zaman çizelgesindeki satırdır: raporda (gün, hafta, ay) yapılan atama ve
 //! düzenlemeler doğrudan satırlara yansır. Yalnızca bir projeye düşen süre iş sayılır; projesi
-//! olan bloğun içindeki atanmamış süre de o projenindir. Aynı projedeki ardışık oturumlar
+//! olan bloğun içindeki (birkaç dakikalık, [`crate::blocks::SWITCH_MIN`]'den kısa) atanmamış
+//! süre de o projenindir. Aynı projedeki ardışık oturumlar
 //! (bilgisayarda, uzakta ya da görüşmede), aradaki boşluk `MERGE_GAP`'i geçmedikçe tek kayıt
 //! olur; türü en çok süreninkidir. Kaydın gerçek süresi boşluklar değil, oturumların toplam
 //! süresidir. Firmaya giden saat bu sürenin çeyrek saate
@@ -543,6 +544,9 @@ pub struct Piece {
     /// Oturumun takvim bloğu katılınan toplantının saatinde ([`named_by`]): bloğun satırının
     /// açıklaması yalnızca toplantının konusudur, pencere başlıkları değil.
     pub meeting_name: Option<String>,
+    /// Oturumun takvim bloğu (başı, sonu); toplantıda `None`. Kaydedilmiş satırın artığı
+    /// yalnızca satırla aynı bloktaki iştir ([`propose`]).
+    pub block: Option<Interval>,
 }
 
 /// Zaman çizelgesine gönderilen takvim blokları: yalnızca bunların işi (ve projesi belli
@@ -593,7 +597,8 @@ fn touches(spans: &[Interval], start: DateTime<Utc>, end: DateTime<Utc>) -> bool
 /// taşır ([`named_by`]).
 ///
 /// Takvimdeki blok zaman çizelgesindeki satırdır: projesi olan bloğun ([`crate::blocks`])
-/// içindeki atanmamış süre de o projenin işidir (takvimde bloğun süresine girer). Başka projeye
+/// içinde kalan kısa atanmamış süre de o projenin işidir (takvimde bloğun süresine girer);
+/// daha uzun atanmamış süre zaten ayrı, projesiz bloktur. Başka projeye
 /// ya da projesize atanmış süre bloğun projesine geçmez.
 pub fn pieces(
     sessions: &[Session],
@@ -635,6 +640,7 @@ pub fn pieces_with(
         .map(|b| (b.start, b.end))
         .collect();
     // Bilerek gönderilen blok çizelgede kendi satırıdır: içine düşen toplantı süresi bloğundur.
+    let block_spans: Vec<Interval> = all.iter().map(|b| (b.start, b.end)).collect();
     let chosen: Vec<Interval> = all
         .iter()
         .filter(|b| b.project_id.is_some() && sent.chosen(b.start, b.end))
@@ -667,6 +673,7 @@ pub fn pieces_with(
             block_start: false,
             sent: true,
             meeting_name: None,
+            block: None,
         }));
     }
     /// Projeli blok: başı, sonu, projesi ve (katılınan toplantının saatindeyse) adı.
@@ -715,6 +722,10 @@ pub fn pieces_with(
                         .iter()
                         .find(|(c, d, p, _)| *c < end && start < *d && *p == project)
                         .and_then(|(_, _, _, name)| name.clone()),
+                    block: block_spans
+                        .iter()
+                        .copied()
+                        .find(|&(c, d)| c < end && start < d),
                 }
             }));
         }
@@ -773,7 +784,8 @@ fn day_blocks(
 /// Gönderilmemiş parçalar ([`Piece::sent`]) yokmuş gibidir.
 /// `saved` proje başına kaydedilmiş (silinmişler dahil) satırların aralıklarıdır, satır satır:
 /// bu süre yeniden önerilmez. Kaydedilmiş satırın artığı `MIN_REMAINDER`'dan kısaysa önerilmez:
-/// satır kaydedilirken süren işin birkaç dakikası (satıra `MERGE_GAP`'ten yakın oturumlar) ya da
+/// satır kaydedilirken süren işin birkaç dakikası (satıra `MERGE_GAP`'ten yakın, satırla aynı
+/// takvim bloğundaki oturumlar; başka bloğun işi kısa da olsa kendi satırıdır) ya da
 /// bir kısmı kaydedilmiş toplantının uzayan ucu yeni iş sayılmaz. Satırın ilk ve son aralığı
 /// arasındaki boşluklara düşen süre ise satır kaydedilirken projenin değildi (raporda sonradan
 /// atandı): en az `MIN_ENTRY` ise kısa da olsa önerilir. Kaydedilmiş toplantının ardından gelen
@@ -800,6 +812,8 @@ pub fn propose(
         spans: Vec<Interval>,
         /// Parçalarından biri kaydedilmiş bir satırca kısaltıldı.
         trimmed: bool,
+        /// Parçalarının takvim blokları.
+        blocks: Vec<Interval>,
     }
     impl Run {
         fn new(p: &Piece, at: DateTime<Utc>) -> Self {
@@ -815,6 +829,7 @@ pub fn propose(
                 names: HashMap::new(),
                 spans: Vec::new(),
                 trimmed: false,
+                blocks: Vec::new(),
             }
         }
 
@@ -835,6 +850,11 @@ pub fn propose(
                 *self.names.entry(name.clone()).or_insert(Duration::zero()) += b - a;
             }
             self.spans.push((a, b));
+            if let Some(block) = p.block
+                && !self.blocks.contains(&block)
+            {
+                self.blocks.push(block);
+            }
         }
 
         /// Oturum kaydının türü en çok sürenidir; eşitlikte bilgisayarda çalışma.
@@ -953,7 +973,9 @@ pub fn propose(
     // Kaydedilmiş satırın artığı mı: oturumlarda satırla aynı kümedeki iş (satır kaydedilirken
     // süren işin birkaç dakikası), toplantıda aynı toplantının ucu. Kaydedilmeden önce de ayrı
     // satır olan iş (toplantının ya da elle bölünmüş bloğun yanındaki) artık değildir. Satırın
-    // kapladığı aralığa sonradan atanmış en az `MIN_ENTRY` iş de artık değildir.
+    // kapladığı aralığa sonradan atanmış en az `MIN_ENTRY` iş de artık değildir. Başka takvim
+    // bloğundaki iş de artık değildir: gönderilen her blok kendi satırına girer (yakında
+    // kaydedilmiş satır olsa da kısa blok kaybolmaz).
     let remainder = |r: &Run| {
         if r.meeting {
             return r.trimmed;
@@ -970,7 +992,11 @@ pub fn propose(
                 .filter(|(a, b)| b > a)
                 .map(|(a, b)| b - a)
                 .sum();
-            near && inside < MIN_ENTRY
+            let same_block = r
+                .blocks
+                .iter()
+                .all(|b| touches(cut, std::slice::from_ref(b)));
+            near && same_block && inside < MIN_ENTRY
         })
     };
     let mut out: Vec<TimesheetEntry> = runs

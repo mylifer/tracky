@@ -1129,6 +1129,20 @@ fn real_database_is_consistent() {
     let copy = std::env::temp_dir().join(format!("kum-invariants-{}.db", Uuid::new_v4()));
     Store::copy_database(std::path::Path::new(&source), &copy).unwrap();
     let store = Store::open(&copy).unwrap();
+    // Gizlenmiş satırlar: kullanıcının bilerek çıkardığı iş kayıp sayılmaz.
+    let db = rusqlite::Connection::open(&copy).unwrap();
+    let hidden_on = |date: NaiveDate| -> Vec<String> {
+        let mut stmt = db
+            .prepare(
+                "SELECT id FROM timesheet_entries
+                 WHERE deleted_at IS NULL AND dismissed_at IS NOT NULL AND date = ?1",
+            )
+            .unwrap();
+        stmt.query_map([date.to_string()], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
     let calendar = std::env::var("KUM_ICS")
         .ok()
         .map(|p| Calendar::parse(&std::fs::read_to_string(p).unwrap()));
@@ -1152,6 +1166,8 @@ fn real_database_is_consistent() {
         if date.weekday().num_days_from_monday() == 0 {
             bad.extend(check_span(&store, date, 7));
         }
+        // Gönderilen blokların işi bir satırda (satırlar kaydedilmeden önce).
+        bad.extend(lost_work(&store, date, &meetings, &hidden_on(date)));
         bad.extend(save_live_rows(&store, date, &meetings));
         if !bad.is_empty() {
             failures.push(format!("{date}:\n  {}", bad.join("\n  ")));
@@ -1159,6 +1175,7 @@ fn real_database_is_consistent() {
         date = date + Days::new(1);
     }
     drop(store);
+    drop(db);
     let _ = std::fs::remove_file(&copy);
     println!("{first} – {last} denetlendi");
     assert!(
@@ -1173,7 +1190,11 @@ fn real_database_is_consistent() {
 #[test]
 #[ignore = "SEED=… ile tek gün"]
 fn one_seed() {
-    let seed: u64 = std::env::var("SEED").unwrap().parse().unwrap();
+    let Ok(seed) = std::env::var("SEED") else {
+        println!("SEED verilmedi, atlandı");
+        return;
+    };
+    let seed: u64 = seed.parse().unwrap();
     let bad = run_seed(seed);
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
@@ -1586,9 +1607,11 @@ fn step(
                 .map_err(|e| e.to_string())
                 .and_then(|_| {
                     let after = day_blocks(store, date);
+                    // Birleşen blok: başı artık başka bir bloğun içinde. Başındaki projeye atanmış
+                    // boşta süre projesiz kalınca iş sayılmaz; blok o zaman birleşmeden kısalır.
                     let lost: Vec<_> = blocks
                         .iter()
-                        .filter(|b| !after.iter().any(|a| a.start == b.start))
+                        .filter(|b| after.iter().any(|a| a.start < b.start && b.start < a.end))
                         .map(|b| hm(b.start))
                         .collect();
                     lost.is_empty()
@@ -1672,6 +1695,7 @@ fn lost_work(
     let ctx = store.timesheet_context().unwrap();
     let pieces = store.timesheet_pieces(&ctx, from, to, meetings).unwrap();
     let rows = rows_of(store, date, meetings);
+    let blocks = store.report(from, to, &[from], true).unwrap().work.blocks;
     let mut bad = Vec::new();
     for sheet in &ctx.config.timesheets {
         for m in &sheet.projects {
@@ -1699,10 +1723,96 @@ fn lost_work(
             let left = minus(&work, &coalesce(covered));
             // Satıra girmeyen iş kümeleri (MERGE_GAP'e kadar boşlukla).
             let mut clusters: Vec<Vec<Interval>> = Vec::new();
-            for span in left {
+            for &span in &left {
                 match clusters.last_mut() {
                     Some(c) if span.0 - c.last().unwrap().1 <= MERGE_GAP => c.push(span),
                     _ => clusters.push(vec![span]),
+                }
+            }
+            // Gönderilen blok kendi satırıdır: bloğun işi, aynı bloğa değen kaydedilmiş satır
+            // yoksa (satır kaydedilirken süren işin artığı değilse) kısa da olsa satıra girer.
+            let saved: Vec<Interval> = rows
+                .iter()
+                .filter(|(_, r)| r.id.is_some() && r.entry.project_id == p)
+                .flat_map(|(_, r)| r.entry.spans())
+                .chain(
+                    hidden
+                        .iter()
+                        .filter_map(|id| {
+                            let s = store.timesheet_entry(id).unwrap()?;
+                            (s.entry.project_id == p).then(|| s.entry.spans())
+                        })
+                        .flatten(),
+                )
+                .collect();
+            // Aralığı bilinmeyen eski satır (önceki sürümde kaydedilen ya da aktarılan) projenin o
+            // günkü işinden bilerek düşülür (`without_legacy`): hangi bloğu kapsadığı bilinemez.
+            let legacy = rows.iter().any(|(_, r)| {
+                r.id.is_some() && r.entry.project_id == p && r.entry.coverage.is_none()
+            });
+            for b in &blocks {
+                if legacy || b.sent != Some(true) || b.project_id.as_deref() != Some(p) {
+                    continue;
+                }
+                let span = [(b.start, b.end)];
+                if !intersect(&saved, &span).is_empty() {
+                    continue;
+                }
+                // Satırlar gibi MERGE_GAP'e kadar boşlukla kümelenir: arada başka projenin uzun
+                // toplantısı kalınca iki yanındaki birkaç dakikalık kırıntı satır olamaz.
+                let mut missing: Vec<Vec<Interval>> = Vec::new();
+                for &x in &intersect(&left, &span) {
+                    match missing.last_mut() {
+                        Some(c) if x.0 - c.last().unwrap().1 <= MERGE_GAP => c.push(x),
+                        _ => missing.push(vec![x]),
+                    }
+                }
+                if let Some(c) = missing.iter().find(|c| total(c) >= MIN_ENTRY) {
+                    bad.push(format!(
+                        "kayıp blok: {p} bloğu {}–{} gönderildi ama {} sn işi satırda değil",
+                        hm(b.start),
+                        hm(b.end),
+                        total(c).num_seconds()
+                    ));
+                    // Nedenini bulmak için: bloğun parçaları ve projenin o günkü satırları.
+                    for x in pieces.iter().filter(|x| x.start < b.end && b.start < x.end) {
+                        bad.push(format!(
+                            "    parça {} {}–{} gönderildi={} toplantı={}",
+                            if x.project == p {
+                                "aynı proje"
+                            } else {
+                                "başka proje"
+                            },
+                            hm(x.start),
+                            hm(x.end),
+                            x.sent,
+                            x.meeting.is_some()
+                        ));
+                    }
+                    for (_, r) in rows.iter().filter(|(_, r)| r.entry.project_id == p) {
+                        bad.push(format!(
+                            "    satır {} {:.2} sa {:?} {} {}",
+                            r.entry.start,
+                            r.entry.hours,
+                            r.entry.kind,
+                            match (&r.id, r.exported) {
+                                (None, _) => "canlı",
+                                (Some(_), true) => "aktarılmış",
+                                (Some(_), false) => "kayıtlı",
+                            },
+                            if r.entry.coverage.is_some() {
+                                "aralıklı"
+                            } else {
+                                "ESKİ (aralıksız)"
+                            }
+                        ));
+                    }
+                    for m in meetings
+                        .iter()
+                        .filter(|m| m.start < b.end && b.start < m.end)
+                    {
+                        bad.push(format!("    toplantı {}–{}", hm(m.start), hm(m.end)));
+                    }
                 }
             }
             for c in clusters {

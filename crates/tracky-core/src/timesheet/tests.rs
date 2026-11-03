@@ -103,8 +103,8 @@ fn a_calendar_block_is_one_row() {
     let (classifier, names, config, sheet) = setup();
     let sessions = [
         s("Figma", "Trumore Loyalty UI/UX — Figma", 0, 50, None),
-        s("Slack", "#genel", 50, 55, None), // atanmamış: bloğun projesine girer
-        s("Figma", "Trumore Loyalty UI/UX — Figma", 55, 80, None),
+        s("Slack", "#genel", 50, 52, None), // kısa atanmamış süre: bloğun projesine girer
+        s("Figma", "Trumore Loyalty UI/UX — Figma", 52, 80, None),
         s("Slack", "#kişisel", 80, 90, Some(NO_PROJECT)), // projesiz: girmez
         s("us.zoom.xos", "Zoom Meeting", 90, 120, Some("tru")), // görüşme: aynı satır
         s("Figma", "Trumore Pitchdeck — Figma", 150, 170, None), // 30 dk boşluk: yeni blok
@@ -162,7 +162,7 @@ fn a_split_block_is_two_rows() {
     let sessions = [
         s("Figma", "Trumore Loyalty — Figma", 0, 60, None),
         after,
-        s("Slack", "#genel", 120, 125, None), // atanmamış: bölünen ikinci bloğa girer
+        s("Slack", "#genel", 120, 125, None), // atanmamış 5 dk: bloğa da satıra da girmez
     ];
     let got = day(&sessions, &[], &classifier, &names, &config, &sheet);
     let rows: Vec<_> = got
@@ -174,7 +174,7 @@ fn a_split_block_is_two_rows() {
             )
         })
         .collect();
-    assert_eq!(rows, [("09:00".to_string(), 60), ("10:00".to_string(), 65)]);
+    assert_eq!(rows, [("09:00".to_string(), 60), ("10:00".to_string(), 60)]);
 }
 
 #[test]
@@ -277,6 +277,23 @@ fn work_assigned_later_inside_a_saved_row_is_proposed() {
     tail.push(s("Figma", "Trumore Loyalty — Figma", 60, 70, None));
     let p = pieces(&tail, &[], &classifier, &config, t(-540), t(900));
     assert!(propose(&p, &names, &sheet, &saved).is_empty());
+}
+
+#[test]
+fn a_short_block_next_to_a_saved_row_is_its_own_row() {
+    let (classifier, names, config, sheet) = setup();
+    // 09:00–10:00 bloğunun satırı kaydedildi; araya başka projenin işi girdi, 10:10–10:20
+    // ayrı bir blok. Kayıtlı satıra 15 dk'dan yakın olsa da onun artığı değil: kendi satırı.
+    let sessions = [
+        s("Figma", "Trumore Loyalty — Figma", 0, 60, None),
+        s("Code", "kum — main.rs", 60, 70, None),
+        s("Figma", "Trumore Loyalty — Figma", 70, 80, None),
+    ];
+    let saved = HashMap::from([("tru".to_string(), vec![vec![(t(0), t(60))]])]);
+    let p = pieces(&sessions, &[], &classifier, &config, t(-540), t(900));
+    let got = propose(&p, &names, &sheet, &saved);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].spans(), vec![(t(70), t(80))]);
 }
 
 #[test]

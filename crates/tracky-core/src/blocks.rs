@@ -6,10 +6,11 @@
 //!   değiştikçe bölünen bloklar bir öğleden sonrayı 23 parçaya ayırıyordu). Bloğun projesine
 //!   atanmış iş, arada `timesheet::MERGE_GAP`'i geçmeyen boşluk olsa da aynı bloktur: zaman
 //!   çizelgesindeki satır gibi.
-//! - **Projeye göre bölme:** bloğun projesinden (yarısını kaplayan; yoksa projesiz) başka
-//!   projeye atanmış, en az `SWITCH_MIN` süren kısım kategorisi aynı olsa da ayrı bloktur
-//!   ([`split_projects`]). O projenin kısımları arasındaki `MERGE_GAP`'i geçmeyen atanmamış
-//!   süre o blokta kalır; bloğun projesindeki atanmamış süre bloğun kendisidir.
+//! - **Projeye göre bölme:** projeli blok yalnızca o projeye atanmış süredir: başka projeye
+//!   atanmış ya da atanmamış, en az `SWITCH_MIN` süren kısım kategorisi aynı olsa da ayrı
+//!   bloktur ([`split_projects`]). Projenin süresi bloğunun süresidir: 58 ve 8 dakikalık iki
+//!   oyunun arasında 37 dakika tarayıcıda geçince oyun bloğu 1 sa 43 dk görünmez. Yalnızca
+//!   `SWITCH_MIN`'den kısa araya girmeler (oyun sırasında bir mesaja bakmak) blokta kalır.
 //! - **Elle bölme:** blok kısaltılınca kesilen kısım silinmez; o anda başlayan dilim
 //!   ([`Activity::block_start`]) önceki bloğa katılmaz, yeni blok başlatır.
 //! - **Mola:** iki blok arasındaki `BREAK_GAP`–`LONG_GAP` arası boşluk (gece gibi
@@ -176,20 +177,14 @@ fn close(b: Builder, blocks: &mut Vec<WorkBlock>, breaks: &mut i64) {
     blocks.extend(parts);
 }
 
-/// Bloğun dilimleri (sıralı), bloğun projesinden (`project`) başka projeye atanmış en az
-/// `SWITCH_MIN` süren kısımlarından bölünmüş. Daha kısa araya girmeler bölmez. Aynı projenin
-/// kısımları arasındaki atanmamış süre, `MERGE_GAP`'i geçmiyorsa ve kısmın en az yarısı yine
-/// o projede kalıyorsa o kısımdadır (aradaki boşlukta olduğu gibi). Bölünecek bir şey yoksa
-/// tek parça döner.
-fn split_projects<'s>(
-    items: &[&'s Activity<'s>],
-    project: Option<&str>,
-) -> Vec<Vec<&'s Activity<'s>>> {
+/// Bloğun dilimleri (sıralı), projesi değişen en az `SWITCH_MIN` süren kısımlarından bölünmüş:
+/// atanmamış süre de projeli kısımdan ayrılır. Daha kısa araya girmeler bölmez; aynı projeye
+/// dönülen kısa araya girme o projenin kısmına katılır. Bölünecek bir şey yoksa tek parça döner.
+fn split_projects<'s>(items: &[&'s Activity<'s>]) -> Vec<Vec<&'s Activity<'s>>> {
     struct Run<'s> {
         project: Option<&'s str>,
         items: Vec<&'s Activity<'s>>,
         start: DateTime<Utc>,
-        end: DateTime<Utc>,
         /// Dilimlerin süresi (aradaki boşluklar hariç).
         length: Duration,
         /// Bunun `project`'e atanmış kısmı.
@@ -201,7 +196,6 @@ fn split_projects<'s>(
                 project: i.project,
                 items: vec![i],
                 start: i.start,
-                end: i.end,
                 length: i.end - i.start,
                 owned: i.end - i.start,
             }
@@ -211,10 +205,9 @@ fn split_projects<'s>(
                 self.owned += other.owned;
             }
             self.items.extend(other.items);
-            self.end = self.end.max(other.end);
             self.length += other.length;
         }
-        /// Kısmın ağırlığı: başka projenin kısmıysa o projede geçen süre.
+        /// Kısmın ağırlığı: projeliyse o projede geçen süre.
         fn weight(&self) -> Duration {
             if self.project.is_some() {
                 self.owned
@@ -232,22 +225,16 @@ fn split_projects<'s>(
             _ => runs.push(Run::new(i)),
         }
     }
-    // Bloğun projesi dışında bir proje yoksa bölünecek bir şey yok.
-    let foreign = |p: Option<&'s str>| p.filter(|p| Some(*p) != project);
-    if runs.iter().all(|r| foreign(r.project).is_none()) {
+    if runs.len() < 2 {
         return vec![items.to_vec()];
     }
 
-    // Aynı projeye dönülen araya girmeler o projenin kısmına katılır.
+    // Aynı projeye dönülen kısa araya girmeler o projenin kısmına katılır.
     let mut joined: Vec<Run> = Vec::new();
     for r in runs {
         if let [.., prev, mid] = joined.as_slice()
             && prev.project == r.project
-            && (mid.length < SWITCH_MIN
-                || (r.project.is_some()
-                    && mid.project.is_none()
-                    && r.start - prev.end <= crate::timesheet::MERGE_GAP
-                    && (prev.owned + r.owned) * 2 >= prev.length + mid.length + r.length))
+            && mid.length < SWITCH_MIN
         {
             let mid = joined.pop().expect("araya giren var");
             let prev = joined.last_mut().expect("önceki var");
@@ -258,10 +245,9 @@ fn split_projects<'s>(
         joined.push(r);
     }
 
-    // Bloğun projesi ve atanmamış süre bir arada kalır; kalan kısa kısımlar komşusuna katılır.
+    // Kalan kısa kısımlar komşusuna katılır.
     let mut parts: Vec<Run> = Vec::new();
-    for mut r in joined {
-        r.project = foreign(r.project);
+    for r in joined {
         let first = parts.len() == 1;
         match parts.last_mut() {
             Some(p) if r.weight() < SWITCH_MIN || p.project == r.project => p.absorb(r),
@@ -355,9 +341,9 @@ impl<'s> Builder<'s> {
             .map(|(p, _)| p.clone())
     }
 
-    /// Blok; başka projeye atanmış kısımları ayrı bloklar olur ([`split_projects`]).
+    /// Blok; projesi değişen kısımları ayrı bloklar olur ([`split_projects`]).
     fn finish(self) -> Vec<WorkBlock> {
-        let parts = split_projects(&self.items, self.project_id().as_deref());
+        let parts = split_projects(&self.items);
         if parts.len() < 2 {
             return vec![self.block()];
         }
@@ -483,7 +469,8 @@ mod tests {
         ];
         let s = analyze(&items);
         let projects: Vec<_> = s.blocks.iter().map(|b| b.project_id.as_deref()).collect();
-        assert_eq!(projects, [Some("kum"), None]);
+        // İlk bloğun atanmamış 20 dk'sı ayrı (projesiz) bloktur.
+        assert_eq!(projects, [Some("kum"), None, None]);
     }
 
     #[test]
@@ -494,7 +481,7 @@ mod tests {
             p(a("Game", None, 30, 60), Some("lol")),
             a("Firefox", None, 60, 62), // kısa araya girme
             p(a("Game", None, 62, 80), Some("lol")),
-            a("Launcher", None, 80, 85), // projenin kısımları arasında atanmamış süre
+            a("Launcher", None, 80, 85), // projenin kısımları arasında atanmamış süre: ayrılır
             p(a("Game", None, 85, 90), Some("lol")),
             a("Firefox", None, 90, 150),
         ];
@@ -503,19 +490,50 @@ mod tests {
             spans(&s),
             [
                 (t(0), t(30), None),
-                (t(30), t(90), Some("lol")),
+                (t(30), t(80), Some("lol")),
+                (t(80), t(85), None),
+                (t(85), t(90), Some("lol")),
                 (t(90), t(150), None),
             ]
         );
-        assert_eq!(s.blocks[1].active_seconds, 60 * 60);
+        assert_eq!(s.blocks[1].active_seconds, 50 * 60);
         assert_eq!(s.break_seconds, 0);
+    }
+
+    #[test]
+    fn project_block_is_only_the_projects_time() {
+        // 58 ve 8 dk'lık iki oyun, aralarında ve sonrasında tarayıcı/Discord; mola yok.
+        // Oyun ilk analizdeki bloğun yarısından fazlası olsa da atanmamış süre oyuna geçmez.
+        let items = [
+            p(a("Game", Some("game"), 0, 58), Some("lol")),
+            a("Firefox", Some("web"), 58, 80),
+            p(a("Game", Some("game"), 80, 88), Some("lol")),
+            a("Discord", Some("comm"), 88, 103),
+        ];
+        let s = analyze(&items);
+        assert_eq!(
+            spans(&s),
+            [
+                (t(0), t(58), Some("lol")),
+                (t(58), t(80), None),
+                (t(80), t(88), Some("lol")),
+                (t(88), t(103), None),
+            ]
+        );
+        let lol: i64 = s
+            .blocks
+            .iter()
+            .filter(|b| b.project_id.as_deref() == Some("lol"))
+            .map(|b| b.active_seconds)
+            .sum();
+        assert_eq!(lol, 66 * 60);
     }
 
     #[test]
     fn other_project_leaves_a_project_block() {
         let items = [
             p(a("Code", Some("dev"), 0, 40), Some("kum")),
-            a("Code", Some("dev"), 40, 55), // bloğun projesinde atanmamış süre: blokta kalır
+            a("Code", Some("dev"), 40, 55), // atanmamış süre: projeli bloktan ayrılır
             p(a("Code", Some("dev"), 55, 100), Some("kum")),
             p(a("Code", Some("dev"), 100, 102), Some("x")), // kısa: bölmez
             p(a("Code", Some("dev"), 102, 140), Some("kum")),
@@ -526,7 +544,9 @@ mod tests {
         assert_eq!(
             spans(&s),
             [
-                (t(0), t(140), Some("kum")),
+                (t(0), t(40), Some("kum")),
+                (t(40), t(55), None),
+                (t(55), t(140), Some("kum")),
                 (t(140), t(160), Some("x")),
                 (t(160), t(200), Some("kum")),
             ]
@@ -563,12 +583,18 @@ mod tests {
             p(a("Slack", Some("comm"), 20, 40), Some("kum")), // başka kategori, aynı proje
             p(a("Code", Some("dev"), 50, 60), Some("kum")),   // 10 dk boşluk: aynı blok
             p(a("Code", Some("dev"), 80, 90), Some("kum")),   // 20 dk boşluk: yeni blok
-            p(a("Slack", Some("comm"), 90, 100), None),       // projesiz, molasız: blokta kalır
+            p(a("Slack", Some("comm"), 90, 92), None),        // kısa atanmamış: blokta kalır
+            p(a("Slack", Some("comm"), 92, 102), Some("kum")),
+            p(a("Slack", Some("comm"), 102, 110), None), // uzun atanmamış: ayrılır
         ];
         let s = analyze(&items);
         assert_eq!(
             spans(&s),
-            [(t(0), t(60), Some("kum")), (t(80), t(100), Some("kum"))]
+            [
+                (t(0), t(60), Some("kum")),
+                (t(80), t(102), Some("kum")),
+                (t(102), t(110), None),
+            ]
         );
         assert_eq!(s.blocks[0].active_seconds, 50 * 60);
     }
