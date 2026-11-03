@@ -1,18 +1,63 @@
 name: Sürüm
 
-# `v0.2.0` gibi bir etiket push'landığında Mac ve Windows paketlerini
-# derleyip imzalı güncelleme dosyalarıyla bir GitHub Release'e ekler.
+# Mac ve Windows paketlerini derleyip imzalı güncelleme dosyalarıyla bir GitHub Release'e ekler.
+# İki yoldan başlar:
+# - `v0.2.0` gibi bir etiket push'lanınca.
+# - Bir dala sürümü artıran commit push'lanınca: `tauri.conf.json`'daki sürümün etiketi yoksa ve
+#   en son sürümden yeniyse etiketi bu iş akışı oluşturur. Claude oturumları yalnızca kendi
+#   dallarına yazabildiği için sürümü böyle çıkarır.
 on:
   push:
     tags: ["v*"]
+    branches: ["**"]
+    paths:
+      - app/src-tauri/tauri.conf.json
+      - .github/workflows/release.yml
 
 permissions:
   contents: write
 
+# Aynı anda iki dal aynı sürümü etiketlemeye kalkmasın.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  # Yayınlanacak etiket; boşsa (sürüm zaten etiketli ya da eski) yayın yapılmaz.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - id: tag
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="v$(jq -r .version app/src-tauri/tauri.conf.json)"
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$tag")" ]; then
+            echo "$tag zaten var; yayın yapılmıyor."
+            exit 0
+          fi
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$tag" | sort -V | tail -1)" != "$tag" ]; then
+            echo "$tag en son sürümden ($latest) eski; yayın yapılmıyor."
+            exit 0
+          fi
+          # GITHUB_TOKEN ile push'lanan etiket bu iş akışını yeniden başlatmaz; yayın burada sürer.
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   # Sürüm notları: önceki etiketten bu yana feat/fix/perf commit'leri. Uygulama kurulan sürümün
   # notlarını ilk açılışta "Yenilikler" olarak gösterir (latest.json'daki `notes`).
   notes:
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
     runs-on: ubuntu-latest
     outputs:
       body: ${{ steps.notes.outputs.body }}
@@ -21,16 +66,18 @@ jobs:
         with:
           fetch-depth: 0
       - id: notes
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           {
             echo 'body<<NOTES_EOF'
-            python3 .github/scripts/release-notes.py "$GITHUB_REF_NAME"
+            python3 .github/scripts/release-notes.py "$TAG"
             echo 'NOTES_EOF'
           } >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.os }}
-    needs: notes
+    needs: [prepare, notes]
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +87,8 @@ jobs:
           - os: windows-latest
             bundles: nsis
     runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
@@ -55,10 +104,10 @@ jobs:
       - name: Sürüm numarası etiketle aynı mı?
         shell: bash
         run: |
-          want="${GITHUB_REF_NAME#v}"
+          want="${TAG#v}"
           have=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
           if [ "$want" != "$have" ]; then
-            echo "Etiket $GITHUB_REF_NAME ama tauri.conf.json sürümü $have" >&2
+            echo "Etiket $TAG ama tauri.conf.json sürümü $have" >&2
             exit 1
           fi
 
@@ -89,8 +138,8 @@ jobs:
           KUM_SUPABASE_ANON_KEY: ${{ vars.KUM_SUPABASE_ANON_KEY }}
         with:
           projectPath: app
-          tagName: ${{ github.ref_name }}
-          releaseName: Kum ${{ github.ref_name }}
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: Kum ${{ needs.prepare.outputs.tag }}
           releaseBody: ${{ needs.notes.outputs.body }}
           releaseDraft: true
           prerelease: false
@@ -104,10 +153,11 @@ jobs:
 
   # Uygulama içi güncelleyici `releases/latest`'i okur; taslaklar orada görünmez.
   publish:
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
       - name: Release'i yayınla
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
