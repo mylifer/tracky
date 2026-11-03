@@ -95,3 +95,18 @@ test("Gün: blok kenarı uzun uygulama kullanımının sınırına yapışır, �
   const [call] = await app.calls("resize_block");
   expect(new Date(call.args.newEnd as string).toISOString()).toBe(new Date("2026-10-07T12:30:00+03:00").toISOString());
 });
+
+test("Zaman çizelgesi: ayı kapatırken takip edilen süreden dosyaya döküm gösterilir", async ({ app, page }) => {
+  await app.open("Zaman çizelgesi");
+  await page.getByRole("tablist", { name: "Görünüm" }).getByRole("tab", { name: "Ay" }).click();
+  await page.getByRole("button", { name: "Ayı kapat" }).click();
+  const panel = page.getByRole("region", { name: "Ayı kapat: denetim" });
+  await expect(panel.getByText("Takip edilen süreden Excel'e")).toBeVisible();
+  await expect(panel.getByText("Satırların gerçek süresi")).toBeVisible();
+  // Konular tek satırlık özettir; tıklayınca günler açılır.
+  const unassigned = panel.getByRole("button", { name: /Projeye atanmamış süre/ });
+  await expect(unassigned).toHaveAttribute("aria-expanded", "false");
+  await unassigned.click();
+  await expect(panel.getByRole("button", { name: "gözden geçir" })).toBeVisible();
+  if (process.env.SHOT) await panel.screenshot({ path: process.env.SHOT });
+});

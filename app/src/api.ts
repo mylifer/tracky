@@ -333,6 +333,12 @@ export type TimesheetDay = {
   entries: EntryView[];
   /** Gizlenen (silinen) satır sayısı. */
   hidden: number;
+  /** Gizlenen satırların gerçek süresi (saat). */
+  hiddenHours: number;
+  /** Çizelgenin projelerinde takip edilen süre (saniye), takvim bloğu gönderilmiş olsun olmasın. */
+  trackedSeconds: number;
+  /** Bunun takvim bloğu çizelgeye gönderilmemiş kısmı (saniye): satır olmaz. */
+  unsentSeconds: number;
   /** Projeye atanmamış takip edilen süre (saniye). */
   unassignedSeconds: number;
   /** Hiçbir projeye düşmeyen takvim toplantıları. */
