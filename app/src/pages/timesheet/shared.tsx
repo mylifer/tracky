@@ -46,6 +46,8 @@ export const MODES: { id: Mode; label: string; current: string; close: string }[
 export const MODE_KEY = "kum.timesheet.mode";
 /** Son açılan zaman çizelgesi (birden çok firma varsa). */
 export const SHEET_KEY = "kum.timesheet.sheet";
+/** Son bakılan gün; sayfadan çıkıp girince görünüm bu günün etrafında açılır. */
+export const ANCHOR_KEY = "kum.timesheet.anchor";
 const longDate = new Intl.DateTimeFormat("tr-TR", {
   weekday: "long",
   day: "numeric",
@@ -61,6 +63,16 @@ export function savedMode(): Mode {
     // Depolama kapalıysa varsayılan.
   }
   return "week";
+}
+
+export function savedAnchor(): string | null {
+  try {
+    const v = localStorage.getItem(ANCHOR_KEY);
+    if (v && /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  } catch {
+    // Depolama kapalıysa bugün.
+  }
+  return null;
 }
 
 export function savedSheet(): string | null {

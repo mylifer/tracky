@@ -19,3 +19,22 @@ export function saveStartView(v: StartView) {
     /* depolama kapalıysa yalnızca bu oturumda */
   }
 }
+
+/** Gün/Hafta/Ay raporunda son bakılan tarih; uygulama yeniden açılınca da korunur. */
+export function savedReportDate(mode: "day" | "week" | "month"): string | null {
+  try {
+    const v = localStorage.getItem(`kum.report.${mode}`);
+    if (v && /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  } catch {
+    /* depolama kapalıysa bugün */
+  }
+  return null;
+}
+
+export function saveReportDate(mode: "day" | "week" | "month", iso: string) {
+  try {
+    localStorage.setItem(`kum.report.${mode}`, iso);
+  } catch {
+    /* hatırlanmasa da olur */
+  }
+}
