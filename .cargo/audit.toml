@@ -2,13 +2,16 @@
 # Yeni bir uyarı ya da buradakilerin etkilediği bir kullanım çıkarsa iş akışı düşer.
 [advisories]
 ignore = [
-    # zip ≤ 8: arşiv çıkarırken sembolik bağ ve izinler (ZipArchive::extract). zip 2.x umya-
-    # spreadsheet'ten (yalnızca kullanıcının seçtiği xlsx okunur/yazılır, extract çağrılmaz),
-    # 4.x tauri-plugin-updater'dan (paket imzası doğrulanmadan açılmaz). Düzeltmesi zip 9: üst
-    # projeler geçince kaldır.
+    # zip ≤ 8: arşiv çıkarırken sembolik bağ, izinler ve büyük boyutlu sembolik bağda süreç
+    # çökmesi (hepsi ZipArchive::extract). tauri-plugin-updater 2.14.1 ile zip 9'a geçti; geriye
+    # yalnızca umya-spreadsheet 2.3.3'ün zip 2.4.2'si kaldı. umya girdileri yalnızca adıyla okur
+    # (by_name), extract hiç çağrılmaz; çalışma alanında zip'i doğrudan kullanan başka crate yok.
+    # Kararlı umya sürümlerinden zip 9 kullanan yok (3.x zip 8, 4.0 henüz beta): umya zip 9'lu
+    # kararlı sürüme geçince kaldır.
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    "RUSTSEC-2026-0429",
     # quick-xml < 0.41: kötü niyetli XML ile bellek/CPU tüketimi. Yalnızca umya-spreadsheet ve
     # kullanıcının kendi zaman çizelgesi dosyası; düzeltmesi umya 3.x'e geçiş.
     "RUSTSEC-2026-0194",
