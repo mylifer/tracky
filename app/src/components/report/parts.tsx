@@ -7,6 +7,7 @@ import { DeviceIcon } from "../DeviceIcon";
 import { tagColor, UNASSIGNED } from "../../lib/tags";
 import { cn } from "../../lib/utils";
 import { stepZoom } from "../../lib/zoom";
+import { DRAFT_DEFAULT, DRAFT_STEPS } from "../../lib/draft";
 import { Dot } from "../Breakdown";
 import { type ColorLens, HATCH } from "../Calendar";
 import { Button } from "../ui/button";
@@ -231,6 +232,32 @@ export function ProjectLegend({ buckets, tags }: { buckets: Bucket[]; tags: Map<
       })}
     </ul>
   );
+}
+
+const DRAFT_KEY = "kum.draftMinutes";
+
+/** Gün takviminde taslak eşiği (dk; 0: ayrıntılı); tercih bu cihazda hatırlanır. */
+export function useDraftMinutes(): [number, (v: number) => void] {
+  const [minutes, setMinutes] = useState(() => {
+    try {
+      const v = localStorage.getItem(DRAFT_KEY);
+      const n = v === null ? DRAFT_DEFAULT : Number(v);
+      return (DRAFT_STEPS as readonly number[]).includes(n) ? n : DRAFT_DEFAULT;
+    } catch {
+      return DRAFT_DEFAULT;
+    }
+  });
+  return [
+    minutes,
+    (v) => {
+      setMinutes(v);
+      try {
+        localStorage.setItem(DRAFT_KEY, String(v));
+      } catch {
+        /* depolama kapalıysa yalnızca bu oturumda */
+      }
+    },
+  ];
 }
 
 const LENS_KEY = "kum.calendarLens";

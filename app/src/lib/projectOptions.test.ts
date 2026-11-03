@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Tag } from "../api";
-import { projectGroups, readRecent, withRecent } from "./projectOptions";
+import { projectGroups, quickProjects, readRecent, withRecent } from "./projectOptions";
 
 const tag = (id: string, name: string): Tag => ({ id, kind: "project", name, color: 1 });
 const projects = [tag("a", "Portal"), tag("b", "Mobil"), tag("c", "İç araçlar"), tag("d", "Bakım"), tag("e", "Web")];
@@ -43,5 +43,22 @@ describe("proje seçicinin grupları", () => {
     expect(withRecent(["a", "b", "c"], "c")).toEqual(["c", "a", "b"]);
     // Depolama yoksa boş liste (hata fırlatmaz).
     expect(readRecent()).toEqual([]);
+  });
+});
+
+describe("aralık menüsünün tek tıklık projeleri", () => {
+  const all = [tag("c", "Çorum"), tag("a", "Ankara"), tag("b", "Bursa"), tag("d", "Denizli"), tag("e", "Edirne")];
+
+  it("önce son seçilenler, sonra adına göre; en çok dört", () => {
+    expect(quickProjects(all, ["e", "b"]).map((p) => p.id)).toEqual(["e", "b", "a", "c"]);
+  });
+
+  it("arşivdeki ve silinmiş projeleri atlar", () => {
+    const archived = { ...tag("x", "Arşiv"), archived: true };
+    expect(quickProjects([...all, archived], ["x", "gone"]).map((p) => p.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("proje yoksa boş", () => {
+    expect(quickProjects([], ["a"])).toEqual([]);
   });
 });

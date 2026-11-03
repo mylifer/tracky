@@ -1,4 +1,4 @@
-import { PORTAL, SHEET } from "./backend";
+import { PORTAL, SHEET, TRUMORE } from "./backend";
 import { expect, test } from "./fixtures";
 
 test("Gözden geçir: grup önerilen projeye tek tuşla atanır", async ({ app, page }) => {
@@ -70,8 +70,56 @@ test("Gün: Pencereler sütunu her pencereyi saatinde gösterir, tıklanan yaln�
   await expect(menu).toContainText("Yalnızca Visual Studio Code · portal — api.ts");
 });
 
+test("Gün: taslak kısa araya girmeyi tek kutuda gösterir, parçalar açılabilir", async ({ app, page }) => {
+  await app.open("Gün");
+  // 09:00–11:00 portal ve ardından 30 dk projesiz Safari: 15 dk eşikte tek taslak.
+  const draft = page.locator("[data-draft]");
+  await expect(draft).toHaveCount(1);
+  await expect(draft).toContainText("2 parça");
+  await expect(page.getByRole("button", { name: "Hacker News 30dk", exact: true })).toHaveCount(0);
+  await draft.click();
+  await expect(page.getByRole("dialog")).toContainText("09:00 – 11:30");
+  await page.getByRole("button", { name: "Parçaları aç" }).click();
+  await expect(draft).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Hacker News 30dk", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Topla" }).click();
+  await expect(draft).toHaveCount(1);
+});
+
+test("Gün: sürüklenen aralık tek tıkla (ya da 1–4 tuşuyla) projeye atanır; ipucu ilk sürüklemede kalkar", async ({
+  app,
+  page,
+}) => {
+  await app.open("Gün");
+  const hint = page.getByText(/Oturumlar sütununda yukarıdan aşağı sürükle/);
+  await expect(hint).toBeVisible();
+  // Taslak 09:00–11:30; ardından 12:30'a kadar boş.
+  const box = (await page.locator("[data-draft]").boundingBox())!;
+  const hourPx = (box.height + 2) / 2.5;
+  const x = box.x + box.width / 2;
+  const bottom = box.y + box.height;
+  await page.mouse.move(x, bottom + hourPx * 0.1);
+  await page.mouse.down();
+  await page.mouse.move(x, bottom + hourPx * 0.85, { steps: 6 });
+  await expect(page.getByText("Bırak: projeye ata")).toBeVisible();
+  await page.mouse.up();
+  const menu = page.getByRole("dialog", { name: "Seçilen aralık" });
+  const quick = menu.getByRole("group", { name: "Projeye ata" });
+  await expect(quick.getByRole("button")).toHaveText(["Portal1", "Trumore2"]);
+  await expect(hint).toHaveCount(0);
+  await page.keyboard.press("2");
+  await expect(menu).toHaveCount(0);
+  const [call] = await app.calls("set_range_project");
+  expect(call.args.projectId).toBe(TRUMORE);
+});
+
 test("Gün: blok kenarı uzun uygulama kullanımının sınırına yapışır, ⌥ basılıyken yapışmaz", async ({ app, page }) => {
   await app.open("Gün");
+  // Kenar sürükleme tek tek bloklarda: taslak kapatılır.
+  await page.getByRole("button", { name: "Taslak eşiği: 15 dk" }).click();
+  await page.getByRole("button", { name: "Ayrıntılı: her blok ayrı" }).click();
+  // Menü kapanırken sürükleme onun üstünde başlamasın.
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   // Safari 11:00–11:30; Visual Studio Code 12:30'da yeniden başlıyor.
   const block = page.getByRole("button", { name: "Hacker News 30dk", exact: true });
   const box = (await block.boundingBox())!;
@@ -94,4 +142,19 @@ test("Gün: blok kenarı uzun uygulama kullanımının sınırına yapışır, �
   await page.mouse.up();
   const [call] = await app.calls("resize_block");
   expect(new Date(call.args.newEnd as string).toISOString()).toBe(new Date("2026-10-07T12:30:00+03:00").toISOString());
+});
+
+test("Zaman çizelgesi: ayı kapatırken takip edilen süreden dosyaya döküm gösterilir", async ({ app, page }) => {
+  await app.open("Zaman çizelgesi");
+  await page.getByRole("tablist", { name: "Görünüm" }).getByRole("tab", { name: "Ay" }).click();
+  await page.getByRole("button", { name: "Ayı kapat" }).click();
+  const panel = page.getByRole("region", { name: "Ayı kapat: denetim" });
+  await expect(panel.getByText("Takip edilen süreden Excel'e")).toBeVisible();
+  await expect(panel.getByText("Satırların gerçek süresi")).toBeVisible();
+  // Konular tek satırlık özettir; tıklayınca günler açılır.
+  const unassigned = panel.getByRole("button", { name: /Projeye atanmamış süre/ });
+  await expect(unassigned).toHaveAttribute("aria-expanded", "false");
+  await unassigned.click();
+  await expect(panel.getByRole("button", { name: "gözden geçir" })).toBeVisible();
+  if (process.env.SHOT) await panel.screenshot({ path: process.env.SHOT });
 });

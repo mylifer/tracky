@@ -81,6 +81,8 @@ pub struct DayRows {
     pub rows: Vec<DayRow>,
     /// Gizlenen satır sayısı.
     pub hidden: usize,
+    /// Gizlenen satırların gerçek süresi (saat).
+    pub hidden_hours: f64,
 }
 
 /// Günün zaman çizelgesine giren süresi ([`Store::timesheet_pieces`]).
@@ -627,6 +629,7 @@ impl Store {
         );
         let mut rows = Vec::new();
         let mut hidden = 0;
+        let mut hidden_hours = 0.0;
         let all = saved.clone();
         for s in saved {
             let routed = match (&s.exported_at, &s.timesheet_id) {
@@ -638,6 +641,7 @@ impl Store {
             }
             if s.dismissed {
                 hidden += 1;
+                hidden_hours += s.entry.worked();
                 continue;
             }
             // Aktarılmış satır da takipte değişebilir: güncellenince dosyadaki satırı da değişir.
@@ -665,7 +669,11 @@ impl Store {
                 .cmp(&b.entry.start)
                 .then(a.entry.division.cmp(&b.entry.division))
         });
-        Ok(DayRows { rows, hidden })
+        Ok(DayRows {
+            rows,
+            hidden,
+            hidden_hours,
+        })
     }
 
     /// `days` günlerinde (`day_starts`: yerel gün sınırları, `days.len() + 1` öğe) bütün zaman

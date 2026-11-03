@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { AppWindow, CalendarDays, FileSpreadsheet, Shapes, Video } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { AppWindow, CalendarDays, ChevronDown, FileSpreadsheet, MousePointer2, Shapes, Video } from "lucide-react";
 import type { CalendarMeeting, EditScope, EntryView, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../../api";
 import { formatDuration } from "../../api";
 import { addDays, formatTime, fromWallMs } from "../../lib/dates";
@@ -19,6 +19,9 @@ import {
   NowLine,
 } from "./grid";
 import { Block, IdleBlock } from "./Block";
+import { DraftBlock } from "./DraftBlock";
+import { DRAFT_STEPS, type DraftGroup, draftGroups } from "../../lib/draft";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { categoryBuckets } from "./buckets";
 import { type SheetSpan, sheetItems, SheetColumn } from "./TimesheetLines";
 import { attendanceLine, isSkipped } from "../../lib/attendance";
@@ -77,14 +80,16 @@ const SLOT_MS = 15 * MIN;
 const SHOW_MIN_MS = SLOT_MS / 3;
 
 type SessionItem = { start: string; end: string; ms: number } & (
-  { block: WorkBlock; idle?: undefined; away: IdleSpan[] } | { idle: IdleSpan; block?: undefined; away?: undefined }
+  | { block: WorkBlock; group?: undefined; idle?: undefined; away: IdleSpan[] }
+  | { group: DraftGroup; block?: undefined; idle?: undefined; away: IdleSpan[] }
+  | { idle: IdleSpan; block?: undefined; group?: undefined; away?: undefined }
 );
 
 /**
  * Boşta aralıkların blokların dışında kalan parçaları. Aynı projenin oturumları arasındaki kısa
  * boşta süre bloğa katılır (o projenin sayılır); blokla üst üste ayrıca çizilmez.
  */
-function idleOutsideBlocks(idle: IdleSpan[], blocks: WorkBlock[]): IdleSpan[] {
+function idleOutsideBlocks(idle: IdleSpan[], blocks: { start: string; end: string }[]): IdleSpan[] {
   const covers = blocks.map((b) => [+new Date(b.start), +new Date(b.end)] as const);
   return idle.flatMap((s) => {
     let parts: [number, number][] = [[+new Date(s.start), +new Date(s.end)]];
@@ -108,7 +113,7 @@ function idleOutsideBlocks(idle: IdleSpan[], blocks: WorkBlock[]): IdleSpan[] {
 }
 
 /** Boşta aralıkların bloğun içine düşen parçaları (blokta silik taralı şerit olarak çizilir). */
-function idleWithin(b: WorkBlock, idle: IdleSpan[]): IdleSpan[] {
+function idleWithin(b: { start: string; end: string }, idle: IdleSpan[]): IdleSpan[] {
   const [a, z] = [+new Date(b.start), +new Date(b.end)];
   return idle.flatMap((s) => {
     const [x, y] = [Math.max(a, +new Date(s.start)), Math.min(z, +new Date(s.end))];
@@ -119,13 +124,15 @@ function idleWithin(b: WorkBlock, idle: IdleSpan[]): IdleSpan[] {
 /**
  * Oturumlar sütununun yerleşimi: kısa (anlamsız) bloklar gösterilmez; kalanlar en az bir
  * dilim yüksekliğinde, ama bir sonrakinin üstüne binmeden çizilir. Boşta süre blokların
- * dışında kalan kısmıyla ayrı, içinde kalan kısmıyla bloğun içinde (`away`) çizilir.
+ * dışında kalan kısmıyla ayrı, içinde kalan kısmıyla bloğun içinde (`away`) çizilir. `groups`:
+ * tek kutu olarak çizilecek taslaklar (blokları `blocks`'ta yer almaz).
  */
 export function placeSessions(
   blocks: WorkBlock[],
   idle: IdleSpan[],
   top: (t: number) => number,
   hourPx: number,
+  groups: DraftGroup[] = [],
 ): (SessionItem & { top: number; height: number })[] {
   const items: SessionItem[] = [
     ...blocks.map((b) => ({
@@ -135,7 +142,14 @@ export function placeSessions(
       block: b,
       away: idleWithin(b, idle),
     })),
-    ...idleOutsideBlocks(idle, blocks).map((s) => ({
+    ...groups.map((g) => ({
+      start: g.start,
+      end: g.end,
+      ms: g.activeSeconds * 1000,
+      group: g,
+      away: idleWithin(g, idle),
+    })),
+    ...idleOutsideBlocks(idle, [...blocks, ...groups]).map((s) => ({
       start: s.start,
       end: s.end,
       ms: +new Date(s.end) - +new Date(s.start),
@@ -172,6 +186,8 @@ export function DayCalendar({
   hourPx = HOUR_PX,
   lens = "category",
   sheet = [],
+  draft = 0,
+  onDraft,
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -200,7 +216,19 @@ export function DayCalendar({
   lens?: ColorLens;
   /** Zaman çizelgesi satırlarının aralıkları: çizelge merceğinde blokların başlığı ve rengi. */
   sheet?: SheetSpan[];
+  /** Taslak eşiği (dk): kısa araya girmeler ve molalar tek kutuda; 0: her blok ayrı. */
+  draft?: number;
+  onDraft?: (minutes: number) => void;
 }) {
+  // Taslaklar; "Parçaları aç" denenler (başlangıçlarıyla) bloklarıyla çizilir.
+  const groups = useMemo(() => draftGroups(blocks, draft), [blocks, draft]);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  useEffect(() => setExpanded(new Set()), [from, draft]);
+  const [hint, hintSeen] = useDragHint();
+  const collapsed = groups.filter((g) => g.blocks.length > 1 && !expanded.has(g.start));
+  const loose = collapsed.length
+    ? groups.flatMap((g) => (g.blocks.length > 1 && !expanded.has(g.start) ? [] : g.blocks))
+    : blocks;
   // Gece yarısını aşan toplantılar güne kırpılır: ızgaranın dışına taşmasınlar, saat
   // aralığı da günün içindeki kısmına göre genişlesin.
   const meetingSpans = useMemo(() => {
@@ -254,12 +282,40 @@ export function DayCalendar({
 
   return (
     <div data-sheet-root>
+      {hint && onRange && blocks.length > 0 && (
+        <div className="mb-2 flex items-center gap-2 rounded-md border border-dashed px-2.5 py-1.5 text-xs text-muted-foreground">
+          <MousePointer2 className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            Oturumlar sütununda yukarıdan aşağı sürükle: seçtiğin aralığın tamamı tek seferde bir projeye atanır.
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded px-1.5 py-0.5 font-medium text-foreground hover:bg-accent"
+            onClick={hintSeen}
+          >
+            Anladım
+          </button>
+        </div>
+      )}
       <div
         className="sticky top-(--cal-head) z-20 grid gap-x-2 bg-card pb-2 text-[11px] font-medium text-muted-foreground"
         style={grid}
       >
         <span />
-        <span>Oturumlar</span>
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="truncate">Oturumlar</span>
+          {onDraft && <DraftMenu value={draft} onChange={onDraft} />}
+          {expanded.size > 0 && (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1 text-primary hover:bg-accent"
+              title="Açılan parçaları yeniden taslakta topla"
+              onClick={() => setExpanded(new Set())}
+            >
+              Topla
+            </button>
+          )}
+        </span>
         {showSheet && (
           <span
             className="flex min-w-0 items-center gap-1"
@@ -302,28 +358,52 @@ export function DayCalendar({
               if (gap) onEmpty(...gap);
             })
           }
-          onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y))}
+          onRange={
+            onRange &&
+            ((a, b, x, y) => {
+              hintSeen();
+              onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y);
+            })
+          }
         >
-          {placeSessions(blocks, idle, top, range.px).map(({ block, idle: span, away, top: t, height }) =>
-            span ? (
-              <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
-            ) : (
-              <Block
-                key={block.start}
-                b={block}
-                away={away}
-                tags={tags}
-                lens={lens}
-                sheet={sheet}
-                windows={windows}
-                meetings={meetings ?? undefined}
-                snaps={snaps}
-                top={t}
-                height={height}
-                hourPx={range.px}
-                dayStart={+from}
-              />
-            ),
+          {placeSessions(loose, idle, top, range.px, collapsed).map(
+            ({ block, group, idle: span, away, top: t, height }) =>
+              span ? (
+                <IdleBlock key={`idle-${span.start}`} span={span} onSelect={onRange} top={t} height={height} />
+              ) : group ? (
+                <DraftBlock
+                  key={`draft-${group.start}`}
+                  g={group}
+                  away={away}
+                  tags={tags}
+                  lens={lens}
+                  sheet={sheet}
+                  windows={windows}
+                  meetings={meetings ?? undefined}
+                  top={t}
+                  height={height}
+                  hourPx={range.px}
+                  dayStart={+from}
+                  onRange={onRange}
+                  onExpand={() => setExpanded((s) => new Set(s).add(group.start))}
+                />
+              ) : (
+                <Block
+                  key={block.start}
+                  b={block}
+                  away={away}
+                  tags={tags}
+                  lens={lens}
+                  sheet={sheet}
+                  windows={windows}
+                  meetings={meetings ?? undefined}
+                  snaps={snaps}
+                  top={t}
+                  height={height}
+                  hourPx={range.px}
+                  dayStart={+from}
+                />
+              ),
           )}
           <Preview range={preview} top={top} />
           <NowLine day={from} range={range} />
@@ -389,6 +469,72 @@ export function DayCalendar({
         </div>
       </div>
     </div>
+  );
+}
+
+const DRAG_HINT_KEY = "kum.hint.dragAssign";
+
+/** Sürükleyerek atama ipucu: "Anladım" denene ya da ilk sürüklemeye dek (bu cihazda). */
+function useDragHint(): [boolean, () => void] {
+  const [show, setShow] = useState(() => {
+    try {
+      return localStorage.getItem(DRAG_HINT_KEY) !== "1";
+    } catch {
+      return false;
+    }
+  });
+  return [
+    show,
+    () => {
+      setShow(false);
+      try {
+        localStorage.setItem(DRAG_HINT_KEY, "1");
+      } catch {
+        /* depolama kapalıysa yalnızca bu oturumda */
+      }
+    },
+  ];
+}
+
+/** Oturumlar başlığında taslak eşiği: kısa araya girmelerin ne zaman ayrı blok sayılacağı. */
+function DraftMenu({ value, onChange }: { value: number; onChange: (minutes: number) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="flex shrink-0 items-center gap-0.5 rounded px-1 font-normal text-muted-foreground/80 hover:bg-accent hover:text-foreground"
+          title="Taslak: kısa araya girmeler ve molalar tek blokta görünür (bloklar ve zaman çizelgesi değişmez)"
+          aria-label={value > 0 ? `Taslak eşiği: ${value} dk` : "Taslak eşiği: ayrıntılı"}
+        >
+          {value > 0 ? `${value} dk` : "Ayrıntılı"}
+          <ChevronDown className="size-3" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-64 p-1.5">
+        <p className="px-2 pt-1 pb-1.5 text-xs text-muted-foreground">
+          Bundan kısa araya girmeler ve molalar ayrı blok sayılmaz, tek kutuda görünür.
+        </p>
+        {DRAFT_STEPS.map((m) => (
+          <button
+            key={m}
+            type="button"
+            className={cn(
+              "flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-accent",
+              m === value && "font-semibold",
+            )}
+            onClick={() => {
+              onChange(m);
+              setOpen(false);
+            }}
+          >
+            <span>{m === 0 ? "Ayrıntılı: her blok ayrı" : `${m} dakika`}</span>
+            {m === value && <span aria-hidden>✓</span>}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }
 

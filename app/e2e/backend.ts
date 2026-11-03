@@ -196,7 +196,16 @@ function timesheetDays(start: string, days: number): TimesheetDay[] {
             }),
           ]
         : [];
-    return { date, entries, hidden: 0, unassignedSeconds: date === TODAY ? 1800 : 0, meetings: [] };
+    return {
+      date,
+      entries,
+      hidden: 0,
+      hiddenHours: 0,
+      trackedSeconds: entries.reduce((s, e) => s + Math.round((e.actualHours ?? e.hours) * 3600), 0),
+      unsentSeconds: 0,
+      unassignedSeconds: date === TODAY ? 1800 : 0,
+      meetings: [],
+    };
   });
 }
 
@@ -345,6 +354,7 @@ const handlers: Record<string, Handler> = {
   ignored_unassigned: () => [],
   assign_unassigned: () => ({ changed: 1, undo: 7 }),
   resize_block: () => ({ changed: 1, undo: 8 }),
+  set_range_project: () => ({ changed: 2, undo: 9 }),
   label_undo: () => null,
   undo_history: () => [],
   pending_timesheet_days: () => [],

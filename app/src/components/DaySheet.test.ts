@@ -32,6 +32,9 @@ const day = (entries: EntryView[]): TimesheetDay => ({
   date: "2026-10-07",
   entries,
   hidden: 0,
+  hiddenHours: 0,
+  trackedSeconds: 0,
+  unsentSeconds: 0,
   unassignedSeconds: 0,
   meetings: [meeting],
 });

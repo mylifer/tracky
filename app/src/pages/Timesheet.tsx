@@ -38,7 +38,16 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { tagColor } from "../lib/tags";
 import { cn } from "../lib/utils";
 import { friendlyError, useChanged } from "../lib/feedback";
-import { blocked, closeReport, divisionColor, keepRowIds, running, started, summarizeDay } from "../lib/timesheet";
+import {
+  blocked,
+  closeReport,
+  divisionColor,
+  keepRowIds,
+  reconcile,
+  running,
+  started,
+  summarizeDay,
+} from "../lib/timesheet";
 import {
   num,
   exportNotice,
@@ -908,6 +917,7 @@ export default function Timesheet({
               <ClosePanel
                 title={modeInfo.close}
                 report={report}
+                recon={reconcile(days, isoDate(today()), outsideHours)}
                 days={days}
                 config={config}
                 sheet={sheet}

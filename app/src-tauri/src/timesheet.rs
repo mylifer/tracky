@@ -56,6 +56,13 @@ pub struct Day {
     entries: Vec<DayRow>,
     /// Gizlenen satır sayısı.
     hidden: usize,
+    /// Gizlenen satırların gerçek süresi (saat).
+    hidden_hours: f64,
+    /// Çizelgenin projelerinde takip edilen süre (saniye): oturumlar ve projesi belli
+    /// toplantılar, takvim bloğu çizelgeye gönderilmiş olsun olmasın.
+    tracked_seconds: i64,
+    /// Bunun takvim bloğu çizelgeye gönderilmemiş kısmı (saniye): satır olmaz.
+    unsent_seconds: i64,
     /// Bir projeye atanmamış takip edilen süre (saniye): gözden geçirilecek.
     unassigned_seconds: i64,
     /// Takvimde olup hiçbir projeye düşmeyen toplantılar: projeye ata ya da yoksay.
@@ -263,10 +270,19 @@ pub async fn timesheet_days(
             let day = store
                 .timesheet_day(&ctx, sheet, date, &pieces)
                 .map_err(err)?;
+            let mine = pieces.iter().filter(|p| sheet.includes(&p.project));
+            let seconds =
+                |p: &tracky_core::timesheet::Piece| (p.end - p.start).num_seconds().max(0);
+            let (tracked_seconds, unsent_seconds) = mine.fold((0, 0), |(t, u), p| {
+                (t + seconds(p), if p.sent { u } else { u + seconds(p) })
+            });
             Ok(Day {
                 date,
                 entries: day.rows,
                 hidden: day.hidden,
+                hidden_hours: day.hidden_hours,
+                tracked_seconds,
+                unsent_seconds,
                 unassigned_seconds,
                 meetings: unassigned
                     .into_iter()
