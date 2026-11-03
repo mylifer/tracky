@@ -196,7 +196,16 @@ function timesheetDays(start: string, days: number): TimesheetDay[] {
             }),
           ]
         : [];
-    return { date, entries, hidden: 0, unassignedSeconds: date === TODAY ? 1800 : 0, meetings: [] };
+    return {
+      date,
+      entries,
+      hidden: 0,
+      hiddenHours: 0,
+      trackedSeconds: entries.reduce((s, e) => s + Math.round((e.actualHours ?? e.hours) * 3600), 0),
+      unsentSeconds: 0,
+      unassignedSeconds: date === TODAY ? 1800 : 0,
+      meetings: [],
+    };
   });
 }
 

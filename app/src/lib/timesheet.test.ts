@@ -7,6 +7,7 @@ import {
   hoursDiff,
   keepRowIds,
   mergeProblem,
+  reconcile,
   running,
   started,
   summarizeDay,
@@ -33,7 +34,17 @@ function row(projectId: string, hours: number, details = "", kind: EntryKind = "
 }
 
 function day(date: string, entries: EntryView[], extra: Partial<TimesheetDay> = {}): TimesheetDay {
-  return { date, entries, hidden: 0, unassignedSeconds: 0, meetings: [], ...extra };
+  return {
+    date,
+    entries,
+    hidden: 0,
+    hiddenHours: 0,
+    trackedSeconds: 0,
+    unsentSeconds: 0,
+    unassignedSeconds: 0,
+    meetings: [],
+    ...extra,
+  };
 }
 
 describe("dönemi kapatma denetimi", () => {
@@ -92,6 +103,39 @@ describe("dönemi kapatma denetimi", () => {
     expect(hoursDiff(week[0], 7.5)).toBeCloseTo(0.5);
     // Tamamı aktarılmış gün kapanmıştır; saatine bakılmaz.
     expect(hoursDiff(day("2026-10-02", [row("a", 2, "x", "Working", true)]), 8)).toBe(0);
+  });
+});
+
+describe("takipten dosyaya döküm", () => {
+  it("takip edilen süreden dosyadaki saate her farkı ayrı gösterir", () => {
+    const sent = { ...row("a", 2.25, "x", "Working", true), actualHours: 2.3 };
+    const unsent = { ...row("a", 1, "y"), actualHours: 0.9 };
+    const days = [
+      // 3,5 sa takip: 0,2 sa gönderilmemiş blokta, 0,05 sa kısa iş, satırlarda 3,2 sa.
+      day("2026-09-28", [sent, unsent], {
+        trackedSeconds: 3.5 * 3600,
+        unsentSeconds: 0.2 * 3600,
+        unassignedSeconds: 3600,
+      }),
+      day("2026-09-29", [], { trackedSeconds: 0.5 * 3600, hiddenHours: 0.5 }),
+      // Gelecek gün sayılmaz.
+      day("2026-10-05", [row("a", 8, "z")], { trackedSeconds: 8 * 3600 }),
+    ];
+    const r = reconcile(days, "2026-10-04", new Map([["2026-09-29", 1.5]]));
+    expect(r.tracked).toBeCloseTo(4);
+    expect(r.unsentBlocks).toBeCloseTo(0.2);
+    expect(r.hidden).toBeCloseTo(0.5);
+    expect(r.other).toBeCloseTo(-0.1);
+    expect(r.actual).toBeCloseTo(3.2);
+    expect(r.rounding).toBeCloseTo(0.05);
+    expect(r.outside).toBeCloseTo(1.5);
+    expect(r.total).toBeCloseTo(4.75);
+    expect(r.notSent).toBeCloseTo(1);
+    expect(r.file).toBeCloseTo(3.75);
+    expect(r.unassigned).toBeCloseTo(1);
+    // Adımlar toplamı tutar.
+    expect(r.tracked - r.unsentBlocks - r.hidden + r.other).toBeCloseTo(r.actual);
+    expect(r.actual + r.rounding + r.outside - r.notSent).toBeCloseTo(r.file);
   });
 });
 

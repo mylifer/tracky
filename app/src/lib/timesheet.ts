@@ -122,6 +122,71 @@ export function closeReport(
   return r;
 }
 
+/**
+ * Takip edilen süreden firmanın dosyasındaki saate döküm (saat). Her adım bir önceki toplamdan
+ * düşülen ya da eklenen süredir:
+ *
+ *   tracked − unsentBlocks − hidden ± other = actual
+ *   actual ± rounding + outside              = total   (sayfadaki büyük toplam)
+ *   total − notSent                          = file    (dosyada olan)
+ *
+ * `other`: kısa işler (5 dk altı), kaydedilmiş satırın artıkları ve elle değiştirilen saatler;
+ * ayrı ayrı bilinmediği için kalandır. `unassigned` hiçbir projeye düşmeyen süredir, dökümün
+ * dışında kalır (hiçbir çizelgeye girmez).
+ */
+export type Reconcile = {
+  tracked: number;
+  unsentBlocks: number;
+  hidden: number;
+  other: number;
+  actual: number;
+  rounding: number;
+  outside: number;
+  total: number;
+  notSent: number;
+  file: number;
+  unassigned: number;
+};
+
+/** Dönemin dökümü; bugünden sonraki günlere bakılmaz. `extra`: gün başına dosyada Kum dışında girilen saat. */
+export function reconcile(days: TimesheetDay[], todayIso: string, extra: Map<string, number> = new Map()): Reconcile {
+  let tracked = 0;
+  let unsentBlocks = 0;
+  let hidden = 0;
+  let actual = 0;
+  let hours = 0;
+  let notSent = 0;
+  let outside = 0;
+  let unassigned = 0;
+  for (const d of days) {
+    if (d.date > todayIso) continue;
+    tracked += d.trackedSeconds / 3600;
+    unsentBlocks += d.unsentSeconds / 3600;
+    hidden += d.hiddenHours;
+    unassigned += d.unassignedSeconds / 3600;
+    outside += extra.get(d.date) ?? 0;
+    for (const e of d.entries) {
+      actual += e.actualHours ?? e.hours;
+      hours += e.hours;
+      if (!e.exported) notSent += e.hours;
+    }
+  }
+  const total = hours + outside;
+  return {
+    tracked,
+    unsentBlocks,
+    hidden,
+    other: actual - (tracked - unsentBlocks - hidden),
+    actual,
+    rounding: hours - actual,
+    outside,
+    total,
+    notSent,
+    file: total - notSent,
+    unassigned,
+  };
+}
+
 /** Seçili satırlar neden birleştirilemez; birleştirilebiliyorsa `null`. */
 export function mergeProblem(rows: EntryView[]): string | null {
   if (rows.length < 2) return "Birleştirmek için en az iki satır seç";
