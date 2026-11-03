@@ -188,10 +188,18 @@ export type DaySummary = {
   diff: number;
   /** Bakılacaklar, okunur cümlelerle. */
   problems: string[];
+  /** Gün gözden geçirilip kapatıldı: bakılacaklar uyarı olarak gösterilmez. */
+  closed: boolean;
 };
 
 /** Günün özeti: hafta ve ay panolarında hücre, durum ve ipucu. */
-export function summarizeDay(day: TimesheetDay, outside: OutsideRow[], dayHours: number, todayIso: string): DaySummary {
+export function summarizeDay(
+  day: TimesheetDay,
+  outside: OutsideRow[],
+  dayHours: number,
+  todayIso: string,
+  closed = false,
+): DaySummary {
   const by = new Map<string, number>();
   const add = (division: string, hours: number) => by.set(division, (by.get(division) ?? 0) + hours);
   for (const e of day.entries) add(e.division, e.hours);
@@ -219,6 +227,7 @@ export function summarizeDay(day: TimesheetDay, outside: OutsideRow[], dayHours:
     empty: day.entries.length === 0 && outside.length === 0,
     diff: day.date <= todayIso ? hoursDiff(day, dayHours, extra) : 0,
     problems,
+    closed,
   };
 }
 
