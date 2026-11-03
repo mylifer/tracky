@@ -1129,6 +1129,20 @@ fn real_database_is_consistent() {
     let copy = std::env::temp_dir().join(format!("kum-invariants-{}.db", Uuid::new_v4()));
     Store::copy_database(std::path::Path::new(&source), &copy).unwrap();
     let store = Store::open(&copy).unwrap();
+    // Gizlenmiş satırlar: kullanıcının bilerek çıkardığı iş kayıp sayılmaz.
+    let db = rusqlite::Connection::open(&copy).unwrap();
+    let hidden_on = |date: NaiveDate| -> Vec<String> {
+        let mut stmt = db
+            .prepare(
+                "SELECT id FROM timesheet_entries
+                 WHERE deleted_at IS NULL AND dismissed_at IS NOT NULL AND date = ?1",
+            )
+            .unwrap();
+        stmt.query_map([date.to_string()], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
     let calendar = std::env::var("KUM_ICS")
         .ok()
         .map(|p| Calendar::parse(&std::fs::read_to_string(p).unwrap()));
@@ -1152,6 +1166,8 @@ fn real_database_is_consistent() {
         if date.weekday().num_days_from_monday() == 0 {
             bad.extend(check_span(&store, date, 7));
         }
+        // Gönderilen blokların işi bir satırda (satırlar kaydedilmeden önce).
+        bad.extend(lost_work(&store, date, &meetings, &hidden_on(date)));
         bad.extend(save_live_rows(&store, date, &meetings));
         if !bad.is_empty() {
             failures.push(format!("{date}:\n  {}", bad.join("\n  ")));
@@ -1159,6 +1175,7 @@ fn real_database_is_consistent() {
         date = date + Days::new(1);
     }
     drop(store);
+    drop(db);
     let _ = std::fs::remove_file(&copy);
     println!("{first} – {last} denetlendi");
     assert!(
@@ -1173,7 +1190,11 @@ fn real_database_is_consistent() {
 #[test]
 #[ignore = "SEED=… ile tek gün"]
 fn one_seed() {
-    let seed: u64 = std::env::var("SEED").unwrap().parse().unwrap();
+    let Ok(seed) = std::env::var("SEED") else {
+        println!("SEED verilmedi, atlandı");
+        return;
+    };
+    let seed: u64 = seed.parse().unwrap();
     let bad = run_seed(seed);
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
