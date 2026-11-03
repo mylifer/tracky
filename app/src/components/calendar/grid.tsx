@@ -213,12 +213,18 @@ function DragGhost({ from, to, range }: { from: number; to: number; range: Range
     const m = Math.round(ms / 60_000);
     return `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
   };
+  const height = Math.max(14, ((to - from) / HOUR_MS) * range.px);
   return (
     <span
       className="pointer-events-none absolute inset-x-0.5 z-20 grid place-items-center rounded-[5px] border-2 border-dashed border-primary/70 bg-primary/15 text-[11px] font-medium text-primary tabular"
-      style={{ top, height: Math.max(14, ((to - from) / HOUR_MS) * range.px) }}
+      style={{ top, height }}
     >
-      {label(from)} – {label(to)}
+      <span className="grid place-items-center leading-tight">
+        <span>
+          {label(from)} – {label(to)}
+        </span>
+        {height >= 34 && <span className="text-[10px] font-normal opacity-80">Bırak: projeye ata</span>}
+      </span>
     </span>
   );
 }

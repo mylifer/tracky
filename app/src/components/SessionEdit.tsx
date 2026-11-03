@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { Check, CircleCheck, PenLine, Plus, Send, Trash2, Undo2, X } from "lucide-react";
+import { Check, ChevronDown, CircleCheck, PenLine, Plus, Send, Trash2, Undo2, X } from "lucide-react";
 import {
   api,
   type CalendarMeeting,
@@ -20,6 +20,8 @@ import { friendlyError, undoable } from "../lib/feedback";
 import { removeBlock, sendBlock } from "../lib/blockSheet";
 import { attendanceLine, isSkipped } from "../lib/attendance";
 import { cn } from "../lib/utils";
+import { quickProjects, rememberRecent } from "../lib/projectOptions";
+import { tagColor } from "../lib/tags";
 
 /** "geçersiz kayıt: bu aralıkta…" → "Bu aralıkta…" */
 const message = friendlyError;
@@ -49,11 +51,14 @@ function ProjectAssign({
   value,
   projects,
   onChange,
+  placeholder = "Projeye ata…",
 }: {
   /** Bloğun şu anki projesi (`null`: atanmamış); aralıkta verilmez ve "Projeye ata…" görünür. */
   value?: string | null;
   projects: Tag[];
   onChange: (id: string | null) => Promise<unknown>;
+  /** Aralıkta seçicinin boşkenki yazısı. */
+  placeholder?: string;
 }) {
   // Seçilen değer yanıt gelmeden gösterilir; hata olursa (yanıt `false`) geri alınır.
   const [chosen, setChosen] = useState<string | undefined>(undefined);
@@ -72,7 +77,7 @@ function ProjectAssign({
       <ProjectSelect
         value={current}
         projects={projects}
-        placeholder={isRange ? "Projeye ata…" : null}
+        placeholder={isRange ? placeholder : null}
         extra={[
           { value: NO_PROJECT, label: "Projesiz" },
           { value: AUTO, label: "Otomatik (kurallara göre)" },
@@ -167,7 +172,8 @@ function MenuHeader({ title, sub, onClose }: { title: React.ReactNode; sub: Reac
 }
 
 /**
- * Seçilen aralık için menü: içindeki kayıtları kategoriye ata, elle kayıt ekle ya da sil.
+ * Seçilen aralık için menü: en üstte tek tıkla atanan projeler, altında başka proje seçicisi;
+ * elle kayıt ekle ya da sil. Kategoriye atama "Daha fazla"nın altında.
  * Bırakılan noktanın yanında açılır; dışına tıklayınca ya da Esc ile kapanır.
  */
 export function RangeMenu({
@@ -204,6 +210,30 @@ export function RangeMenu({
         return false;
       },
     );
+  // Menü açıldığında sabitlenir: atama "son seçilenler"i değiştirince düğmeler kaymasın.
+  const [quick] = useState(() => quickProjects(projects));
+  const [more, setMore] = useState(false);
+  const assign = (id: string | null) =>
+    run(() => undoable(api.setRangeProject(iso(start), iso(end), id, scope), projectMessage(projects, id)));
+  const canAssign = end > start;
+  // 1–4 tuşları tek tıklık projeye atar (seçici ya da alan odaktayken değil).
+  useEffect(() => {
+    if (!canAssign || quick.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey) return;
+      if ((e.target as HTMLElement | null)?.closest("input, textarea, select")) return;
+      const n = Number(e.key);
+      if (!(n >= 1 && n <= quick.length)) return;
+      // Uygulamanın 1/2/3 (Gün/Hafta/Ay) kısayollarından önce yakalanır.
+      e.preventDefault();
+      e.stopPropagation();
+      rememberRecent(quick[n - 1].id);
+      void assign(quick[n - 1].id);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canAssign, quick]);
 
   return (
     <FloatingMenu x={selection.x} y={selection.y} label="Seçilen aralık" onClose={onClose}>
@@ -217,15 +247,36 @@ export function RangeMenu({
         onClose={onClose}
       />
       {future && <p className="text-xs text-muted-foreground">Bu aralık henüz gelmedi; kayıt eklenemez.</p>}
-      {end > start && (
+      {canAssign && quick.length > 0 && (
+        <div className="grid gap-1" role="group" aria-label="Projeye ata">
+          {quick.map((p, i) => (
+            <button
+              key={p.id}
+              type="button"
+              className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+              title={`Aralığın tamamını ${p.name} projesine ata (${i + 1})`}
+              onClick={() => {
+                rememberRecent(p.id);
+                void assign(p.id);
+              }}
+            >
+              <i className="size-2.5 shrink-0 rounded-full" style={{ background: tagColor(p) }} />
+              <span className="truncate">{p.name}</span>
+              <kbd className="ml-auto shrink-0 rounded border px-1 font-sans text-[10px] text-muted-foreground">
+                {i + 1}
+              </kbd>
+            </button>
+          ))}
+        </div>
+      )}
+      {canAssign && (
         <ProjectAssign
           projects={projects}
-          onChange={(id) =>
-            run(() => undoable(api.setRangeProject(iso(start), iso(end), id, scope), projectMessage(projects, id)))
-          }
+          placeholder={quick.length > 0 ? "Başka proje…" : "Projeye ata…"}
+          onChange={assign}
         />
       )}
-      {end > start && (
+      {canAssign && more && (
         <CategorySelect
           value={null}
           onChange={(id) =>
@@ -239,7 +290,7 @@ export function RangeMenu({
         />
       )}
       {!future && (
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
           {/* Elle kayıt bir uygulamaya ait değildir: yalnızca takvimden seçilen aralıkta. */}
           {!scoped && (
             <Button
@@ -253,6 +304,17 @@ export function RangeMenu({
               }}
             >
               <PenLine /> Elle kayıt ekle
+            </Button>
+          )}
+          {canAssign && !more && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground"
+              title="Kategoriye ata"
+              onClick={() => setMore(true)}
+            >
+              Daha fazla <ChevronDown />
             </Button>
           )}
           {end > start && (

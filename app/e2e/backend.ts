@@ -354,6 +354,7 @@ const handlers: Record<string, Handler> = {
   ignored_unassigned: () => [],
   assign_unassigned: () => ({ changed: 1, undo: 7 }),
   resize_block: () => ({ changed: 1, undo: 8 }),
+  set_range_project: () => ({ changed: 2, undo: 9 }),
   label_undo: () => null,
   undo_history: () => [],
   pending_timesheet_days: () => [],

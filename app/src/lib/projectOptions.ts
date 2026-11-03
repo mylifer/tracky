@@ -31,6 +31,16 @@ export function rememberRecent(id: string) {
   }
 }
 
+/** Aralık menüsündeki tek tıklık proje düğmesi sayısı (1–4 tuşları da seçer). */
+export const QUICK_MAX = 4;
+
+/** Tek tıklık projeler: son seçilenler, sonra adına göre ilk projeler (arşivdekiler hariç). */
+export function quickProjects(projects: Tag[], recent: string[] = readRecent()): Tag[] {
+  const byId = new Map(projects.filter((p) => !p.archived).map((p) => [p.id, p]));
+  const byName = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, "tr"));
+  return [...new Set([...recent, ...byName.map((p) => p.id)])].flatMap((id) => byId.get(id) ?? []).slice(0, QUICK_MAX);
+}
+
 const fold = (s: string) => s.toLocaleLowerCase("tr-TR");
 
 /**

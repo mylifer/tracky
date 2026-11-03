@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AppWindow, CalendarDays, ChevronDown, FileSpreadsheet, Shapes, Video } from "lucide-react";
+import { AppWindow, CalendarDays, ChevronDown, FileSpreadsheet, MousePointer2, Shapes, Video } from "lucide-react";
 import type { CalendarMeeting, EditScope, EntryView, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../../api";
 import { formatDuration } from "../../api";
 import { addDays, formatTime, fromWallMs } from "../../lib/dates";
@@ -224,6 +224,7 @@ export function DayCalendar({
   const groups = useMemo(() => draftGroups(blocks, draft), [blocks, draft]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   useEffect(() => setExpanded(new Set()), [from, draft]);
+  const [hint, hintSeen] = useDragHint();
   const collapsed = groups.filter((g) => g.blocks.length > 1 && !expanded.has(g.start));
   const loose = collapsed.length
     ? groups.flatMap((g) => (g.blocks.length > 1 && !expanded.has(g.start) ? [] : g.blocks))
@@ -281,6 +282,21 @@ export function DayCalendar({
 
   return (
     <div data-sheet-root>
+      {hint && onRange && blocks.length > 0 && (
+        <div className="mb-2 flex items-center gap-2 rounded-md border border-dashed px-2.5 py-1.5 text-xs text-muted-foreground">
+          <MousePointer2 className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            Oturumlar sütununda yukarıdan aşağı sürükle: seçtiğin aralığın tamamı tek seferde bir projeye atanır.
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded px-1.5 py-0.5 font-medium text-foreground hover:bg-accent"
+            onClick={hintSeen}
+          >
+            Anladım
+          </button>
+        </div>
+      )}
       <div
         className="sticky top-(--cal-head) z-20 grid gap-x-2 bg-card pb-2 text-[11px] font-medium text-muted-foreground"
         style={grid}
@@ -342,7 +358,13 @@ export function DayCalendar({
               if (gap) onEmpty(...gap);
             })
           }
-          onRange={onRange && ((a, b, x, y) => onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y))}
+          onRange={
+            onRange &&
+            ((a, b, x, y) => {
+              hintSeen();
+              onRange(fromWallMs(a, +from), fromWallMs(b, +from), x, y);
+            })
+          }
         >
           {placeSessions(loose, idle, top, range.px, collapsed).map(
             ({ block, group, idle: span, away, top: t, height }) =>
@@ -448,6 +470,30 @@ export function DayCalendar({
       </div>
     </div>
   );
+}
+
+const DRAG_HINT_KEY = "kum.hint.dragAssign";
+
+/** Sürükleyerek atama ipucu: "Anladım" denene ya da ilk sürüklemeye dek (bu cihazda). */
+function useDragHint(): [boolean, () => void] {
+  const [show, setShow] = useState(() => {
+    try {
+      return localStorage.getItem(DRAG_HINT_KEY) !== "1";
+    } catch {
+      return false;
+    }
+  });
+  return [
+    show,
+    () => {
+      setShow(false);
+      try {
+        localStorage.setItem(DRAG_HINT_KEY, "1");
+      } catch {
+        /* depolama kapalıysa yalnızca bu oturumda */
+      }
+    },
+  ];
 }
 
 /** Oturumlar başlığında taslak eşiği: kısa araya girmelerin ne zaman ayrı blok sayılacağı. */
