@@ -46,6 +46,8 @@ import {
   MODES,
   MODE_KEY,
   SHEET_KEY,
+  ANCHOR_KEY,
+  savedAnchor,
   savedMode,
   savedSheet,
   range,
@@ -96,7 +98,15 @@ export default function Timesheet({
 }) {
   const [mode, setModeState] = useState<Mode>(savedMode);
   // Görünümdeki herhangi bir gün; görünüm değişince aynı gün etrafında açılır.
-  const [anchor, setAnchor] = useState(() => isoDate(today()));
+  // Sayfadan çıkıp girince son bakılan gün ve dönem korunur.
+  const [anchor, setAnchor] = useState(() => savedAnchor() ?? isoDate(today()));
+  useEffect(() => {
+    try {
+      localStorage.setItem(ANCHOR_KEY, anchor);
+    } catch {
+      // Hatırlanmasa da olur.
+    }
+  }, [anchor]);
   const setMode = (m: Mode) => {
     setModeState(m);
     try {
