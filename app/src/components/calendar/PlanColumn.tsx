@@ -102,7 +102,10 @@ export function PlanColumn({
   plan,
   className,
   children,
+  onDrag,
 }: {
+  /** Sütunda sürükleyerek aralık seçildi (ipucunu kapatmak için). */
+  onDrag?: () => void;
   range: Range;
   top: (t: number) => number;
   windows: WindowSpan[];
@@ -177,7 +180,10 @@ export function PlanColumn({
       <Column
         range={range}
         className={className}
-        onRange={(a, b, x, y) => setPaintSel({ a: fromWallMs(a, dayStart), b: fromWallMs(b, dayStart), x, y })}
+        onRange={(a, b, x, y) => {
+          onDrag?.();
+          setPaintSel({ a: fromWallMs(a, dayStart), b: fromWallMs(b, dayStart), x, y });
+        }}
       >
         {all.map((b) => (
           <PlanBlockView

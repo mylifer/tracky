@@ -1,6 +1,14 @@
 import type { PlanBlock } from "../src/api";
 import { PORTAL, SHEET, TRUMORE } from "./backend";
+import { type Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+
+/** Gün görünümünü eski Oturumlar görünümüne (verilen eşikle) çevirir; menü kapanana dek bekler. */
+async function oldView(page: Page, step: string) {
+  await page.getByRole("button", { name: "Görünüm: gün planı" }).click();
+  await page.getByRole("button", { name: step }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+}
 
 test("Gözden geçir: grup önerilen projeye tek tuşla atanır", async ({ app, page }) => {
   await app.open("Gözden geçir");
@@ -73,6 +81,7 @@ test("Gün: Pencereler sütunu her pencereyi saatinde gösterir, tıklanan yaln�
 
 test("Gün: taslak kısa araya girmeyi tek kutuda gösterir, parçalar açılabilir", async ({ app, page }) => {
   await app.open("Gün");
+  await oldView(page, "15 dakika");
   // 09:00–11:00 portal ve ardından 30 dk projesiz Safari: 15 dk eşikte tek taslak.
   const draft = page.locator("[data-draft]");
   await expect(draft).toHaveCount(1);
@@ -92,7 +101,8 @@ test("Gün: sürüklenen aralık tek tıkla (ya da 1–4 tuşuyla) projeye atan�
   page,
 }) => {
   await app.open("Gün");
-  const hint = page.getByText(/Oturumlar sütununda yukarıdan aşağı sürükle/);
+  await oldView(page, "15 dakika");
+  const hint = page.getByText(/Bu sütunda yukarıdan aşağı sürükle/);
   await expect(hint).toBeVisible();
   // Taslak 09:00–11:30; ardından 12:30'a kadar boş.
   const box = (await page.locator("[data-draft]").boundingBox())!;
@@ -115,9 +125,8 @@ test("Gün: sürüklenen aralık tek tıkla (ya da 1–4 tuşuyla) projeye atan�
 });
 
 test("Gün planı: taslaklar önerilir, onaylanınca saklanır; kenar sürüklenince blok bölünmez", async ({ app, page }) => {
+  // Gün planı varsayılan görünüm.
   await app.open("Gün");
-  await page.getByRole("button", { name: "Taslak eşiği: 15 dk" }).click();
-  await page.getByRole("button", { name: /Gün planı \(yeni, deneysel\)/ }).click();
   // 09:00–11:30 Portal (arada 30 dk projesiz Safari bloğun içinde), 12:30–13:50 Trumore.
   const drafts = page.locator("[data-plan=draft]");
   await expect(drafts).toHaveCount(2);
@@ -150,9 +159,8 @@ test("Gün planı: taslaklar önerilir, onaylanınca saklanır; kenar sürüklen
 
 test("Gün: blok kenarı uzun uygulama kullanımının sınırına yapışır, ⌥ basılıyken yapışmaz", async ({ app, page }) => {
   await app.open("Gün");
-  // Kenar sürükleme tek tek bloklarda: taslak kapatılır.
-  await page.getByRole("button", { name: "Taslak eşiği: 15 dk" }).click();
-  await page.getByRole("button", { name: "Ayrıntılı: her blok ayrı" }).click();
+  // Kenar sürükleme eski görünümde tek tek bloklarda: taslak kapatılır.
+  await oldView(page, "Ayrıntılı: her blok ayrı");
   // Menü kapanırken sürükleme onun üstünde başlamasın.
   await expect(page.getByRole("dialog")).toHaveCount(0);
   // Safari 11:00–11:30; Visual Studio Code 12:30'da yeniden başlıyor.
