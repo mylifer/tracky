@@ -1769,6 +1769,45 @@ fn lost_work(
                         hm(b.end),
                         total(c).num_seconds()
                     ));
+                    // Nedenini bulmak için: bloğun parçaları ve projenin o günkü satırları.
+                    for x in pieces.iter().filter(|x| x.start < b.end && b.start < x.end) {
+                        bad.push(format!(
+                            "    parça {} {}–{} gönderildi={} toplantı={}",
+                            if x.project == p {
+                                "aynı proje"
+                            } else {
+                                "başka proje"
+                            },
+                            hm(x.start),
+                            hm(x.end),
+                            x.sent,
+                            x.meeting.is_some()
+                        ));
+                    }
+                    for (_, r) in rows.iter().filter(|(_, r)| r.entry.project_id == p) {
+                        bad.push(format!(
+                            "    satır {} {:.2} sa {:?} {} {}",
+                            r.entry.start,
+                            r.entry.hours,
+                            r.entry.kind,
+                            match (&r.id, r.exported) {
+                                (None, _) => "canlı",
+                                (Some(_), true) => "aktarılmış",
+                                (Some(_), false) => "kayıtlı",
+                            },
+                            if r.entry.coverage.is_some() {
+                                "aralıklı"
+                            } else {
+                                "ESKİ (aralıksız)"
+                            }
+                        ));
+                    }
+                    for m in meetings
+                        .iter()
+                        .filter(|m| m.start < b.end && b.start < m.end)
+                    {
+                        bad.push(format!("    toplantı {}–{}", hm(m.start), hm(m.end)));
+                    }
                 }
             }
             for c in clusters {
