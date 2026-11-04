@@ -176,7 +176,7 @@ impl Store {
     }
 
     /// `[from, to)` gönderilmiş olur (çıkarılmışsa artık değil).
-    fn mark_sent(&self, (from, to): Interval) -> Result<()> {
+    pub(super) fn mark_sent(&self, (from, to): Interval) -> Result<()> {
         if to <= from {
             return Err(StoreError::Invalid(
                 "bitiş başlangıçtan sonra olmalı".into(),
