@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "kum"
-version = "0.9.98"
+version = "0.9.99"
 dependencies = [
  "base64 0.22.1",
  "chrono",
