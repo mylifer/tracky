@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { Check, Combine, Scissors, Trash2 } from "lucide-react";
 import type { Tag, WindowSpan } from "../../api";
 import { api, formatDuration, NO_PROJECT } from "../../api";
@@ -222,6 +222,25 @@ export function PlanColumn({
   );
 }
 
+/** Daha önce zaman çizelgesine yazılan açıklamalar (blok adı önerileri); açılışta bir kez okunur. */
+let pastNames: Promise<string[]> | null = null;
+
+function usePastNames(): string[] {
+  const [names, setNames] = useState<string[]>([]);
+  useEffect(() => {
+    pastNames ??= api.timesheetDetails().catch(() => {
+      pastNames = null;
+      return [];
+    });
+    let live = true;
+    void pastNames.then((n) => live && setNames(n));
+    return () => {
+      live = false;
+    };
+  }, []);
+  return names;
+}
+
 /** Taslakların hepsini onaylar. */
 export function approveAll(plan: ReturnType<typeof usePlan>): Slot[] {
   return [...(plan.confirmed ?? []), ...plan.drafts.map(confirm)];
@@ -412,6 +431,14 @@ function PlanDetails({
   useEffect(() => setNote(b.note), [b.note]);
   const [quick] = useState(() => quickProjects(projects));
   const apps = useMemo(() => blockWindows(windows, iso(b.start), iso(b.end)).slice(0, 4), [windows, b.start, b.end]);
+  // Ad önerileri (zaman çizelgesindeki gibi): önce bloğun pencere başlıkları, sonra daha önce
+  // yazılan açıklamalar. Yazdıkça süzülür.
+  const past = usePastNames();
+  const listId = useId();
+  const suggestions = useMemo(() => {
+    const titles = blockWindows(windows, iso(b.start), iso(b.end)).flatMap((a) => a.windows.map((w) => w.title.trim()));
+    return [...new Set([...titles, ...past.map((d) => d.trim())].filter(Boolean))].slice(0, 200);
+  }, [windows, b.start, b.end, past]);
   const run = (f: () => void) => {
     onDone();
     f();
@@ -434,6 +461,8 @@ function PlanDetails({
           value={note}
           placeholder={titleOf({ ...b, note: "" }, tags, windows)}
           aria-label="Blok adı"
+          list={listId}
+          autoComplete="off"
           className="h-8 w-full rounded-md border bg-transparent px-2 text-sm"
           onChange={(e) => setNote(e.target.value)}
           onKeyDown={(e) => {
@@ -441,6 +470,11 @@ function PlanDetails({
           }}
           onBlur={() => note.trim() !== b.note && actions.setNote(b, note.trim())}
         />
+        <datalist id={listId}>
+          {suggestions.map((d) => (
+            <option key={d} value={d} />
+          ))}
+        </datalist>
       </label>
       <div className="grid gap-1" role="group" aria-label="Proje">
         {[
