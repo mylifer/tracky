@@ -8,13 +8,28 @@
 //!
 //! Arayüz bir günün bloklarını bütün olarak kaydeder ([`Store::replace_plan`]); önceki hali
 //! döner ki değişiklik geri alınabilsin. Silme yumuşaktır (eşitlemeye hazır).
+//!
+//! Projesi olan onaylı blok zaman çizelgesine gönderilmiştir (Timely'de onaylanan taslağın
+//! kayda geçmesi gibi): kaydederken önceki projeli blokların aralığı gönderilenlerden düşülür,
+//! şimdikilerinki eklenir. Bloğun adı (`note`) satırının açıklamasıdır
+//! ([`crate::timesheet::name_by_plan`]).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{Result, Store, StoreError, from_ms, ms};
+
+/// Gün planının uygulandığı ilk an (1 Kasım 2026, yerel gece yarısı). Öncesindeki günler eski
+/// blok görünümünde kalır: süreleri gün planıyla değişmez, plan kaydedilmez, varsa eski plan
+/// blokları zaman çizelgesini etkilemez.
+pub fn plan_since() -> DateTime<Utc> {
+    Local
+        .with_ymd_and_hms(2026, 11, 1, 0, 0, 0)
+        .earliest()
+        .map_or_else(Utc::now, |t| t.with_timezone(&Utc))
+}
 
 /// Plan bloğu: `[start, end)` aralığı, projesi (yoksa projesiz) ve notu.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +100,17 @@ impl Store {
         let previous = self.plan_between(from, to)?;
         let now = ms(Utc::now());
         let tx = self.savepoint()?;
+        let works = |b: &PlanBlock| {
+            b.project_id
+                .as_deref()
+                .is_some_and(|p| p != crate::classify::NO_PROJECT)
+        };
+        for old in previous.iter().filter(|b| works(b)) {
+            self.unsend_from_timesheet(old.start, old.end)?;
+        }
+        for b in sorted.iter().filter(|b| works(b)) {
+            self.mark_sent((b.start, b.end))?;
+        }
         for old in &previous {
             if !sorted.iter().any(|b| b.id == old.id) {
                 self.conn.execute(
@@ -163,6 +189,34 @@ mod tests {
         // Geri alma: önceki hal aynı işlevle kaydedilir; silinen blok kimliğiyle geri gelir.
         store.replace_plan(t(0), t(600), &prev).unwrap();
         assert_eq!(store.plan_between(t(0), t(600)).unwrap(), saved);
+    }
+
+    #[test]
+    fn project_blocks_are_sent_to_the_timesheet() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_selective_since(t(-60)).unwrap();
+        let project = store.accept_project_suggestion("Togg").unwrap();
+        let p = Some(project.id.as_str());
+        let blocks = [block("", 60, 180, p), block("", 200, 260, None)];
+        store.replace_plan(t(0), t(600), &blocks).unwrap();
+        let sent = store.timesheet_sent(t(0), t(600)).unwrap();
+        assert!(sent.block(t(60), t(180)));
+        assert!(!sent.block(t(200), t(260)));
+        // Blok kaldırılınca gönderilmiş sayılmaz; geri alınınca yeniden gönderilir.
+        let prev = store.replace_plan(t(0), t(600), &[]).unwrap();
+        assert!(
+            !store
+                .timesheet_sent(t(0), t(600))
+                .unwrap()
+                .block(t(60), t(180))
+        );
+        store.replace_plan(t(0), t(600), &prev).unwrap();
+        assert!(
+            store
+                .timesheet_sent(t(0), t(600))
+                .unwrap()
+                .block(t(60), t(180))
+        );
     }
 
     #[test]

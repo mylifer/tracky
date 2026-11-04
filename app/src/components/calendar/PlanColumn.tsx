@@ -242,8 +242,9 @@ function projectName(projectId: string | null, tags: Map<string, Tag>) {
   return (projectId && tags.get(projectId)?.name) || UNASSIGNED;
 }
 
-/** Bloğun başlığı: projesi, yoksa içinde en çok süren pencere. */
+/** Bloğun başlığı: verilen adı, yoksa projesi, o da yoksa içinde en çok süren pencere. */
 function titleOf(b: Slot, tags: Map<string, Tag>, windows: WindowSpan[]) {
+  if (b.note.trim()) return b.note.trim();
   if (b.projectId === NO_PROJECT) return "Projesiz";
   if (b.projectId) return tags.get(b.projectId)?.name ?? "Silinen proje";
   return topWindow(windows, b.start, b.end)?.title ?? UNASSIGNED;
@@ -364,8 +365,8 @@ function PlanBlockView({
                 </span>
                 {full && (
                   <span className="truncate text-[10px] leading-tight text-muted-foreground tabular">
+                    {b.note.trim() && b.projectId && `${projectName(b.projectId, tags)} · `}
                     {time(start)}–{time(end)} · {span}
-                    {b.note && ` · ${b.note}`}
                   </span>
                 )}
               </span>
@@ -427,6 +428,20 @@ function PlanDetails({
           {b.draft && " · taslak: pencere kaydından önerildi"}
         </p>
       </div>
+      <label className="block space-y-1">
+        <span className="block text-[11px] text-muted-foreground">Blok adı · zaman çizelgesinde açıklama olur</span>
+        <input
+          value={note}
+          placeholder={titleOf({ ...b, note: "" }, tags, windows)}
+          aria-label="Blok adı"
+          className="h-8 w-full rounded-md border bg-transparent px-2 text-sm"
+          onChange={(e) => setNote(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+          onBlur={() => note.trim() !== b.note && actions.setNote(b, note.trim())}
+        />
+      </label>
       <div className="grid gap-1" role="group" aria-label="Proje">
         {[
           ...quick,
@@ -455,14 +470,6 @@ function PlanDetails({
           onChange={(v) => run(() => actions.setProject(b, v))}
         />
       </div>
-      <textarea
-        value={note}
-        placeholder="Not (zaman çizelgesi açıklaması)"
-        aria-label="Not"
-        className="min-h-14 w-full resize-y rounded-md border bg-transparent px-2 py-1.5 text-xs"
-        onChange={(e) => setNote(e.target.value)}
-        onBlur={() => note !== b.note && actions.setNote(b, note.trim())}
-      />
       {apps.length > 0 && (
         <ul className="space-y-0.5 text-xs text-muted-foreground">
           {apps.map((a) => (

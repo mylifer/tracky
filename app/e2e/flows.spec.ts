@@ -157,6 +157,29 @@ test("Gün planı: taslaklar önerilir, onaylanınca saklanır; kenar sürüklen
   expect(after[0].id).toBe((saved.args.blocks as PlanBlock[])[0].id);
 });
 
+test("Gün planı: bloğa ad verilir; ad kaydedilir ve takvimde bloğun başlığı olur", async ({ app, page }) => {
+  await app.open("Gün");
+  await page.locator("[data-plan=draft]").first().click();
+  const name = page.getByRole("textbox", { name: "Blok adı" });
+  await name.fill("API entegrasyonu");
+  await name.press("Enter");
+  await expect.poll(async () => (await app.calls("save_plan")).length).toBe(1);
+  const [saved] = await app.calls("save_plan");
+  const blocks = saved.args.blocks as PlanBlock[];
+  expect(blocks).toHaveLength(1);
+  expect(blocks[0]).toMatchObject({ note: "API entegrasyonu", projectId: PORTAL });
+  await expect(page.locator("[data-plan=block]")).toContainText("API entegrasyonu");
+});
+
+test("Gün planı 1 Kasım'dan önceki günlere uygulanmaz: eski görünüm, süreler değişmez", async ({ app, page }) => {
+  await page.addInitScript(() => localStorage.setItem("kum.planSince", "2026-11-01"));
+  await page.reload();
+  await app.open("Gün");
+  await expect(page.getByText("Oturumlar", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-plan]")).toHaveCount(0);
+  expect(await app.calls("get_plan")).toHaveLength(0);
+});
+
 test("Gün: blok kenarı uzun uygulama kullanımının sınırına yapışır, ⌥ basılıyken yapışmaz", async ({ app, page }) => {
   await app.open("Gün");
   // Kenar sürükleme eski görünümde tek tek bloklarda: taslak kapatılır.

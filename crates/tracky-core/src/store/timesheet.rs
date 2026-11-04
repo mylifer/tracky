@@ -585,16 +585,24 @@ impl Store {
             .collect();
         let sessions = self.merged_sessions_between(from, to)?;
         let sent = self.timesheet_sent(from, to)?;
+        let pieces = timesheet::pieces_with(
+            &sessions,
+            &known,
+            &held,
+            &ctx.classifier,
+            &ctx.config,
+            (from, to),
+            &sent,
+        );
+        // Gün planında adı verilen bloğun satırı o adla gider (planın uygulandığı günlerde).
+        let named: Vec<(timesheet::Interval, String)> = self
+            .plan_between(from.max(super::plan_since()), to)?
+            .into_iter()
+            .filter(|b| !b.note.trim().is_empty() && b.start >= super::plan_since())
+            .map(|b| ((b.start, b.end), b.note))
+            .collect();
         Ok(TimesheetPieces {
-            pieces: timesheet::pieces_with(
-                &sessions,
-                &known,
-                &held,
-                &ctx.classifier,
-                &ctx.config,
-                (from, to),
-                &sent,
-            ),
+            pieces: timesheet::name_by_plan(pieces, &named),
             skipped,
         })
     }

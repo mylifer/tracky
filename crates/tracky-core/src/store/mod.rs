@@ -29,7 +29,7 @@ pub use edits::EditSnapshot;
 pub use files::BackupInfo;
 pub use health::{DoubleRow, Health, LongCall, Overlap, Repaired};
 pub use marks::Unsent;
-pub use plan::PlanBlock;
+pub use plan::{PlanBlock, plan_since};
 pub use sessions::EditScope;
 pub use taxonomy::TagExtras;
 pub use timesheet::{

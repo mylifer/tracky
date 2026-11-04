@@ -527,6 +527,11 @@ pub async fn save_plan(
     assign: Vec<PlanAssign>,
 ) -> CmdResult<Edited> {
     let (from, to) = (parse_time(&start)?, parse_time(&end)?);
+    if from < tracky_core::store::plan_since() {
+        return Err(
+            "Gün planı 1 Kasım 2026'dan itibaren kullanılır; önceki günler değişmez.".into(),
+        );
+    }
     let ranges = assign
         .iter()
         .map(|a| {

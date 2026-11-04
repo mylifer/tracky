@@ -963,3 +963,42 @@ fn a_row_runs_until_its_work_ends_not_its_rounded_hours() {
         t(90)
     );
 }
+
+#[test]
+fn a_named_plan_block_is_its_own_row_with_its_name() {
+    let (classifier, names, config, sheet) = setup();
+    let sessions = [
+        s("Figma", "Trumore Loyalty UI/UX — Figma", 0, 50, None),
+        s("Figma", "Trumore Pitchdeck — Figma", 52, 120, None),
+    ];
+    let p = pieces(&sessions, &[], &classifier, &config, t(-540), t(900));
+    // 09:00–10:00 adlı plan bloğu; sonrası adsız: iki satır, ilki bloğun adıyla.
+    let named = [((t(0), t(60)), "Loyalty ekranları".to_string())];
+    let got = propose(&name_by_plan(p, &named), &names, &sheet, &HashMap::new());
+    let rows: Vec<_> = got
+        .iter()
+        .map(|e| {
+            (
+                e.start.format("%H:%M").to_string(),
+                (e.worked() * 60.0).round() as i64,
+                e.details.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("09:00".to_string(), 58, "Loyalty ekranları"),
+            ("10:00".to_string(), 60, "Trumore Pitchdeck"),
+        ]
+    );
+}
+
+#[test]
+fn plan_names_leave_pieces_alone_without_names() {
+    let (classifier, _, config, _) = setup();
+    let sessions = [s("Figma", "Trumore — Figma", 0, 50, None)];
+    let p = pieces(&sessions, &[], &classifier, &config, t(-540), t(900));
+    let same = name_by_plan(p.clone(), &[((t(0), t(60)), "  ".to_string())]);
+    assert_eq!(same, p);
+}

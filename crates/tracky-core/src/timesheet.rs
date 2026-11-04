@@ -733,6 +733,54 @@ pub fn pieces_with(
     out
 }
 
+/// Gün planının adlı blokları ([`crate::store::PlanBlock`]): içlerine düşen oturum parçaları
+/// bloğun adını açıklama olarak taşır ve her adlı blok kendi satırıdır. Parçalar blok
+/// sınırlarından bölünür; sınırdan sonraki ilk parça yeni satır başlatır (araya kısa boşluk
+/// girse de komşu satıra katılmaz). Toplantıların kendi kaydı olduğu için onlara dokunulmaz.
+pub fn name_by_plan(pieces: Vec<Piece>, named: &[(Interval, String)]) -> Vec<Piece> {
+    let named: Vec<&(Interval, String)> = named
+        .iter()
+        .filter(|((a, b), name)| b > a && !name.trim().is_empty())
+        .collect();
+    if named.is_empty() {
+        return pieces;
+    }
+    let mut bounds: Vec<DateTime<Utc>> = named.iter().flat_map(|((a, b), _)| [*a, *b]).collect();
+    bounds.sort();
+    bounds.dedup();
+    let mut out: Vec<Piece> = Vec::new();
+    for p in pieces {
+        if p.meeting.is_some() {
+            out.push(p);
+            continue;
+        }
+        let mut cuts = vec![p.start];
+        cuts.extend(bounds.iter().copied().filter(|&t| t > p.start && t < p.end));
+        cuts.push(p.end);
+        for w in cuts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let mut part = p.clone();
+            part.start = a;
+            part.end = b;
+            if let Some(((_, _), name)) = named.iter().find(|((c, d), _)| *c <= a && b <= *d) {
+                part.meeting_name = Some(name.trim().to_string());
+            }
+            out.push(part);
+        }
+    }
+    // Her sınırdan sonraki ilk oturum parçası yeni satır başlatır.
+    let mut order: Vec<usize> = (0..out.len())
+        .filter(|&i| out[i].meeting.is_none())
+        .collect();
+    order.sort_by_key(|&i| out[i].start);
+    for t in bounds {
+        if let Some(&i) = order.iter().find(|&&i| out[i].start >= t) {
+            out[i].block_start = true;
+        }
+    }
+    out
+}
+
 /// `block`'a adını veren toplantılar: bloğun satırına giren (kendi kaydına yazılmayan, `covered`
 /// dışındaki) süresi toplantının ya da bloğun yarısından çok olanlar; bloğun ucuna değen ya da
 /// yarısı bloğun dışında kalan toplantı ad vermez. Birden çoksa açıklama gibi bloktaki süreleriyle özetlenir ([`describe`]); yoksa `None`.

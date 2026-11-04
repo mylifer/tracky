@@ -16,6 +16,24 @@ import type { PlanBlock, WindowSpan } from "../api";
  */
 
 export const MIN = 60_000;
+
+/**
+ * Gün planının uygulandığı ilk gün (1 Kasım 2026): öncesindeki günler eski görünümde kalır,
+ * süreleri değişmez (çekirdekte `store::plan_since`). Uçtan uca testler `kum.planSince` ile
+ * değiştirir (sabit "şimdi"leri Ekim'de).
+ */
+export function planSince(): number {
+  try {
+    const v = localStorage.getItem("kum.planSince");
+    if (v) return +new Date(`${v}T00:00:00`);
+  } catch {
+    /* depolama kapalı */
+  }
+  return +new Date(2026, 10, 1);
+}
+
+/** Gün planı bu güne uygulanır mı. */
+export const planApplies = (day: Date) => +day >= planSince();
 const SNAP = 5 * MIN;
 
 export type PlanOpts = { slotMin: number; breakMin: number; minBlockMin: number };

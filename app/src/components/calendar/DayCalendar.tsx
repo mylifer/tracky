@@ -21,6 +21,7 @@ import {
 import { Block, IdleBlock } from "./Block";
 import { DraftBlock } from "./DraftBlock";
 import { PlanColumn, approveAll, usePlan } from "./PlanColumn";
+import { planApplies } from "../../lib/plan";
 import { DRAFT_STEPS, type DraftGroup, draftGroups } from "../../lib/draft";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { categoryBuckets } from "./buckets";
@@ -226,7 +227,10 @@ export function DayCalendar({
   planMode?: boolean;
   onPlanMode?: (on: boolean) => void;
 }) {
-  const plan = usePlan(from, windows ?? [], planMode);
+  // Gün planı 1 Kasım'dan itibaren: önceki günler eski görünümde, süreleri değişmez.
+  const planOk = planApplies(from);
+  const planHere = planMode && planOk;
+  const plan = usePlan(from, windows ?? [], planHere);
   // Taslaklar; "Parçaları aç" denenler (başlangıçlarıyla) bloklarıyla çizilir.
   const groups = useMemo(() => draftGroups(blocks, draft), [blocks, draft]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -310,9 +314,11 @@ export function DayCalendar({
       >
         <span />
         <span className="flex min-w-0 items-center gap-1">
-          <span className="truncate">{planMode ? "Plan" : "Oturumlar"}</span>
-          {onDraft && <DraftMenu value={draft} onChange={onDraft} plan={planMode} onPlan={onPlanMode} />}
-          {planMode && plan.drafts.length > 0 && (
+          <span className="truncate">{planHere ? "Plan" : "Oturumlar"}</span>
+          {onDraft && (
+            <DraftMenu value={draft} onChange={onDraft} plan={planHere} onPlan={planOk ? onPlanMode : undefined} />
+          )}
+          {planHere && plan.drafts.length > 0 && (
             <button
               type="button"
               className="shrink-0 rounded px-1 font-medium text-primary hover:bg-accent"
@@ -323,7 +329,7 @@ export function DayCalendar({
               Onayla
             </button>
           )}
-          {!planMode && expanded.size > 0 && (
+          {!planHere && expanded.size > 0 && (
             <button
               type="button"
               className="shrink-0 rounded px-1 text-primary hover:bg-accent"
@@ -366,7 +372,7 @@ export function DayCalendar({
         <div className="col-start-1 row-start-1">
           <HourRail range={range} />
         </div>
-        {planMode ? (
+        {planHere ? (
           <PlanColumn
             range={range}
             top={top}

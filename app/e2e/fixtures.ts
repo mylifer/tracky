@@ -47,6 +47,8 @@ export const test = base.extend<{ app: App }>({
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.clock.setFixedTime(new Date(NOW));
+    // Gün planı 1 Kasım 2026'dan itibaren; testlerin "şimdi"si Ekim'de.
+    await page.addInitScript(() => localStorage.setItem("kum.planSince", "2026-10-01"));
     await page.goto("/e2e/harness.html");
     await expect(page.getByRole("navigation")).toBeVisible();
     await use(new App(page));
