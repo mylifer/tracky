@@ -92,7 +92,7 @@ pub const SYNCED_SETTINGS: &[&str] = &[
 
 /// Parça parça şekle ([`table_fingerprints`]) geçilmeden önce eklenmiş tablo ve ayarlar:
 /// [`legacy_fingerprint`] bunlarsız hesaplanır.
-const AFTER_LEGACY_TABLES: &[&str] = &["calls", "timesheet_marks"];
+const AFTER_LEGACY_TABLES: &[&str] = &["calls", "timesheet_marks", "plan_blocks"];
 const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance", "closed_days"];
 /// Parça parça şekle geçildikten sonra eklenen sütunlar: [`legacy_fingerprint`] bunlarsız.
 const AFTER_LEGACY_COLUMNS: &[&str] = &["passive"];
@@ -273,10 +273,34 @@ const TABLES: &[Table] = &[
         only: None,
         prefix: None,
     },
+    // Gün planının onaylı blokları (store::plan): öteki bilgisayarda da aynı plan. Sunucuda tablo
+    // yoksa (0018 öncesi) eşitlemenin geri kalanı sürer; her bilgisayar kendi planını görür.
+    Table {
+        name: "plan_blocks",
+        cols: &[
+            ("id", Col::Text),
+            ("started_at", Col::Time),
+            ("ended_at", Col::Time),
+            ("project_id", Col::OptText),
+            ("note", Col::Text),
+            ("updated_at", Col::Time),
+            ("deleted_at", Col::OptTime),
+        ],
+        optional: &[],
+        key: "id",
+        only: None,
+        prefix: None,
+    },
 ];
 
 /// Sonradan eklenen tablolar: sunucuda yoksa yalnızca onlar eşitlenmez, gerisi sürer.
-const LATE_TABLES: &[&str] = &["settings", "timesheet_entries", "calls", "timesheet_marks"];
+const LATE_TABLES: &[&str] = &[
+    "settings",
+    "timesheet_entries",
+    "calls",
+    "timesheet_marks",
+    "plan_blocks",
+];
 
 impl Table {
     /// Sunucudaki sütunun yereldeki adı.
@@ -442,6 +466,8 @@ impl SyncSummary {
             "calls" => {}
             // Gönderilen bloklar eşitlenmezse her bilgisayar yalnızca kendi gönderdiklerini görür.
             "timesheet_marks" => {}
+            // Plan eşitlenmezse her bilgisayar kendi planını görür.
+            "plan_blocks" => {}
             _ => self.timesheet_unavailable = true,
         }
     }
