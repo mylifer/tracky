@@ -257,21 +257,12 @@ export function draftSlots(
 
 const sorted = (list: Slot[]) => [...list].sort((a, b) => a.start - b.start);
 
-/** Aynı projeli, bitişik onaylı bloklar birleşir; 1 dakikadan kısalar düşer. */
+/**
+ * Sıralar, 1 dakikadan kısa parçaları atar. Bitişik bloklar kendiliğinden birleşmez (aynı
+ * projede olsalar da): blok yalnızca kullanıcı birleştirince birleşir ([`mergeWith`]).
+ */
 export function normalize(list: Slot[]): Slot[] {
-  const out: Slot[] = [];
-  for (const b of sorted(list).filter((x) => x.end - x.start >= MIN)) {
-    const last = out[out.length - 1];
-    if (
-      last &&
-      last.projectId === b.projectId &&
-      b.start - last.end <= MIN &&
-      !(last.note && b.note && last.note !== b.note)
-    ) {
-      out[out.length - 1] = { ...last, end: Math.max(last.end, b.end), note: last.note || b.note };
-    } else out.push(b);
-  }
-  return out;
+  return sorted(list).filter((x) => x.end - x.start >= MIN);
 }
 
 /** `[a, b)` aralığını tek blok yapar: kesişen bloklar kırpılır ya da ikiye bölünür. */

@@ -733,19 +733,22 @@ pub fn pieces_with(
     out
 }
 
-/// Gün planının adlı blokları ([`crate::store::PlanBlock`]): içlerine düşen oturum parçaları
-/// bloğun adını açıklama olarak taşır ve her adlı blok kendi satırıdır. Parçalar blok
-/// sınırlarından bölünür; sınırdan sonraki ilk parça yeni satır başlatır (araya kısa boşluk
-/// girse de komşu satıra katılmaz). Toplantıların kendi kaydı olduğu için onlara dokunulmaz.
-pub fn name_by_plan(pieces: Vec<Piece>, named: &[(Interval, String)]) -> Vec<Piece> {
-    let named: Vec<&(Interval, String)> = named
-        .iter()
-        .filter(|((a, b), name)| b > a && !name.trim().is_empty())
-        .collect();
-    if named.is_empty() {
+/// Gün planının blokları ([`crate::store::PlanBlock`]; aralığı ve adı): her plan bloğu kendi
+/// satırıdır (aynı projedeki bitişik iki blok da) ve adı varsa içine düşen oturum parçaları
+/// onu açıklama olarak taşır. Parçalar blok sınırlarından bölünür; sınırdan sonraki ilk parça
+/// yeni satır başlatır (araya kısa boşluk girse de komşu satıra katılmaz). Toplantıların kendi
+/// kaydı olduğu için onlara dokunulmaz.
+pub fn name_by_plan(pieces: Vec<Piece>, plan: &[(Interval, String)]) -> Vec<Piece> {
+    let blocks: Vec<&(Interval, String)> = plan.iter().filter(|((a, b), _)| b > a).collect();
+    if blocks.is_empty() {
         return pieces;
     }
-    let mut bounds: Vec<DateTime<Utc>> = named.iter().flat_map(|((a, b), _)| [*a, *b]).collect();
+    let named: Vec<&(Interval, String)> = blocks
+        .iter()
+        .copied()
+        .filter(|(_, name)| !name.trim().is_empty())
+        .collect();
+    let mut bounds: Vec<DateTime<Utc>> = blocks.iter().flat_map(|((a, b), _)| [*a, *b]).collect();
     bounds.sort();
     bounds.dedup();
     let mut out: Vec<Piece> = Vec::new();

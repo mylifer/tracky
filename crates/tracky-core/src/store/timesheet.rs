@@ -594,15 +594,16 @@ impl Store {
             (from, to),
             &sent,
         );
-        // Gün planında adı verilen bloğun satırı o adla gider (planın uygulandığı günlerde).
-        let named: Vec<(timesheet::Interval, String)> = self
+        // Gün planının her bloğu kendi satırıdır; adı varsa açıklaması o addır (planın
+        // uygulandığı günlerde).
+        let plan: Vec<(timesheet::Interval, String)> = self
             .plan_between(from.max(super::plan_since()), to)?
             .into_iter()
-            .filter(|b| !b.note.trim().is_empty() && b.start >= super::plan_since())
+            .filter(|b| b.start >= super::plan_since())
             .map(|b| ((b.start, b.end), b.note))
             .collect();
         Ok(TimesheetPieces {
-            pieces: timesheet::name_by_plan(pieces, &named),
+            pieces: timesheet::name_by_plan(pieces, &plan),
             skipped,
         })
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WindowSpan } from "../api";
-import { assignRanges, draftSlots, mergeWith, normalize, paint, resize, type Slot, split } from "./plan";
+import { assignRanges, draftSlots, mergeWith, normalize, paint, resize, type Slot, split, update } from "./plan";
 
 const DAY = Date.parse("2026-11-03T00:00:00");
 const at = (hm: string) => {
@@ -132,9 +132,18 @@ describe("düzenleme", () => {
     expect(new Set(inside.map((x) => x.id)).size).toBe(3);
   });
 
-  it("aynı projeye boyanan bitişik bloklar birleşir", () => {
+  it("aynı projeye boyanan bitişik bloklar kendiliğinden birleşmez", () => {
     const out = paint([b("a", "09:00", "10:00"), b("c", "10:00", "11:00", "q")], at("10:00"), at("11:00"), "p");
-    expect(show(out)).toEqual(["09:00–11:00 p"]);
+    expect(show(out)).toEqual(["09:00–10:00 p", "10:00–11:00 p"]);
+  });
+
+  it("bloğa ad ya da proje vermek bitişik aynı projeli bloğu birleştirmez", () => {
+    const list = [b("a", "06:25", "07:30"), b("c", "07:30", "08:50")];
+    expect(show(update(list, "c", { note: "API entegrasyonu" }))).toEqual(["06:25–07:30 p", "07:30–08:50 p"]);
+    expect(show(update([b("a", "06:25", "07:30"), b("c", "07:30", "08:50", "q")], "c", { projectId: "p" }))).toEqual([
+      "06:25–07:30 p",
+      "07:30–08:50 p",
+    ]);
   });
 
   it("bölme iki parça verir, birleştirme aradaki boşluğu kapatır", () => {
@@ -145,9 +154,9 @@ describe("düzenleme", () => {
     expect(show(merged)).toEqual(["09:00–11:00 p"]);
   });
 
-  it("normalize kısa parçaları atar, aynı projeli bitişikleri birleştirir", () => {
-    const out = normalize([b("a", "09:00", "10:00"), b("c", "10:00", "10:00"), b("d", "10:00", "11:00")]);
-    expect(show(out)).toEqual(["09:00–11:00 p"]);
+  it("normalize kısa parçaları atar, bitişikleri birleştirmez", () => {
+    const out = normalize([b("d", "10:00", "11:00"), b("c", "10:00", "10:00"), b("a", "09:00", "10:00")]);
+    expect(show(out)).toEqual(["09:00–10:00 p", "10:00–11:00 p"]);
   });
 
   it("yalnızca değişen ve projesi belli kısımlar oturumlara yazılır", () => {
