@@ -9,6 +9,10 @@ ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    # Aynı fonksiyonda, sembolik bağın beyan edilen boyutu büyükken süreç düşüyor
+    # (ZipArchive::extract). Etki yukarıdakiyle aynı: çağrılan tek yer updater'ın imzası
+    # doğrulanmış paketi.
+    "RUSTSEC-2026-0429",
     # quick-xml < 0.41: kötü niyetli XML ile bellek/CPU tüketimi. Yalnızca umya-spreadsheet ve
     # kullanıcının kendi zaman çizelgesi dosyası; düzeltmesi umya 3.x'e geçiş.
     "RUSTSEC-2026-0194",
