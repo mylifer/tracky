@@ -292,6 +292,9 @@ Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birl
    çalışması için gerekmez ama önerilir.
    `0017_sync_nudges.sql` anında eşitlemeyi açar (dürtme tablosu ve Realtime yayını); çalıştırılmazsa
    değişiklikler öteki bilgisayara en geç 5 dakikada gider.
+   `0018_plan_blocks.sql` gün planının bloklarını (onay, ad, boyut) eşitler; çalıştırılmazsa eşitleme
+   sürer, yalnızca her bilgisayar kendi planını görür. Dosya sonradan çalıştırılınca bekleyen bloklar
+   kendiliğinden gönderilir.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.

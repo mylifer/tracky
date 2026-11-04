@@ -37,7 +37,10 @@ fn only_new_or_changed_tables_are_refetched() {
     // Eski tek özetten geçiş: yalnızca yeni tablo ve yeni ayar eklenen ayarlar baştan çekilir.
     let first = tables_to_refetch(|_| None, true);
     let refetch: Vec<&str> = first.iter().filter(|r| r.2).map(|r| r.0).collect();
-    assert_eq!(refetch, ["settings", "calls", "timesheet_marks"]);
+    assert_eq!(
+        refetch,
+        ["settings", "calls", "timesheet_marks", "plan_blocks"]
+    );
     assert_eq!(first.len(), TABLES.len());
     // Kayıtlıyla aynıysa hiçbir şey; biri değişmişse yalnızca o.
     let stored = |name: &str| current.get(name).cloned();
@@ -456,6 +459,46 @@ fn manual_project_syncs_between_devices() {
     run(&b, &mut remote, "u1").unwrap();
     let got = lock(&b).sessions_between(s.started_at, s.ended_at).unwrap();
     assert_eq!(got[0].project_id.as_deref(), Some(project.id.as_str()));
+}
+
+#[test]
+fn plan_blocks_sync_between_devices() {
+    use crate::store::PlanBlock;
+    let a = Mutex::new(Store::open_in_memory().unwrap());
+    let b = Mutex::new(Store::open_in_memory().unwrap());
+    let mut remote = FakeRemote::default();
+    let s = session("Code", 3600);
+    let project = lock(&a).accept_project_suggestion("Trumore").unwrap();
+    let (from, to) = (s.started_at, s.ended_at);
+    let block = |note: &str| PlanBlock {
+        id: "blok".into(),
+        start: from,
+        end: to,
+        project_id: Some(project.id.clone()),
+        note: note.into(),
+    };
+    lock(&a)
+        .replace_plan(from, to, &[block("Pitch deck")])
+        .unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+    assert_eq!(
+        lock(&b).plan_between(from, to).unwrap(),
+        vec![block("Pitch deck")]
+    );
+
+    // Öteki cihazda ad değişir, sonra blok kaldırılır: ikisi de geri gelir.
+    lock(&b).replace_plan(from, to, &[block("Sunum")]).unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    assert_eq!(
+        lock(&a).plan_between(from, to).unwrap(),
+        vec![block("Sunum")]
+    );
+    lock(&a).replace_plan(from, to, &[]).unwrap();
+    run(&a, &mut remote, "u1").unwrap();
+    run(&b, &mut remote, "u1").unwrap();
+    assert!(lock(&b).plan_between(from, to).unwrap().is_empty());
 }
 
 /// Süren oturumu uzatan cihaz, öteki cihazdaki proje atamasını ve silmeyi ezmez: eşitleme

@@ -7,7 +7,7 @@
 //! sürüklenince yalnızca kenarı oynar. Ham oturumlar kanıt olarak kalır.
 //!
 //! Arayüz bir günün bloklarını bütün olarak kaydeder ([`Store::replace_plan`]); önceki hali
-//! döner ki değişiklik geri alınabilsin. Silme yumuşaktır (eşitlemeye hazır).
+//! döner ki değişiklik geri alınabilsin. Silme yumuşaktır; bloklar eşitlenir (`sync::TABLES`, supabase/migrations/0018).
 //!
 //! Projesi olan onaylı blok zaman çizelgesine gönderilmiştir (Timely'de onaylanan taslağın
 //! kayda geçmesi gibi): kaydederken önceki projeli blokların aralığı gönderilenlerden düşülür,

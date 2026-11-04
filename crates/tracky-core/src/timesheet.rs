@@ -989,7 +989,44 @@ pub fn propose(
         run.settle_kind();
     }
     runs.extend(open.into_values());
-    runs.extend(meetings.into_iter().map(|(_, run)| run));
+    // Toplantı, aynı projede gönderilmiş bir bloğun iki yanına taşıyorsa (blok toplantının
+    // içinde) kalan parçaları bloğun iki yanından tek bir toplantı satırında toplanır ve bloğun
+    // satırıyla üst üste biner. Böyle toplantı satırı o bloğun satırına katılır: tek satır,
+    // toplantının başından sonuna, adı toplantının. Blok toplantının bir ucuna taşıyorsa kalan
+    // tek parçadır, bloğun ardından (ya da önünden) kendi satırıdır.
+    for (_, m) in meetings {
+        let inside = runs.iter_mut().find(|r| {
+            r.project == m.project
+                && !r.meeting
+                && m.start < r.start
+                && r.end < m.end
+                && m.spans.iter().any(|s| s.1 <= r.start)
+                && m.spans.iter().any(|s| s.0 >= r.end)
+        });
+        match inside {
+            Some(r) => {
+                let subject = m
+                    .titles
+                    .iter()
+                    .max_by_key(|(_, d)| **d)
+                    .map(|(t, _)| t.clone());
+                r.start = r.start.min(m.start);
+                r.end = r.end.max(m.end);
+                r.worked += m.worked;
+                for (k, d) in m.kinds {
+                    *r.kinds.entry(k).or_insert(Duration::zero()) += d;
+                }
+                r.settle_kind();
+                r.names.clear();
+                if let Some(subject) = subject {
+                    r.names.insert(subject, r.worked);
+                }
+                r.spans.extend(m.spans);
+                r.trimmed |= m.trimmed;
+            }
+            None => runs.push(m),
+        }
+    }
 
     // Kaydedilmiş satırlar düşülmeden oturum kümeleri (önerilerin satır kaydedilmeden önceki
     // hali): proje, aralıklar.

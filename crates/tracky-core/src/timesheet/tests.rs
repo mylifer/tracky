@@ -803,6 +803,49 @@ fn a_sent_block_in_an_attended_meeting_is_named_after_it() {
 }
 
 #[test]
+fn a_meeting_longer_than_its_sent_block_is_one_row() {
+    let (classifier, names, config, sheet) = setup();
+    // 09:30–10:00 Trumore toplantısı; 09:33–09:48 Teams'te sunum (Trumore), blok gönderildi.
+    let sessions = [s("Teams", "Trumore Pitch Deck", 33, 48, Some("tru"))];
+    let sent = Sent {
+        spans: vec![(t(33), t(48))],
+        off: Vec::new(),
+        before: t(-600),
+    };
+    let pitch = meeting("p", "Trumore Pitch", 30, 60, true);
+    let rows = |project: &str| -> Vec<(String, i64, String)> {
+        let p = pieces_with(
+            &sessions,
+            &[(pitch.clone(), project.to_string())],
+            std::slice::from_ref(&pitch),
+            &classifier,
+            &config,
+            (t(-540), t(900)),
+            &sent,
+        );
+        propose(&p, &names, &sheet, &HashMap::new())
+            .into_iter()
+            .map(|e| {
+                (
+                    e.start.format("%H:%M").to_string(),
+                    (e.worked() * 60.0).round() as i64,
+                    e.details,
+                )
+            })
+            .collect()
+    };
+    // Aynı proje: tek satır, toplantının başından sonuna, adı toplantının.
+    assert_eq!(
+        rows("tru"),
+        [("09:30".to_string(), 30, "Trumore Pitch".to_string())]
+    );
+    // Başka projenin toplantısı: blok kendi satırı, toplantının kalanı ayrı (eskisi gibi).
+    let other = rows("sync");
+    assert_eq!(other.len(), 2);
+    assert_eq!(other.iter().map(|r| r.1).sum::<i64>(), 30);
+}
+
+#[test]
 fn meeting_project_prefers_assignment_then_rules() {
     let (classifier, _, _, _) = setup();
     let m = meeting("seri", "Trumore weekly", 0, 30, true);

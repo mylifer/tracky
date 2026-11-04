@@ -14,10 +14,23 @@ import { FULL_LABEL_PX, HOUR_MS, LABEL_MIN_PX } from "./grid";
 const hoursFmt = new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 /**
- * Yazılan saat çeyreğe yuvarlandığı için satır sonrakine biraz taşabilir: bu kadarlık örtüşmede
- * sonraki satır aynı şeritte, öncekinin üstünde durur (yan şeride kaymaz, kartlar daralmaz).
+ * Yazılan saat çeyreğe yuvarlandığı için satır sonrakine biraz taşabilir: önceki satırın gerçek
+ * aralığı (takip aralıkları ya da gerçek süre) bitmişse sonraki satır aynı şeritte, öncekinin
+ * üstünde durur (yan şeride kaymaz, kartlar daralmaz). Gerçekten çakışan satırlar (aynı saatte
+ * iki iş) yan yana şeritlere ayrılır, üst üste binmez.
  */
-const OVERLAP_MS = 15 * 60_000;
+const OVERLAP_MS = 60_000;
+
+/**
+ * Satırın gerçekten sürdüğü son an: takip aralıklarının sonu, yoksa gerçek süre. İkisi de yoksa
+ * (elle eklenen ya da eski kayıt) yuvarlamanın taşırabileceği çeyrek saat düşülmüş yazılan saat.
+ */
+function realEnd(entry: EntryView, start: number) {
+  const ends = (entry.coverage ?? []).map(([, b]) => b);
+  if (ends.length) return Math.max(...ends);
+  if (entry.actualHours != null) return start + entry.actualHours * HOUR_MS;
+  return start + entry.hours * HOUR_MS - 14 * 60_000;
+}
 
 /**
  * Satırın gerçek aralıkları (ms): kapsadığı takip aralıkları; elle eklenen ya da eski satırda
@@ -102,13 +115,13 @@ export function sheetItems(entries: EntryView[], blocks: WorkBlock[], from: Date
     .map((entry) => {
       const [h, m] = entry.start.split(":").map(Number);
       const start = +new Date(from.getFullYear(), from.getMonth(), from.getDate(), h, m);
-      return { entry, key: entry.key, start, end: start + entry.hours * HOUR_MS };
+      return { entry, key: entry.key, start, end: start + entry.hours * HOUR_MS, real: realEnd(entry, start) };
     })
     .sort((a, b) => a.start - b.start || b.end - a.end)
-    .map((item) => {
+    .map(({ real, ...item }) => {
       let lane = ends.findIndex((end) => end - OVERLAP_MS <= item.start);
       if (lane < 0) lane = ends.length;
-      ends[lane] = Math.max(ends[lane] ?? 0, item.end);
+      ends[lane] = Math.max(ends[lane] ?? 0, real);
       return { ...item, lane };
     });
   return { items: [...unsent, ...rows], lanes: Math.max(1, ends.length) };

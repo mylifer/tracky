@@ -163,7 +163,11 @@ test("Gün planı: taslaklar önerilir, onaylanınca saklanır; kenar sürüklen
 test("Gün planı: bloğa ad verilir; ad kaydedilir ve takvimde bloğun başlığı olur", async ({ app, page }) => {
   await app.open("Gün");
   await page.locator("[data-plan=draft]").first().click();
-  const name = page.getByRole("textbox", { name: "Blok adı" });
+  const name = page.getByRole("combobox", { name: "Blok adı" });
+  // Öneriler: bloğun pencere başlıkları, sonra zaman çizelgesindeki önceki açıklamalar.
+  const options = page.locator(`datalist[id="${await name.getAttribute("list")}"] option`);
+  await expect(options).toHaveCount(3);
+  await expect(options.nth(0)).toHaveAttribute("value", "portal — api.ts");
   await name.fill("API entegrasyonu");
   await name.press("Enter");
   await expect.poll(async () => (await app.calls("save_plan")).length).toBe(1);
