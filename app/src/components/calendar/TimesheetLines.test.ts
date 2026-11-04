@@ -62,6 +62,30 @@ describe("sheetItems", () => {
     expect(sheetItems([row("a", "09:02:00", 1.25), row("b", "10:05:00", 0.5)], [], day).lanes).toBe(1);
   });
 
+  it("gerçekten çakışan iki satır (aynı saatte iki iş) yan yana şeritlere ayrılır, üst üste binmez", () => {
+    // 11:30'da 3 dk süren (0,25 sa yazılan) satır ve 11:33–11:48 satırı.
+    const a = {
+      ...row("a", "11:30:00", 0.25),
+      actualHours: 0.05,
+      coverage: [[at(11, 30), at(11, 48)]] as [number, number][],
+    };
+    const b = {
+      ...row("b", "11:33:00", 0.25),
+      actualHours: 0.25,
+      coverage: [[at(11, 33), at(11, 48)]] as [number, number][],
+    };
+    expect(lanes([a, b])).toEqual([
+      ["a", 0],
+      ["b", 1],
+    ]);
+    // Yalnızca yuvarlamadan taşan satır (gerçekte 11:33'te bitmiş) aynı şeritte kalır.
+    const c = { ...a, coverage: [[at(11, 30), at(11, 33)]] as [number, number][] };
+    expect(lanes([c, b])).toEqual([
+      ["a", 0],
+      ["b", 0],
+    ]);
+  });
+
   it("gönderilmemiş bloğu kendi aralığında ve satırlardan önce ekler; gönderileni ve çizelgesi olmayanı eklemez", () => {
     const unsent = block(at(11, 12), at(12, 38), false);
     const { items } = sheetItems(
