@@ -167,7 +167,9 @@ export function draftSlots(
 
   const out: Slot[] = [];
   for (const [i0, i1] of pieces) {
-    // Dilim başına kısımlar; projesiz ya da boş dilim kendi kısmını açmaz.
+    // Dilim başına kısımlar. Dilimin çoğu bir projedeyse o projenin, değilse atanmamış
+    // (`null`) kısmıdır: atanmamış süre yandaki projeye geçmez (Trumore'dan sonra tarayıcıda
+    // geçen yarım saat Trumore bloğunu uzatmasın). Boş dilim (kısa boşluk) önceki kısımda kalır.
     const runs: Run[] = [];
     for (let i = i0; i <= i1; i++) {
       const s = slots[i];
@@ -175,9 +177,8 @@ export function draftSlots(
       const label = busy(i) && nonNull * 2 >= s.active ? lead(s.weight) : null;
       const r = runs[runs.length - 1];
       const start = dayStart + i * step;
-      if (r && (label === null || r.label === null || r.label === label)) {
+      if (r && (!busy(i) || r.label === label)) {
         r.end = start + step;
-        if (r.label === null) r.label = label;
         r.first = Math.min(r.first, s.first);
         r.last = Math.max(r.last, s.last);
         addWeight(r.weight, s.weight);
@@ -202,14 +203,17 @@ export function draftSlots(
       addWeight(into.weight, r.weight);
       into.active += r.active;
     };
-    // Kısa kısımlar komşusuna katılır; önce kendi projesinde en az süre geçen. İki yanı aynı
+    // Kısa kısımlar komşusuna katılır; önce kendi projesinde en az süre geçen. Projeli kısım
+    // `minBlockMin`'den kısaysa, atanmamış kısım ancak bir dilim kadarsa (bir mesaja, bir
+    // sekmeye bakmak) katılır; atanmamış kısım önceki bloğa geçer (işin devamı). İki yanı aynı
     // projeyse üçü tek blok olur (Kum'a 8 dakika SD App karışınca Kum bölünmesin), değilse
-    // uzun komşuya.
-    const short = opts.minBlockMin * MIN;
+    // uzun komşuya. Şu an süren son kısım katılmaz: blok dakika dakika büyüyüp küçülmesin.
     const len = (r: Run) => r.end - r.start;
+    const live = (r: Run) => r === runs[runs.length - 1] && r.end >= end - step && end < dayEnd;
+    const isShort = (r: Run) => !live(r) && (r.label === null ? len(r) <= step : len(r) < opts.minBlockMin * MIN);
     while (runs.length > 1) {
       let k = -1;
-      for (let m = 0; m < runs.length; m++) if (len(runs[m]) < short && (k < 0 || own(runs[m]) < own(runs[k]))) k = m;
+      for (let m = 0; m < runs.length; m++) if (isShort(runs[m]) && (k < 0 || own(runs[m]) < own(runs[k]))) k = m;
       if (k < 0) break;
       const [a, r, b] = [runs[k - 1], runs[k], runs[k + 1]];
       if (a && b && a.label === b.label) {
@@ -217,7 +221,7 @@ export function draftSlots(
         join(a, b);
         runs.splice(k, 2);
       } else {
-        join(!a ? b : !b ? a : len(a) >= len(b) ? a : b, r);
+        join(!a ? b : !b ? a : r.label === null ? a : len(a) >= len(b) ? a : b, r);
         runs.splice(k, 1);
       }
       for (let m = 1; m < runs.length; m++) {
@@ -253,21 +257,12 @@ export function draftSlots(
 
 const sorted = (list: Slot[]) => [...list].sort((a, b) => a.start - b.start);
 
-/** Aynı projeli, bitişik onaylı bloklar birleşir; 1 dakikadan kısalar düşer. */
+/**
+ * Sıralar, 1 dakikadan kısa parçaları atar. Bitişik bloklar kendiliğinden birleşmez (aynı
+ * projede olsalar da): blok yalnızca kullanıcı birleştirince birleşir ([`mergeWith`]).
+ */
 export function normalize(list: Slot[]): Slot[] {
-  const out: Slot[] = [];
-  for (const b of sorted(list).filter((x) => x.end - x.start >= MIN)) {
-    const last = out[out.length - 1];
-    if (
-      last &&
-      last.projectId === b.projectId &&
-      b.start - last.end <= MIN &&
-      !(last.note && b.note && last.note !== b.note)
-    ) {
-      out[out.length - 1] = { ...last, end: Math.max(last.end, b.end), note: last.note || b.note };
-    } else out.push(b);
-  }
-  return out;
+  return sorted(list).filter((x) => x.end - x.start >= MIN);
 }
 
 /** `[a, b)` aralığını tek blok yapar: kesişen bloklar kırpılır ya da ikiye bölünür. */

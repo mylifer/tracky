@@ -1,7 +1,7 @@
 {
   "name": "kum",
   "private": true,
-  "version": "0.9.97",
+  "version": "0.9.99",
   "type": "module",
   "scripts": {
     "dev": "vite",

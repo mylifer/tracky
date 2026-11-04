@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WindowSpan } from "../api";
-import { assignRanges, draftSlots, mergeWith, normalize, paint, resize, type Slot, split } from "./plan";
+import { assignRanges, draftSlots, mergeWith, normalize, paint, resize, type Slot, split, update } from "./plan";
 
 const DAY = Date.parse("2026-11-03T00:00:00");
 const at = (hm: string) => {
@@ -71,6 +71,27 @@ describe("taslak", () => {
     expect(drafts.some((b) => b.end > at("09:00") && b.start < at("12:10"))).toBe(false);
   });
 
+  it("atanmamış süre yandaki projeli bloğu uzatmaz", () => {
+    // 09:00–09:30 Trumore, ardından 45 dk atanmamış tarayıcı, sonra yine Trumore.
+    const w = [win("09:00", "09:30", "tru"), win("09:30", "10:15", null, "Safari"), win("10:15", "11:00", "tru")];
+    expect(show(draftSlots(w, DAY, DAY + 86_400_000, NOW, []))).toEqual([
+      "09:00–09:30 tru",
+      "09:30–10:15 -",
+      "10:15–11:00 tru",
+    ]);
+  });
+
+  it("şu an süren atanmamış iş projeli bloğa katılmaz (blok dakika dakika büyümez)", () => {
+    // 14:00–14:20 Trumore, 14:20'den beri (şimdi 14:31) atanmamış.
+    const w = [win("13:00", "14:20", "tru"), win("14:20", "14:31", null, "Safari")];
+    expect(show(draftSlots(w, DAY, DAY + 86_400_000, at("14:31"), []))).toEqual(["13:00–14:15 tru", "14:15–14:30 -"]);
+  });
+
+  it("bir dilimlik atanmamış araya girme önceki blokta kalır", () => {
+    const w = [win("09:00", "10:00", "tru"), win("10:00", "10:12", null, "WhatsApp"), win("10:15", "11:00", "kum")];
+    expect(show(draftSlots(w, DAY, DAY + 86_400_000, NOW, []))).toEqual(["09:00–10:15 tru", "10:15–11:00 kum"]);
+  });
+
   it("şimdiden sonrasını çizmez", () => {
     const drafts = draftSlots([win("14:00", "15:00", "togg")], DAY, DAY + 86_400_000, at("14:30"), []);
     expect(show(drafts)).toEqual(["14:00–14:30 togg"]);
@@ -111,9 +132,18 @@ describe("düzenleme", () => {
     expect(new Set(inside.map((x) => x.id)).size).toBe(3);
   });
 
-  it("aynı projeye boyanan bitişik bloklar birleşir", () => {
+  it("aynı projeye boyanan bitişik bloklar kendiliğinden birleşmez", () => {
     const out = paint([b("a", "09:00", "10:00"), b("c", "10:00", "11:00", "q")], at("10:00"), at("11:00"), "p");
-    expect(show(out)).toEqual(["09:00–11:00 p"]);
+    expect(show(out)).toEqual(["09:00–10:00 p", "10:00–11:00 p"]);
+  });
+
+  it("bloğa ad ya da proje vermek bitişik aynı projeli bloğu birleştirmez", () => {
+    const list = [b("a", "06:25", "07:30"), b("c", "07:30", "08:50")];
+    expect(show(update(list, "c", { note: "API entegrasyonu" }))).toEqual(["06:25–07:30 p", "07:30–08:50 p"]);
+    expect(show(update([b("a", "06:25", "07:30"), b("c", "07:30", "08:50", "q")], "c", { projectId: "p" }))).toEqual([
+      "06:25–07:30 p",
+      "07:30–08:50 p",
+    ]);
   });
 
   it("bölme iki parça verir, birleştirme aradaki boşluğu kapatır", () => {
@@ -124,9 +154,9 @@ describe("düzenleme", () => {
     expect(show(merged)).toEqual(["09:00–11:00 p"]);
   });
 
-  it("normalize kısa parçaları atar, aynı projeli bitişikleri birleştirir", () => {
-    const out = normalize([b("a", "09:00", "10:00"), b("c", "10:00", "10:00"), b("d", "10:00", "11:00")]);
-    expect(show(out)).toEqual(["09:00–11:00 p"]);
+  it("normalize kısa parçaları atar, bitişikleri birleştirmez", () => {
+    const out = normalize([b("d", "10:00", "11:00"), b("c", "10:00", "10:00"), b("a", "09:00", "10:00")]);
+    expect(show(out)).toEqual(["09:00–10:00 p", "10:00–11:00 p"]);
   });
 
   it("yalnızca değişen ve projesi belli kısımlar oturumlara yazılır", () => {
