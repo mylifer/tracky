@@ -293,7 +293,7 @@ export function DayCalendar({
         <div className="mb-2 flex items-center gap-2 rounded-md border border-dashed px-2.5 py-1.5 text-xs text-muted-foreground">
           <MousePointer2 className="size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
-            Oturumlar sütununda yukarıdan aşağı sürükle: seçtiğin aralığın tamamı tek seferde bir projeye atanır.
+            Bu sütunda yukarıdan aşağı sürükle: seçtiğin aralığın tamamı tek seferde bir projeye atanır.
           </span>
           <button
             type="button"
@@ -374,6 +374,7 @@ export function DayCalendar({
             tags={tags}
             plan={plan}
             className="col-start-2 row-start-1"
+            onDrag={hintSeen}
           >
             <NowLine day={from} range={range} />
           </PlanColumn>
@@ -549,7 +550,7 @@ function DraftMenu({
           title="Taslak: kısa araya girmeler ve molalar tek blokta görünür (bloklar ve zaman çizelgesi değişmez)"
           aria-label={plan ? "Görünüm: gün planı" : value > 0 ? `Taslak eşiği: ${value} dk` : "Taslak eşiği: ayrıntılı"}
         >
-          {plan ? "yeni" : value > 0 ? `${value} dk` : "Ayrıntılı"}
+          {plan ? "görünüm" : value > 0 ? `${value} dk` : "Ayrıntılı"}
           <ChevronDown className="size-3" />
         </button>
       </PopoverTrigger>
@@ -565,7 +566,7 @@ function DraftMenu({
               }}
             >
               <span>
-                <span className={cn("block", plan && "font-semibold")}>Gün planı (yeni, deneysel)</span>
+                <span className={cn("block", plan && "font-semibold")}>Gün planı</span>
                 <span className="block text-muted-foreground">
                   Bloklar saklanır, kendi kendine bölünmez; boşluklar bloğun içinde kalır.
                 </span>
@@ -576,7 +577,7 @@ function DraftMenu({
           </>
         )}
         <p className="px-2 pt-1 pb-1.5 text-xs text-muted-foreground">
-          Oturumlar: bundan kısa araya girmeler ve molalar ayrı blok sayılmaz, tek kutuda görünür.
+          Oturumlar (eski görünüm): bundan kısa araya girmeler ve molalar ayrı blok sayılmaz.
         </p>
         {DRAFT_STEPS.map((m) => (
           <button

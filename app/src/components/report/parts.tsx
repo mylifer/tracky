@@ -236,13 +236,13 @@ export function ProjectLegend({ buckets, tags }: { buckets: Bucket[]; tags: Map<
 
 const PLAN_KEY = "kum.planMode";
 
-/** Gün takviminde yeni gün planı (deneysel); tercih bu cihazda hatırlanır. */
+/** Gün takviminde gün planı (varsayılan; eski Oturumlar görünümü seçilebilir); tercih bu cihazda hatırlanır. */
 export function usePlanMode(): [boolean, (v: boolean) => void] {
   const [on, setOn] = useState(() => {
     try {
-      return localStorage.getItem(PLAN_KEY) === "1";
+      return localStorage.getItem(PLAN_KEY) !== "0";
     } catch {
-      return false;
+      return true;
     }
   });
   return [
