@@ -71,6 +71,27 @@ describe("taslak", () => {
     expect(drafts.some((b) => b.end > at("09:00") && b.start < at("12:10"))).toBe(false);
   });
 
+  it("atanmamış süre yandaki projeli bloğu uzatmaz", () => {
+    // 09:00–09:30 Trumore, ardından 45 dk atanmamış tarayıcı, sonra yine Trumore.
+    const w = [win("09:00", "09:30", "tru"), win("09:30", "10:15", null, "Safari"), win("10:15", "11:00", "tru")];
+    expect(show(draftSlots(w, DAY, DAY + 86_400_000, NOW, []))).toEqual([
+      "09:00–09:30 tru",
+      "09:30–10:15 -",
+      "10:15–11:00 tru",
+    ]);
+  });
+
+  it("şu an süren atanmamış iş projeli bloğa katılmaz (blok dakika dakika büyümez)", () => {
+    // 14:00–14:20 Trumore, 14:20'den beri (şimdi 14:31) atanmamış.
+    const w = [win("13:00", "14:20", "tru"), win("14:20", "14:31", null, "Safari")];
+    expect(show(draftSlots(w, DAY, DAY + 86_400_000, at("14:31"), []))).toEqual(["13:00–14:15 tru", "14:15–14:30 -"]);
+  });
+
+  it("bir dilimlik atanmamış araya girme önceki blokta kalır", () => {
+    const w = [win("09:00", "10:00", "tru"), win("10:00", "10:12", null, "WhatsApp"), win("10:15", "11:00", "kum")];
+    expect(show(draftSlots(w, DAY, DAY + 86_400_000, NOW, []))).toEqual(["09:00–10:15 tru", "10:15–11:00 kum"]);
+  });
+
   it("şimdiden sonrasını çizmez", () => {
     const drafts = draftSlots([win("14:00", "15:00", "togg")], DAY, DAY + 86_400_000, at("14:30"), []);
     expect(show(drafts)).toEqual(["14:00–14:30 togg"]);

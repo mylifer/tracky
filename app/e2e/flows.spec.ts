@@ -127,33 +127,36 @@ test("Gün: sürüklenen aralık tek tıkla (ya da 1–4 tuşuyla) projeye atan�
 test("Gün planı: taslaklar önerilir, onaylanınca saklanır; kenar sürüklenince blok bölünmez", async ({ app, page }) => {
   // Gün planı varsayılan görünüm.
   await app.open("Gün");
-  // 09:00–11:30 Portal (arada 30 dk projesiz Safari bloğun içinde), 12:30–13:50 Trumore.
+  // 09:00–11:00 Portal; 30 dk atanmamış Safari ayrı taslak (Portal'ı uzatmaz); 12:30–13:50 Trumore.
   const drafts = page.locator("[data-plan=draft]");
-  await expect(drafts).toHaveCount(2);
+  await expect(drafts).toHaveCount(3);
   await expect(drafts.nth(0)).toContainText("Portal");
-  await expect(drafts.nth(1)).toContainText("Trumore");
+  await expect(drafts.nth(1)).toContainText("Hacker News");
+  await expect(drafts.nth(2)).toContainText("Trumore");
 
   await page.getByRole("button", { name: "Günü onayla" }).click();
   const blocks = page.locator("[data-plan=block]");
-  await expect(blocks).toHaveCount(2);
+  await expect(blocks).toHaveCount(3);
   const [saved] = await app.calls("save_plan");
-  expect((saved.args.blocks as PlanBlock[]).map((b) => b.projectId)).toEqual([PORTAL, TRUMORE]);
-  // Onaylanan bloklar oturumlara da yazılır: rapor ve zaman çizelgesi planı izler.
+  expect((saved.args.blocks as PlanBlock[]).map((b) => b.projectId)).toEqual([PORTAL, null, TRUMORE]);
+  // Projeli onaylı bloklar oturumlara da yazılır: rapor ve zaman çizelgesi planı izler.
   expect((saved.args.assign as { projectId: string }[]).map((r) => r.projectId)).toEqual([PORTAL, TRUMORE]);
 
-  // Alt kenar 30 dk aşağı: blok uzar, yeni parça doğmaz.
+  // Portal'ın alt kenarı 15 dk aşağı: bitişik bloğun kenarı da kayar, yeni parça doğmaz.
   const box = (await blocks.nth(0).boundingBox())!;
-  const hourPx = (box.height + 2) / 2.5;
+  const hourPx = (box.height + 2) / 2;
   const x = box.x + box.width / 2;
   await page.mouse.move(x, box.y + box.height - 2);
   await page.mouse.down();
-  await page.mouse.move(x, box.y + box.height - 2 + hourPx / 2, { steps: 6 });
+  await page.mouse.move(x, box.y + box.height - 2 + hourPx / 4, { steps: 6 });
   await page.mouse.up();
   await expect.poll(async () => (await app.calls("save_plan")).length).toBe(2);
   const [, resized] = await app.calls("save_plan");
   const after = resized.args.blocks as PlanBlock[];
-  expect(after).toHaveLength(2);
-  expect(new Date(after[0].end).toISOString()).toBe(new Date("2026-10-07T12:00:00+03:00").toISOString());
+  expect(after).toHaveLength(3);
+  const t1115 = new Date("2026-10-07T11:15:00+03:00").toISOString();
+  expect(new Date(after[0].end).toISOString()).toBe(t1115);
+  expect(new Date(after[1].start).toISOString()).toBe(t1115);
   expect(after[0].id).toBe((saved.args.blocks as PlanBlock[])[0].id);
 });
 
