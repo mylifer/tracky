@@ -92,6 +92,32 @@ describe("taslak", () => {
     expect(show(draftSlots(w, DAY, DAY + 86_400_000, NOW, []))).toEqual(["09:00–10:15 tru", "10:15–11:00 kum"]);
   });
 
+  it("aynı projede iş değişince ayrı blok açar", () => {
+    // Bütün sabah Trumore: önce Figma'da Onboarding UI/UX, sonra Pitch deck.
+    const w = [
+      { ...win("09:00", "10:30", "tru", "Figma"), title: "Trumore Onboarding UI/UX" },
+      { ...win("10:30", "11:30", "tru", "Figma"), title: "Trumore Pitch Deck" },
+    ];
+    expect(show(draftSlots(w, DAY, DAY + 86_400_000, NOW, []))).toEqual(["09:00–10:30 tru", "10:30–11:30 tru"]);
+  });
+
+  it("sekmeden sekmeye geçilen karışık süre ve kısa iş değişikliği bloğu parçalamaz", () => {
+    // 10 dakikada bir başlık değişiyor (baskın başlık yok) ve araya 15 dk başka iş giriyor.
+    const titles = ["A", "B", "C", "D", "E", "F"];
+    const chatter = titles.map((t, k) => ({
+      ...win(`09:${String(k * 10).padStart(2, "0")}`, `09:${String(k * 10 + 10).padStart(2, "0")}`, "tru"),
+      title: t,
+    }));
+    const w = [
+      { ...win("08:00", "09:00", "tru"), title: "Onboarding" },
+      ...chatter.slice(0, 5),
+      { ...win("09:50", "10:00", "tru"), title: "Onboarding" },
+      { ...win("10:00", "10:15", "tru"), title: "Kısa iş" },
+      { ...win("10:15", "11:00", "tru"), title: "Onboarding" },
+    ];
+    expect(show(draftSlots(w, DAY, DAY + 86_400_000, NOW, []))).toEqual(["08:00–11:00 tru"]);
+  });
+
   it("şimdiden sonrasını çizmez", () => {
     const drafts = draftSlots([win("14:00", "15:00", "togg")], DAY, DAY + 86_400_000, at("14:30"), []);
     expect(show(drafts)).toEqual(["14:00–14:30 togg"]);
@@ -107,14 +133,24 @@ const b = (id: string, from: string, to: string, projectId: string | null = "p")
 });
 
 describe("düzenleme", () => {
-  it("kenar sürükleme yalnızca kenarı taşır; bitişik komşu da kayar, yeni blok doğmaz", () => {
+  it("büyütürken bitişik komşu kısalır; yeni blok doğmaz", () => {
     const list = [b("a", "09:00", "10:00"), b("b", "10:00", "11:00", "q")];
-    const out = resize(list, "a", "end", at("10:20"), NOW);
-    expect(show(out)).toEqual(["09:00–10:20 p", "10:20–11:00 q"]);
-    // Küçültmek de parça doğurmaz.
-    expect(show(resize(list, "a", "end", at("09:40"), NOW))).toEqual(["09:00–09:40 p", "09:40–11:00 q"]);
+    expect(show(resize(list, "a", "end", at("10:20"), NOW))).toEqual(["09:00–10:20 p", "10:20–11:00 q"]);
     // Komşu 5 dakikadan kısalamaz.
     expect(show(resize(list, "a", "end", at("11:30"), NOW))).toEqual(["09:00–10:55 p", "10:55–11:00 q"]);
+  });
+
+  it("küçültmek yalnızca o bloğu küçültür; açılan süre komşuya geçmez", () => {
+    // Üstteki "Onboarding UI/UX" ile alttaki "Onboarding" bitişik; alttakinin üst kenarı aşağı.
+    const list = [b("ust", "09:00", "10:00"), b("alt", "10:00", "11:00")];
+    expect(show(resize(list, "alt", "start", at("10:30"), NOW))).toEqual(["09:00–10:00 p", "10:30–11:00 p"]);
+    // Alt kenarı yukarı: alttaki komşu da yerinde kalır.
+    const three = [...list, b("son", "11:00", "12:00", "q")];
+    expect(show(resize(three, "alt", "end", at("10:40"), NOW))).toEqual([
+      "09:00–10:00 p",
+      "10:00–10:40 p",
+      "11:00–12:00 q",
+    ]);
   });
 
   it("bitişik olmayan komşunun üstüne binmez, şimdiyi geçmez", () => {
