@@ -1,17 +1,18 @@
 import type { PlanBlock, WindowSpan } from "../api";
 
 /**
- * Gün planı: saklanan zaman blokları (onaylı) ve henüz onaylanmamış zaman için önerilen taslak
- * bloklar. Onaylı blok yalnızca kullanıcı değiştirince değişir; taslak her yenilemede pencere
- * kaydından yeniden çıkarılır ama onaylı blokların aralığına girmez.
+ * Gün planı (davranış kuralları: docs/gun-plani.md). İki tür blok:
+ * - Onaylı: kullanıcının bloğu; yalnızca kullanıcı değiştirince değişir, hiçbir işlem başka bir
+ *   bloğu kendiliğinden değiştirmez (kural 4, 5, 7). Zaman çizelgesine gider (kural 6).
+ * - Öneri (`draft`): takvim etkinliğinden (kural 1, her zaman) ya da "Öner" düğmesine basınca
+ *   bilgisayar kaydından (kural 3). Onaylanmadıkça hiçbir yere yazılmaz.
  *
- * Taslak (Rize'nin 15 dakikalık pencereleri ve ManicTime'ın "absorb"u gibi):
+ * Bilgisayar kaydından öneri ([`draftSlots`], Rize'nin 15 dakikalık pencereleri gibi):
  * 1. Gün duvar saatine hizalı dilimlere bölünür; her dilimin etkinliği projelere göre toplanır.
  *    Etkinliği dilimin beşte birinden az olan dilim boştur.
- * 2. `breakMin`'den uzun boş süre günü parçalara ayırır (öğle arası gibi); daha kısa boşluklar
- *    bloğun içinde kalır.
- * 3. Parça içinde her dilim çoğunluk projesini alır; projesiz ve boş dilimler komşusununkini.
- * 4. `minBlockMin`'den kısa kısımlar uzun komşusuna katılır: kısa araya girmeler blok açmaz.
+ * 2. `breakMin`'den uzun boş süre günü parçalara ayırır; daha kısa boşluklar bloğun içinde kalır.
+ * 3. Her dilim çoğunluk projesini ve işini (baskın pencere başlığı) alır.
+ * 4. `minBlockMin`'den kısa kısımlar komşusuna katılır.
  * 5. Parçanın başı ilk etkinliğe, sonu son etkinliğe 5 dakikalık dilimle oturur.
  */
 
@@ -36,17 +37,29 @@ export function planSince(): number {
 export const planApplies = (day: Date) => +day >= planSince();
 const SNAP = 5 * MIN;
 
-export type PlanOpts = { slotMin: number; breakMin: number; minBlockMin: number };
+/** `names`: bu adlardan biri kısmın baskın işiyse önerinin adı o olur (öğrenen modelin tahmini). */
+export type PlanOpts = { slotMin: number; breakMin: number; minBlockMin: number; names?: Set<string> };
 export const PLAN_DEFAULTS: PlanOpts = { slotMin: 15, breakMin: 30, minBlockMin: 30 };
 
-/** Çizimde ve düzenlemede kullanılan blok (zamanlar ms). `draft`: kaydedilmemiş öneri. */
-export type Slot = { id: string; start: number; end: number; projectId: string | null; note: string; draft?: boolean };
+/**
+ * Çizimde ve düzenlemede kullanılan blok (zamanlar ms). `draft`: kaydedilmemiş öneri;
+ * `meeting`: takvim etkinliğinden gelen önerinin anahtarı (silinince o gün bir daha gelmez).
+ */
+export type Slot = {
+  id: string;
+  start: number;
+  end: number;
+  projectId: string | null;
+  note: string;
+  draft?: boolean;
+  meeting?: string;
+};
 
 /** Yeni onaylı bloğun kimliği. */
 export const newId = () => crypto.randomUUID();
 
 /** Taslağı onaylı bloğa çevirir. */
-export const confirm = (b: Slot): Slot => ({ ...b, id: newId(), draft: undefined });
+export const confirm = (b: Slot): Slot => ({ ...b, id: newId(), draft: undefined, meeting: undefined });
 
 export const fromApi = (b: PlanBlock): Slot => ({
   id: b.id,
@@ -100,7 +113,7 @@ function lead(weight: Map<string, number>): string | null {
 }
 
 /** Aralıklardan `cut` aralıklarını çıkarır. */
-function subtract(a: number, b: number, cut: { start: number; end: number }[]): [number, number][] {
+export function subtract(a: number, b: number, cut: { start: number; end: number }[]): [number, number][] {
   let parts: [number, number][] = [[a, b]];
   for (const c of cut) {
     parts = parts.flatMap(([x, y]): [number, number][] =>
@@ -118,15 +131,16 @@ function subtract(a: number, b: number, cut: { start: number; end: number }[]): 
 }
 
 /**
- * Onaylı blokların dışında kalan zaman için taslak bloklar (`draft`). `windows`: günün pencere
- * aralıkları (projesiyle); `now`: bundan sonrası çizilmez.
+ * Bilgisayar kaydından öneriler (`draft`; kural 3). `windows`: günün pencere aralıkları
+ * (projesiyle); `exclude`: öneri girmeyecek aralıklar (onaylı bloklar ve takvim etkinlikleri,
+ * kural 2); `now`: bundan sonrası çizilmez.
  */
 export function draftSlots(
   windows: WindowSpan[],
   dayStart: number,
   dayEnd: number,
   now: number,
-  confirmed: Slot[],
+  exclude: { start: number; end: number }[],
   opts: PlanOpts = PLAN_DEFAULTS,
 ): Slot[] {
   const end = Math.min(dayEnd, now);
@@ -275,9 +289,16 @@ export function draftSlots(
       }
     }
     for (const r of runs) {
-      for (const [x, y] of subtract(r.start, r.end, confirmed)) {
+      for (const [x, y] of subtract(r.start, r.end, exclude)) {
         if (y - x >= 10 * MIN)
-          out.push({ id: `draft:${x}`, start: x, end: y, projectId: r.label, note: "", draft: true });
+          out.push({
+            id: `draft:${x}`,
+            start: x,
+            end: y,
+            projectId: r.label,
+            note: r.task && opts.names?.has(r.task) ? r.task : "",
+            draft: true,
+          });
       }
     }
   }
@@ -296,25 +317,20 @@ export function normalize(list: Slot[]): Slot[] {
   return sorted(list).filter((x) => x.end - x.start >= MIN);
 }
 
-/** `[a, b)` aralığını tek blok yapar: kesişen bloklar kırpılır ya da ikiye bölünür. */
-export function paint(list: Slot[], a: number, b: number, projectId: string | null, note = ""): Slot[] {
-  const out: Slot[] = [];
-  for (const x of list) {
-    if (x.end <= a || x.start >= b) out.push(x);
-    else {
-      if (x.start < a) out.push({ ...x, end: a });
-      if (x.end > b) out.push({ ...x, id: x.start < a ? newId() : x.id, start: b });
-    }
-  }
-  out.push({ id: newId(), start: a, end: b, projectId, note });
-  return normalize(out);
+/**
+ * Sürükleyerek çizilen yeni blok (kural 7): yalnızca boş alana çizilir. `[a, b)` onaylı
+ * blokların dışında kalan en uzun parçasına kırpılır; onaylı bloklar değişmez. Boş yer 5
+ * dakikadan kısaysa liste aynen döner.
+ */
+export function draw(list: Slot[], a: number, b: number, projectId: string | null, note = ""): Slot[] {
+  const free = subtract(a, b, list).sort((x, y) => y[1] - y[0] - (x[1] - x[0]))[0];
+  if (!free || free[1] - free[0] < SNAP) return list;
+  return sorted([...list, { id: newId(), start: free[0], end: free[1], projectId, note }]);
 }
 
 /**
- * Bloğun kenarını `t`'ye taşır; asla yeni blok doğmaz. Küçültmek yalnızca bu bloğu küçültür:
- * açılan süre hiçbir bloğa geçmez (komşu blok olduğu gibi kalır, boşluk planlanmamış kalır).
- * Büyütürken bitişik komşunun üstüne gelinirse komşu o kadar küçülür (en az 5 dakika kalır);
- * bitişik olmayan komşunun kenarında durulur. Blok 5 dakikadan kısalmaz, şimdiyi geçmez.
+ * Bloğun kenarını `t`'ye taşır (kural 4, 5): yalnızca bu blok değişir. Küçültünce açılan süre
+ * boş kalır; büyütürken komşu bloğun kenarında durur. Blok 5 dakikadan kısalmaz, şimdiyi geçmez.
  */
 export function resize(list: Slot[], id: string, edge: "start" | "end", t: number, now: number): Slot[] {
   const s = sorted(list);
@@ -322,18 +338,13 @@ export function resize(list: Slot[], id: string, edge: "start" | "end", t: numbe
   if (i < 0) return list;
   const b = s[i];
   if (edge === "start") {
-    const prev = s[i - 1];
-    const touching = prev && b.start - prev.end <= MIN;
-    const lo = prev ? (touching ? prev.start + SNAP : prev.end) : -Infinity;
+    const lo = s[i - 1]?.end ?? -Infinity;
     const v = Math.max(lo, Math.min(t, b.end - SNAP));
-    // Komşu yalnızca bloğun üstüne gelinince (büyütürken) kısalır.
-    return s.map((x, k) => (k === i ? { ...x, start: v } : k === i - 1 && prev && v < prev.end ? { ...x, end: v } : x));
+    return s.map((x, k) => (k === i ? { ...x, start: v } : x));
   }
-  const next = s[i + 1];
-  const touching = next && next.start - b.end <= MIN;
-  const hi = next ? (touching ? next.end - SNAP : next.start) : now;
-  const v = Math.min(hi, now, Math.max(t, b.start + SNAP));
-  return s.map((x, k) => (k === i ? { ...x, end: v } : k === i + 1 && next && v > next.start ? { ...x, start: v } : x));
+  const hi = Math.min(s[i + 1]?.start ?? Infinity, now);
+  const v = Math.min(hi, Math.max(t, b.start + SNAP));
+  return s.map((x, k) => (k === i ? { ...x, end: v } : x));
 }
 
 /** Bloğu `t`'de ikiye böler (iki parça da en az 5 dakika); alttaki parça yeni bloktur. */
@@ -366,16 +377,53 @@ export const update = (list: Slot[], id: string, patch: Partial<Pick<Slot, "proj
 export const remove = (list: Slot[], id: string) => list.filter((x) => x.id !== id);
 
 /**
- * Kaydederken oturumlarına proje yazılacak aralıklar: projesi belli (projesiz işareti dahil),
- * yeni ya da aralığı veya projesi değişen blokların değişen kısmı.
+ * Takvim etkinliklerinden öneriler (kural 1, 7. varsayılan): etkinlik tam saatinde ve süresince,
+ * projesi toplantının projesi, adı konusu. Silinen (`dismissed`) ya da bir onaylı blokla
+ * çakışan etkinlik öneri olmaz: onaylanınca ya da kullanıcı o saate blok koyunca kaybolur,
+ * blok küçültülünce geri gelmez (kural 4).
  */
-export function assignRanges(before: Slot[], after: Slot[]): { start: number; end: number; projectId: string }[] {
-  const out: { start: number; end: number; projectId: string }[] = [];
-  for (const b of after) {
-    if (!b.projectId) continue;
-    // Önceki halde aynı projeyle kaplanmış kısımlar yeniden yazılmaz.
-    const same = before.filter((x) => x.projectId === b.projectId);
-    for (const [x, y] of subtract(b.start, b.end, same)) out.push({ start: x, end: y, projectId: b.projectId });
-  }
-  return out;
+export function meetingSlots(
+  meetings: {
+    uid: string;
+    start: string;
+    end: string;
+    subject: string;
+    projectId?: string | null;
+    ignored?: boolean;
+  }[],
+  dayStart: number,
+  dayEnd: number,
+  confirmed: Slot[],
+  dismissed: Set<string>,
+): Slot[] {
+  return meetings
+    .map((m) => {
+      const start = Math.max(Date.parse(m.start), dayStart);
+      const end = Math.min(Date.parse(m.end), dayEnd);
+      return { m, start, end, key: `${m.uid}@${m.start}` };
+    })
+    .filter(({ m, start, end, key }) => end - start >= SNAP && !m.ignored && !dismissed.has(key))
+    .filter(({ start, end }) => !confirmed.some((c) => c.start < end && start < c.end))
+    .map(({ m, start, end, key }) => ({
+      id: `meeting:${key}`,
+      start,
+      end,
+      projectId: m.projectId ?? null,
+      note: m.subject.trim(),
+      draft: true,
+      meeting: key,
+    }));
+}
+
+/**
+ * Ekranda gösterilecek öneriler: saklanan bilgisayar önerileri onaylı blokların ve etkinlik
+ * önerilerinin dışında kalan, en az 5 dakikalık parçalarıyla (kural 2, 4).
+ */
+export function visibleSuggestions(stored: Slot[], confirmed: Slot[], meetingsShown: Slot[]): Slot[] {
+  const taken = [...confirmed, ...meetingsShown];
+  return stored.flatMap((d) =>
+    subtract(d.start, d.end, taken)
+      .filter(([x, y]) => y - x >= SNAP)
+      .map(([x, y]) => ({ ...d, id: `draft:${x}`, start: x, end: y })),
+  );
 }

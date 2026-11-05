@@ -44,7 +44,63 @@ pub struct PlanBlock {
     pub note: String,
 }
 
+/// Geçmişte onaylanan bir bloğun içindeki pencere: öğrenen öneri modelinin örneği
+/// (docs/gun-plani.md kural 3a). Hangi uygulama ve başlık hangi projeye ve ada gitti.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanExample {
+    pub app_name: String,
+    pub title: String,
+    pub project_id: String,
+    pub note: String,
+    pub seconds: i64,
+}
+
 impl Store {
+    /// `[from, to)`'daki projeli onaylı blokların içindeki pencereler, (uygulama, başlık, proje,
+    /// ad) başına toplam süreyle. Bilgisayarda kalır; öneri modeli bundan öğrenir.
+    pub fn plan_examples(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<PlanExample>> {
+        let mut out: std::collections::HashMap<(String, String, String, String), i64> =
+            std::collections::HashMap::new();
+        for b in self.plan_between(from, to)? {
+            let Some(project) = b.project_id.filter(|p| p != crate::classify::NO_PROJECT) else {
+                continue;
+            };
+            for s in self.sessions_between(b.start, b.end)? {
+                let secs = (s.ended_at.min(b.end) - s.started_at.max(b.start)).num_seconds();
+                if secs <= 0 || !s.counts_as_work() {
+                    continue;
+                }
+                let title = crate::timesheet::clean_title(&s.title, &s.app_name);
+                *out.entry((
+                    s.app_name.clone(),
+                    title,
+                    project.clone(),
+                    b.note.trim().to_string(),
+                ))
+                .or_default() += secs;
+            }
+        }
+        let mut list: Vec<PlanExample> = out
+            .into_iter()
+            .map(
+                |((app_name, title, project_id, note), seconds)| PlanExample {
+                    app_name,
+                    title,
+                    project_id,
+                    note,
+                    seconds,
+                },
+            )
+            .collect();
+        list.sort_by(|a, b| b.seconds.cmp(&a.seconds).then(a.title.cmp(&b.title)));
+        Ok(list)
+    }
+
     /// `[from, to)` ile kesişen plan blokları, başlangıca göre sıralı.
     pub fn plan_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<PlanBlock>> {
         let mut stmt = self.conn.prepare(
@@ -176,6 +232,41 @@ mod tests {
         // Geri alma: önceki hal aynı işlevle kaydedilir; silinen blok kimliğiyle geri gelir.
         store.replace_plan(t(0), t(600), &prev).unwrap();
         assert_eq!(store.plan_between(t(0), t(600)).unwrap(), saved);
+    }
+
+    #[test]
+    fn examples_come_from_confirmed_project_blocks() {
+        use crate::model::Session;
+        let store = Store::open_in_memory().unwrap();
+        let project = store.accept_project_suggestion("Trumore").unwrap();
+        let session = |title: &str, a: i64, b: i64| Session {
+            id: Uuid::new_v4(),
+            app_id: "com.figma.Desktop".into(),
+            app_name: "Figma".into(),
+            title: title.into(),
+            url: None,
+            domain: None,
+            started_at: t(a),
+            ended_at: t(b),
+            category_id: None,
+            project_id: None,
+            block_from: None,
+            passive: false,
+        };
+        store.upsert_session(&session("Onboarding", 0, 60)).unwrap();
+        store.upsert_session(&session("Kişisel", 60, 120)).unwrap();
+        let p = Some(project.id.as_str());
+        let mut named = block("", 0, 60, p);
+        named.note = "Onboarding akışı".into();
+        store
+            .replace_plan(t(0), t(600), &[named, block("", 60, 120, None)])
+            .unwrap();
+        let ex = store.plan_examples(t(0), t(600)).unwrap();
+        assert_eq!(ex.len(), 1);
+        assert_eq!(
+            (ex[0].title.as_str(), ex[0].note.as_str(), ex[0].seconds),
+            ("Onboarding", "Onboarding akışı", 3600)
+        );
     }
 
     #[test]

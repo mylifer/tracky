@@ -798,6 +798,12 @@ export const api = {
     categoryId: string | null,
     projectId: string | null,
   ) => invoke<Edited>("resize_block", { start, end, newStart, newEnd, label, categoryId, projectId }),
+  /** Son `days` günde onaylanan blokların içindeki pencereler: öğrenen öneri modelinin örnekleri. */
+  getPlanExamples: (days: number) =>
+    invoke<{ appName: string; title: string; projectId: string; note: string; seconds: number }[]>(
+      "get_plan_examples",
+      { days },
+    ),
   /** Gün planının aralıktaki onaylı blokları. */
   getPlan: (start: string, end: string) => invoke<PlanBlock[]>("get_plan", { start, end }),
   /**

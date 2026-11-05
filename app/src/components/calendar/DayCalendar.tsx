@@ -190,8 +190,6 @@ export function DayCalendar({
   sheet = [],
   draft = 0,
   onDraft,
-  planMode = false,
-  onPlanMode,
 }: {
   from: Date;
   blocks: WorkBlock[];
@@ -223,14 +221,11 @@ export function DayCalendar({
   /** Taslak eşiği (dk): kısa araya girmeler ve molalar tek kutuda; 0: her blok ayrı. */
   draft?: number;
   onDraft?: (minutes: number) => void;
-  /** Yeni gün planı (deneysel): Oturumlar yerine saklanan bloklar ve taslaklar. */
-  planMode?: boolean;
-  onPlanMode?: (on: boolean) => void;
 }) {
-  // Gün planı 1 Kasım'dan itibaren: önceki günler eski görünümde, süreleri değişmez.
-  const planOk = planApplies(from);
-  const planHere = planMode && planOk;
-  const plan = usePlan(from, windows ?? [], planHere);
+  // Gün planı 1 Kasım'dan itibaren yalnızca Plan; önceki günler eski Oturumlar görünümünde,
+  // hiçbir şeyleri değişmez (docs/gun-plani.md kural 10).
+  const planHere = planApplies(from);
+  const plan = usePlan(from, windows ?? [], meetings, planHere);
   // Taslaklar; "Parçaları aç" denenler (başlangıçlarıyla) bloklarıyla çizilir.
   const groups = useMemo(() => draftGroups(blocks, draft), [blocks, draft]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -315,18 +310,26 @@ export function DayCalendar({
         <span />
         <span className="flex min-w-0 items-center gap-1">
           <span className="truncate">{planHere ? "Plan" : "Oturumlar"}</span>
-          {onDraft && (
-            <DraftMenu value={draft} onChange={onDraft} plan={planHere} onPlan={planOk ? onPlanMode : undefined} />
+          {onDraft && !planHere && <DraftMenu value={draft} onChange={onDraft} />}
+          {planHere && plan.confirmed && (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1 font-normal text-muted-foreground/80 hover:bg-accent hover:text-foreground disabled:opacity-50"
+              title="Bilgisayar kaydından öneri hazırla: geçmişte onayladığın bloklardan öğrenir (bilgisayarında çalışır, internete bağlanmaz)"
+              disabled={plan.suggesting}
+              onClick={() => void plan.suggest()}
+            >
+              {plan.suggesting ? "Öneriliyor…" : "Öner"}
+            </button>
           )}
           {planHere && plan.drafts.length > 0 && (
             <button
               type="button"
               className="shrink-0 rounded px-1 font-medium text-primary hover:bg-accent"
-              title="Günü onayla: taslakların hepsi onaylı blok olur"
-              aria-label="Günü onayla"
-              onClick={() => void plan.save(approveAll(plan), `${plan.drafts.length} taslak onaylandı`)}
+              title="Kesik çizgili önerilerin hepsi onaylı blok olur ve zaman çizelgesine gider"
+              onClick={() => void plan.save(approveAll(plan), `${plan.drafts.length} öneri onaylandı`)}
             >
-              Onayla
+              Hepsini onayla
             </button>
           )}
           {!planHere && expanded.size > 0 && (
@@ -535,17 +538,7 @@ function useDragHint(): [boolean, () => void] {
 }
 
 /** Oturumlar başlığında taslak eşiği: kısa araya girmelerin ne zaman ayrı blok sayılacağı. */
-function DraftMenu({
-  value,
-  onChange,
-  plan = false,
-  onPlan,
-}: {
-  value: number;
-  onChange: (minutes: number) => void;
-  plan?: boolean;
-  onPlan?: (on: boolean) => void;
-}) {
+function DraftMenu({ value, onChange }: { value: number; onChange: (minutes: number) => void }) {
   const [open, setOpen] = useState(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -554,36 +547,15 @@ function DraftMenu({
           type="button"
           className="flex shrink-0 items-center gap-0.5 rounded px-1 font-normal text-muted-foreground/80 hover:bg-accent hover:text-foreground"
           title="Taslak: kısa araya girmeler ve molalar tek blokta görünür (bloklar ve zaman çizelgesi değişmez)"
-          aria-label={plan ? "Görünüm: gün planı" : value > 0 ? `Taslak eşiği: ${value} dk` : "Taslak eşiği: ayrıntılı"}
+          aria-label={value > 0 ? `Taslak eşiği: ${value} dk` : "Taslak eşiği: ayrıntılı"}
         >
-          {plan ? "görünüm" : value > 0 ? `${value} dk` : "Ayrıntılı"}
+          {value > 0 ? `${value} dk` : "Ayrıntılı"}
           <ChevronDown className="size-3" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64 p-1.5">
-        {onPlan && (
-          <>
-            <button
-              type="button"
-              className="flex w-full items-start justify-between gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
-              onClick={() => {
-                onPlan(!plan);
-                setOpen(false);
-              }}
-            >
-              <span>
-                <span className={cn("block", plan && "font-semibold")}>Gün planı</span>
-                <span className="block text-muted-foreground">
-                  Bloklar saklanır, kendi kendine bölünmez; boşluklar bloğun içinde kalır.
-                </span>
-              </span>
-              {plan && <span aria-hidden>✓</span>}
-            </button>
-            <div className="my-1 border-t" />
-          </>
-        )}
         <p className="px-2 pt-1 pb-1.5 text-xs text-muted-foreground">
-          Oturumlar (eski görünüm): bundan kısa araya girmeler ve molalar ayrı blok sayılmaz.
+          Bundan kısa araya girmeler ve molalar ayrı blok sayılmaz.
         </p>
         {DRAFT_STEPS.map((m) => (
           <button
@@ -591,16 +563,15 @@ function DraftMenu({
             type="button"
             className={cn(
               "flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-accent",
-              !plan && m === value && "font-semibold",
+              m === value && "font-semibold",
             )}
             onClick={() => {
-              if (plan) onPlan?.(false);
               onChange(m);
               setOpen(false);
             }}
           >
             <span>{m === 0 ? "Ayrıntılı: her blok ayrı" : `${m} dakika`}</span>
-            {!plan && m === value && <span aria-hidden>✓</span>}
+            {m === value && <span aria-hidden>✓</span>}
           </button>
         ))}
       </PopoverContent>

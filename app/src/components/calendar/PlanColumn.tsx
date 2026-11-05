@@ -1,23 +1,27 @@
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { Check, Combine, Scissors, Trash2 } from "lucide-react";
-import type { Tag, WindowSpan } from "../../api";
+import type { CalendarMeeting, Tag, WindowSpan } from "../../api";
 import { api, formatDuration, NO_PROJECT } from "../../api";
-import { addDays, formatTime, fromWallMs } from "../../lib/dates";
+import { addDays, formatTime, fromWallMs, isoDate } from "../../lib/dates";
 import { friendlyError, toast, undoable, useChanged } from "../../lib/feedback";
+import { buildModel, relabel } from "../../lib/learn";
 import {
+  PLAN_DEFAULTS,
   type Slot,
-  assignRanges,
   confirm,
   draftSlots,
+  draw,
   fromApi,
+  meetingSlots,
   mergeWith,
-  paint,
   remove,
   resize,
   snap,
   split,
+  subtract,
   toApi,
   update,
+  visibleSuggestions,
 } from "../../lib/plan";
 import { quickProjects, rememberRecent } from "../../lib/projectOptions";
 import { UNASSIGNED, tagColor } from "../../lib/tags";
@@ -32,16 +36,58 @@ import { topWindow } from "./windowLanes";
 
 const iso = (t: number) => new Date(t).toISOString();
 const time = (t: number) => formatTime(new Date(t));
+/** Öneri modelinin baktığı geçmiş (gün). */
+const HISTORY_DAYS = 60;
+
+/** Önerilerden verilen aralıkları çıkarır (5 dakikadan kısa kalan parçalar düşer). */
+function cutOut(list: Slot[], spans: { start: number; end: number }[]): Slot[] {
+  return list.flatMap((d) =>
+    subtract(d.start, d.end, spans)
+      .filter(([x, y]) => y - x >= 5 * 60_000)
+      .map(([x, y]) => ({ ...d, start: x, end: y })),
+  );
+}
+
+/** Bu cihazda saklanan liste (günün önerileri, silinen etkinlik önerileri). */
+function useStored<T>(key: string, empty: T): [T, (v: T) => void] {
+  const read = useCallback((): T => {
+    try {
+      const v = localStorage.getItem(key);
+      return v ? (JSON.parse(v) as T) : empty;
+    } catch {
+      return empty;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  const [value, setValue] = useState<T>(read);
+  useEffect(() => setValue(read()), [read]);
+  return [
+    value,
+    (v) => {
+      setValue(v);
+      try {
+        localStorage.setItem(key, JSON.stringify(v));
+      } catch {
+        /* depolama kapalıysa yalnızca bu oturumda */
+      }
+    },
+  ];
+}
 
 /**
- * Günün planı: onaylı bloklar sunucudan, taslaklar pencere kaydından. `enabled` değilse hiçbir
- * şey yüklenmez (eski görünüm).
+ * Günün planı (docs/gun-plani.md): onaylı bloklar sunucudan; öneriler takvim etkinliklerinden
+ * (her zaman) ve "Öner" ile bilgisayar kaydından (bu cihazda saklanır, kendiliğinden yenilenmez).
+ * `enabled` değilse hiçbir şey yüklenmez (eski görünüm).
  */
-export function usePlan(from: Date, windows: WindowSpan[], enabled: boolean) {
+export function usePlan(from: Date, windows: WindowSpan[], meetings: CalendarMeeting[] | null, enabled: boolean) {
   const edit = useEdit();
   const dayStart = +from;
   const dayEnd = +addDays(from, 1);
+  const day = isoDate(from);
   const [confirmed, setConfirmed] = useState<Slot[] | null>(null);
+  const [stored, setStored] = useStored<Slot[]>(`kum.plan.suggestions.${day}`, []);
+  const [dismissed, setDismissed] = useStored<string[]>(`kum.plan.dismissedMeetings.${day}`, []);
+  const [suggesting, setSuggesting] = useState(false);
   const load = useCallback(() => {
     if (!enabled) return;
     api.getPlan(iso(dayStart), iso(dayEnd)).then(
@@ -55,44 +101,96 @@ export function usePlan(from: Date, windows: WindowSpan[], enabled: boolean) {
   }, [load]);
   // Geri alma ve başka sayfalardaki değişiklikler.
   useChanged(load);
-  const drafts = useMemo(
-    () => (confirmed ? draftSlots(windows, dayStart, dayEnd, Date.now(), confirmed) : []),
-    [windows, dayStart, dayEnd, confirmed],
+
+  const meetingDrafts = useMemo(
+    () => (confirmed ? meetingSlots(meetings ?? [], dayStart, dayEnd, confirmed, new Set(dismissed)) : []),
+    [meetings, dayStart, dayEnd, confirmed, dismissed],
   );
-  /** Planı kaydeder (iyimser); oturumlar da değişen aralıklarda projeye geçer. */
+  const drafts = useMemo(
+    () =>
+      confirmed
+        ? [...meetingDrafts, ...visibleSuggestions(stored, confirmed, meetingDrafts)].sort((a, b) => a.start - b.start)
+        : [],
+    [confirmed, stored, meetingDrafts],
+  );
+
+  /** Planı kaydeder (iyimser). Plan ham kayda yazmaz (kural 9). */
   const save = useCallback(
     async (next: Slot[], message: string) => {
       if (!confirmed) return;
       const clipped = next
         .map((b) => ({ ...b, start: Math.max(b.start, dayStart), end: Math.min(b.end, dayEnd) }))
         .filter((b) => b.end > b.start && !b.draft);
-      const assign = assignRanges(confirmed, clipped).map((r) => ({
-        start: iso(r.start),
-        end: iso(r.end),
-        projectId: r.projectId,
-      }));
       const before = confirmed;
       setConfirmed(clipped);
+      // Onaylanan saatin önerisi bir daha görünmez: blok sonra küçülse ya da silinse de orası
+      // boş kalır (kural 4).
+      setStored(cutOut(stored, clipped));
+      const taken = meetingDrafts.filter((m) => clipped.some((c) => c.start < m.end && m.start < c.end));
+      if (taken.length) setDismissed([...dismissed, ...taken.map((m) => m.meeting!)]);
       try {
-        await undoable(api.savePlan(iso(dayStart), iso(dayEnd), clipped.map(toApi), assign), message);
+        await undoable(api.savePlan(iso(dayStart), iso(dayEnd), clipped.map(toApi), []), message);
         load();
-        if (assign.length) edit?.onChanged();
+        // Zaman çizelgesi sütunu onaylı bloklardan gelir: yenilensin.
+        edit?.onChanged();
       } catch (e) {
         setConfirmed(before);
         toast(friendlyError(e), { tone: "error" });
       }
     },
-    [confirmed, dayStart, dayEnd, load, edit],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [confirmed, dayStart, dayEnd, load, edit, stored, dismissed, meetingDrafts],
   );
 
-  return { confirmed, drafts, save, dayStart, dayEnd };
+  /** Öneriyi siler (V3): bilgisayar önerisi "Öner"e yeniden basılana dek, etkinlik o gün gelmez. */
+  const dismiss = (d: Slot) => {
+    if (d.meeting) setDismissed([...dismissed, d.meeting]);
+    else setStored(cutOut(stored, [d]));
+  };
+
+  /**
+   * "Öner" (kural 3): geçmişte onaylanan bloklardan öğrenen modelle bilgisayar kaydından öneriler
+   * hazırlar ve saklar. Onaylı blokların ve takvim etkinliklerinin saatine öneri girmez.
+   */
+  const suggest = async () => {
+    if (!confirmed || suggesting) return;
+    setSuggesting(true);
+    try {
+      const examples = await api.getPlanExamples(HISTORY_DAYS).catch(() => []);
+      const model = buildModel(examples);
+      const { windows: labeled, guessed, names } = relabel(model, windows);
+      const list = draftSlots(labeled, dayStart, dayEnd, Date.now(), [...confirmed, ...meetingDrafts], {
+        ...PLAN_DEFAULTS,
+        names,
+      });
+      setStored(list);
+      toast(
+        list.length === 0
+          ? "Önerilecek yeni süre yok"
+          : guessed > 0
+            ? `${list.length} öneri hazırlandı (geçmişinden öğrenildi)`
+            : `${list.length} öneri hazırlandı (henüz öğrenecek geçmiş yok: basit öneriler)`,
+      );
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  return { confirmed, drafts, save, dismiss, suggest, suggesting, dayStart, dayEnd };
+}
+
+export type Plan = ReturnType<typeof usePlan>;
+
+/** Önerilerin hepsini onaylar (V2). */
+export function approveAll(plan: Plan): Slot[] {
+  return [...(plan.confirmed ?? []), ...plan.drafts.map(confirm)];
 }
 
 /**
- * Gün planı sütunu: onaylı bloklar (dolu) ve taslaklar (kesikli, çizgili). Bloğa tıklayınca
- * projesi, notu ve içindeki pencereler; kenarı sürüklenince yalnızca kenarı (bitişik komşuyla
- * ortak sınır) oynar; çift tıklayınca o noktadan bölünür; sütunda sürükleyince aralık tek
- * seferde bir projeye boyanır. Taslağa yapılan her düzenleme onu onaylı bloğa çevirir.
+ * Gün planı sütunu (docs/gun-plani.md): onaylı bloklar dolu, öneriler kesik çizgili. Bloğa
+ * tıklayınca proje, ad, içindeki pencereler, böl ve birleştir; kenarı sürüklenince yalnızca o
+ * blok değişir; sütunda sürükleyince boş alana yeni blok çizilir. Öneriye yapılan her düzenleme
+ * onu onaylar.
  */
 export function PlanColumn({
   range,
@@ -110,20 +208,25 @@ export function PlanColumn({
   top: (t: number) => number;
   windows: WindowSpan[];
   tags: Map<string, Tag>;
-  plan: ReturnType<typeof usePlan>;
+  plan: Plan;
   className?: string;
   children?: React.ReactNode;
 }) {
   const edit = useEdit();
   const projects = useMemo(() => edit?.projects ?? [], [edit]);
-  const { confirmed, drafts, save, dayStart, dayEnd } = plan;
+  const { confirmed, drafts, save, dismiss, dayStart, dayEnd } = plan;
   const [paintSel, setPaintSel] = useState<{ a: number; b: number; x: number; y: number } | null>(null);
+  // Menüden "Böl" seçilen blok: bir sonraki tıklama bölme yeridir (kural 8).
+  const [splitting, setSplitting] = useState<string | null>(null);
+  useEffect(() => {
+    if (!splitting) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSplitting(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [splitting]);
   const all = useMemo(() => [...(confirmed ?? []), ...drafts].sort((a, b) => a.start - b.start), [confirmed, drafts]);
 
-  /**
-   * Düzenlemeden önce ilgili taslakları onaylı bloğa çevirir: onaylı liste ve taslakların yeni
-   * kimlikleri döner.
-   */
+  /** Düzenlemeden önce ilgili önerileri onaylı bloğa çevirir: onaylı liste ve yeni kimlikler. */
   const materialize = (ids: string[]): [Slot[], Map<string, string>] => {
     const map = new Map<string, string>();
     const list = (confirmed ?? []).slice();
@@ -145,13 +248,15 @@ export function PlanColumn({
     },
     setNote: (b, note) => {
       const [list, map] = materialize([b.id]);
-      void save(update(list, idOf(map, b.id), { note }), "Not kaydedildi");
+      void save(update(list, idOf(map, b.id), { note }), "Ad kaydedildi");
     },
     approve: (b) => {
       const [list] = materialize([b.id]);
       void save(list, "Blok onaylandı");
     },
+    startSplit: (b) => setSplitting(b.id),
     split: (b, t) => {
+      setSplitting(null);
       const [list, map] = materialize([b.id]);
       void save(split(list, idOf(map, b.id), snap(t)), `${time(snap(t))}'de bölündü`);
     },
@@ -162,7 +267,10 @@ export function PlanColumn({
       const [list, map] = materialize([b.id, other.id]);
       void save(mergeWith(list, idOf(map, b.id), dir), "Bloklar birleşti");
     },
-    remove: (b) => void save(remove(confirmed ?? [], b.id), "Blok kaldırıldı; yerine taslak önerilir"),
+    remove: (b) => {
+      if (b.draft) dismiss(b);
+      else void save(remove(confirmed ?? [], b.id), "Blok kaldırıldı; yeri boş kalır");
+    },
     resize: (b, edge, t) => {
       const [list, map] = materialize([b.id]);
       const next = resize(list, idOf(map, b.id), edge, snap(t), Math.min(Date.now(), dayEnd));
@@ -196,6 +304,7 @@ export function PlanColumn({
             hourPx={range.px}
             actions={actions}
             neighbors={neighbors(b)}
+            splitting={splitting === b.id}
           />
         ))}
         {children}
@@ -209,12 +318,10 @@ export function PlanColumn({
             const { a, b } = paintSel;
             setPaintSel(null);
             const end = Math.min(b, Date.now());
-            if (end - a < 5 * 60_000) return;
             if (projectId && projectId !== NO_PROJECT) rememberRecent(projectId);
-            void save(
-              paint(confirmed ?? [], a, end, projectId),
-              `${time(a)}–${time(end)} ${projectName(projectId, tags)} olarak kaydedildi`,
-            );
+            const next = draw(confirmed ?? [], a, end, projectId);
+            if (next === confirmed) return toast("Burada boş yer yok: yeni blok yalnızca boş alana çizilir");
+            void save(next, `${projectName(projectId, tags)} bloğu eklendi`);
           }}
         />
       )}
@@ -241,15 +348,11 @@ function usePastNames(): string[] {
   return names;
 }
 
-/** Taslakların hepsini onaylar. */
-export function approveAll(plan: ReturnType<typeof usePlan>): Slot[] {
-  return [...(plan.confirmed ?? []), ...plan.drafts.map(confirm)];
-}
-
 type PlanActions = {
   setProject: (b: Slot, projectId: string | null) => void;
   setNote: (b: Slot, note: string) => void;
   approve: (b: Slot) => void;
+  startSplit: (b: Slot) => void;
   split: (b: Slot, t: number) => void;
   merge: (b: Slot, dir: "prev" | "next") => void;
   remove: (b: Slot) => void;
@@ -278,6 +381,7 @@ function PlanBlockView({
   hourPx,
   actions,
   neighbors,
+  splitting,
 }: {
   b: Slot;
   tags: Map<string, Tag>;
@@ -287,8 +391,13 @@ function PlanBlockView({
   hourPx: number;
   actions: PlanActions;
   neighbors: { prev: boolean; next: boolean };
+  /** "Böl" seçildi: bloğa tıklanan yer bölme yeridir. */
+  splitting: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  // Bölme modunda imlecin gösterdiği bölme yeri (ms).
+  const [cut, setCut] = useState<number | null>(null);
+  useEffect(() => setCut(null), [splitting]);
   // Sürüklenen kenar ve şu anki konumu (ms).
   const [drag, setDrag] = useState<{ edge: "start" | "end"; y0: number; at: number } | null>(null);
   const start = drag?.edge === "start" ? drag.at : b.start;
@@ -299,7 +408,7 @@ function PlanBlockView({
   const color = project ? tagColor(project) : "var(--muted-foreground)";
   const title = titleOf(b, tags, windows);
   const span = formatDuration((end - start) / 1000);
-  const summary = `${title} · ${time(start)}–${time(end)} · ${span}${b.draft ? " · taslak" : ""}`;
+  const summary = `${title} · ${time(start)}–${time(end)} · ${span}${b.draft ? " · öneri" : ""}`;
   const full = height >= FULL_LABEL_PX;
   const label = height >= LABEL_MIN_PX;
 
@@ -311,7 +420,7 @@ function PlanBlockView({
         edge === "end" && "items-end",
       )}
       style={{ top: edge === "start" ? y - 2 : y + height - 6 }}
-      title="Sürükle: yalnızca bu kenar oynar (bitişik bloğun kenarı da birlikte kayar)"
+      title="Sürükle: yalnızca bu blok değişir, yandaki bloğun kenarında durur"
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         e.stopPropagation();
@@ -362,14 +471,8 @@ function PlanBlockView({
                   ? `color-mix(in srgb, ${color} 22%, var(--card))`
                   : `${HATCH}, var(--card)`,
             }}
-            title={`${summary}\nTıkla: proje, not, böl, birleştir · Çift tıkla: buradan böl · Kenarı sürükle: boyut`}
+            title={`${summary}\nTıkla: proje, ad, onayla, böl, birleştir · Kenarı sürükle: boyut`}
             aria-label={label ? undefined : summary}
-            onDoubleClick={(e) => {
-              const r = e.currentTarget.getBoundingClientRect();
-              const t = b.start + ((e.clientY - r.top) / r.height) * (b.end - b.start);
-              setOpen(false);
-              actions.split(b, t);
-            }}
           >
             {label && (
               <span className={cn("relative flex h-full flex-col", full ? "py-1" : "justify-center")}>
@@ -377,7 +480,7 @@ function PlanBlockView({
                   <span className="truncate text-[11px] leading-tight font-semibold">{title}</span>
                   {b.draft && (
                     <span className="shrink-0 rounded-full border border-dashed px-1 text-[9px] leading-tight text-muted-foreground">
-                      taslak
+                      öneri
                     </span>
                   )}
                   {!full && <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular">{span}</span>}
@@ -406,6 +509,41 @@ function PlanBlockView({
       </Popover>
       {handle("start")}
       {handle("end")}
+      {splitting && (
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label={`${title}: bölmek için tıkla`}
+          data-plan-split
+          className="absolute inset-x-0.5 z-[6] cursor-row-resize rounded-[5px] ring-2 ring-[var(--cat)]"
+          style={{ top: y, height, ["--cat" as string]: color }}
+          title="Bölmek istediğin yere tıkla (Esc: vazgeç)"
+          onPointerMove={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            const t = snap(b.start + ((e.clientY - r.top) / r.height) * (b.end - b.start));
+            setCut(t > b.start && t < b.end ? t : null);
+          }}
+          onPointerLeave={() => setCut(null)}
+          // Sütunun sürükleyerek çizmesi başlamasın.
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            actions.split(b, b.start + ((e.clientY - r.top) / r.height) * (b.end - b.start));
+          }}
+          onKeyDown={(e) => e.key === "Enter" && actions.split(b, (b.start + b.end) / 2)}
+        >
+          {cut !== null && (
+            <span
+              className="pointer-events-none absolute inset-x-0 border-t-2 border-dashed border-foreground"
+              style={{ top: top(cut) - y }}
+            >
+              <span className="absolute -top-2.5 right-1 rounded bg-foreground px-1 text-[9px] text-background tabular">
+                {time(cut)}
+              </span>
+            </span>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -452,7 +590,7 @@ function PlanDetails({
         </div>
         <p className="mt-0.5 text-xs text-muted-foreground tabular">
           {time(b.start)} – {time(b.end)}
-          {b.draft && " · taslak: pencere kaydından önerildi"}
+          {b.draft && (b.meeting ? " · öneri: takvim etkinliği" : " · öneri: bilgisayar kaydından")}
         </p>
       </div>
       <label className="block space-y-1">
@@ -523,8 +661,8 @@ function PlanDetails({
         <Button
           size="sm"
           variant="outline"
-          title="Ortadan böl (çift tıklayarak istediğin yerden de bölebilirsin)"
-          onClick={() => run(() => actions.split(b, (b.start + b.end) / 2))}
+          title="Sonra blokta bölmek istediğin yere tıkla"
+          onClick={() => run(() => actions.startSplit(b))}
         >
           <Scissors /> Böl
         </Button>
@@ -538,18 +676,22 @@ function PlanDetails({
             <Combine /> Alttakiyle
           </Button>
         )}
-        {!b.draft && (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            className="text-muted-foreground hover:text-destructive"
-            aria-label="Bloğu kaldır"
-            title="Bloğu kaldır (yerine taslak önerilir; kayıtlar silinmez)"
-            onClick={() => run(() => actions.remove(b))}
-          >
-            <Trash2 />
-          </Button>
-        )}
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          className="text-muted-foreground hover:text-destructive"
+          aria-label={b.draft ? "Öneriyi sil" : "Bloğu kaldır"}
+          title={
+            b.draft
+              ? b.meeting
+                ? "Öneriyi sil (bu etkinlik bugün bir daha önerilmez)"
+                : 'Öneriyi sil ("Öner"e yeniden basılana dek gelmez)'
+              : "Bloğu kaldır (yeri boş kalır; bilgisayar kaydı silinmez)"
+          }
+          onClick={() => run(() => actions.remove(b))}
+        >
+          <Trash2 />
+        </Button>
       </div>
     </div>
   );
@@ -596,7 +738,7 @@ function PaintMenu({
         }}
       >
         <p className="px-2 pt-1 text-xs text-muted-foreground tabular">
-          {time(sel.a)} – {time(Math.min(sel.b, Date.now()))} · tek blok olarak kaydet
+          {time(sel.a)} – {time(Math.min(sel.b, Date.now()))} · boş alana yeni blok
         </p>
         <div className="grid gap-1" role="group" aria-label="Projeye ata">
           {quick.map((p, i) => (

@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { WindowSpan } from "../api";
-import { assignRanges, draftSlots, mergeWith, normalize, paint, resize, type Slot, split, update } from "./plan";
+import { buildModel, guess, relabel } from "./learn";
+import {
+  confirm,
+  draftSlots,
+  draw,
+  meetingSlots,
+  mergeWith,
+  normalize,
+  PLAN_DEFAULTS,
+  remove,
+  resize,
+  type Slot,
+  split,
+  update,
+  visibleSuggestions,
+} from "./plan";
 
 const DAY = Date.parse("2026-11-03T00:00:00");
 const at = (hm: string) => {
@@ -132,74 +147,134 @@ const b = (id: string, from: string, to: string, projectId: string | null = "p")
   note: "",
 });
 
-describe("düzenleme", () => {
-  it("büyütürken bitişik komşu kısalır; yeni blok doğmaz", () => {
-    const list = [b("a", "09:00", "10:00"), b("b", "10:00", "11:00", "q")];
-    expect(show(resize(list, "a", "end", at("10:20"), NOW))).toEqual(["09:00–10:20 p", "10:20–11:00 q"]);
-    // Komşu 5 dakikadan kısalamaz.
-    expect(show(resize(list, "a", "end", at("11:30"), NOW))).toEqual(["09:00–10:55 p", "10:55–11:00 q"]);
+// Her test docs/gun-plani.md'deki bir kurala karşılık gelir.
+describe("kurallar", () => {
+  const meeting = (from: string, to: string, extra: Partial<{ projectId: string | null; ignored: boolean }> = {}) => ({
+    uid: `m${from}`,
+    start: new Date(at(from)).toISOString(),
+    end: new Date(at(to)).toISOString(),
+    subject: "Haftalık toplantı",
+    ...extra,
   });
 
-  it("küçültmek yalnızca o bloğu küçültür; açılan süre komşuya geçmez", () => {
-    // Üstteki "Onboarding UI/UX" ile alttaki "Onboarding" bitişik; alttakinin üst kenarı aşağı.
+  it("1, V7: takvim etkinliği tam saatinde, toplantının projesiyle kesik öneri olur", () => {
+    const out = meetingSlots([meeting("10:00", "10:45", { projectId: "togg" })], DAY, DAY + 86_400_000, [], new Set());
+    expect(out.map((x) => `${hm(x.start)}–${hm(x.end)} ${x.projectId} ${x.note} ${x.draft}`)).toEqual([
+      "10:00–10:45 togg Haftalık toplantı true",
+    ]);
+    // Onaylanınca öneri olmaktan çıkar.
+    expect(confirm(out[0])).toMatchObject({ draft: undefined, meeting: undefined, projectId: "togg" });
+    expect(confirm(out[0]).id).not.toBe(out[0].id);
+  });
+
+  it("1, V3: yok sayılan, silinen ya da onaylı blokla çakışan etkinlik öneri olmaz", () => {
+    const ms = [meeting("09:00", "09:30", { ignored: true }), meeting("10:00", "10:30"), meeting("11:00", "11:30")];
+    const dismissed = new Set([`${ms[1].uid}@${ms[1].start}`]);
+    const confirmed = [b("x", "11:15", "12:00")];
+    expect(meetingSlots(ms, DAY, DAY + 86_400_000, confirmed, dismissed)).toEqual([]);
+  });
+
+  it("2: etkinlik saatinde bilgisayar işi ayrı öneri açmaz", () => {
+    const ms = meetingSlots([meeting("10:00", "11:00")], DAY, DAY + 86_400_000, [], new Set());
+    const drafts = draftSlots([win("09:00", "12:00", "kum")], DAY, DAY + 86_400_000, NOW, ms);
+    expect(drafts.some((d) => d.start < at("11:00") && at("10:00") < d.end)).toBe(false);
+    // Saklanmış öneriler de etkinliğin saatinde görünmez.
+    const stored = [{ ...b("d", "09:00", "12:00", "kum"), draft: true }];
+    expect(show(visibleSuggestions(stored, [], ms))).toEqual(["09:00–10:00 kum", "11:00–12:00 kum"]);
+  });
+
+  it("3a: öneri modeli geçmişte onaylanan bloklardan proje ve ad öğrenir", () => {
+    const m = buildModel([
+      { appName: "Figma", title: "Onboarding – Figma", projectId: "trumore", note: "Onboarding UI/UX", seconds: 3600 },
+      { appName: "Code", title: "plan.ts — kum", projectId: "kum", note: "Gün planı", seconds: 5400 },
+      { appName: "Code", title: "api.rs — kum", projectId: "kum", note: "Gün planı", seconds: 1800 },
+    ]);
+    expect(guess(m, "Figma", "Onboarding – Figma")).toEqual({ projectId: "trumore", note: "Onboarding UI/UX" });
+    // Görülmemiş başlık: kelimelerden ("kum").
+    expect(guess(m, "Code", "lib.rs — kum")).toEqual({ projectId: "kum", note: "Gün planı" });
+    // Hiç görülmemiş uygulama ve kelimeler: tahmin yok.
+    expect(guess(m, "Safari", "Hava durumu")).toBeNull();
+    const w = { ...win("09:00", "10:00", null, "Figma"), title: "Onboarding – Figma" };
+    const out = relabel(m, [w]);
+    expect(out.guessed).toBe(1);
+    expect(out.windows[0]).toMatchObject({ projectId: "trumore", title: "Onboarding UI/UX" });
+    // Tahmin edilen ad önerinin adı olur.
+    const drafts = draftSlots(out.windows, DAY, DAY + 86_400_000, NOW, [], { ...PLAN_DEFAULTS, names: out.names });
+    expect(drafts.map((d) => `${d.projectId} ${d.note}`)).toEqual(["trumore Onboarding UI/UX"]);
+  });
+
+  it("3b: geçmiş yoksa basit öneriler: adsız, projeye göre, uzun boşlukta bölünür", () => {
+    const m = buildModel([]);
+    const windows = [win("09:00", "10:00", "kum"), win("11:00", "12:00", "kum")];
+    const out = relabel(m, windows);
+    expect(out.guessed).toBe(0);
+    const drafts = draftSlots(out.windows, DAY, DAY + 86_400_000, NOW, [], { ...PLAN_DEFAULTS, names: out.names });
+    expect(drafts.map((d) => `${hm(d.start)}–${hm(d.end)} ${d.projectId} "${d.note}"`)).toEqual([
+      '09:00–10:00 kum ""',
+      '11:00–12:00 kum ""',
+    ]);
+  });
+
+  it("4: küçültmek ya da silmek boşluk açar; komşu ve öneri oraya gelmez", () => {
     const list = [b("ust", "09:00", "10:00"), b("alt", "10:00", "11:00")];
     expect(show(resize(list, "alt", "start", at("10:30"), NOW))).toEqual(["09:00–10:00 p", "10:30–11:00 p"]);
-    // Alt kenarı yukarı: alttaki komşu da yerinde kalır.
     const three = [...list, b("son", "11:00", "12:00", "q")];
     expect(show(resize(three, "alt", "end", at("10:40"), NOW))).toEqual([
       "09:00–10:00 p",
       "10:00–10:40 p",
       "11:00–12:00 q",
     ]);
+    expect(show(remove(three, "alt"))).toEqual(["09:00–10:00 p", "11:00–12:00 q"]);
   });
 
-  it("bitişik olmayan komşunun üstüne binmez, şimdiyi geçmez", () => {
-    const list = [b("a", "09:00", "10:00"), b("b", "10:30", "11:00", "q")];
-    expect(show(resize(list, "a", "end", at("10:45"), NOW))).toEqual(["09:00–10:30 p", "10:30–11:00 q"]);
-    expect(show(resize(list, "b", "end", at("16:00"), NOW))).toEqual(["09:00–10:00 p", "10:30–14:40 q"]);
+  it("5: büyütülen blok yalnızca kendisi değişir, komşunun kenarında durur, şimdiyi geçmez", () => {
+    const list = [b("a", "09:00", "10:00"), b("b", "10:00", "11:00", "q")];
+    expect(show(resize(list, "a", "end", at("10:20"), NOW))).toEqual(["09:00–10:00 p", "10:00–11:00 q"]);
+    const gap = [b("a", "09:00", "10:00"), b("b", "10:30", "11:00", "q")];
+    expect(show(resize(gap, "a", "end", at("10:45"), NOW))).toEqual(["09:00–10:30 p", "10:30–11:00 q"]);
+    expect(show(resize(gap, "b", "start", at("09:30"), NOW))).toEqual(["09:00–10:00 p", "10:00–11:00 q"]);
+    expect(show(resize(gap, "b", "end", at("16:00"), NOW))).toEqual(["09:00–10:00 p", "10:30–14:40 q"]);
   });
 
-  it("boyama aralığı tek blok yapar, kesişenleri kırpar ya da böler", () => {
-    const list = [b("a", "09:00", "12:00"), b("c", "12:00", "13:00", "q")];
-    const out = paint(list, at("10:00"), at("12:30"), "x");
-    expect(show(out)).toEqual(["09:00–10:00 p", "10:00–12:30 x", "12:30–13:00 q"]);
-    const inside = paint([b("a", "09:00", "12:00")], at("10:00"), at("11:00"), "x");
-    expect(show(inside)).toEqual(["09:00–10:00 p", "10:00–11:00 x", "11:00–12:00 p"]);
-    expect(new Set(inside.map((x) => x.id)).size).toBe(3);
-  });
-
-  it("aynı projeye boyanan bitişik bloklar kendiliğinden birleşmez", () => {
-    const out = paint([b("a", "09:00", "10:00"), b("c", "10:00", "11:00", "q")], at("10:00"), at("11:00"), "p");
-    expect(show(out)).toEqual(["09:00–10:00 p", "10:00–11:00 p"]);
-  });
-
-  it("bloğa ad ya da proje vermek bitişik aynı projeli bloğu birleştirmez", () => {
+  it("6: aynı projede art arda bloklar ayrı kalır; ad ya da proje vermek birleştirmez", () => {
     const list = [b("a", "06:25", "07:30"), b("c", "07:30", "08:50")];
     expect(show(update(list, "c", { note: "API entegrasyonu" }))).toEqual(["06:25–07:30 p", "07:30–08:50 p"]);
     expect(show(update([b("a", "06:25", "07:30"), b("c", "07:30", "08:50", "q")], "c", { projectId: "p" }))).toEqual([
       "06:25–07:30 p",
       "07:30–08:50 p",
     ]);
+    expect(show(normalize([b("d", "10:00", "11:00"), b("c", "10:00", "10:00"), b("a", "09:00", "10:00")]))).toEqual([
+      "09:00–10:00 p",
+      "10:00–11:00 p",
+    ]);
   });
 
-  it("bölme iki parça verir, birleştirme aradaki boşluğu kapatır", () => {
+  it("7: çizim yalnızca boş alana olur, onaylı bloğun kenarında durur", () => {
+    const list = [b("a", "09:00", "10:00"), b("c", "11:00", "12:00", "q")];
+    expect(show(draw(list, at("09:30"), at("11:30"), "x"))).toEqual([
+      "09:00–10:00 p",
+      "10:00–11:00 x",
+      "11:00–12:00 q",
+    ]);
+    // Boş yer yoksa hiçbir şey değişmez.
+    expect(draw(list, at("09:10"), at("09:50"), "x")).toBe(list);
+    // Komşusuyla aynı proje olsa da ayrı blok.
+    expect(show(draw(list, at("10:00"), at("11:00"), "p"))).toEqual([
+      "09:00–10:00 p",
+      "10:00–11:00 p",
+      "11:00–12:00 q",
+    ]);
+  });
+
+  it("8: bölme iki parça verir; birleştirme yalnızca istenen iki bloğu birleştirir", () => {
     const parts = split([b("a", "09:00", "11:00")], "a", at("10:00"));
     expect(show(parts)).toEqual(["09:00–10:00 p", "10:00–11:00 p"]);
     expect(split([b("a", "09:00", "11:00")], "a", at("09:02"))).toHaveLength(1);
-    const merged = mergeWith([b("a", "09:00", "09:30", "x"), b("c", "09:40", "11:00")], "a", "next");
-    expect(show(merged)).toEqual(["09:00–11:00 p"]);
-  });
-
-  it("normalize kısa parçaları atar, bitişikleri birleştirmez", () => {
-    const out = normalize([b("d", "10:00", "11:00"), b("c", "10:00", "10:00"), b("a", "09:00", "10:00")]);
-    expect(show(out)).toEqual(["09:00–10:00 p", "10:00–11:00 p"]);
-  });
-
-  it("yalnızca değişen ve projesi belli kısımlar oturumlara yazılır", () => {
-    const before = [b("a", "09:00", "10:00", "p")];
-    const after = [b("a", "09:00", "10:30", "p"), b("c", "10:30", "11:00", null)];
-    expect(assignRanges(before, after).map((r) => `${hm(r.start)}–${hm(r.end)} ${r.projectId}`)).toEqual([
-      "10:00–10:30 p",
-    ]);
+    const merged = mergeWith(
+      [b("a", "09:00", "09:30", "x"), b("c", "09:40", "11:00"), b("z", "11:00", "12:00")],
+      "a",
+      "next",
+    );
+    expect(show(merged)).toEqual(["09:00–11:00 p", "11:00–12:00 p"]);
   });
 });

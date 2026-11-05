@@ -1,13 +1,25 @@
 import type { PlanBlock } from "../src/api";
 import { PORTAL, SHEET, TRUMORE } from "./backend";
 import { type Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { type App, expect, test } from "./fixtures";
 
-/** Gün görünümünü eski Oturumlar görünümüne (verilen eşikle) çevirir; menü kapanana dek bekler. */
-async function oldView(page: Page, step: string) {
-  await page.getByRole("button", { name: "Görünüm: gün planı" }).click();
+/**
+ * Gün görünümünü eski Oturumlar görünümünde (verilen eşikle) açar: gün planı yalnızca planın
+ * başladığı günden sonra (docs/gun-plani.md kural 10), test günü bunun öncesine alınır.
+ */
+async function oldView(app: App, page: Page, step: string) {
+  await page.addInitScript(() => localStorage.setItem("kum.planSince", "2026-11-01"));
+  await page.reload();
+  await app.open("Gün");
+  await page.getByRole("button", { name: /^Taslak eşiği/ }).click();
   await page.getByRole("button", { name: step }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+}
+
+/** Sayfa açılmadan sahte arka uca veri yazar (`e2e.meetings`, `e2e.planExamples`) ve yeniler. */
+async function seed(page: Page, key: string, value: unknown) {
+  await page.addInitScript(([k, v]) => localStorage.setItem(k, v), [key, JSON.stringify(value)] as const);
+  await page.reload();
 }
 
 test("Gözden geçir: grup önerilen projeye tek tuşla atanır", async ({ app, page }) => {
@@ -80,8 +92,7 @@ test("Gün: Pencereler sütunu her pencereyi saatinde gösterir, tıklanan yaln�
 });
 
 test("Gün: taslak kısa araya girmeyi tek kutuda gösterir, parçalar açılabilir", async ({ app, page }) => {
-  await app.open("Gün");
-  await oldView(page, "15 dakika");
+  await oldView(app, page, "15 dakika");
   // 09:00–11:00 portal ve ardından 30 dk projesiz Safari: 15 dk eşikte tek taslak.
   const draft = page.locator("[data-draft]");
   await expect(draft).toHaveCount(1);
@@ -100,8 +111,7 @@ test("Gün: sürüklenen aralık tek tıkla (ya da 1–4 tuşuyla) projeye atan�
   app,
   page,
 }) => {
-  await app.open("Gün");
-  await oldView(page, "15 dakika");
+  await oldView(app, page, "15 dakika");
   const hint = page.getByText(/Bu sütunda yukarıdan aşağı sürükle/);
   await expect(hint).toBeVisible();
   // Taslak 09:00–11:30; ardından 12:30'a kadar boş.
@@ -124,25 +134,32 @@ test("Gün: sürüklenen aralık tek tıkla (ya da 1–4 tuşuyla) projeye atan�
   expect(call.args.projectId).toBe(TRUMORE);
 });
 
-test("Gün planı: taslaklar önerilir, onaylanınca saklanır; kenar sürüklenince blok bölünmez", async ({ app, page }) => {
-  // Gün planı varsayılan görünüm.
+test("Gün planı: öneriler Öner ile gelir, onaylanınca saklanır; büyütülen blok komşusunda durur", async ({
+  app,
+  page,
+}) => {
   await app.open("Gün");
-  // 09:00–11:00 Portal; 30 dk atanmamış Safari ayrı taslak (Portal'ı uzatmaz); 12:30–13:50 Trumore.
   const drafts = page.locator("[data-plan=draft]");
+  // Öneri kendiliğinden gelmez (kural 3a).
+  await expect(page.getByRole("button", { name: "Öner" })).toBeVisible();
+  await expect(drafts).toHaveCount(0);
+  await page.getByRole("button", { name: "Öner" }).click();
+  // 09:00–11:00 Portal; 30 dk atanmamış Safari ayrı öneri (Portal'ı uzatmaz); 12:30–13:50 Trumore.
   await expect(drafts).toHaveCount(3);
   await expect(drafts.nth(0)).toContainText("Portal");
   await expect(drafts.nth(1)).toContainText("Hacker News");
   await expect(drafts.nth(2)).toContainText("Trumore");
 
-  await page.getByRole("button", { name: "Günü onayla" }).click();
+  await page.getByRole("button", { name: "Hepsini onayla" }).click();
   const blocks = page.locator("[data-plan=block]");
   await expect(blocks).toHaveCount(3);
+  await expect(drafts).toHaveCount(0);
   const [saved] = await app.calls("save_plan");
   expect((saved.args.blocks as PlanBlock[]).map((b) => b.projectId)).toEqual([PORTAL, null, TRUMORE]);
-  // Projeli onaylı bloklar oturumlara da yazılır: rapor ve zaman çizelgesi planı izler.
-  expect((saved.args.assign as { projectId: string }[]).map((r) => r.projectId)).toEqual([PORTAL, TRUMORE]);
+  // Plan ham kayda yazmaz (kural 9).
+  expect(saved.args.assign).toEqual([]);
 
-  // Portal'ın alt kenarı 15 dk aşağı: bitişik bloğun kenarı da kayar, yeni parça doğmaz.
+  // Portal'ın alt kenarı 15 dk aşağı: bitişik Safari bloğunun kenarında durur (kural 5).
   const box = (await blocks.nth(0).boundingBox())!;
   const hourPx = (box.height + 2) / 2;
   const x = box.x + box.width / 2;
@@ -154,14 +171,59 @@ test("Gün planı: taslaklar önerilir, onaylanınca saklanır; kenar sürüklen
   const [, resized] = await app.calls("save_plan");
   const after = resized.args.blocks as PlanBlock[];
   expect(after).toHaveLength(3);
-  const t1115 = new Date("2026-10-07T11:15:00+03:00").toISOString();
-  expect(new Date(after[0].end).toISOString()).toBe(t1115);
-  expect(new Date(after[1].start).toISOString()).toBe(t1115);
-  expect(after[0].id).toBe((saved.args.blocks as PlanBlock[])[0].id);
+  const t1100 = new Date("2026-10-07T11:00:00+03:00").toISOString();
+  expect(new Date(after[0].end).toISOString()).toBe(t1100);
+  expect(new Date(after[1].start).toISOString()).toBe(t1100);
+  expect(after.map((b) => b.id)).toEqual((saved.args.blocks as PlanBlock[]).map((b) => b.id));
+});
+
+test("Gün planı: takvim etkinliği toplantının projesiyle kesik öneri olur, onaylanınca saklanır", async ({
+  app,
+  page,
+}) => {
+  await seed(page, "e2e.meetings", [
+    {
+      uid: "standup",
+      start: "2026-10-07T11:45:00+03:00",
+      end: "2026-10-07T12:15:00+03:00",
+      subject: "Sprint planlama",
+      location: "",
+      online: true,
+      agenda: "",
+      projectId: TRUMORE,
+      ignored: false,
+      attendance: null,
+    },
+  ]);
+  await app.open("Gün");
+  // "Öner"e basmadan da görünür (kural 1).
+  const draft = page.locator("[data-plan=draft]");
+  await expect(draft).toHaveCount(1);
+  await expect(draft).toContainText("Sprint planlama");
+  await draft.click();
+  await page.getByRole("dialog").getByRole("button", { name: "Onayla" }).click();
+  await expect.poll(async () => (await app.calls("save_plan")).length).toBe(1);
+  const [saved] = await app.calls("save_plan");
+  expect(saved.args.blocks).toMatchObject([{ projectId: TRUMORE, note: "Sprint planlama" }]);
+  await expect(page.locator("[data-plan=block]")).toContainText("Sprint planlama");
+  await expect(draft).toHaveCount(0);
+});
+
+test("Gün planı: Öner geçmişte onaylanan bloklardan adı ve projeyi öğrenir", async ({ app, page }) => {
+  await seed(page, "e2e.planExamples", [
+    { appName: "Safari", title: "Hacker News", projectId: TRUMORE, note: "Pazar araştırması", seconds: 3600 },
+  ]);
+  await app.open("Gün");
+  await page.getByRole("button", { name: "Öner" }).click();
+  const drafts = page.locator("[data-plan=draft]");
+  await expect(drafts).toHaveCount(3);
+  // Safari süresi artık atanmamış değil: geçmişte gittiği proje ve adla önerilir.
+  await expect(drafts.nth(1)).toContainText("Pazar araştırması");
 });
 
 test("Gün planı: bloğa ad verilir; ad kaydedilir ve takvimde bloğun başlığı olur", async ({ app, page }) => {
   await app.open("Gün");
+  await page.getByRole("button", { name: "Öner" }).click();
   await page.locator("[data-plan=draft]").first().click();
   const name = page.getByRole("combobox", { name: "Blok adı" });
   // Öneriler: bloğun pencere başlıkları, sonra zaman çizelgesindeki önceki açıklamalar.
@@ -178,6 +240,29 @@ test("Gün planı: bloğa ad verilir; ad kaydedilir ve takvimde bloğun başlı�
   await expect(page.locator("[data-plan=block]")).toContainText("API entegrasyonu");
 });
 
+test("Gün planı: blok yalnızca menüden Böl ile, tıklanan yerden bölünür", async ({ app, page }) => {
+  await app.open("Gün");
+  await page.getByRole("button", { name: "Öner" }).click();
+  await page.getByRole("button", { name: "Hepsini onayla" }).click();
+  const blocks = page.locator("[data-plan=block]");
+  await expect(blocks).toHaveCount(3);
+  // Çift tıklama bölmez (kural 8).
+  await blocks.nth(0).dblclick();
+  await page.keyboard.press("Escape");
+  await expect(blocks).toHaveCount(3);
+  await blocks.nth(0).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Böl" }).click();
+  // Portal 09:00–11:00: ortasına tıklanınca 10:00'da bölünür.
+  const box = (await page.locator("[data-plan-split]").boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + (box.height + 2) / 2);
+  await expect(blocks).toHaveCount(4);
+  const calls = await app.calls("save_plan");
+  const last = calls[calls.length - 1].args.blocks as PlanBlock[];
+  const t1000 = new Date("2026-10-07T10:00:00+03:00").toISOString();
+  expect(new Date(last[0].end).toISOString()).toBe(t1000);
+  expect(new Date(last[1].start).toISOString()).toBe(t1000);
+});
+
 test("Gün planı 1 Kasım'dan önceki günlere uygulanmaz: eski görünüm, süreler değişmez", async ({ app, page }) => {
   await page.addInitScript(() => localStorage.setItem("kum.planSince", "2026-11-01"));
   await page.reload();
@@ -188,9 +273,8 @@ test("Gün planı 1 Kasım'dan önceki günlere uygulanmaz: eski görünüm, sü
 });
 
 test("Gün: blok kenarı uzun uygulama kullanımının sınırına yapışır, ⌥ basılıyken yapışmaz", async ({ app, page }) => {
-  await app.open("Gün");
   // Kenar sürükleme eski görünümde tek tek bloklarda: taslak kapatılır.
-  await oldView(page, "Ayrıntılı: her blok ayrı");
+  await oldView(app, page, "Ayrıntılı: her blok ayrı");
   // Menü kapanırken sürükleme onun üstünde başlamasın.
   await expect(page.getByRole("dialog")).toHaveCount(0);
   // Safari 11:00–11:30; Visual Studio Code 12:30'da yeniden başlıyor.

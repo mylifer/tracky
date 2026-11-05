@@ -48,7 +48,6 @@ import {
   useCalendarView,
   useColorLens,
   useDraftMinutes,
-  usePlanMode,
   useHeight,
   ZoomControl,
 } from "./report/parts";
@@ -248,7 +247,6 @@ export default function ReportView(p: Props) {
   const [calendarView, setCalendarView] = useCalendarView();
   const [lens, setLens] = useColorLens();
   const [draftMinutes, setDraftMinutes] = useDraftMinutes();
-  const [planMode, setPlanMode] = usePlanMode();
   const [preview, setPreview] = useState<[number, number] | null>(null);
   const [selection, setSelection] = useState<RangeSelection | null>(null);
   const [meetingSel, setMeetingSel] = useState<MeetingSelection | null>(null);
@@ -712,8 +710,6 @@ export default function ReportView(p: Props) {
                           sheet={sheet}
                           draft={draftMinutes}
                           onDraft={setDraftMinutes}
-                          planMode={planMode}
-                          onPlanMode={setPlanMode}
                         />
                       ) : (
                         <WeekCalendar

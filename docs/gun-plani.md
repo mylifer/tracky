@@ -43,9 +43,9 @@ Bir kural değişecekse önce bu belge değişir.
 10. **Eski görünüm.** 1 Kasım 2026 ve sonrası yalnızca Plan ile açılır. Önceki günler eski
     "Oturumlar" görünümünde, hiçbir şeyleri değişmeden durur. Görünüm seçme menüsü kalkar.
 
-## Varsayılan ayrıntılar (onay bekliyor)
+## Ayrıntılar
 
-Aşağıdakiler kullanıcıya ayrıca sorulmadı; yukarıdaki kurallarla uyumlu varsayılanlardır.
+Kurallarla birlikte onaylandı.
 
 - **V1.** Kenarlar ve çizim 5 dakikaya oturur. Bir blok 5 dakikadan kısa olamaz.
 - **V2.** Öneri onaylama: öneriye tıklayıp "Onayla", ya da başlıktaki "Hepsini onayla".
@@ -55,5 +55,6 @@ Aşağıdakiler kullanıcıya ayrıca sorulmadı; yukarıdaki kurallarla uyumlu 
 - **V4.** Projesi olmayan onaylı blok zaman çizelgesine gitmez (projesiz iş). Proje verilince gider.
 - **V5.** Bloğun adı zaman çizelgesindeki açıklamadır. Ad yazarken önceki açıklamalar ve
   bloğun pencere başlıkları önerilir.
-- **V6.** Bloklar ve öneriler bilgisayarlar arasında eşitlenir (Supabase `plan_blocks`).
+- **V6.** Onaylı bloklar bilgisayarlar arasında eşitlenir (Supabase `plan_blocks`). "Öner" ile
+  hazırlanan öneriler o bilgisayarda kalır; takvim etkinliği önerileri her bilgisayarda görünür.
 - **V7.** Etkinlik önerisinin projesi, toplantının proje atamasından gelir; yoksa projesizdir.

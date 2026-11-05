@@ -4,7 +4,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tracky_core::search::SearchResult;
-use tracky_core::store::{EditScope, KnownDevice, PlanBlock};
+use tracky_core::store::{EditScope, KnownDevice, PlanBlock, PlanExample};
 use tracky_core::suggest::Suggestions;
 use tracky_core::trends::Trends;
 use tracky_core::{
@@ -504,6 +504,17 @@ pub async fn get_plan(app: AppHandle, start: String, end: String) -> CmdResult<V
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
     store.plan_between(from, to).map_err(err)
+}
+
+/// Son `days` günde onaylanan projeli blokların içindeki pencereler: öğrenen öneri modelinin
+/// örnekleri (docs/gun-plani.md kural 3a). Bilgisayardan çıkmaz.
+#[tauri::command]
+pub async fn get_plan_examples(app: AppHandle, days: u32) -> CmdResult<Vec<PlanExample>> {
+    let to = Utc::now();
+    let from = to - chrono::Duration::days(i64::from(days.clamp(1, 365)));
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    store.plan_examples(from, to).map_err(err)
 }
 
 /// Plan kaydedilirken projesi değişen aralık: oturumları da o projeye geçer.
