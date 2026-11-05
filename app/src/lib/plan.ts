@@ -73,11 +73,17 @@ type Run = {
   start: number;
   end: number;
   label: string | null;
+  /** Kısmın işi: projede baskın pencere başlığı; karışıksa `null` (komşusuyla uyuşur). */
+  task: string | null;
   first: number;
   last: number;
   weight: Map<string, number>;
   active: number;
 };
+
+/** Aynı iş mi: aynı proje ve (biri karışık değilse) aynı baskın başlık. */
+const same = (a: Pick<Run, "label" | "task">, b: Pick<Run, "label" | "task">) =>
+  a.label === b.label && (a.task === null || b.task === null || a.task === b.task);
 
 /** Kısmın kendi projesinde geçen süre (projesizse bütün etkinliği). */
 const own = (r: Run) => (r.label ? (r.weight.get(r.label) ?? 0) : r.active);
@@ -129,6 +135,8 @@ export function draftSlots(
   const n = Math.ceil((end - dayStart) / step);
   const slots = Array.from({ length: n }, () => ({
     weight: new Map<string, number>(),
+    /** Proje ve pencere başlığına göre süre (anahtar: "proje\u0000başlık"). */
+    tasks: new Map<string, number>(),
     active: 0,
     first: Infinity,
     last: -Infinity,
@@ -146,10 +154,29 @@ export function draftSlots(
       slot.active += y - x;
       slot.first = Math.min(slot.first, x);
       slot.last = Math.max(slot.last, y);
-      if (w.projectId) slot.weight.set(w.projectId, (slot.weight.get(w.projectId) ?? 0) + (y - x));
+      if (w.projectId) {
+        slot.weight.set(w.projectId, (slot.weight.get(w.projectId) ?? 0) + (y - x));
+        const key = `${w.projectId}\u0000${w.title.trim()}`;
+        slot.tasks.set(key, (slot.tasks.get(key) ?? 0) + (y - x));
+      }
     }
   }
   const busy = (i: number) => slots[i].active >= step / 5;
+  /**
+   * Dilimin işi: projesinde süresinin en az yarısı tek bir pencere başlığındaysa o başlık
+   * (Figma'da "Onboarding UI/UX"), değilse karışık. Aynı projede iş değişince ayrı blok açılır;
+   * sekmeden sekmeye geçilen karışık dilimler komşusuna katılır, bloğu parçalamaz.
+   */
+  const taskOf = (i: number, label: string | null): string | null => {
+    if (!label) return null;
+    const total = slots[i].weight.get(label) ?? 0;
+    let best: [string, number] | null = null;
+    for (const [k, v] of slots[i].tasks) {
+      const [p, title] = k.split("\u0000");
+      if (p === label && title && (!best || v > best[1])) best = [title, v];
+    }
+    return best && best[1] * 2 >= total ? best[0] : null;
+  };
 
   // Uzun boşlukla ayrılan parçalar: [ilk dolu dilim, son dolu dilim].
   const pieces: [number, number][] = [];
@@ -175,9 +202,11 @@ export function draftSlots(
       const s = slots[i];
       const nonNull = [...s.weight.values()].reduce((x, y) => x + y, 0);
       const label = busy(i) && nonNull * 2 >= s.active ? lead(s.weight) : null;
+      const task = busy(i) ? taskOf(i, label) : null;
       const r = runs[runs.length - 1];
       const start = dayStart + i * step;
-      if (r && (!busy(i) || r.label === label)) {
+      if (r && (!busy(i) || same(r, { label, task }))) {
+        r.task ??= task;
         r.end = start + step;
         r.first = Math.min(r.first, s.first);
         r.last = Math.max(r.last, s.last);
@@ -188,6 +217,7 @@ export function draftSlots(
           start,
           end: start + step,
           label,
+          task,
           first: s.first,
           last: s.last,
           weight: new Map(s.weight),
@@ -202,6 +232,7 @@ export function draftSlots(
       into.last = Math.max(into.last, r.last);
       addWeight(into.weight, r.weight);
       into.active += r.active;
+      into.task ??= r.task;
     };
     // Kısa kısımlar komşusuna katılır; önce kendi projesinde en az süre geçen. Projeli kısım
     // `minBlockMin`'den kısaysa, atanmamış kısım ancak bir dilim kadarsa (bir mesaja, bir
@@ -216,7 +247,7 @@ export function draftSlots(
       for (let m = 0; m < runs.length; m++) if (isShort(runs[m]) && (k < 0 || own(runs[m]) < own(runs[k]))) k = m;
       if (k < 0) break;
       const [a, r, b] = [runs[k - 1], runs[k], runs[k + 1]];
-      if (a && b && a.label === b.label) {
+      if (a && b && same(a, b)) {
         join(a, r);
         join(a, b);
         runs.splice(k, 2);
@@ -225,7 +256,7 @@ export function draftSlots(
         runs.splice(k, 1);
       }
       for (let m = 1; m < runs.length; m++) {
-        if (runs[m].label === runs[m - 1].label) {
+        if (same(runs[m], runs[m - 1])) {
           join(runs[m - 1], runs[m]);
           runs.splice(m, 1);
           m--;
@@ -280,8 +311,10 @@ export function paint(list: Slot[], a: number, b: number, projectId: string | nu
 }
 
 /**
- * Bloğun kenarını `t`'ye taşır. Bitişik komşunun kenarı da birlikte kayar (ortak sınır);
- * blok ya da komşu 5 dakikadan kısalmaz, başka bloğun üstüne binilmez. Asla yeni blok doğmaz.
+ * Bloğun kenarını `t`'ye taşır; asla yeni blok doğmaz. Küçültmek yalnızca bu bloğu küçültür:
+ * açılan süre hiçbir bloğa geçmez (komşu blok olduğu gibi kalır, boşluk planlanmamış kalır).
+ * Büyütürken bitişik komşunun üstüne gelinirse komşu o kadar küçülür (en az 5 dakika kalır);
+ * bitişik olmayan komşunun kenarında durulur. Blok 5 dakikadan kısalmaz, şimdiyi geçmez.
  */
 export function resize(list: Slot[], id: string, edge: "start" | "end", t: number, now: number): Slot[] {
   const s = sorted(list);
@@ -293,13 +326,14 @@ export function resize(list: Slot[], id: string, edge: "start" | "end", t: numbe
     const touching = prev && b.start - prev.end <= MIN;
     const lo = prev ? (touching ? prev.start + SNAP : prev.end) : -Infinity;
     const v = Math.max(lo, Math.min(t, b.end - SNAP));
-    return s.map((x, k) => (k === i ? { ...x, start: v } : touching && k === i - 1 ? { ...x, end: v } : x));
+    // Komşu yalnızca bloğun üstüne gelinince (büyütürken) kısalır.
+    return s.map((x, k) => (k === i ? { ...x, start: v } : k === i - 1 && prev && v < prev.end ? { ...x, end: v } : x));
   }
   const next = s[i + 1];
   const touching = next && next.start - b.end <= MIN;
   const hi = next ? (touching ? next.end - SNAP : next.start) : now;
   const v = Math.min(hi, now, Math.max(t, b.start + SNAP));
-  return s.map((x, k) => (k === i ? { ...x, end: v } : touching && k === i + 1 ? { ...x, start: v } : x));
+  return s.map((x, k) => (k === i ? { ...x, end: v } : k === i + 1 && next && v > next.start ? { ...x, start: v } : x));
 }
 
 /** Bloğu `t`'de ikiye böler (iki parça da en az 5 dakika); alttaki parça yeni bloktur. */
