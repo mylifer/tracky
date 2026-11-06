@@ -118,4 +118,23 @@ describe("çizelge görünümü satırları", () => {
     } as unknown as Report);
     expect(lines.map((l) => l.kind)).toEqual(["unsent"]);
   });
+
+  it("plan gününde bilgisayar kaydının blokları satır olmaz; satırlar yalnızca plandan", () => {
+    const at = (h: number) => new Date(2026, 10, 10, h, 0).toISOString();
+    const block = (h: number, projectId: string | null, sent?: boolean) => ({
+      start: at(h),
+      end: at(h + 1),
+      activeSeconds: 3600,
+      categoryId: null,
+      projectId,
+      switches: 0,
+      topApps: [],
+      sent,
+    });
+    const raw = { work: { blocks: [block(9, null), block(10, "p2"), block(11, "p1", false)] } } as unknown as Report;
+    const sheets = [{ id: "a", projects: new Set(["p1"]), day: { ...day([entry("13:00")]), meetings: [] } }];
+    expect(buildLines(sheets, raw, true).map((l) => l.kind)).toEqual(["entry"]);
+    // Eski günlerde aynen.
+    expect(buildLines(sheets, raw).map((l) => l.kind)).toEqual(["entry", "unassigned", "off", "unsent"]);
+  });
 });

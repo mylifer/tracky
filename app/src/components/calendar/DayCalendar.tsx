@@ -314,7 +314,7 @@ export function DayCalendar({
           {planHere && plan.confirmed && (
             <button
               type="button"
-              className="shrink-0 rounded px-1 font-normal text-muted-foreground/80 hover:bg-accent hover:text-foreground disabled:opacity-50"
+              className="shrink-0 rounded border px-1.5 font-medium text-foreground hover:bg-accent disabled:opacity-50"
               title="Bilgisayar kaydından öneri hazırla: geçmişte onayladığın bloklardan öğrenir (bilgisayarında çalışır, internete bağlanmaz)"
               disabled={plan.suggesting}
               onClick={() => void plan.suggest()}
