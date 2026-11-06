@@ -263,6 +263,20 @@ test("Gün planı: blok yalnızca menüden Böl ile, tıklanan yerden bölünür
   expect(new Date(last[1].start).toISOString()).toBe(t1000);
 });
 
+test("Gün planı: Pencereler'de projeye atanan pencere Plan'da o projeyle öneri olur", async ({ app, page }) => {
+  await app.open("Gün");
+  const drafts = page.locator("[data-plan=draft]");
+  await expect(drafts).toHaveCount(0);
+  // Safari 11:00–11:30 (atanmamış): Trumore'a ata.
+  await page.getByRole("button", { name: /^Hacker News\s*30dk\s*11:00–11:30$/ }).click();
+  const menu = page.getByRole("dialog", { name: "Seçilen aralık" });
+  await menu.getByRole("button", { name: /Trumore/ }).first().click();
+  await expect.poll(async () => (await app.calls("set_range_project")).length).toBe(1);
+  await expect(drafts).toHaveCount(1);
+  await expect(drafts).toContainText("Trumore");
+  await expect(drafts).toHaveAttribute("title", /11:00–11:30/);
+});
+
 test("Gün planı 1 Kasım'dan önceki günlere uygulanmaz: eski görünüm, süreler değişmez", async ({ app, page }) => {
   await page.addInitScript(() => localStorage.setItem("kum.planSince", "2026-11-01"));
   await page.reload();

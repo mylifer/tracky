@@ -27,6 +27,10 @@ Bir kural değişecekse önce bu belge değişir.
      bilgisayarda öğrenen bir modeldir. İnternete bağlanmaz, ücret yoktur.
    - **3b.** Öğrenecek yeterli geçmiş yoksa basit öneriler gelir: proje ve baskın pencereye
      göre, uzun boşlukta bölünen bloklar.
+   - **3c.** Pencereler sütununda bir pencere ya da aralık projeye atanınca, o saat için Plan'da
+     o projeyle kesik öneri belirir ("Öner"e basmadan). Aynı projede peş peşe atananlar tek
+     öneri olur. Onaylı blokların ve etkinliklerin saatine öneri girmez; "projesiz" atama o
+     saatteki öneriyi kaldırır.
 4. **Boşluk.** Kullanıcının küçültme ya da silmeyle açtığı boşluk boş kalır. Sistem oraya ne
    komşu bloğu ne de öneriyi koyar.
 5. **Büyütme.** Kenarı sürüklenen blok yalnızca kendisi değişir. Yanındaki bloğa değince

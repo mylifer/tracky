@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WindowSpan } from "../api";
+import { NO_PROJECT } from "../api";
 import { buildModel, guess, relabel } from "./learn";
 import {
   confirm,
@@ -15,6 +16,7 @@ import {
   split,
   update,
   visibleSuggestions,
+  withAssigned,
 } from "./plan";
 
 const DAY = Date.parse("2026-11-03T00:00:00");
@@ -213,6 +215,25 @@ describe("kurallar", () => {
       '09:00–10:00 kum ""',
       '11:00–12:00 kum ""',
     ]);
+  });
+
+  it("3c: Pencereler'de projeye atanan aralık o projeyle öneri olur, yakın aynı projeli öneriyle birleşir", () => {
+    const end = DAY + 86_400_000;
+    // Figma'da 09:18–11:43 Onboarding: Trumore'a atandı.
+    const one = withAssigned([], at("09:18"), at("11:43"), "trumore", DAY, end);
+    expect(show(one)).toEqual(["09:15–11:45 trumore"]);
+    expect(one[0].draft).toBe(true);
+    // Başka projeli öneri olan aralığa atama onu ezer; kalan kısmı durur.
+    const other = [{ ...b("x", "11:00", "13:00", "kum"), draft: true }];
+    expect(show(withAssigned(other, at("09:18"), at("11:43"), "trumore", DAY, end))).toEqual([
+      "09:15–11:45 trumore",
+      "11:45–13:00 kum",
+    ]);
+    // Aynı projede peş peşe atanan pencereler tek öneri.
+    const two = withAssigned(one, at("11:50"), at("12:30"), "trumore", DAY, end);
+    expect(show(two)).toEqual(["09:15–12:30 trumore"]);
+    // Projesiz (iş değil) atama aralıktaki öneriyi kaldırır.
+    expect(show(withAssigned(two, at("12:00"), at("12:30"), NO_PROJECT, DAY, end))).toEqual(["09:15–12:00 trumore"]);
   });
 
   it("4: küçültmek ya da silmek boşluk açar; komşu ve öneri oraya gelmez", () => {
