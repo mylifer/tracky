@@ -538,6 +538,23 @@ impl Store {
         to: DateTime<Utc>,
         meetings: &[Meeting],
     ) -> Result<TimesheetPieces> {
+        // Gün planının uygulandığı günlerde satırlar yalnızca onaylı plan bloklarıdır: her blok
+        // bir satır; takvim toplantısı ancak onaylanıp blok olunca girer (docs/gun-plani.md).
+        if from >= super::plan_since() {
+            let blocks: Vec<(timesheet::Interval, String, String)> = self
+                .plan_between(from, to)?
+                .into_iter()
+                .filter_map(|b| {
+                    let project = b.project_id.filter(|p| p != crate::classify::NO_PROJECT)?;
+                    Some(((b.start.max(from), b.end.min(to)), project, b.note))
+                })
+                .collect();
+            let sessions = self.merged_sessions_between(from, to)?;
+            return Ok(TimesheetPieces {
+                pieces: timesheet::plan_pieces(&blocks, &sessions, meetings),
+                skipped: HashSet::new(),
+            });
+        }
         let day = |t: DateTime<Utc>| t.with_timezone(&chrono::Local).date_naive();
         let (dismissed, kept): (Vec<SavedEntry>, Vec<SavedEntry>) = self
             .saved_rows(day(from), day(to))?
@@ -594,18 +611,7 @@ impl Store {
             (from, to),
             &sent,
         );
-        // Gün planının her bloğu kendi satırıdır; adı varsa açıklaması o addır (planın
-        // uygulandığı günlerde).
-        let plan: Vec<(timesheet::Interval, String)> = self
-            .plan_between(from.max(super::plan_since()), to)?
-            .into_iter()
-            .filter(|b| b.start >= super::plan_since())
-            .map(|b| ((b.start, b.end), b.note))
-            .collect();
-        Ok(TimesheetPieces {
-            pieces: timesheet::name_by_plan(pieces, &plan),
-            skipped,
-        })
+        Ok(TimesheetPieces { pieces, skipped })
     }
 
     /// Günün `sheet` çizelgesindeki satırları: kaydedilmiş satırlar (aktarılmışsa bu çizelgeye

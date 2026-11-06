@@ -638,6 +638,7 @@ pub fn run() {
             commands::add_manual_entry,
             commands::resize_block,
             commands::get_plan,
+            commands::get_plan_examples,
             commands::save_plan,
             commands::get_privacy,
             commands::save_privacy,

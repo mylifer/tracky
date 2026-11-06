@@ -1289,3 +1289,103 @@ fn removing_a_block_hides_its_rows_and_undo_brings_them_back() {
         ]
     );
 }
+
+/// Gün planı günü (1 Kasım 2026 sonrası): satırlar yalnızca onaylı plan bloklarıdır.
+#[test]
+fn plan_days_take_rows_only_from_confirmed_blocks() {
+    use crate::store::PlanBlock;
+    let store = Store::open_in_memory().unwrap();
+    project(&store, "togg", "Togg");
+    project(&store, "tru", "Trumore");
+    let date = NaiveDate::from_ymd_opt(2026, 11, 10).unwrap();
+    let n = |min: i64| {
+        Local
+            .with_ymd_and_hms(2026, 11, 10, 9, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc)
+            + Duration::minutes(min)
+    };
+    // Ham kayıt bütün sabahı Togg'a yazıyor (kural 9: plan ham kayda dokunmaz).
+    let session = Session {
+        id: Uuid::new_v4(),
+        app_id: "com.figma.Desktop".into(),
+        app_name: "Figma".into(),
+        title: "Trumore Onboarding UI/UX".into(),
+        url: None,
+        domain: None,
+        started_at: n(0),
+        ended_at: n(240),
+        category_id: None,
+        project_id: Some("togg".into()),
+        block_from: None,
+        passive: false,
+    };
+    store.upsert_session(&session).unwrap();
+    store
+        .set_project_between(n(0), n(240), Some("togg"))
+        .unwrap();
+    let block = |a: i64, b: i64, p: Option<&str>, note: &str| PlanBlock {
+        id: String::new(),
+        start: n(a),
+        end: n(b),
+        project_id: p.map(str::to_string),
+        note: note.into(),
+    };
+    let (from, to) = (n(-540), n(900));
+    store
+        .replace_plan(
+            from,
+            to,
+            &[
+                // Bitişik iki Trumore bloğu: iki satır (kural 6).
+                block(0, 60, Some("tru"), "Onboarding akışı"),
+                block(60, 120, Some("tru"), ""),
+                // Projesiz blok satır olmaz (V4).
+                block(120, 180, None, "Mola"),
+            ],
+        )
+        .unwrap();
+    // Onaylanmamış takvim toplantısı satır olmaz (kural 1).
+    let meeting = Meeting {
+        uid: "m".into(),
+        start: n(200),
+        end: n(230),
+        subject: "Haftalık".into(),
+        online: true,
+        ..Meeting::default()
+    };
+    store.assign_meeting("m", Some("tru")).unwrap();
+    let ctx = store.timesheet_context().unwrap();
+    let pieces = store.timesheet_pieces(&ctx, from, to, &[meeting]).unwrap();
+    let tru = sheet("tru", &["tru"]);
+    let rows = store.timesheet_day(&ctx, &tru, date, &pieces).unwrap().rows;
+    assert_eq!(
+        short(&rows),
+        [
+            (false, "09:00".into(), 60, "Onboarding akışı".into()),
+            (false, "10:00".into(), 60, "Trumore Onboarding UI/UX".into()),
+        ]
+    );
+    // Ham kayıt Togg dese de Togg'un çizelgesine plan dışında satır gitmez.
+    let togg = sheet("togg", &["togg"]);
+    assert!(
+        store
+            .timesheet_day(&ctx, &togg, date, &pieces)
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    // Plan ham kayda yazmadı.
+    let raw = store.sessions_between(n(0), n(240)).unwrap();
+    assert_eq!(raw[0].project_id.as_deref(), Some("togg"));
+    // Ham kaydın blokları "gönderilmedi" diye çizelge sütununa düşmez: çizelge plandan gelir.
+    store
+        .save_timesheet_config(&TimesheetConfig {
+            timesheets: vec![togg, tru],
+            ..Default::default()
+        })
+        .unwrap();
+    let report = store.report(from, to, &[from], true).unwrap();
+    assert!(!report.work.blocks.is_empty());
+    assert!(report.work.blocks.iter().all(|b| b.sent.is_none()));
+}

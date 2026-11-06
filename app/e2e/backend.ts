@@ -342,6 +342,15 @@ let repaired = false;
 /** Gün planının kaydedilen blokları (`save_plan` yazar, `get_plan` okur). */
 let plan: PlanBlock[] = [];
 
+/** Testin sayfa açılmadan yazdığı veri (yoksa boş liste). */
+function stored(key: string): unknown[] {
+  try {
+    return JSON.parse(localStorage.getItem(key) ?? "[]") as unknown[];
+  } catch {
+    return [];
+  }
+}
+
 type Args = Record<string, unknown>;
 type Handler = (args: Args) => unknown;
 
@@ -372,8 +381,12 @@ const handlers: Record<string, Handler> = {
   timesheet_details: () => ["API entegrasyonu", "Sprint planlama"],
   closed_days: () => [],
   sheet_rows: () => ({ rows: [], missing: [], synced: 0 }),
-  calendar_meetings: () => [],
-  calendar_status: () => calendar,
+  // Test isterse localStorage'dan (sayfa açılmadan önce yazılır).
+  calendar_meetings: () => stored("e2e.meetings"),
+  get_plan_examples: () => stored("e2e.planExamples"),
+  // Test toplantı verdiyse takvim bağlı sayılır.
+  calendar_status: () =>
+    stored("e2e.meetings").length ? { ...calendar, url: "https://example.com/takvim.ics", events: 1 } : calendar,
   list_devices: () => devices,
   sync_status: () => sync,
   update_status: () => update,

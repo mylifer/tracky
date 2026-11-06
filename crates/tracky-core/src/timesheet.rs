@@ -733,55 +733,67 @@ pub fn pieces_with(
     out
 }
 
-/// Gün planının blokları ([`crate::store::PlanBlock`]; aralığı ve adı): her plan bloğu kendi
-/// satırıdır (aynı projedeki bitişik iki blok da) ve adı varsa içine düşen oturum parçaları
-/// onu açıklama olarak taşır. Parçalar blok sınırlarından bölünür; sınırdan sonraki ilk parça
-/// yeni satır başlatır (araya kısa boşluk girse de komşu satıra katılmaz). Toplantıların kendi
-/// kaydı olduğu için onlara dokunulmaz.
-pub fn name_by_plan(pieces: Vec<Piece>, plan: &[(Interval, String)]) -> Vec<Piece> {
-    let blocks: Vec<&(Interval, String)> = plan.iter().filter(|((a, b), _)| b > a).collect();
-    if blocks.is_empty() {
-        return pieces;
-    }
-    let named: Vec<&(Interval, String)> = blocks
+/// Gün planının uygulandığı günlerde zaman çizelgesine giren süre: onaylı her plan bloğu
+/// (aralığı, projesi, adı) tek bir satırdır, başka hesap yoktur (docs/gun-plani.md, kural 6).
+/// Açıklama bloğun adıdır; adı yoksa bloktaki en uzun süren pencere başlığı. Tür, bloğun en az
+/// yarısını kaplayan takvim toplantısından gelir (çevrim içi: Online, değilse F2F); yoksa
+/// bilgisayarda çalışma. Projesi olmayan blok buraya hiç gelmez.
+pub fn plan_pieces(
+    blocks: &[(Interval, String, String)],
+    sessions: &[Session],
+    meetings: &[Meeting],
+) -> Vec<Piece> {
+    blocks
         .iter()
-        .copied()
-        .filter(|(_, name)| !name.trim().is_empty())
-        .collect();
-    let mut bounds: Vec<DateTime<Utc>> = blocks.iter().flat_map(|((a, b), _)| [*a, *b]).collect();
-    bounds.sort();
-    bounds.dedup();
-    let mut out: Vec<Piece> = Vec::new();
-    for p in pieces {
-        if p.meeting.is_some() {
-            out.push(p);
-            continue;
-        }
-        let mut cuts = vec![p.start];
-        cuts.extend(bounds.iter().copied().filter(|&t| t > p.start && t < p.end));
-        cuts.push(p.end);
-        for w in cuts.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            let mut part = p.clone();
-            part.start = a;
-            part.end = b;
-            if let Some(((_, _), name)) = named.iter().find(|((c, d), _)| *c <= a && b <= *d) {
-                part.meeting_name = Some(name.trim().to_string());
+        .filter(|((a, b), project, _)| b > a && !project.is_empty())
+        .map(|&((start, end), ref project, ref note)| {
+            let overlap = |a: DateTime<Utc>, b: DateTime<Utc>| {
+                (b.min(end) - a.max(start)).max(Duration::zero())
+            };
+            let mut titles: HashMap<String, Duration> = HashMap::new();
+            for s in sessions {
+                let d = overlap(s.started_at, s.ended_at);
+                if d > Duration::zero() {
+                    *titles
+                        .entry(clean_title(&s.title, &s.app_name))
+                        .or_insert(Duration::zero()) += d;
+                }
             }
-            out.push(part);
-        }
-    }
-    // Her sınırdan sonraki ilk oturum parçası yeni satır başlatır.
-    let mut order: Vec<usize> = (0..out.len())
-        .filter(|&i| out[i].meeting.is_none())
-        .collect();
-    order.sort_by_key(|&i| out[i].start);
-    for t in bounds {
-        if let Some(&i) = order.iter().find(|&&i| out[i].start >= t) {
-            out[i].block_start = true;
-        }
-    }
-    out
+            let title = if note.trim().is_empty() {
+                titles
+                    .into_iter()
+                    .filter(|(t, _)| !t.is_empty())
+                    .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+                    .map(|(t, _)| t)
+                    .unwrap_or_default()
+            } else {
+                note.trim().to_string()
+            };
+            let kind = meetings
+                .iter()
+                .filter(|m| overlap(m.start, m.end) * 2 >= end - start)
+                .max_by_key(|m| overlap(m.start, m.end))
+                .map_or(EntryKind::Working, |m| {
+                    if m.online {
+                        EntryKind::Online
+                    } else {
+                        EntryKind::F2F
+                    }
+                });
+            Piece {
+                project: project.clone(),
+                kind,
+                start,
+                end,
+                title: title.clone(),
+                meeting: None,
+                block_start: true,
+                sent: true,
+                meeting_name: (!note.trim().is_empty()).then(|| note.trim().to_string()),
+                block: Some((start, end)),
+            }
+        })
+        .collect()
 }
 
 /// `block`'a adını veren toplantılar: bloğun satırına giren (kendi kaydına yazılmayan, `covered`

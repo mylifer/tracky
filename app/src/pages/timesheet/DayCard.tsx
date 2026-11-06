@@ -1,3 +1,4 @@
+import { planApplies } from "../../lib/plan";
 import { useMemo, useState } from "react";
 import { CalendarDays, Copy, Loader2, RotateCcw, Sparkles, WandSparkles } from "lucide-react";
 import {
@@ -185,7 +186,16 @@ export function DayCard({
             {signedHours(diff)}
           </Badge>
         )}
-        {day.unassignedSeconds >= UNASSIGNED_MIN && (
+        {planApplies(date) && !exported && day.date <= isoDate(today()) && (
+          <button
+            className="rounded text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            onClick={() => onOpenDay(day.date)}
+            title="Bu günün satırları Gün görünümündeki Plan sütununda onayladığın bloklardan gelir"
+          >
+            Plan'da onayla · takvim
+          </button>
+        )}
+        {!planApplies(date) && day.unassignedSeconds >= UNASSIGNED_MIN && (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <button
               className="rounded underline-offset-2 hover:text-foreground hover:underline"

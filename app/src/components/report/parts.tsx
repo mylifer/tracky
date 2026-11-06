@@ -234,30 +234,6 @@ export function ProjectLegend({ buckets, tags }: { buckets: Bucket[]; tags: Map<
   );
 }
 
-const PLAN_KEY = "kum.planMode";
-
-/** Gün takviminde gün planı (varsayılan; eski Oturumlar görünümü seçilebilir); tercih bu cihazda hatırlanır. */
-export function usePlanMode(): [boolean, (v: boolean) => void] {
-  const [on, setOn] = useState(() => {
-    try {
-      return localStorage.getItem(PLAN_KEY) !== "0";
-    } catch {
-      return true;
-    }
-  });
-  return [
-    on,
-    (v) => {
-      setOn(v);
-      try {
-        localStorage.setItem(PLAN_KEY, v ? "1" : "0");
-      } catch {
-        /* depolama kapalıysa yalnızca bu oturumda */
-      }
-    },
-  ];
-}
-
 const DRAFT_KEY = "kum.draftMinutes";
 
 /** Gün takviminde taslak eşiği (dk; 0: ayrıntılı); tercih bu cihazda hatırlanır. */

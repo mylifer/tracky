@@ -17,6 +17,7 @@ import { sheetEntryAt, sheetSpans } from "./calendar/TimesheetLines";
 import { ProjectSelect } from "./ProjectSelect";
 import { Button } from "./ui/button";
 import { parseIsoDate } from "../lib/dates";
+import { planApplies } from "../lib/plan";
 import { sendBlock } from "../lib/blockSheet";
 import { friendlyError, toast, undoable, useChanged } from "../lib/feedback";
 import { tagColor, tagInk, UNASSIGNED } from "../lib/tags";
@@ -78,8 +79,11 @@ async function fetchSheets(day: string): Promise<Sheet[]> {
  * sütunlarda. Projesiz blok, takvimde bir satırın adını alıyorsa (ör. toplantı satırının
  * içindeki iş) ayrıca listelenmez: süresi çizelgede zaten var. Zaman çizelgesine gönderilmemiş
  * blok soluk görünür, buradan gönderilir.
+ *
+ * Plan günlerinde (`plan`; docs/gun-plani.md) satırlar yalnızca onaylı plan bloklarından gelir:
+ * bilgisayar kaydının blokları (projesiz, çizelge dışı, gönderilmemiş) listelenmez.
  */
-export function buildLines(sheets: Omit<Sheet, "info">[] | null, report: Report): Line[] {
+export function buildLines(sheets: Omit<Sheet, "info">[] | null, report: Report, plan = false): Line[] {
   const out: Line[] = [];
   const sheetProjects = new Set<string>();
   const meetings = new Set<string>();
@@ -111,7 +115,7 @@ export function buildLines(sheets: Omit<Sheet, "info">[] | null, report: Report)
     }
   }
   const spans = sheetSpans(entries);
-  for (const b of report.work.blocks) {
+  for (const b of plan ? [] : report.work.blocks) {
     const from = +new Date(b.start);
     const to = +new Date(b.end);
     const app = b.topApps[0]?.appName ?? "";
@@ -186,7 +190,8 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
   };
 
   const now = Date.now();
-  const lines = useMemo(() => buildLines(sheets, report), [sheets, report]);
+  const planDay = planApplies(parseIsoDate(day));
+  const lines = useMemo(() => buildLines(sheets, report, planDay), [sheets, report, planDay]);
 
   const entries = lines.flatMap((l) => (l.kind === "entry" ? [l] : []));
   const running = (l: Line) => isRunning(l, now);
@@ -207,7 +212,7 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
       await Promise.allSettled([...inFlight.current]);
       const fresh = await fetchSheets(day);
       setSheets(fresh);
-      const freshEntries = buildLines(fresh, report).flatMap((l) => (l.kind === "entry" ? [l] : []));
+      const freshEntries = buildLines(fresh, report, planDay).flatMap((l) => (l.kind === "entry" ? [l] : []));
       const bySheet = new Map<string, EntryView[]>();
       for (const l of readyOf(freshEntries, Date.now()))
         bySheet.set(l.sheetId, [...(bySheet.get(l.sheetId) ?? []), l.entry]);
@@ -278,7 +283,11 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
         {!sheets ? (
           <div className="skeleton h-40 rounded-xl" aria-busy />
         ) : lines.length === 0 ? (
-          <p className="py-6 text-center text-xs text-muted-foreground">Bu gün için satır yok.</p>
+          <p className="py-6 text-center text-xs text-muted-foreground">
+            {planDay
+              ? "Bu gün için satır yok. Satırlar Takvim'deki Plan sütununda onayladığın bloklardan gelir."
+              : "Bu gün için satır yok."}
+          </p>
         ) : (
           <table className="w-full min-w-[760px] border-collapse text-xs">
             <thead>
@@ -294,7 +303,15 @@ export default function DaySheet({ day, report, tags, projects, onChanged }: Pro
               {lines.map((l) => (
                 <Fragment key={l.key}>
                   {gaps.has(l.key) && <GapRow ms={gaps.get(l.key)!} />}
-                  <Row line={l} tags={tags} projects={projects} sheets={sheets} running={running(l)} run={run} />
+                  <Row
+                    line={l}
+                    tags={tags}
+                    projects={projects}
+                    sheets={sheets}
+                    running={running(l)}
+                    run={run}
+                    planDay={planDay}
+                  />
                 </Fragment>
               ))}
             </tbody>
@@ -360,6 +377,7 @@ function Row({
   sheets,
   running,
   run,
+  planDay,
 }: {
   line: Line;
   tags: Map<string, Tag>;
@@ -367,11 +385,22 @@ function Row({
   sheets: Sheet[];
   running: boolean;
   run: (work: () => Promise<unknown>) => Promise<void>;
+  planDay: boolean;
 }) {
   const start = hm.format(new Date(l.from));
   const hours = num.format((l.to - l.from) / 3600_000);
   if (l.kind === "entry")
-    return <EntryLine line={l} tags={tags} projects={projects} sheets={sheets} running={running} run={run} />;
+    return (
+      <EntryLine
+        line={l}
+        tags={tags}
+        projects={projects}
+        sheets={sheets}
+        running={running}
+        run={run}
+        planDay={planDay}
+      />
+    );
   if (l.kind === "off" || l.kind === "unsent") {
     const tag = tags.get(l.projectId);
     return (
@@ -453,6 +482,20 @@ function Row({
 }
 
 /** Çizelge satırı: saat, tür, proje ve açıklama yerinde düzenlenir (gönderilmişse salt okunur). */
+/** Aralıklarla çakışan onaylı plan bloklarını `projectId`'ye geçirir (plan günü satır taşıma). */
+async function movePlan(parts: [number, number][], projectId: string, message: string | null) {
+  if (parts.length === 0) return;
+  const from = Math.min(...parts.map(([a]) => a));
+  const to = Math.max(...parts.map(([, b]) => b));
+  const day = new Date(from);
+  const start = new Date(day.getFullYear(), day.getMonth(), day.getDate()).toISOString();
+  const end = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1).toISOString();
+  const blocks = await api.getPlan(start, end);
+  const next = blocks.map((b) => (Date.parse(b.start) < to && from < Date.parse(b.end) ? { ...b, projectId } : b));
+  const save = api.savePlan(start, end, next, []);
+  await (message ? undoable(save, message) : save);
+}
+
 function EntryLine({
   line,
   tags,
@@ -460,6 +503,7 @@ function EntryLine({
   sheets,
   running,
   run,
+  planDay,
 }: {
   line: Extract<Line, { kind: "entry" }>;
   tags: Map<string, Tag>;
@@ -467,6 +511,8 @@ function EntryLine({
   sheets: Sheet[];
   running: boolean;
   run: (work: () => Promise<unknown>) => Promise<void>;
+  /** Plan günü: satır onaylı bir plan bloğudur; projesi bloğun projesidir. */
+  planDay: boolean;
 }) {
   const e = line.entry;
   const [hours, setHours] = useState(num.format(e.hours));
@@ -486,18 +532,21 @@ function EntryLine({
   /**
    * Satırı başka projeye taşır: takipteki aralıkları da (blok = satır, takvim de değişir).
    * Kaydedilmiş satırın aralıkları yeniden önerilmez; satırın kendisi de yeni projeye geçer,
-   * proje bir çizelgeye bağlı değilse çizelgeden çıkar.
+   * proje bir çizelgeye bağlı değilse çizelgeden çıkar. Plan gününde ham kayda dokunulmaz,
+   * satırın plan bloğunun projesi değişir (satır bloktan gelir).
    */
   const move = (id: string) => {
     if (id === e.projectId) return;
     const message = `${tags.get(id)?.name ?? "Proje"} projesine taşındı`;
     const parts = (e.coverage ?? []).filter(([a, b]) => b > a);
     void run(async () => {
-      for (const [a, b] of parts) {
-        const edit = api.setRangeProject(new Date(a).toISOString(), new Date(b).toISOString(), id);
-        // Kaydedilmiş satır geri almayla eski projesine dönmez: geri almayı önerme.
-        await (e.id ? edit : undoable(edit, message));
-      }
+      if (planDay) await movePlan(parts, id, e.id ? null : message);
+      else
+        for (const [a, b] of parts) {
+          const edit = api.setRangeProject(new Date(a).toISOString(), new Date(b).toISOString(), id);
+          // Kaydedilmiş satır geri almayla eski projesine dönmez: geri almayı önerme.
+          await (e.id ? edit : undoable(edit, message));
+        }
       if (!e.id) return;
       const target = sheets.find((s) => s.projects.has(id))?.info;
       if (!target) await api.dismissTimesheetEntry(e.id, e);
