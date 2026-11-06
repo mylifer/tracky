@@ -1378,4 +1378,14 @@ fn plan_days_take_rows_only_from_confirmed_blocks() {
     // Plan ham kayda yazmadı.
     let raw = store.sessions_between(n(0), n(240)).unwrap();
     assert_eq!(raw[0].project_id.as_deref(), Some("togg"));
+    // Ham kaydın blokları "gönderilmedi" diye çizelge sütununa düşmez: çizelge plandan gelir.
+    store
+        .save_timesheet_config(&TimesheetConfig {
+            timesheets: vec![togg, tru],
+            ..Default::default()
+        })
+        .unwrap();
+    let report = store.report(from, to, &[from], true).unwrap();
+    assert!(!report.work.blocks.is_empty());
+    assert!(report.work.blocks.iter().all(|b| b.sent.is_none()));
 }

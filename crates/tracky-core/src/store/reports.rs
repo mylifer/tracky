@@ -134,10 +134,14 @@ impl Store {
         if !report.work.blocks.is_empty() {
             let config = self.timesheet_config()?;
             let sent = self.timesheet_sent(from, to)?;
+            // Plan günlerinde çizelgeye yalnızca onaylı plan blokları gider (docs/gun-plani.md
+            // kural 6): ham kaydın blokları "gönderilmedi" diye işaretlenmez.
+            let plan_since = super::plan_since();
             for b in &mut report.work.blocks {
-                if b.project_id
-                    .as_deref()
-                    .is_some_and(|p| config.timesheet_of(p).is_some())
+                if b.start < plan_since
+                    && b.project_id
+                        .as_deref()
+                        .is_some_and(|p| config.timesheet_of(p).is_some())
                 {
                     b.sent = Some(sent.block(b.start, b.end));
                 }
