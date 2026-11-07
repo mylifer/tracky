@@ -18,6 +18,7 @@ import { CategorySelect } from "./CategorySelect";
 import { ProjectSelect } from "./ProjectSelect";
 import { friendlyError, undoable } from "../lib/feedback";
 import { removeBlock, sendBlock } from "../lib/blockSheet";
+import { announceAssigned } from "../lib/plan";
 import { attendanceLine, isSkipped } from "../lib/attendance";
 import { cn } from "../lib/utils";
 import { quickProjects, rememberRecent } from "../lib/projectOptions";
@@ -214,7 +215,11 @@ export function RangeMenu({
   const [quick] = useState(() => quickProjects(projects));
   const [more, setMore] = useState(false);
   const assign = (id: string | null) =>
-    run(() => undoable(api.setRangeProject(iso(start), iso(end), id, scope), projectMessage(projects, id)));
+    run(async () => {
+      await undoable(api.setRangeProject(iso(start), iso(end), id, scope), projectMessage(projects, id));
+      // Plan günlerinde atanan aralık Plan sütununa öneri olarak düşer (docs/gun-plani.md 3c).
+      announceAssigned({ start, end, projectId: id });
+    });
   const canAssign = end > start;
   // 1–4 tuşları tek tıklık projeye atar (seçici ya da alan odaktayken değil).
   useEffect(() => {

@@ -22,6 +22,9 @@ import {
   toApi,
   update,
   visibleSuggestions,
+  withAssigned,
+  PLAN_ASSIGNED,
+  type PlanAssigned,
 } from "../../lib/plan";
 import { quickProjects, rememberRecent } from "../../lib/projectOptions";
 import { UNASSIGNED, tagColor } from "../../lib/tags";
@@ -49,7 +52,7 @@ function cutOut(list: Slot[], spans: { start: number; end: number }[]): Slot[] {
 }
 
 /** Bu cihazda saklanan liste (günün önerileri, silinen etkinlik önerileri). */
-function useStored<T>(key: string, empty: T): [T, (v: T) => void] {
+function useStored<T>(key: string, empty: T): [T, (v: T | ((prev: T) => T)) => void] {
   const read = useCallback((): T => {
     try {
       const v = localStorage.getItem(key);
@@ -63,14 +66,16 @@ function useStored<T>(key: string, empty: T): [T, (v: T) => void] {
   useEffect(() => setValue(read()), [read]);
   return [
     value,
-    (v) => {
-      setValue(v);
-      try {
-        localStorage.setItem(key, JSON.stringify(v));
-      } catch {
-        /* depolama kapalıysa yalnızca bu oturumda */
-      }
-    },
+    (v) =>
+      setValue((prev) => {
+        const next = typeof v === "function" ? (v as (prev: T) => T)(prev) : v;
+        try {
+          localStorage.setItem(key, JSON.stringify(next));
+        } catch {
+          /* depolama kapalıysa yalnızca bu oturumda */
+        }
+        return next;
+      }),
   ];
 }
 
@@ -142,9 +147,22 @@ export function usePlan(from: Date, windows: WindowSpan[], meetings: CalendarMee
     [confirmed, dayStart, dayEnd, load, edit, stored, dismissed, meetingDrafts],
   );
 
+  // Kural 3c: atanan aralık o projeyle öneri olur; aynı projedeki yakın önerilerle tek öneri.
+  // Projesiz (iş değil) atanan aralıkta öneri kalmaz.
+  useEffect(() => {
+    if (!enabled) return;
+    const onAssigned = (e: Event) => {
+      const { start, end, projectId } = (e as CustomEvent<PlanAssigned>).detail;
+      setStored((prev) => withAssigned(prev, start, end, projectId, dayStart, dayEnd));
+    };
+    window.addEventListener(PLAN_ASSIGNED, onAssigned);
+    return () => window.removeEventListener(PLAN_ASSIGNED, onAssigned);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, dayStart, dayEnd]);
+
   /** Öneriyi siler (V3): bilgisayar önerisi "Öner"e yeniden basılana dek, etkinlik o gün gelmez. */
   const dismiss = (d: Slot) => {
-    if (d.meeting) setDismissed([...dismissed, d.meeting]);
+    if (d.meeting) setDismissed((prev) => [...prev, d.meeting!]);
     else setStored(cutOut(stored, [d]));
   };
 

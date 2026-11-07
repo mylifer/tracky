@@ -1,4 +1,5 @@
 import type { PlanBlock, WindowSpan } from "../api";
+import { NO_PROJECT as NO_PROJECT_ID } from "../api";
 
 /**
  * Gün planı (davranış kuralları: docs/gun-plani.md). İki tür blok:
@@ -426,4 +427,55 @@ export function visibleSuggestions(stored: Slot[], confirmed: Slot[], meetingsSh
       .filter(([x, y]) => y - x >= SNAP)
       .map(([x, y]) => ({ ...d, id: `draft:${x}`, start: x, end: y })),
   );
+}
+
+/** Aynı projedeki iki öneri arasında bundan kısa boşluk varsa tek öneri olurlar (kural 3c). */
+const ASSIGN_JOIN = 15 * MIN;
+
+/**
+ * Pencereler sütununda `[start, end)` projeye atandı (kural 3c): saklanan önerilerde o aralık
+ * bu projeye geçer, aynı projede yakın öneriyle birleşir. Projesiz ya da `NO_PROJECT` atamada
+ * aralıkta öneri kalmaz. Onaylı bloklar ve etkinlikler ekranda zaten çıkarılır
+ * ([`visibleSuggestions`]); günün dışı kırpılır.
+ */
+export function withAssigned(
+  stored: Slot[],
+  start: number,
+  end: number,
+  projectId: string | null,
+  dayStart: number,
+  dayEnd: number,
+): Slot[] {
+  const a = Math.max(floorSnap(start), dayStart);
+  const b = Math.min(ceilSnap(end), dayEnd);
+  if (b - a < SNAP) return stored;
+  const rest = stored.flatMap((d) =>
+    subtract(d.start, d.end, [{ start: a, end: b }])
+      .filter(([x, y]) => y - x >= SNAP)
+      .map(([x, y]) => ({ ...d, start: x, end: y })),
+  );
+  if (!projectId || projectId === NO_PROJECT_ID) return sorted(rest);
+  let slot: Slot = { id: newId(), start: a, end: b, projectId, note: "", draft: true };
+  const keep: Slot[] = [];
+  for (const d of sorted(rest)) {
+    const near = d.projectId === projectId && d.start - slot.end < ASSIGN_JOIN && slot.start - d.end < ASSIGN_JOIN;
+    if (near)
+      slot = {
+        ...slot,
+        start: Math.min(slot.start, d.start),
+        end: Math.max(slot.end, d.end),
+        note: slot.note || d.note,
+      };
+    else keep.push(d);
+  }
+  return sorted([...keep, slot]);
+}
+
+/** Pencereler sütununda (ya da takvimde) bir aralık projeye atandı: Plan'a öneri olarak düşer. */
+export const PLAN_ASSIGNED = "kum:plan-assigned";
+export type PlanAssigned = { start: number; end: number; projectId: string | null };
+
+/** Atamayı Plan sütununa bildirir (kural 3c). */
+export function announceAssigned(detail: PlanAssigned) {
+  window.dispatchEvent(new CustomEvent<PlanAssigned>(PLAN_ASSIGNED, { detail }));
 }
