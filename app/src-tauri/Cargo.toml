@@ -45,4 +45,4 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 
 [dev-dependencies]
 # Testlerde eski şema sürümlü veritabanı hazırlamak için (çekirdekle aynı sürüm).
-rusqlite = "0.40.2"
+rusqlite = "0.42.0"
