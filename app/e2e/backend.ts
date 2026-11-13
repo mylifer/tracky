@@ -390,6 +390,7 @@ const handlers: Record<string, Handler> = {
     stored("e2e.meetings").length ? { ...calendar, url: "https://example.com/takvim.ics", events: 1 } : calendar,
   list_devices: () => devices,
   sync_status: () => sync,
+  sync_check_schema: () => ({ missing: [], unchecked: [], sql: "", schema: null }),
   update_status: () => update,
   get_goals: () => goals,
   get_privacy: () => privacy,
@@ -400,7 +401,13 @@ const handlers: Record<string, Handler> = {
   known_apps: () => [],
   get_trends: () => ({ periods: [], categories: [], projects: [] }),
   google_status: () => ({ connected: false, email: null, clientId: "", hasSecret: false }),
-  get_ai_settings: () => ({ enabled: false, hasKey: false, keyHint: null, model: "claude" }),
+  get_ai_settings: () => ({
+    enabled: false,
+    hasKey: false,
+    keyHint: null,
+    model: "claude-opus-5-5",
+    models: [{ id: "claude-opus-5-5", label: "Claude Opus 5.5", hint: "" }],
+  }),
   backup_status: () => ({ dir: "/tmp/yedek", last: null, damage: null, files: [] }),
   client_report: (a) => clientReport(a.month as string),
   data_health: () =>

@@ -663,6 +663,69 @@ pub async fn sync_disconnect(app: AppHandle) -> CmdResult<SyncStatus> {
     Ok(status(&app))
 }
 
+/// Sunucu şemasının denetimi (Ayarlar → Senkronizasyon): çalıştırılmamış göçler ve
+/// çalıştırılacak SQL ([`tracky_core::sync::schema`]).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaReport {
+    missing: Vec<MigrationInfo>,
+    /// Yoklanamayan göçler (kısıt, yetki).
+    unchecked: Vec<MigrationInfo>,
+    /// Kopyalanıp SQL Editor'da çalıştırılacak metin; eksik yoksa boş.
+    sql: String,
+    /// Ayrı şemada kurulum (`kum_schema.sql`).
+    schema: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MigrationInfo {
+    file: &'static str,
+    effect: &'static str,
+}
+
+impl From<&tracky_core::sync::schema::Migration> for MigrationInfo {
+    fn from(m: &tracky_core::sync::schema::Migration) -> Self {
+        Self {
+            file: m.file,
+            effect: m.effect,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn sync_check_schema(app: AppHandle) -> CmdResult<SchemaReport> {
+    let (Some(config), Some(auth)) = (config(&app), load_auth(&app)) else {
+        return Err("Önce Supabase'e giriş yap.".into());
+    };
+    let schema = config.schema.clone();
+    let handle = app.clone();
+    let check = tauri::async_runtime::spawn_blocking(move || {
+        let client = Client::new(config);
+        let mut auth = auth;
+        if auth.needs_refresh() {
+            auth = refresh(&handle, &client, &auth)?;
+        }
+        let remote = client.remote(&auth);
+        tracky_core::sync::schema::check(&mut |table, column| remote.has_column(table, column))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(SchemaReport {
+        missing: check
+            .missing
+            .iter()
+            .map(|m| MigrationInfo::from(*m))
+            .collect(),
+        unchecked: check
+            .unchecked
+            .iter()
+            .map(|m| MigrationInfo::from(*m))
+            .collect(),
+        sql: check.sql(schema.is_some()),
+        schema,
+    })
+}
+
 #[tauri::command]
 pub fn sync_now(app: AppHandle) {
     let _ = lock(&app.state::<SyncWorker>().tx).send(SyncCommand::Now);

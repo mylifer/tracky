@@ -418,7 +418,24 @@ export type TimesheetConfig = {
 };
 
 /** Yapay zekâyla açıklama yazma ayarı; anahtarın yalnızca son dört karakteri gelir. */
-export type AiStatus = { enabled: boolean; hasKey: boolean; keyHint: string | null; model: string };
+export type MigrationInfo = { file: string; effect: string };
+export type SchemaReport = {
+  missing: MigrationInfo[];
+  unchecked: MigrationInfo[];
+  /** SQL Editor'da çalıştırılacak metin; eksik yoksa boş. */
+  sql: string;
+  /** Ayrı şemada kurulum (`kum_schema.sql`). */
+  schema: string | null;
+};
+export type AiModel = { id: string; label: string; hint: string };
+export type AiStatus = {
+  enabled: boolean;
+  hasKey: boolean;
+  keyHint: string | null;
+  /** Seçili modelin kimliği. */
+  model: string;
+  models: AiModel[];
+};
 /** Yapay zekânın bir satıra (sayfadaki anahtarıyla) yazdığı açıklama (henüz kaydedilmedi). */
 export type AiChange = { key: string; details: string };
 
@@ -757,9 +774,9 @@ export const api = {
   openTimesheet: (timesheetId: string) => invoke<void>("open_timesheet", { timesheetId }),
   removeTimesheet: (timesheetId: string) => invoke<TimesheetConfig>("remove_timesheet", { timesheetId }),
   aiSettings: () => invoke<AiStatus>("get_ai_settings"),
-  /** `apiKey` verilmezse kayıtlı anahtar korunur; boş dize siler. */
-  saveAiSettings: (enabled: boolean, apiKey?: string) =>
-    invoke<AiStatus>("save_ai_settings", { enabled, apiKey: apiKey ?? null }),
+  /** `apiKey` verilmezse kayıtlı anahtar korunur; boş dize siler. `model` verilmezse değişmez. */
+  saveAiSettings: (enabled: boolean, apiKey?: string, model?: string) =>
+    invoke<AiStatus>("save_ai_settings", { enabled, apiKey: apiKey ?? null, model: model ?? null }),
   testAi: (apiKey?: string) => invoke<string>("test_ai_connection", { apiKey: apiKey ?? null }),
   aiWriteDetails: (timesheetId: string, date: string, rewrite: boolean) =>
     invoke<AiChange[]>("ai_write_details", { timesheetId, date, rewrite }),
@@ -845,6 +862,8 @@ export const api = {
   syncSignOut: () => invoke<SyncStatus>("sync_sign_out"),
   syncDisconnect: () => invoke<SyncStatus>("sync_disconnect"),
   syncNow: () => invoke<void>("sync_now"),
+  /** Supabase'de çalıştırılmamış göçler ve çalıştırılacak SQL. */
+  syncCheckSchema: () => invoke<SchemaReport>("sync_check_schema"),
   onSync: (cb: (s: SyncStatus) => void): Promise<UnlistenFn> => listen<SyncStatus>("sync", (e) => cb(e.payload)),
   diagnose: () => invoke<string>("diagnose"),
   dataHealth: () => invoke<DataHealth>("data_health"),

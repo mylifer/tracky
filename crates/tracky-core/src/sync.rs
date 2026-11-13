@@ -24,6 +24,8 @@ use serde_json::{Map, Value};
 
 use crate::store::Store;
 
+pub mod schema;
+
 /// Uzak depo (Supabase ya da testlerde bellek içi sahte).
 pub trait Remote {
     /// Satırları upsert eder (uzak taraf eski sürümleri reddeder).

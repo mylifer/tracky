@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type KnownDevice, type SyncStatus } from "../api";
+import { api, type KnownDevice, type SchemaReport, type SyncStatus } from "../api";
 import { DeviceIcon } from "../components/DeviceIcon";
 import { ErrorText, SettingBlock, SettingRow, SettingsGroup } from "../components/settings";
 import { Badge } from "../components/ui/badge";
@@ -185,10 +185,88 @@ export default function SyncSettings() {
             <div className="flex-1" />
             <ErrorText>{error ?? (status.last && !status.last.ok ? status.last.message : null)}</ErrorText>
           </div>
+          <ServerSchema />
           <Devices />
         </>
       )}
     </SettingsGroup>
+  );
+}
+
+/**
+ * Sunucu şeması: Supabase'de çalıştırılmamış göçler, her birinin etkisi ve tek seferde
+ * kopyalanacak SQL. Eşitleme eksik göçlerle de sürer; bu bölüm neyin taşınmadığını söyler.
+ */
+function ServerSchema() {
+  const [report, setReport] = useState<SchemaReport | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const check = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setReport(await api.syncCheckSchema());
+    } catch (e) {
+      setError(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    check();
+  }, []);
+  const copy = async () => {
+    if (!report) return;
+    try {
+      await navigator.clipboard.writeText(report.sql);
+      toast("SQL kopyalandı. Supabase'de SQL Editor'a yapıştırıp çalıştır, sonra yeniden denetle.");
+    } catch (e) {
+      setError(friendlyError(e));
+    }
+  };
+  const missing = report?.missing ?? [];
+  return (
+    <SettingBlock
+      label="Sunucu şeması"
+      hint={
+        !report
+          ? busy
+            ? "Denetleniyor…"
+            : "Supabase projesindeki tablolar Kum'un bu sürümüyle karşılaştırılır."
+          : missing.length === 0
+            ? "Güncel: bütün göçler çalıştırılmış."
+            : report.schema
+              ? `${missing.length} göç eksik. "${report.schema}" şemasında kurulum: kum_schema.sql'i yeniden çalıştır (tekrar çalıştırmak zararsız).`
+              : `${missing.length} göç eksik. Eşitleme sürer, yalnızca aşağıdakiler taşınmaz. SQL'i kopyalayıp SQL Editor'da çalıştır.`
+      }
+    >
+      {missing.length > 0 && (
+        <ul className="space-y-1 text-xs">
+          {missing.map((m) => (
+            <li key={m.file} className="flex gap-2">
+              <code className="shrink-0 font-mono text-foreground selectable">{m.file}</code>
+              <span className="text-muted-foreground">{m.effect}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {missing.length > 0 && (
+          <Button size="sm" onClick={copy}>
+            SQL'i kopyala
+          </Button>
+        )}
+        <Button size="sm" variant="outline" disabled={busy} onClick={check}>
+          {report ? "Şemayı yeniden denetle" : "Şemayı denetle"}
+        </Button>
+        <ErrorText>{error}</ErrorText>
+      </div>
+      {report && report.unchecked.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Denetlenemeyenler: {report.unchecked.map((m) => `${m.file} (${m.effect})`).join(" · ")}
+        </p>
+      )}
+    </SettingBlock>
   );
 }
 

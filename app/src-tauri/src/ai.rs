@@ -26,13 +26,49 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// Kullanılan model; tek yerde.
-pub const MODEL: &str = "claude-opus-5";
+/// Seçilebilen modeller (Ayarlar → Yapay zekâ); ilki varsayılan. Fiyatlar milyon jeton başına
+/// girdi / çıktı (Anthropic API).
+pub const MODELS: &[ModelInfo] = &[
+    ModelInfo {
+        id: "claude-opus-5-5",
+        label: "Claude Opus 5.5",
+        hint: "En iyi sonuç · $4 / $20",
+        fallback: true,
+    },
+    ModelInfo {
+        id: "claude-sonnet-5-5",
+        label: "Claude Sonnet 5.5",
+        hint: "Hızlı, yarı fiyatına · $2 / $10",
+        fallback: true,
+    },
+    ModelInfo {
+        id: "claude-haiku-5-5",
+        label: "Claude Haiku 5.5",
+        hint: "En ucuz · $0,10 / $0,50",
+        // Haiku'da sunucu tarafı yedek model yok; ret durumunda hata gösterilir.
+        fallback: false,
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ModelInfo {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub hint: &'static str,
+    /// Ret durumunda sunucu tarafı yedek model (`fallbacks`) desteklenir mi?
+    #[serde(skip)]
+    pub fallback: bool,
+}
+
+/// Kayıtlı model kimliği; tanınmıyorsa ya da boşsa (eski sürümün ayarı) varsayılan.
+pub fn model(id: &str) -> &'static ModelInfo {
+    MODELS.iter().find(|m| m.id == id).unwrap_or(&MODELS[0])
+}
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
 /// Sunucu tarafı yedek model (ret durumunda); `"fallbacks": "default"` ile birlikte.
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
-/// Opus 5'te düşünme varsayılan açıktır ve düşünme jetonları da bu sınıra sayılır: kalabalık
+/// Bu modellerde düşünme hep açıktır ve düşünme jetonları da bu sınıra sayılır: kalabalık
 /// günde yanıt yarıda kalmasın. Akışsız istekte zaman aşımına düşmeyecek kadar.
 const MAX_TOKENS: u32 = 16_000;
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -46,6 +82,8 @@ const EXAMPLES_LOOKBACK: u64 = 180;
 struct AiSettings {
     enabled: bool,
     api_key: String,
+    /// Seçilen model ([`MODELS`]); boş: varsayılan. Cihazlar arasında eşitlenir.
+    model: String,
 }
 
 /// Arayüze giden durum: anahtarın kendisi değil, yalnızca son dört karakteri.
@@ -56,6 +94,7 @@ pub struct AiStatus {
     has_key: bool,
     key_hint: Option<String>,
     model: &'static str,
+    models: &'static [ModelInfo],
 }
 
 impl From<&AiSettings> for AiStatus {
@@ -69,7 +108,8 @@ impl From<&AiSettings> for AiStatus {
             enabled: s.enabled,
             has_key: !key.is_empty(),
             key_hint: hint,
-            model: MODEL,
+            model: model(&s.model).id,
+            models: MODELS,
         }
     }
 }
@@ -103,12 +143,14 @@ pub async fn get_ai_settings(app: AppHandle) -> CmdResult<AiStatus> {
     Ok(AiStatus::from(&settings(&app)?))
 }
 
-/// Açar/kapatır; `api_key` verilirse anahtarı değiştirir (boş: siler).
+/// Açar/kapatır; `api_key` verilirse anahtarı değiştirir (boş: siler), `model` verilirse
+/// modeli değiştirir.
 #[tauri::command]
 pub async fn save_ai_settings(
     app: AppHandle,
     enabled: bool,
     api_key: Option<String>,
+    model: Option<String>,
 ) -> CmdResult<AiStatus> {
     let shared = app.state::<Shared>();
     let store = lock(&shared.store);
@@ -116,6 +158,9 @@ pub async fn save_ai_settings(
     s.enabled = enabled;
     if let Some(key) = api_key {
         s.api_key = key.trim().to_string();
+    }
+    if let Some(id) = model {
+        s.model = self::model(&id).id.to_string();
     }
     // Anahtar depoya yazılabildiyse veritabanında boş kalır (depo yoksa eskisi gibi orada).
     let mut stored = s.clone();
@@ -129,21 +174,24 @@ pub async fn save_ai_settings(
 /// Bağlantıyı küçük bir istekle dener; `api_key` verilmezse kayıtlı anahtar.
 #[tauri::command]
 pub async fn test_ai_connection(app: AppHandle, api_key: Option<String>) -> CmdResult<String> {
+    let saved = settings(&app)?;
+    let model = model(&saved.model);
     let key = match api_key
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
     {
         Some(k) => k,
-        None => settings(&app)?.api_key,
+        None => saved.api_key,
     };
     if key.trim().is_empty() {
         return Err(NO_KEY.into());
     }
-    let (status, body) = tauri::async_runtime::spawn_blocking(move || post(&key, &ping_body()))
-        .await
-        .map_err(err)??;
+    let (status, body) =
+        tauri::async_runtime::spawn_blocking(move || post(&key, model, &ping_body(model)))
+            .await
+            .map_err(err)??;
     check_status(status, &body)?;
-    Ok(format!("Bağlantı çalışıyor ({MODEL})."))
+    Ok(format!("Bağlantı çalışıyor ({}).", model.label))
 }
 
 const NO_KEY: &str = "Önce Anthropic API anahtarını gir (Ayarlar → Yapay zekâ).";
@@ -266,9 +314,10 @@ pub async fn ai_write_details(
         (keys, rows, examples)
     };
 
-    let body = request_body(ai::SYSTEM_PROMPT, &ai::user_prompt(&rows, &examples));
+    let model = model(&settings.model);
+    let body = request_body(model, ai::SYSTEM_PROMPT, &ai::user_prompt(&rows, &examples));
     let key = settings.api_key;
-    let (status, text) = tauri::async_runtime::spawn_blocking(move || post(&key, &body))
+    let (status, text) = tauri::async_runtime::spawn_blocking(move || post(&key, model, &body))
         .await
         .map_err(err)??;
     let written = parse_response(status, &text, rows.len())?;
@@ -307,51 +356,64 @@ fn schema() -> Value {
 /// Messages API isteği: sabit yönergeler `system`'de, günün verisi kullanıcı iletisinde;
 /// yanıt JSON şemasıyla sınırlı. (Örnekleme ayarı, düşünme bütçesi ve ön doldurma bu modelde
 /// reddedilir; gönderilmez.)
-pub fn request_body(system: &str, user: &str) -> Value {
-    json!({
-        "model": MODEL,
-        "max_tokens": MAX_TOKENS,
-        "fallbacks": "default",
-        "system": system,
-        "messages": [{ "role": "user", "content": user }],
-        "output_config": {
-            "effort": "low",
-            "format": { "type": "json_schema", "schema": schema() }
-        }
-    })
+pub fn request_body(model: &ModelInfo, system: &str, user: &str) -> Value {
+    with_fallback(
+        model,
+        json!({
+            "model": model.id,
+            "max_tokens": MAX_TOKENS,
+            "system": system,
+            "messages": [{ "role": "user", "content": user }],
+            "output_config": {
+                "effort": "low",
+                "format": { "type": "json_schema", "schema": schema() }
+            }
+        }),
+    )
+}
+
+/// Model destekliyorsa ret durumunda sunucu tarafı yedek model (`FALLBACK_BETA` başlığıyla).
+fn with_fallback(model: &ModelInfo, mut body: Value) -> Value {
+    if model.fallback {
+        body["fallbacks"] = json!("default");
+    }
+    body
 }
 
 /// Bağlantı denemesi: olabildiğince küçük istek.
-fn ping_body() -> Value {
-    json!({
-        "model": MODEL,
-        "max_tokens": 16,
-        "fallbacks": "default",
-        "messages": [{ "role": "user", "content": "ping" }],
-        "output_config": { "effort": "low" }
-    })
+fn ping_body(model: &ModelInfo) -> Value {
+    with_fallback(
+        model,
+        json!({
+            "model": model.id,
+            "max_tokens": 16,
+            "messages": [{ "role": "user", "content": "ping" }],
+            "output_config": { "effort": "low" }
+        }),
+    )
 }
 
 /// İsteği gönderir; (HTTP durumu, gövde). Anahtar yalnızca bu başlıkta, yalnızca bu adrese gider.
-fn post(key: &str, body: &Value) -> CmdResult<(u16, String)> {
+fn post(key: &str, model: &ModelInfo, body: &Value) -> CmdResult<(u16, String)> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(TIMEOUT))
         .build()
         .into();
-    let mut resp = agent
+    let mut req = agent
         .post(API_URL)
         .header("x-api-key", key)
         .header("anthropic-version", API_VERSION)
-        .header("anthropic-beta", FALLBACK_BETA)
-        .header("content-type", "application/json")
-        .send(body.to_string())
-        .map_err(|e| match e {
-            ureq::Error::Timeout(_) => {
-                "Anthropic 2 dakikada yanıt vermedi; biraz sonra tekrar dene.".to_string()
-            }
-            e => format!("Anthropic'e bağlanılamadı ({e}). İnternet bağlantını kontrol et."),
-        })?;
+        .header("content-type", "application/json");
+    if model.fallback {
+        req = req.header("anthropic-beta", FALLBACK_BETA);
+    }
+    let mut resp = req.send(body.to_string()).map_err(|e| match e {
+        ureq::Error::Timeout(_) => {
+            "Anthropic 2 dakikada yanıt vermedi; biraz sonra tekrar dene.".to_string()
+        }
+        e => format!("Anthropic'e bağlanılamadı ({e}). İnternet bağlantını kontrol et."),
+    })?;
     let status = resp.status().as_u16();
     let text = resp
         .body_mut()
@@ -444,7 +506,7 @@ mod tests {
             "id": "msg_1",
             "type": "message",
             "role": "assistant",
-            "model": MODEL,
+            "model": MODELS[0].id,
             "stop_reason": stop,
             "content": content,
         })
@@ -453,8 +515,8 @@ mod tests {
 
     #[test]
     fn request_has_the_expected_shape() {
-        let body = request_body("yönergeler", "satırlar");
-        assert_eq!(body["model"], "claude-opus-5");
+        let body = request_body(&MODELS[0], "yönergeler", "satırlar");
+        assert_eq!(body["model"], "claude-opus-5-5");
         assert_eq!(body["max_tokens"], 16_000);
         assert_eq!(body["fallbacks"], "default");
         assert_eq!(body["system"], "yönergeler");
@@ -473,7 +535,34 @@ mod tests {
         for key in ["thinking", "temperature", "top_p", "top_k"] {
             assert!(body.get(key).is_none(), "{key}");
         }
-        assert_eq!(ping_body()["model"], MODEL);
+        assert_eq!(ping_body(&MODELS[0])["model"], "claude-opus-5-5");
+    }
+
+    #[test]
+    fn model_choice_falls_back_to_the_default() {
+        assert_eq!(model("claude-sonnet-5-5").id, "claude-sonnet-5-5");
+        // Eski sürümün ayarında model yok; bilinmeyen kimlik de varsayılana döner.
+        assert_eq!(model("").id, "claude-opus-5-5");
+        assert_eq!(model("claude-opus-5").id, "claude-opus-5-5");
+    }
+
+    #[test]
+    fn haiku_is_sent_without_server_side_fallback() {
+        let haiku = model("claude-haiku-5-5");
+        let body = request_body(haiku, "y", "s");
+        assert_eq!(body["model"], "claude-haiku-5-5");
+        assert!(body.get("fallbacks").is_none());
+        assert!(ping_body(haiku).get("fallbacks").is_none());
+        assert_eq!(
+            request_body(model("claude-sonnet-5-5"), "y", "s")["fallbacks"],
+            "default"
+        );
+    }
+
+    #[test]
+    fn settings_without_a_model_still_load() {
+        let s: AiSettings = serde_json::from_value(json!({ "enabled": true })).unwrap();
+        assert_eq!(model(&s.model).id, "claude-opus-5-5");
     }
 
     #[test]
@@ -568,6 +657,7 @@ mod tests {
         let s = AiStatus::from(&AiSettings {
             enabled: true,
             api_key: "sk-ant-api03-abcdefgh1234".into(),
+            model: String::new(),
         });
         assert!(s.has_key);
         assert_eq!(s.key_hint.as_deref(), Some("…1234"));

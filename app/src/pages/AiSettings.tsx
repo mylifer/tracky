@@ -12,9 +12,10 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "../components/ui/alert-dialog";
-import { ErrorText, SettingBlock, SettingsGroup, ToggleRow } from "../components/settings";
+import { ErrorText, SettingBlock, SettingRow, SettingsGroup, ToggleRow } from "../components/settings";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { cn } from "../lib/utils";
 import { friendlyError } from "../lib/feedback";
 import { AI_SECTION } from "./settingsSections";
@@ -34,9 +35,9 @@ export function AiSettings() {
   }, []);
   if (!status) return result ? <ErrorText>{result.text}</ErrorText> : null;
 
-  const save = async (enabled: boolean, apiKey?: string) => {
+  const save = async (enabled: boolean, apiKey?: string, model?: string) => {
     try {
-      setStatus(await api.saveAiSettings(enabled, apiKey));
+      setStatus(await api.saveAiSettings(enabled, apiKey, model));
       if (apiKey !== undefined) setKey("");
       setResult(null);
     } catch (e) {
@@ -67,6 +68,23 @@ export function AiSettings() {
         checked={status.enabled}
         onChange={(v) => save(v)}
       />
+      <SettingRow
+        label="Model"
+        hint={`${status.models.find((m) => m.id === status.model)?.hint ?? ""} (milyon jeton başına girdi / çıktı). Bir günün açıklamaları birkaç bin jetondur.`}
+      >
+        <Select value={status.model} onValueChange={(v) => save(status.enabled, undefined, v)}>
+          <SelectTrigger size="sm" className="w-44" aria-label="Model">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            {status.models.map((m) => (
+              <SelectItem key={m.id} value={m.id}>
+                {m.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </SettingRow>
       <SettingBlock
         label="Anthropic API anahtarı"
         hint={
@@ -140,7 +158,7 @@ export function AiSettings() {
           ve müşteri adı, tür, saat ve başlangıç; o satırın süresindeki pencere başlıkları, iş anahtarları ve site
           adları ya da toplantı konusu; üslup örneği olarak o projelere daha önce yazdığın en çok 10'ar açıklama
           (projede hiç yoksa diğer projelerinden 5). Gün başına bir istek yapılır; ücreti API anahtarının hesabından
-          düşer ({status.model}).
+          düşer ({status.models.find((m) => m.id === status.model)?.label ?? status.model}).
         </div>
       </SettingBlock>
     </SettingsGroup>
