@@ -171,6 +171,35 @@ impl SupabaseRemote<'_> {
         self.check(&mut resp)
     }
 
+    /// Sunucuda tablo ve sütun var mı? Boş bir `select` gönderir (satır okumaz). Tablo ya da
+    /// sütun yoksa `Ok(false)`; başka hata (ağ, oturum, yetki) `Err`.
+    pub fn has_column(&self, table: &str, column: &str) -> std::result::Result<bool, String> {
+        let mut req = self
+            .client
+            .agent
+            .get(self.rest(table))
+            .query("select", column)
+            .query("limit", "0")
+            .header("apikey", &self.client.config.anon_key)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.session.access_token),
+            );
+        if let Some(schema) = self.client.config.profile() {
+            req = req.header("Accept-Profile", schema);
+        }
+        let mut resp = req.call().map_err(|e| e.to_string())?;
+        let status = resp.status().as_u16();
+        if status < 400 {
+            return Ok(true);
+        }
+        let body: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
+        if is_missing_object(&body) {
+            return Ok(false);
+        }
+        Err(api_message(&body, status))
+    }
+
     fn check(
         &self,
         resp: &mut ureq::http::Response<ureq::Body>,
@@ -291,6 +320,16 @@ fn session_from(body: &Value) -> Result<AuthSession> {
     })
 }
 
+/// PostgREST'in "tablo/sütun yok" yanıtı mı? Kodlar: PGRST205 (tablo şema önbelleğinde yok),
+/// PGRST204 (sütun yok), 42P01 (tablo yok), 42703 (sütun yok).
+fn is_missing_object(body: &Value) -> bool {
+    let code = body["code"].as_str().unwrap_or_default();
+    let message = body["message"].as_str().unwrap_or_default();
+    matches!(code, "PGRST205" | "PGRST204" | "42P01" | "42703")
+        || message.contains("Could not find the table")
+        || message.contains("does not exist")
+}
+
 /// GoTrue ve PostgREST hata gövdelerinden okunabilir mesaj.
 fn api_message(body: &Value, status: u16) -> String {
     let text = ["msg", "message", "error_description", "error"]
@@ -324,6 +363,22 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_tables_and_columns_are_recognized() {
+        assert!(is_missing_object(&json!({
+            "code": "PGRST205",
+            "message": "Could not find the table 'public.plan_blocks' in the schema cache"
+        })));
+        assert!(is_missing_object(&json!({
+            "code": "42703",
+            "message": "column sessions.passive does not exist"
+        })));
+        assert!(!is_missing_object(
+            &json!({ "code": "PGRST301", "message": "JWT expired" })
+        ));
+        assert!(!is_missing_object(&Value::Null));
+    }
     use std::sync::mpsc;
     use std::thread;
 

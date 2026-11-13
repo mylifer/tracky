@@ -657,6 +657,7 @@ pub fn run() {
             sync::sync_sign_out,
             sync::sync_disconnect,
             sync::sync_now,
+            sync::sync_check_schema,
             updater::update_status,
             updater::check_update,
             updater::install_update,

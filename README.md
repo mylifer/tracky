@@ -264,37 +264,47 @@ iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
 - **Ne gönderilir:** yalnızca düğmeye basınca ve yalnızca `api.anthropic.com`'a; yazılacak satırların proje
   ve müşteri adı, türü, saati ve başlangıcı; o satırın süresindeki en çok 15 pencere başlığı (süreleriyle),
   iş anahtarları ve site adları ya da toplantı konusu; üslup örneği olarak o projeye daha önce yazdığın en
-  çok 10 açıklama (projede hiç yoksa diğer projelerden 5). Anahtar ayarlarda durur, senkronizasyon açıksa
-  diğer ayarlarla birlikte kendi Supabase projene eşitlenir ve günlüğe yazılmaz (yerel yedek dosyalarına girer).
-- **Maliyet:** gün başına bir istek (`claude-opus-5`, düşük çaba), ücreti senin API hesabından düşer;
-  hafta için en çok beş-yedi istek.
+  çok 10 açıklama (projede hiç yoksa diğer projelerden 5). Anahtar yalnızca bu bilgisayarda, işletim
+  sisteminin anahtar deposunda durur; eşitlenmez ve günlüğe yazılmaz.
+- **Maliyet:** gün başına bir istek (düşük çaba), ücreti senin API hesabından düşer; hafta için en çok
+  beş-yedi istek. Model *Ayarlar → Yapay zekâ*'dan seçilir (seçim bilgisayarlar arasında eşitlenir):
+  Claude Opus 5.5 (varsayılan, en iyi sonuç), Claude Sonnet 5.5 (yarı fiyatına) ya da Claude Haiku 5.5
+  (en ucuz). Açıklama yazmak kısa bir iş olduğu için daha ucuz modeller çoğu zaman yeter.
 
 ## Cihazlar arası senkronizasyon (Supabase)
 
 Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birleşik rapor için:
 
 1. [supabase.com](https://supabase.com) üzerinde ücretsiz bir proje oluştur.
-2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0009_…`) çalıştır.
-   Önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli. `0003_writer.sql`
-   cihazların kendi gönderdiklerini geri indirmesini önler; çalıştırılmazsa eşitleme eskisi gibi sürer.
-   `0004_session_project.sql` elle verilen projeleri eşitler; Kum 0.4'ten itibaren gereklidir.
-   `0005_clients.sql` müşterileri ve projelerin müşterisini eşitler; Kum 0.6'dan itibaren gereklidir.
-   `0006_domain_rules.sql` web sitesi kurallarını eşitler; çalıştırılmazsa web sitesi kuralı eklenen
-   cihazda eşitleme `rules_field_check` hatası verir.
-   `0007_archive_budget.sql` proje arşivini ve sözleşme bütçelerini eşitler. Çalıştırılmazsa eşitleme sürer
-   (Kum bu sütunları göndermeden yeniden dener ve Ayarlar'da uyarır), yalnızca arşiv ve bütçeler diğer
-   cihazlara geçmez; dosya sonradan çalıştırılınca bekleyenler kendiliğinden gönderilir.
-   `0008_settings.sql` ayarları (zaman çizelgeleri ve Google Sheets bağlantıları, takvim, gizlilik,
-   hedefler, görünüm, yapay zekâ açık/kapalı) eşitler; yeni bilgisayarda giriş yapınca hepsi gelir.
-   Çalıştırılmazsa eşitleme sürer, yalnızca ayarlar taşınmaz. Yapay zekâ API anahtarı eşitlenmez; her
-   bilgisayarda ayrıca girilir.
-   `0009_harden_grants.sql` tablo yetkilerini daraltır (anon rolünün hiçbir yetkisi kalmaz); Kum'un
-   çalışması için gerekmez ama önerilir.
-   `0017_sync_nudges.sql` anında eşitlemeyi açar (dürtme tablosu ve Realtime yayını); çalıştırılmazsa
-   değişiklikler öteki bilgisayara en geç 5 dakikada gider.
-   `0018_plan_blocks.sql` gün planının bloklarını (onay, ad, boyut) eşitler; çalıştırılmazsa eşitleme
-   sürer, yalnızca her bilgisayar kendi planını görür. Dosya sonradan çalıştırılınca bekleyen bloklar
-   kendiliğinden gönderilir.
+2. **SQL Editor**'da `supabase/migrations/` altındaki dosyaları sırayla (`0001_…` … `0018_…`) çalıştır.
+   Önceki bir sürümden geliyorsan yalnızca yeni dosyaları çalıştırman yeterli; dosyaları tekrar çalıştırmak
+   zararsızdır. Giriş yaptıktan sonra **Ayarlar → Senkronizasyon → Sunucu şeması** hangi dosyaların eksik
+   olduğunu ve her birinin neyi etkilediğini gösterir; **SQL'i kopyala** eksiklerin hepsini tek seferde
+   SQL Editor'a yapıştırılacak hâle getirir. Eşitleme eksik dosyalarla da sürer, yalnızca ilgili veri taşınmaz;
+   dosya sonradan çalıştırılınca bekleyenler kendiliğinden gönderilir.
+
+   | Dosya | Ne yapar / çalıştırılmazsa |
+   | --- | --- |
+   | `0001_kum_sync.sql` | Temel tablolar (oturumlar, kategoriler/projeler, kurallar). Zorunlu. |
+   | `0002_session_category.sql` | Oturumun kategorisi. Zorunlu. |
+   | `0003_writer.sql` | Bilgisayarlar kendi gönderdiklerini geri indirmez; yoksa eşitleme eskisi gibi, daha yavaş sürer. |
+   | `0004_session_project.sql` | Elle verilen projeler. Kum 0.4'ten itibaren zorunlu. |
+   | `0005_clients.sql` | Müşteriler ve projelerin müşterisi. Kum 0.6'dan itibaren zorunlu. |
+   | `0006_domain_rules.sql` | Web sitesi kuralları; yoksa web sitesi kuralı eklenince `rules_field_check` hatası. |
+   | `0007_archive_budget.sql` | Proje arşivi ve sözleşme bütçeleri. |
+   | `0008_settings.sql` | Ayarlar (zaman çizelgeleri, Google Sheets, takvim, gizlilik, hedefler, görünüm, yapay zekâ modeli). |
+   | `0009_harden_grants.sql` | Tablo yetkilerini daraltır (anon rolünün yetkisi kalmaz); gerekmez ama önerilir. |
+   | `0010_timesheet_entries.sql` | Zaman çizelgesi satırları (kaydedilen, gönderilen, silinen). |
+   | `0011_timesheet_state.sql` | Satırların durum zamanı ve danışman adı. |
+   | `0012_session_state.sql` | Atama ve silme, başka bilgisayarda süren oturumdan ayrı eşitlenir. |
+   | `0013_session_block_from.sql` | Takvimde elle bölünen bloklar. |
+   | `0014_calls.sql` | Görüşmeler; toplantı katılımı bütün bilgisayarlarla yargılanır. |
+   | `0015_session_passive.sql` | Girdisiz izleme (video, görüşme). |
+   | `0016_timesheet_marks.sql` | Zaman çizelgesine gönderilen bloklar öteki bilgisayarda da görünür. |
+   | `0017_sync_nudges.sql` | Anında eşitleme (Realtime); yoksa değişiklikler en geç 5 dakikada gider. |
+   | `0018_plan_blocks.sql` | Gün planının onaylı blokları; yoksa her bilgisayar kendi planını görür. |
+
+   Yapay zekâ API anahtarı hiçbir dosyayla eşitlenmez; her bilgisayarda ayrıca girilir.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.
