@@ -62,3 +62,4 @@ Kurallarla birlikte onaylandı.
 - **V6.** Onaylı bloklar bilgisayarlar arasında eşitlenir (Supabase `plan_blocks`). "Öner" ile
   hazırlanan öneriler o bilgisayarda kalır; takvim etkinliği önerileri her bilgisayarda görünür.
 - **V7.** Etkinlik önerisinin projesi, toplantının proje atamasından gelir; yoksa projesizdir.
+- **V8.** "Katılmadım" denen (ya da Kum'un katılmadın dediği) toplantı öneri olmaz.

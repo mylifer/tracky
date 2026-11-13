@@ -384,6 +384,7 @@ const handlers: Record<string, Handler> = {
   // Test isterse localStorage'dan (sayfa açılmadan önce yazılır).
   calendar_meetings: () => stored("e2e.meetings"),
   get_plan_examples: () => stored("e2e.planExamples"),
+  answer_meeting: () => null,
   // Test toplantı verdiyse takvim bağlı sayılır.
   calendar_status: () =>
     stored("e2e.meetings").length ? { ...calendar, url: "https://example.com/takvim.ics", events: 1 } : calendar,

@@ -16,7 +16,7 @@ import { Label } from "./ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { CategorySelect } from "./CategorySelect";
 import { ProjectSelect } from "./ProjectSelect";
-import { friendlyError, undoable } from "../lib/feedback";
+import { friendlyError, toast, undoable } from "../lib/feedback";
 import { removeBlock, sendBlock } from "../lib/blockSheet";
 import { announceAssigned } from "../lib/plan";
 import { attendanceLine, isSkipped } from "../lib/attendance";
@@ -385,14 +385,45 @@ export function MeetingMenu({
   const suggestion = value === "" && m.suggestion ? m.suggestion : null;
   const suggestedName = suggestion ? projects.find((p) => p.id === suggestion.projectId)?.name : undefined;
 
-  const attendance = m.attendance;
+  // Cevap verilince menü hemen değişsin (iyimser); takvim yenilenince gerçeği gelir.
+  const [attendance, setAttendance] = useState(m.attendance);
+  useEffect(() => setAttendance(m.attendance), [m.attendance]);
+  const [answering, setAnswering] = useState(false);
   // Projesiz toplantı çizelgeye girmez: "çizelgeye … girer" demesin; cevap yine verilebilir.
   const attendanceText = m.projectId ? attendanceLine(m, attendance) : null;
   // Katılım cevabı (`null`: geri al, Kum karar versin).
   function answer(attended: boolean | null) {
-    if (!attendance) return;
+    if (!attendance || answering) return;
+    const before = attendance;
     setError(null);
-    api.answerMeeting(attendance.key, attended).then(onChanged, (e) => setError(message(e)));
+    setAnswering(true);
+    setAttendance(
+      attended === null
+        ? { ...before, auto: true }
+        : { ...before, auto: false, status: attended ? "attended" : "skipped" },
+    );
+    api
+      .answerMeeting(before.key, attended)
+      .then(
+        () => {
+          toast(
+            attended === null
+              ? "Cevap geri alındı: Kum görüşmeye bakıp karar verecek"
+              : attended
+                ? m.projectId
+                  ? "Katıldın: toplantı zaman çizelgesine girer"
+                  : "Katıldın olarak işaretlendi"
+                : "Katılmadın: toplantı zaman çizelgesine girmez",
+            { tone: "success" },
+          );
+          onChanged();
+        },
+        (e) => {
+          setAttendance(before);
+          setError(message(e));
+        },
+      )
+      .finally(() => setAnswering(false));
   }
 
   function assign(v: string) {
@@ -474,6 +505,7 @@ export function MeetingMenu({
                   variant={picked ? "secondary" : "outline"}
                   className="flex-1"
                   aria-pressed={picked}
+                  disabled={answering}
                   onClick={() => answer(attended)}
                 >
                   {attended ? <Check /> : <X />} {attended ? "Katıldım" : "Katılmadım"}
@@ -487,6 +519,7 @@ export function MeetingMenu({
               variant="ghost"
               className="w-full"
               title="Kum görüşmeye bakıp karar versin"
+              disabled={answering}
               onClick={() => answer(null)}
             >
               <Undo2 /> Cevabı geri al

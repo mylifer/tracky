@@ -391,29 +391,36 @@ export function meetingSlots(
     subject: string;
     projectId?: string | null;
     ignored?: boolean;
+    attendance?: { status: string } | null;
   }[],
   dayStart: number,
   dayEnd: number,
   confirmed: Slot[],
   dismissed: Set<string>,
 ): Slot[] {
-  return meetings
-    .map((m) => {
-      const start = Math.max(Date.parse(m.start), dayStart);
-      const end = Math.min(Date.parse(m.end), dayEnd);
-      return { m, start, end, key: `${m.uid}@${m.start}` };
-    })
-    .filter(({ m, start, end, key }) => end - start >= SNAP && !m.ignored && !dismissed.has(key))
-    .filter(({ start, end }) => !confirmed.some((c) => c.start < end && start < c.end))
-    .map(({ m, start, end, key }) => ({
-      id: `meeting:${key}`,
-      start,
-      end,
-      projectId: m.projectId ?? null,
-      note: m.subject.trim(),
-      draft: true,
-      meeting: key,
-    }));
+  return (
+    meetings
+      .map((m) => {
+        const start = Math.max(Date.parse(m.start), dayStart);
+        const end = Math.min(Date.parse(m.end), dayEnd);
+        return { m, start, end, key: `${m.uid}@${m.start}` };
+      })
+      // "Katılmadım" denen (ya da Kum'un katılmadın dediği) toplantı öneri olmaz.
+      .filter(
+        ({ m, start, end, key }) =>
+          end - start >= SNAP && !m.ignored && m.attendance?.status !== "skipped" && !dismissed.has(key),
+      )
+      .filter(({ start, end }) => !confirmed.some((c) => c.start < end && start < c.end))
+      .map(({ m, start, end, key }) => ({
+        id: `meeting:${key}`,
+        start,
+        end,
+        projectId: m.projectId ?? null,
+        note: m.subject.trim(),
+        draft: true,
+        meeting: key,
+      }))
+  );
 }
 
 /**

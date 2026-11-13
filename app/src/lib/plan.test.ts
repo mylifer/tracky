@@ -170,7 +170,13 @@ describe("kurallar", () => {
   });
 
   it("1, V3: yok sayılan, silinen ya da onaylı blokla çakışan etkinlik öneri olmaz", () => {
-    const ms = [meeting("09:00", "09:30", { ignored: true }), meeting("10:00", "10:30"), meeting("11:00", "11:30")];
+    const ms = [
+      meeting("09:00", "09:30", { ignored: true }),
+      meeting("10:00", "10:30"),
+      meeting("11:00", "11:30"),
+      // "Katılmadım" denen toplantı.
+      { ...meeting("13:00", "13:30"), attendance: { status: "skipped" } },
+    ];
     const dismissed = new Set([`${ms[1].uid}@${ms[1].start}`]);
     const confirmed = [b("x", "11:15", "12:00")];
     expect(meetingSlots(ms, DAY, DAY + 86_400_000, confirmed, dismissed)).toEqual([]);

@@ -209,6 +209,43 @@ test("Gün planı: takvim etkinliği toplantının projesiyle kesik öneri olur,
   await expect(draft).toHaveCount(0);
 });
 
+test("Gün: toplantıya katıldım/katılmadım cevabı hemen görünür ve onaylanır", async ({ app, page }) => {
+  await seed(page, "e2e.meetings", [
+    {
+      uid: "demo",
+      start: "2026-10-07T11:45:00+03:00",
+      end: "2026-10-07T12:15:00+03:00",
+      subject: "Müşteri demosu",
+      location: "",
+      online: true,
+      agenda: "",
+      projectId: TRUMORE,
+      ignored: false,
+      attendance: {
+        key: "demo@1",
+        status: "attended",
+        auto: true,
+        start: "2026-10-07T11:45:00+03:00",
+        end: "2026-10-07T12:15:00+03:00",
+        call: null,
+        reason: null,
+      },
+    },
+  ]);
+  await app.open("Gün");
+  await page.getByRole("button", { name: /^Müşteri demosu\s+11:45/ }).click();
+  const menu = page.getByRole("dialog", { name: "Toplantı" });
+  const skipped = menu.getByRole("button", { name: "Katılmadım" });
+  await expect(skipped).toHaveAttribute("aria-pressed", "false");
+  await skipped.click();
+  // Seçim hemen işaretlenir, onay mesajı çıkar.
+  await expect(skipped).toHaveAttribute("aria-pressed", "true");
+  await expect(menu).toContainText("Katılmadın olarak işaretlendi");
+  await expect(page.getByText("Katılmadın: toplantı zaman çizelgesine girmez")).toBeVisible();
+  const [call] = await app.calls("answer_meeting");
+  expect(call.args).toMatchObject({ key: "demo@1", attended: false });
+});
+
 test("Gün planı: Öner geçmişte onaylanan bloklardan adı ve projeyi öğrenir", async ({ app, page }) => {
   await seed(page, "e2e.planExamples", [
     { appName: "Safari", title: "Hacker News", projectId: TRUMORE, note: "Pazar araştırması", seconds: 3600 },
