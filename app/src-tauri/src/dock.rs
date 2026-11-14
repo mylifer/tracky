@@ -5,16 +5,19 @@
 //! ⌘M pencereyi gizler; Dock simgesine tıklamak geri açar (`RunEvent::Reopen`). Takip arka
 //! planda sürer.
 //!
-//! Ayarlardan seçilen uygulama simgesi de burada Dock'a uygulanır ([`set_app_icon`]);
-//! paket simgesi değişince sistemin simge önbelleği sıfırlanır ([`refresh_icon_cache`]).
+//! Ayarlardan seçilen uygulama simgesi de burada Dock'a ([`set_app_icon`]) ve Finder'a
+//! ([`set_finder_icon`]) uygulanır; paket simgesi değişince sistemin simge önbelleği
+//! sıfırlanır ([`refresh_icon_cache`]).
 
 use std::sync::OnceLock;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSImage, NSWindow, NSWindowButton};
-use objc2_foundation::NSData;
+use objc2_app_kit::{
+    NSApplication, NSImage, NSWindow, NSWindowButton, NSWorkspace, NSWorkspaceIconCreationOptions,
+};
+use objc2_foundation::{NSData, NSString};
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -72,9 +75,7 @@ pub fn install(app: &AppHandle) {
 
 /// Dock'ta, ⌘⇥ değiştiricide ve "Hakkında" penceresinde görünen simge. Paketteki simge için
 /// de görsel verilir: nil verilince Dock, sabitlenmiş Kum'un güncellemeden önceki simgesini
-/// kendi önbelleğinden gösteriyor. Finder'daki simge paketten gelir: paketi değiştirmek imzayı
-/// (ve ona bağlı Erişilebilirlik iznini) bozacağı için ona dokunulmaz. Ana iş parçacığında
-/// çağrılmalı.
+/// kendi önbelleğinden gösteriyor. Ana iş parçacığında çağrılmalı.
 pub fn set_app_icon(png: &[u8]) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -82,6 +83,46 @@ pub fn set_app_icon(png: &[u8]) {
     let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(png));
     // SAFETY: ana iş parçacığındayız; görsel çözülemezse nil, paketteki simgeye döner.
     unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(image.as_deref()) };
+}
+
+/// Finder'da, Uygulamalar klasöründe, Launchpad'de ve Dock'ta (Kum kapalıyken) görünen simge.
+/// `Some` pakete özel simge koyar, `None` kaldırır (paketteki simge görünür). macOS bunu
+/// paketin kökündeki `Icon\r` dosyasıyla yapar; dosya zaten istenen durumdaysa paket yazılmaz.
+/// Güncelleme paketi yenisiyle değiştirince özel simge gider; açılışta yeniden konur.
+/// Geliştirme sürümünde (paket dışında) bir şey yapmaz. Ana iş parçacığında çağrılmalı.
+pub fn set_finder_icon(png: Option<&[u8]>) {
+    let Some(bundle) = bundle_path() else {
+        return;
+    };
+    let has_custom = bundle.join("Icon\r").exists();
+    if has_custom == png.is_some() {
+        return;
+    }
+    let image =
+        png.and_then(|png| NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(png)));
+    if png.is_some() && image.is_none() {
+        return;
+    }
+    let path = NSString::from_str(&bundle.to_string_lossy());
+    let ok = NSWorkspace::sharedWorkspace().setIcon_forFile_options(
+        image.as_deref(),
+        &path,
+        NSWorkspaceIconCreationOptions(0),
+    );
+    if ok {
+        log_info!("Finder simgesi güncellendi: {}", bundle.display());
+    } else {
+        // Örneğin paket başka bir kullanıcıya ait ve yazılamıyor.
+        log_error!("Finder simgesi güncellenemedi: {}", bundle.display());
+    }
+}
+
+/// Çalışan `.app` paketinin yolu (`…/Kum.app/Contents/MacOS/kum` → `…/Kum.app`).
+fn bundle_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(|p| p.to_path_buf())
 }
 
 /// Paket simgesi değiştikten sonra kullanıcının simge önbelleğini sıfırlar. Bildirim Merkezi

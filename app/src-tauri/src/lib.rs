@@ -170,9 +170,9 @@ fn app_icon_setting(store: &Store) -> String {
         .unwrap_or_else(|| "kum".into())
 }
 
-/// Seçilen simgeyi çalışan uygulamaya uygular: macOS'ta Dock, Windows'ta pencere ve görev
-/// çubuğu. Kum için de görsel açıkça verilir (bkz. `dock::set_app_icon`); Finder'da ve
-/// kısayollarda paketteki simge görünür.
+/// Seçilen simgeyi uygular: macOS'ta Dock ve Finder (bkz. `dock::set_finder_icon`),
+/// Windows'ta pencere ve görev çubuğu (kısayollarda paketteki simge görünür). Kum için de
+/// Dock'a görsel açıkça verilir (bkz. `dock::set_app_icon`).
 fn apply_app_icon(app: &AppHandle, icon: &str) {
     let png = if icon == "kobalt" {
         KOBALT_ICON
@@ -181,7 +181,11 @@ fn apply_app_icon(app: &AppHandle, icon: &str) {
     };
     #[cfg(target_os = "macos")]
     {
-        let _ = app.run_on_main_thread(move || dock::set_app_icon(png));
+        let custom = (png != KUM_ICON).then_some(png);
+        let _ = app.run_on_main_thread(move || {
+            dock::set_app_icon(png);
+            dock::set_finder_icon(custom);
+        });
     }
     #[cfg(not(target_os = "macos"))]
     {

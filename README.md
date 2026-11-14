@@ -128,9 +128,9 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       üstünde bilgisayar filtresi (Tümü / her bilgisayar ve süresi). Yalnızca aralıkta birden çok bilgisayar varsa
       görünür. Adlar sistemden gelir (`device:<kimlik>` ayarı, eşitlenir), Ayarlar → Senkronizasyon'da değiştirilir
 - [x] 55. Uygulama simgesi: dilimlenmiş cam küre (Dilim), menü çubuğunda tek renkli hâli. Ayarlar → Genel'de Kum
-      (turuncu, varsayılan) ya da Kobalt (mavi); seçilen simge çalışırken macOS'ta Dock'ta, ⌘⇥'de ve Hakkında'da,
-      Windows'ta pencerede ve görev çubuğunda görünür. Paketin simgesi (Finder, kısayollar) imza ve ona bağlı
-      Erişilebilirlik izni bozulmasın diye Kum kalır. Seçim cihaza özgüdür (`app_icon`, eşitlenmez)
+      (turuncu, varsayılan) ya da Kobalt (mavi); seçilen simge macOS'ta Dock'ta, ⌘⇥'de, Hakkında'da ve Finder'da
+      (pakete özel simge, `Icon\r`; güncellemeden sonra açılışta yeniden konur), Windows'ta pencerede ve görev
+      çubuğunda görünür (kısayollarda Kum kalır). Seçim cihaza özgüdür (`app_icon`, eşitlenmez)
 - [x] 56. Anında eşitleme: eşitlenen veriyi değiştiren bir komuttan en geç 4 saniye sonra eşitlenir ve
       bir şey gönderildiyse öteki bilgisayarlar dürtülür (`sync_nudges`, `supabase/migrations/0017`);
       onlar Supabase Realtime ile duyup hemen eşitler. Realtime'a ulaşılamazsa eşitleme 5 dakikada bir sürer

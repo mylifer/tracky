@@ -367,7 +367,7 @@ export default function Settings({
                 label="Uygulama simgesi"
                 hint={
                   mac
-                    ? "Dock’ta ve uygulama değiştiricide görünür; Finder’da Kum simgesi kalır."
+                    ? "Dock’ta, Finder’da ve uygulama değiştiricide görünür."
                     : "Görev çubuğunda görünür; kısayollarda Kum simgesi kalır."
                 }
               >
