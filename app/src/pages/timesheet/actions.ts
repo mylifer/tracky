@@ -1,4 +1,5 @@
 import { api, type EntryView } from "../../api";
+import { formatUsd } from "../../lib/money";
 import { addDays, isoDate, parseIsoDate } from "../../lib/dates";
 import { friendlyError, notifyChanged, toast } from "../../lib/feedback";
 import { copyDetails } from "../../lib/timesheet";
@@ -68,11 +69,14 @@ export async function aiWriteDays(
 ) {
   const saved: Saved[] = [];
   let failure: unknown = null;
+  let cost = 0;
   for (const [i, date] of dates.entries()) {
     try {
       const [day] = await api.timesheetDays(sheetId, date, 1);
       if (!day.entries.some((e) => !e.exported)) continue;
-      for (const w of await api.aiWriteDetails(sheetId, date, rewrite)) {
+      const written = await api.aiWriteDetails(sheetId, date, rewrite);
+      cost += written.costUsd ?? 0;
+      for (const w of written.changes) {
         const entry = day.entries.find((e) => e.key === w.key);
         if (!entry || entry.details === w.details) continue;
         saved.push({ before: entry, id: await api.saveTimesheetEntry(entry.id, { ...entry, details: w.details }) });
@@ -85,7 +89,7 @@ export async function aiWriteDays(
     }
   }
   if (saved.length > 0)
-    toast(`${saved.length} satıra yapay zekâyla açıklama yazıldı`, {
+    toast(`${saved.length} satıra yapay zekâyla açıklama yazıldı${cost > 0 ? ` · ≈ ${formatUsd(cost)}` : ""}`, {
       tone: "success",
       action: { label: "Geri al", run: () => undoSaves(saved) },
     });

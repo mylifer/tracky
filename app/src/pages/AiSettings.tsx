@@ -18,6 +18,7 @@ import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { cn } from "../lib/utils";
 import { friendlyError } from "../lib/feedback";
+import { formatUsd } from "../lib/money";
 import { AI_SECTION } from "./settingsSections";
 
 /**
@@ -53,6 +54,8 @@ export function AiSettings() {
       setResult({ ok: false, text: friendlyError(e) });
     } finally {
       setBusy(false);
+      // Deneme isteği de ücretlendirilir: bu ayın sayacı yenilensin.
+      api.aiSettings().then(setStatus, () => {});
     }
   };
 
@@ -84,6 +87,16 @@ export function AiSettings() {
             ))}
           </SelectContent>
         </Select>
+      </SettingRow>
+      <SettingRow
+        label="Bu ayki kullanım"
+        hint="Bu bilgisayardan giden istekler; yanıttaki jeton sayısından hesaplanır, kesin tutar Anthropic Console'da (Usage)."
+      >
+        <span className="text-sm tabular-nums selectable">
+          {status.usage.requests === 0
+            ? "İstek yok"
+            : `${status.usage.requests} istek · ≈ ${formatUsd(status.usage.costUsd)}`}
+        </span>
       </SettingRow>
       <SettingBlock
         label="Anthropic API anahtarı"

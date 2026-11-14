@@ -34,12 +34,14 @@ pub const MODELS: &[ModelInfo] = &[
         label: "Claude Opus 5.5",
         hint: "En iyi sonuç · $4 / $20",
         fallback: true,
+        price: (4.0, 20.0),
     },
     ModelInfo {
         id: "claude-sonnet-5-5",
         label: "Claude Sonnet 5.5",
         hint: "Hızlı, yarı fiyatına · $2 / $10",
         fallback: true,
+        price: (2.0, 10.0),
     },
     ModelInfo {
         id: "claude-haiku-5-5",
@@ -47,10 +49,12 @@ pub const MODELS: &[ModelInfo] = &[
         hint: "En ucuz · $0,10 / $0,50",
         // Haiku'da sunucu tarafı yedek model yok; ret durumunda hata gösterilir.
         fallback: false,
+        // 100 bin jetonu aşan istemde $0,50 / $2,50 ([`cost`]).
+        price: (0.10, 0.50),
     },
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct ModelInfo {
     pub id: &'static str,
     pub label: &'static str,
@@ -58,6 +62,94 @@ pub struct ModelInfo {
     /// Ret durumunda sunucu tarafı yedek model (`fallbacks`) desteklenir mi?
     #[serde(skip)]
     pub fallback: bool,
+    /// Milyon jeton başına girdi ve çıktı fiyatı (USD).
+    #[serde(skip)]
+    pub price: (f64, f64),
+}
+
+/// Yanıtın `usage` alanından isteğin yaklaşık maliyeti (USD). Yanıtı yedek model verdiyse ve o
+/// model listede yoksa seçilen modelin fiyatı kullanılır. Düşünme jetonları çıktıya sayılır.
+pub fn cost(selected: &ModelInfo, body: &str) -> Option<f64> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let usage = v.get("usage")?;
+    let n = |k: &str| usage[k].as_u64().unwrap_or(0) as f64;
+    let served = v["model"]
+        .as_str()
+        .and_then(|id| MODELS.iter().find(|m| m.id == id))
+        .unwrap_or(selected);
+    // Önbellek okuma girdinin onda biri, yazma 1,25 katı.
+    let input = n("input_tokens")
+        + 0.1 * n("cache_read_input_tokens")
+        + 1.25 * n("cache_creation_input_tokens");
+    let (mut inp, mut out) = served.price;
+    let prompt =
+        n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
+    if served.id == "claude-haiku-5-5" && prompt > 100_000.0 {
+        (inp, out) = (0.50, 2.50);
+    }
+    Some((input * inp + n("output_tokens") * out) / 1e6)
+}
+
+/// Bu bilgisayarda bu ay yapılan isteklerin sayısı ve yaklaşık tutarı. Eşitlenmez: her
+/// bilgisayar kendi isteklerini sayar.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AiUsage {
+    /// `YYYY-AA`; ay değişince sayaç sıfırlanır.
+    month: String,
+    requests: u32,
+    cost_usd: f64,
+}
+
+const USAGE_KEY: &str = "ai_usage";
+
+fn this_month() -> String {
+    chrono::Local::now().format("%Y-%m").to_string()
+}
+
+impl AiUsage {
+    /// Ay değiştiyse sıfırdan başlar.
+    fn current(self, month: &str) -> Self {
+        if self.month == month {
+            self
+        } else {
+            Self {
+                month: month.to_string(),
+                ..Self::default()
+            }
+        }
+    }
+
+    fn add(self, month: &str, cost: f64) -> Self {
+        let mut u = self.current(month);
+        u.requests += 1;
+        u.cost_usd += cost;
+        u
+    }
+}
+
+fn usage(store: &Store) -> AiUsage {
+    store
+        .setting::<AiUsage>(USAGE_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .current(&this_month())
+}
+
+/// Ücretlendirilen (başarılı) isteği aylık sayaca ekler; isteğin tutarını döndürür.
+fn record(app: &AppHandle, model: &ModelInfo, status: u16, body: &str) -> Option<f64> {
+    if status >= 400 {
+        return None;
+    }
+    let cost = cost(model, body)?;
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    let next = usage(&store).add(&this_month(), cost);
+    if let Err(e) = store.save_setting(USAGE_KEY, &next) {
+        log_info!("yapay zekâ kullanımı kaydedilemedi: {e}");
+    }
+    Some(cost)
 }
 
 /// Kayıtlı model kimliği; tanınmıyorsa ya da boşsa (eski sürümün ayarı) varsayılan.
@@ -95,6 +187,8 @@ pub struct AiStatus {
     key_hint: Option<String>,
     model: &'static str,
     models: &'static [ModelInfo],
+    /// Bu bilgisayarda bu ayki istekler ve yaklaşık tutar.
+    usage: AiUsage,
 }
 
 impl From<&AiSettings> for AiStatus {
@@ -110,6 +204,7 @@ impl From<&AiSettings> for AiStatus {
             key_hint: hint,
             model: model(&s.model).id,
             models: MODELS,
+            usage: AiUsage::default(),
         }
     }
 }
@@ -140,7 +235,16 @@ fn load_settings(store: &Store) -> CmdResult<AiSettings> {
 
 #[tauri::command]
 pub async fn get_ai_settings(app: AppHandle) -> CmdResult<AiStatus> {
-    Ok(AiStatus::from(&settings(&app)?))
+    let shared = app.state::<Shared>();
+    let store = lock(&shared.store);
+    Ok(AiStatus::from(&load_settings(&store)?).with_usage(usage(&store)))
+}
+
+impl AiStatus {
+    fn with_usage(mut self, usage: AiUsage) -> Self {
+        self.usage = usage;
+        self
+    }
 }
 
 /// Açar/kapatır; `api_key` verilirse anahtarı değiştirir (boş: siler), `model` verilirse
@@ -168,7 +272,7 @@ pub async fn save_ai_settings(
         stored.api_key.clear();
     }
     store.save_setting(SETTINGS_KEY, &stored).map_err(err)?;
-    Ok(AiStatus::from(&s))
+    Ok(AiStatus::from(&s).with_usage(usage(&store)))
 }
 
 /// Bağlantıyı küçük bir istekle dener; `api_key` verilmezse kayıtlı anahtar.
@@ -190,6 +294,7 @@ pub async fn test_ai_connection(app: AppHandle, api_key: Option<String>) -> CmdR
         tauri::async_runtime::spawn_blocking(move || post(&key, model, &ping_body(model)))
             .await
             .map_err(err)??;
+    record(&app, model, status, &body);
     check_status(status, &body)?;
     Ok(format!("Bağlantı çalışıyor ({}).", model.label))
 }
@@ -205,6 +310,14 @@ pub struct AiChange {
     details: String,
 }
 
+/// Bir günün yazımı: değişiklikler ve isteğin yaklaşık tutarı (istek gitmediyse `None`).
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiWritten {
+    changes: Vec<AiChange>,
+    cost_usd: Option<f64>,
+}
+
 /// Günün `timesheet_id` çizelgesindeki aktarılmamış satırlarına açıklama yazdırır; kaydetmez,
 /// değişiklikleri döndürür. `rewrite` değilse yalnızca boş ya da otomatik (başlıklardan, hazır
 /// açıklamadan) gelen açıklamalar yazılır; canlı önerilerin açıklaması hep otomatiktir, elle
@@ -215,7 +328,7 @@ pub async fn ai_write_details(
     timesheet_id: String,
     date: String,
     rewrite: bool,
-) -> CmdResult<Vec<AiChange>> {
+) -> CmdResult<AiWritten> {
     let settings = settings(&app)?;
     if !settings.enabled {
         return Err("Yapay zekâyla yazma kapalı (Ayarlar → Yapay zekâ).".into());
@@ -253,7 +366,10 @@ pub async fn ai_write_details(
             })
             .collect();
         if targets.is_empty() {
-            return Ok(Vec::new());
+            return Ok(AiWritten {
+                changes: Vec::new(),
+                cost_usd: None,
+            });
         }
         let clients: HashMap<String, String> = store
             .clients()
@@ -320,14 +436,19 @@ pub async fn ai_write_details(
     let (status, text) = tauri::async_runtime::spawn_blocking(move || post(&key, model, &body))
         .await
         .map_err(err)??;
+    // Yanıt ayrıştırılamasa da (ret, yarıda kalma) istek ücretlendirilmiştir.
+    let cost_usd = record(&app, model, status, &text);
     let written = parse_response(status, &text, rows.len())?;
-    Ok(written
-        .into_iter()
-        .map(|(i, details)| AiChange {
-            key: keys[i].clone(),
-            details,
-        })
-        .collect())
+    Ok(AiWritten {
+        changes: written
+            .into_iter()
+            .map(|(i, details)| AiChange {
+                key: keys[i].clone(),
+                details,
+            })
+            .collect(),
+        cost_usd,
+    })
 }
 
 /// Yanıtın biçimi: her satır için index ve açıklama.
@@ -557,6 +678,50 @@ mod tests {
             request_body(model("claude-sonnet-5-5"), "y", "s")["fallbacks"],
             "default"
         );
+    }
+
+    #[test]
+    fn cost_comes_from_usage_and_the_serving_model() {
+        let body = |model: &str, input: u64, output: u64| {
+            json!({ "model": model, "usage": { "input_tokens": input, "output_tokens": output } })
+                .to_string()
+        };
+        let opus = model("claude-opus-5-5");
+        let haiku = model("claude-haiku-5-5");
+        // 3000 girdi × $4 + 500 çıktı × $20, milyon jeton başına.
+        let c = cost(opus, &body("claude-opus-5-5", 3_000, 500)).unwrap();
+        assert!((c - 0.022).abs() < 1e-9, "{c}");
+        // Sonnet seçiliyken yanıtı Opus verdiyse Opus fiyatı.
+        let c = cost(
+            model("claude-sonnet-5-5"),
+            &body("claude-opus-5-5", 1_000_000, 0),
+        )
+        .unwrap();
+        assert!((c - 4.0).abs() < 1e-9, "{c}");
+        // Listede olmayan yedek model: seçilen modelin fiyatı.
+        let c = cost(haiku, &body("claude-opus-5", 50_000, 0)).unwrap();
+        assert!((c - 0.005).abs() < 1e-9, "{c}");
+        // Haiku'da 100 bin jetonu aşan istem daha pahalı.
+        let c = cost(haiku, &body("claude-haiku-5-5", 200_000, 0)).unwrap();
+        assert!((c - 0.10).abs() < 1e-9, "{c}");
+        let cached = json!({ "model": "claude-opus-5-5", "usage": {
+            "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 1_000_000
+        }})
+        .to_string();
+        assert!((cost(opus, &cached).unwrap() - 0.4).abs() < 1e-9);
+        assert_eq!(cost(opus, "{}"), None);
+        assert_eq!(cost(opus, "geçersiz"), None);
+    }
+
+    #[test]
+    fn usage_counts_this_month_and_resets_on_a_new_one() {
+        let u = AiUsage::default().add("2026-11", 0.02).add("2026-11", 0.03);
+        assert_eq!(u.requests, 2);
+        assert!((u.cost_usd - 0.05).abs() < 1e-9);
+        let next = u.clone().add("2026-12", 0.01);
+        assert_eq!((next.month.as_str(), next.requests), ("2026-12", 1));
+        assert_eq!(u.clone().current("2026-11"), u);
+        assert_eq!(u.current("2026-12").requests, 0);
     }
 
     #[test]

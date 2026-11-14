@@ -435,9 +435,14 @@ export type AiStatus = {
   /** Seçili modelin kimliği. */
   model: string;
   models: AiModel[];
+  usage: AiUsage;
 };
 /** Yapay zekânın bir satıra (sayfadaki anahtarıyla) yazdığı açıklama (henüz kaydedilmedi). */
 export type AiChange = { key: string; details: string };
+/** Bir günün yazımı; `costUsd`: isteğin yaklaşık tutarı (istek gitmediyse `null`). */
+export type AiWritten = { changes: AiChange[]; costUsd: number | null };
+/** Bu bilgisayarda bu ayki istekler (`month`: YYYY-AA). */
+export type AiUsage = { month: string; requests: number; costUsd: number };
 
 export type BackupFile = { name: string; path: string; at: string; bytes: number };
 export type BackupStatus = {
@@ -779,7 +784,7 @@ export const api = {
     invoke<AiStatus>("save_ai_settings", { enabled, apiKey: apiKey ?? null, model: model ?? null }),
   testAi: (apiKey?: string) => invoke<string>("test_ai_connection", { apiKey: apiKey ?? null }),
   aiWriteDetails: (timesheetId: string, date: string, rewrite: boolean) =>
-    invoke<AiChange[]>("ai_write_details", { timesheetId, date, rewrite }),
+    invoke<AiWritten>("ai_write_details", { timesheetId, date, rewrite }),
   /** Toplantı serisini projeye ata; `null` yoksayar. */
   assignMeeting: (uid: string, projectId: string | null) => invoke<void>("assign_meeting", { uid, projectId }),
   /** Toplantının bu tekrarına katılıp katılmadığı (`null`: cevabı geri al). */
