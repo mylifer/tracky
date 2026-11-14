@@ -16,3 +16,8 @@ if [ -n "${MACOS_CERTIFICATE:-}" ] && echo "$requirement" | grep -q "cdhash"; th
   echo "Sertifika verildiği hâlde paket ad-hoc imzalanmış." >&2
   exit 1
 fi
+# Notarize edildiyse Gatekeeper paketi kabul etmeli ve onay pakete eklenmiş (stapled) olmalı.
+if [ "${KUM_NOTARIZE:-}" = 1 ]; then
+  xcrun stapler validate "$app"
+  spctl --assess --type execute --verbose=2 "$app"
+fi
