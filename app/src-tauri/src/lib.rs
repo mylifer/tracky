@@ -449,7 +449,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             .map(|b| format!("{b:02x}"))
             .collect();
         if store.setting::<String>(ICON_CACHE_KEY)?.as_deref() != Some(digest.as_str()) {
-            dock::refresh_icon_cache();
+            dock::refresh_icon_cache(&[]);
             store.save_setting(ICON_CACHE_KEY, &digest)?;
         }
     }

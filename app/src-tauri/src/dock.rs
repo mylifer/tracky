@@ -111,6 +111,9 @@ pub fn set_finder_icon(png: Option<&[u8]>) {
     );
     if ok {
         log_info!("Finder simgesi güncellendi: {}", bundle.display());
+        // Finder ve Dock simgeyi IconServices önbelleğinden alır; o sıfırlanmadan (Finder'ı
+        // yeniden başlatmak yetmiyor) eski simge görünmeye devam ediyor.
+        refresh_icon_cache(&["Finder", "Dock"]);
     } else {
         // Örneğin paket başka bir kullanıcıya ait ve yazılamıyor.
         log_error!("Finder simgesi güncellenemedi: {}", bundle.display());
@@ -131,9 +134,9 @@ fn bundle_path() -> Option<std::path::PathBuf> {
 /// yönlendirmeyi sürdürüyor. LaunchServices'e yeniden kayıt da, bildirim servislerini yeniden
 /// başlatmak da bunu düzeltmiyor. Dizin silinir (macOS yeniden kurar) ve onu tutan servisler
 /// yeniden başlatılır (launchd hemen yeniden açar; bekleyen bildirimler kaybolmaz). Arka planda
-/// çalışır.
-pub fn refresh_icon_cache() {
-    std::thread::spawn(|| {
+/// çalışır. `also` ile yeniden başlatılacak başka süreçler de verilebilir (Finder, Dock).
+pub fn refresh_icon_cache(also: &'static [&'static str]) {
+    std::thread::spawn(move || {
         let cache_dir = match std::process::Command::new("/usr/bin/getconf")
             .arg("DARWIN_USER_CACHE_DIR")
             .output()
@@ -150,11 +153,12 @@ pub fn refresh_icon_cache() {
         if let Err(e) = std::fs::remove_dir_all(&index)
             && e.kind() != std::io::ErrorKind::NotFound
         {
+            // Açılışta iki sıfırlama aynı anda çalışabilir; servisler yine de yeniden başlasın.
             log_error!("simge önbelleği silinemedi: {e}");
-            return;
         }
         if let Err(e) = std::process::Command::new("/usr/bin/killall")
             .args(["iconservicesagent", "NotificationCenter", "usernoted"])
+            .args(also)
             .output()
         {
             log_error!("simge önbelleği: killall çalışmadı: {e}");
