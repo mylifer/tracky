@@ -13,6 +13,7 @@ mod edits;
 mod effects;
 mod google;
 mod icons;
+mod retention;
 mod secrets;
 mod shortcut;
 mod sync;
@@ -647,6 +648,8 @@ pub fn run() {
             commands::save_goals,
             commands::export_csv,
             backup::backup_status,
+            retention::get_retention,
+            retention::set_retention,
             backup::backup_now,
             backup::open_backup_folder,
             backup::pick_backup,

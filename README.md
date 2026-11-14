@@ -137,6 +137,15 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 57. Güncellemeler bilgisayar başında kimse yokken (10 dk girdi yok; video, görüşme ve zaman çizelgesi
       aktarımı sürmüyor) kendiliğinden kurulur; Ayarlar → Hakkında'dan kapatılır. Kurulan sürümün notları
       (sürümün feat/fix commit'lerinden) ilk açılışta kenar çubuğunda "Yenilikler" kartında
+- [x] 58. Yapay zekâ modeli seçimi (Opus 5.5, Sonnet 5.5, Haiku 5.5); her isteğin yaklaşık tutarı yazma
+      bildiriminde, bu bilgisayarın bu ayki toplamı Ayarlar → Yapay zekâ'da (yanıttaki jeton sayısından)
+- [x] 59. Sunucu şeması denetimi: Ayarlar → Senkronizasyon'da Supabase'de çalıştırılmamış göçler, etkileri ve
+      tek tıkla kopyalanan SQL
+- [x] 60. Eski kayıtları sadeleştirme (Ayarlar → Veriler, varsayılan kapalı): 6 ay, 1 yıl ya da 2 yıldan eski
+      oturumların pencere başlığı ve adres yolu silinir; süre, uygulama, alan adı, kategori ve proje kalır.
+      Kuralla projeye düşen süre önce oturuma yazılır, rapor toplamları değişmez. Açılınca önce yedek alınır,
+      sonra günde bir kez çalışır
+- [x] 61. Açılış: uygulama çizelgesi, ay takvimi, çizelge görünümü ve karşılama ihtiyaç anında yüklenir
 
 ## Yapı
 
@@ -339,6 +348,22 @@ bir kod imzalama sertifikası üretir (`~/.kum-signing`). İki secret ekle:
 `MACOS_CERTIFICATE_PASSWORD` = `kum-codesign.password` dosyasının içeriği. CI ve sürüm iş
 akışları sertifikayı geçici bir anahtar zincirine aktarıp paketi onunla imzalar; secret yoksa
 ad-hoc imzaya döner. Klasörü yedekle: sertifika değişirse kullanıcılar izni bir kez daha verir.
+
+**Apple notarization (isteğe bağlı):** İlk açılıştaki "geliştirici doğrulanamadı" uyarısını kaldırır;
+yıllık ücretli [Apple Developer](https://developer.apple.com/programs/) üyeliği gerekir.
+
+1. Apple Developer hesabında (*Certificates, Identifiers & Profiles*) bir **Developer ID Application**
+   sertifikası oluştur, Anahtar Zinciri'nden özel anahtarıyla birlikte `.p12` olarak dışa aktar.
+2. `MACOS_CERTIFICATE` secret'ını bu `.p12`'nin base64'üyle (`base64 -i kum.p12 | pbcopy`),
+   `MACOS_CERTIFICATE_PASSWORD`'ı da dışa aktarırken verdiğin parolayla değiştir.
+3. Üç secret ekle: `APPLE_ID` (Apple hesabının e-postası), `APPLE_PASSWORD`
+   ([appleid.apple.com](https://appleid.apple.com) → *Uygulamaya özel parolalar*'dan alınan parola, hesap
+   parolası değil), `APPLE_TEAM_ID` (Developer hesabındaki 10 karakterlik ekip kimliği).
+
+Sonraki sürümden itibaren paket Apple'a onaylatılır ve onay pakete eklenir; iş akışı Gatekeeper'ın
+paketi kabul ettiğini de denetler. Üçü birden verilmezse iş akışı hata verir; hiçbiri yoksa eskisi gibi
+notarize etmeden devam eder. **İmza sertifikası değiştiği için Erişilebilirlik izni bir kez daha
+verilir** (Sistem Ayarları → Gizlilik ve Güvenlik → Erişilebilirlik'te Kum'u kaldırıp yeniden ekle).
 
 1. `app/src-tauri/tauri.conf.json`, `app/package.json` ve `app/src-tauri/Cargo.toml` içindeki sürümü artır.
 2. Commit'le ve push'la. Sürümün etiketi yoksa ve en son sürümden yeniyse `Sürüm` iş akışı

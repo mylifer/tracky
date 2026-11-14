@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Combine, X } from "lucide-react";
 import {
   api,
@@ -18,9 +18,7 @@ import { cn } from "../lib/utils";
 import { useLatest } from "../lib/latest";
 import { CAL_ZOOM_MIN, clampZoom, stepZoom, useZoomGestures } from "../lib/zoom";
 import { AppList, Legend } from "./Breakdown";
-import AppTimeline from "./AppTimeline";
 import { type ColorLens, DayCalendar, HOUR_PX, WeekCalendar } from "./Calendar";
-import MonthCalendar from "./MonthCalendar";
 import { blockLabel } from "./calendar/Block";
 import { sheetSpans } from "./calendar/TimesheetLines";
 import {
@@ -34,8 +32,13 @@ import {
 } from "./SessionEdit";
 import Summary from "./Summary";
 import Toolbar from "./Toolbar";
-import DaySheet from "./DaySheet";
 import { Button } from "./ui/button";
+
+// Açılışta çoğunlukla ekranda olmayan görünümler (uygulama çizelgesi, ay takvimi, çizelge
+// görünümü) ilk açıldıklarında yüklenir; gün takvimi ve hafta takvimi hemen.
+const AppTimeline = lazy(() => import("./AppTimeline"));
+const MonthCalendar = lazy(() => import("./MonthCalendar"));
+const DaySheet = lazy(() => import("./DaySheet"));
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 import {
@@ -649,7 +652,9 @@ export default function ReportView(p: Props) {
           </div>
         )}
         {report && sheetView && (
-          <DaySheet day={p.start} report={report} tags={tags} projects={projects} onChanged={load} />
+          <Suspense fallback={<div className="skeleton h-[420px] rounded-xl" />}>
+            <DaySheet day={p.start} report={report} tags={tags} projects={projects} onChanged={load} />
+          </Suspense>
         )}
         {report && !sheetView && (
           <div className="grid gap-4 @[880px]:grid-cols-[minmax(0,1fr)_292px]">
@@ -671,65 +676,67 @@ export default function ReportView(p: Props) {
                   )}
                   <div ref={setCalendarArea}>
                     <EditContext.Provider value={editCtx}>
-                      {p.mode === "month" ? (
-                        <MonthCalendar
-                          from={from}
-                          days={report.days}
-                          tags={tags}
-                          dailyHours={dailyHours}
-                          onSelectDay={p.onSelectDay}
-                        />
-                      ) : appsView ? (
-                        <AppTimeline
-                          from={from}
-                          days={days}
-                          windows={report.windows}
-                          tags={tags}
-                          onSelectDay={p.onSelectDay}
-                          zoom={appZoom}
-                          onZoom={(z) => setAppZoom(clampZoom(z))}
-                          onSelectSpan={selectRange}
-                        />
-                      ) : p.mode === "day" ? (
-                        <DayCalendar
-                          from={from}
-                          blocks={report.work.blocks}
-                          idle={report.idle}
-                          segments={report.timeline}
-                          windows={report.windows}
-                          tags={tags}
-                          meetings={meetings}
-                          // Çizelge görünümünde satırlar yanda; takvimde ayrıca sütun olmaz.
-                          entries={entries}
-                          onMeeting={(meeting, x, y) => setMeetingSel({ meeting, x, y })}
-                          onEmpty={openDraft}
-                          onRange={selectRange}
-                          preview={preview}
-                          hourPx={HOUR_PX * calZoom}
-                          lens={calLens}
-                          sheet={sheet}
-                          draft={draftMinutes}
-                          onDraft={setDraftMinutes}
-                        />
-                      ) : (
-                        <WeekCalendar
-                          from={from}
-                          blocks={report.work.blocks}
-                          idle={report.idle}
-                          dayTotals={report.days.map((d) => d.seconds)}
-                          windows={report.windows}
-                          tags={tags}
-                          onSelectDay={p.onSelectDay}
-                          onEmpty={openDraft}
-                          onRange={selectRange}
-                          preview={preview}
-                          hourPx={HOUR_PX * calZoom}
-                          lens={calLens}
-                          sheet={sheet}
-                          entries={entries}
-                          meetings={meetings}
-                        />
-                      )}
+                      <Suspense fallback={<div className="skeleton h-[420px] rounded-xl" />}>
+                        {p.mode === "month" ? (
+                          <MonthCalendar
+                            from={from}
+                            days={report.days}
+                            tags={tags}
+                            dailyHours={dailyHours}
+                            onSelectDay={p.onSelectDay}
+                          />
+                        ) : appsView ? (
+                          <AppTimeline
+                            from={from}
+                            days={days}
+                            windows={report.windows}
+                            tags={tags}
+                            onSelectDay={p.onSelectDay}
+                            zoom={appZoom}
+                            onZoom={(z) => setAppZoom(clampZoom(z))}
+                            onSelectSpan={selectRange}
+                          />
+                        ) : p.mode === "day" ? (
+                          <DayCalendar
+                            from={from}
+                            blocks={report.work.blocks}
+                            idle={report.idle}
+                            segments={report.timeline}
+                            windows={report.windows}
+                            tags={tags}
+                            meetings={meetings}
+                            // Çizelge görünümünde satırlar yanda; takvimde ayrıca sütun olmaz.
+                            entries={entries}
+                            onMeeting={(meeting, x, y) => setMeetingSel({ meeting, x, y })}
+                            onEmpty={openDraft}
+                            onRange={selectRange}
+                            preview={preview}
+                            hourPx={HOUR_PX * calZoom}
+                            lens={calLens}
+                            sheet={sheet}
+                            draft={draftMinutes}
+                            onDraft={setDraftMinutes}
+                          />
+                        ) : (
+                          <WeekCalendar
+                            from={from}
+                            blocks={report.work.blocks}
+                            idle={report.idle}
+                            dayTotals={report.days.map((d) => d.seconds)}
+                            windows={report.windows}
+                            tags={tags}
+                            onSelectDay={p.onSelectDay}
+                            onEmpty={openDraft}
+                            onRange={selectRange}
+                            preview={preview}
+                            hourPx={HOUR_PX * calZoom}
+                            lens={calLens}
+                            sheet={sheet}
+                            entries={entries}
+                            meetings={meetings}
+                          />
+                        )}
+                      </Suspense>
                     </EditContext.Provider>
                     {pickedBlocks.length > 0 && (
                       <div className="sticky bottom-3 z-30 mt-2 flex justify-center">

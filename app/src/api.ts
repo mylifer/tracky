@@ -427,6 +427,8 @@ export type SchemaReport = {
   /** Ayrı şemada kurulum (`kum_schema.sql`). */
   schema: string | null;
 };
+/** Eski kayıtların sadeleştirilmesi (bu bilgisayarın ayarı). */
+export type Retention = { months: number | null; lastRun: string | null; lastCount: number };
 export type AiModel = { id: string; label: string; hint: string };
 export type AiStatus = {
   enabled: boolean;
@@ -435,9 +437,14 @@ export type AiStatus = {
   /** Seçili modelin kimliği. */
   model: string;
   models: AiModel[];
+  usage: AiUsage;
 };
 /** Yapay zekânın bir satıra (sayfadaki anahtarıyla) yazdığı açıklama (henüz kaydedilmedi). */
 export type AiChange = { key: string; details: string };
+/** Bir günün yazımı; `costUsd`: isteğin yaklaşık tutarı (istek gitmediyse `null`). */
+export type AiWritten = { changes: AiChange[]; costUsd: number | null };
+/** Bu bilgisayarda bu ayki istekler (`month`: YYYY-AA). */
+export type AiUsage = { month: string; requests: number; costUsd: number };
 
 export type BackupFile = { name: string; path: string; at: string; bytes: number };
 export type BackupStatus = {
@@ -779,7 +786,7 @@ export const api = {
     invoke<AiStatus>("save_ai_settings", { enabled, apiKey: apiKey ?? null, model: model ?? null }),
   testAi: (apiKey?: string) => invoke<string>("test_ai_connection", { apiKey: apiKey ?? null }),
   aiWriteDetails: (timesheetId: string, date: string, rewrite: boolean) =>
-    invoke<AiChange[]>("ai_write_details", { timesheetId, date, rewrite }),
+    invoke<AiWritten>("ai_write_details", { timesheetId, date, rewrite }),
   /** Toplantı serisini projeye ata; `null` yoksayar. */
   assignMeeting: (uid: string, projectId: string | null) => invoke<void>("assign_meeting", { uid, projectId }),
   /** Toplantının bu tekrarına katılıp katılmadığı (`null`: cevabı geri al). */
@@ -848,6 +855,9 @@ export const api = {
   saveGoals: (goals: Goals) => invoke<void>("save_goals", { goals }),
   exportCsv: () => invoke<string>("export_csv"),
   backupStatus: () => invoke<BackupStatus>("backup_status"),
+  retention: () => invoke<Retention>("get_retention"),
+  /** `null`: kapatır. Açılınca ya da süre kısalınca önce yedek alınır, hemen sadeleştirilir. */
+  setRetention: (months: number | null) => invoke<Retention>("set_retention", { months }),
   backupNow: () => invoke<BackupFile>("backup_now"),
   openBackupFolder: () => invoke<void>("open_backup_folder"),
   /** Yedek dosyası seçtirir ve içeriğini döndürür; vazgeçilirse `null`. */

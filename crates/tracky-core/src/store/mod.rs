@@ -11,6 +11,7 @@ mod health;
 mod marks;
 mod plan;
 mod reports;
+mod retention;
 mod schema;
 mod sessions;
 mod taxonomy;

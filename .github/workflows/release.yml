@@ -123,6 +123,34 @@ jobs:
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: bash .github/scripts/macos-keychain.sh
 
+      # Apple notarization (isteğe bağlı): MACOS_CERTIFICATE bir "Developer ID Application"
+      # sertifikasıysa ve APPLE_ID, APPLE_PASSWORD (uygulamaya özel parola), APPLE_TEAM_ID
+      # secret'ları varsa tauri paketi Apple'a onaylatır ve onayı pakete ekler; ilk açılıştaki
+      # "geliştirici doğrulanamadı" uyarısı çıkmaz. Değişkenler yalnızca üçü de doluysa
+      # tanımlanır: tauri boş tanımlı değişkenle de notarize etmeye kalkar.
+      - name: macOS notarization bilgileri
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            {
+              echo "APPLE_ID=$APPLE_ID"
+              echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+              echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+              echo "KUM_NOTARIZE=1"
+            } >> "$GITHUB_ENV"
+            echo "Paket notarize edilecek."
+          elif [ -n "$APPLE_ID$APPLE_PASSWORD$APPLE_TEAM_ID" ]; then
+            echo "::error title=Notarization::APPLE_ID, APPLE_PASSWORD ve APPLE_TEAM_ID birlikte verilmeli."
+            exit 1
+          else
+            echo "Apple bilgileri yok: paket notarize edilmeyecek."
+          fi
+
       # Paketleri derler, güncelleme imzalarını üretir ve `latest.json` ile
       # birlikte taslak Release'e yükler. Taslak, iki işletim sisteminin paketi
       # de yüklendikten sonra `publish` işinde yayınlanır: yoksa önce biten işin

@@ -25,7 +25,6 @@ import { activeProjects } from "./lib/tags";
 import { applyPlatform, useTheme, type ThemePref } from "./lib/theme";
 import { useUpdate } from "./lib/useUpdate";
 import type { Mode, View } from "./lib/views";
-import Onboarding from "./Onboarding";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { HistoryDialog } from "./components/HistoryDialog";
 import { AssignRecentDialog } from "./components/AssignRecentDialog";
@@ -35,6 +34,8 @@ import Today from "./pages/Today";
 
 // Açılış görünümleri (Gün raporu, Bugün) hemen; öteki sayfalar ilk açıldıklarında yüklenir:
 // pencere tek büyük dosyayı ayrıştırmayı beklemeden açılsın.
+// Karşılama yalnızca ilk açılışta (ya da izin geri alınınca) gerekir.
+const Onboarding = lazy(() => import("./Onboarding"));
 const TagsPage = lazy(() => import("./pages/TagsPage"));
 const ClientsPage = lazy(() => import("./pages/ClientsPage"));
 const ProjectsPage = lazy(() => import("./pages/ProjectsPage"));
@@ -99,7 +100,9 @@ export default function App() {
   if (!status.onboarded || !status.accessibility)
     return (
       <>
-        <Onboarding status={status} onChange={refresh} />
+        <Suspense fallback={<Splash />}>
+          <Onboarding status={status} onChange={refresh} />
+        </Suspense>
         {/* Karşılamadaki hatalar da bildirimle görünsün. */}
         <Toaster />
       </>
