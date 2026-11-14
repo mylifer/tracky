@@ -352,13 +352,15 @@ ad-hoc imzaya döner. Klasörü yedekle: sertifika değişirse kullanıcılar iz
 **Apple notarization (isteğe bağlı):** İlk açılıştaki "geliştirici doğrulanamadı" uyarısını kaldırır;
 yıllık ücretli [Apple Developer](https://developer.apple.com/programs/) üyeliği gerekir.
 
-1. Apple Developer hesabında (*Certificates, Identifiers & Profiles*) bir **Developer ID Application**
-   sertifikası oluştur, Anahtar Zinciri'nden özel anahtarıyla birlikte `.p12` olarak dışa aktar.
-2. `MACOS_CERTIFICATE` secret'ını bu `.p12`'nin base64'üyle (`base64 -i kum.p12 | pbcopy`),
-   `MACOS_CERTIFICATE_PASSWORD`'ı da dışa aktarırken verdiğin parolayla değiştir.
-3. Üç secret ekle: `APPLE_ID` (Apple hesabının e-postası), `APPLE_PASSWORD`
-   ([appleid.apple.com](https://appleid.apple.com) → *Uygulamaya özel parolalar*'dan alınan parola, hesap
-   parolası değil), `APPLE_TEAM_ID` (Developer hesabındaki 10 karakterlik ekip kimliği).
+1. Xcode → *Settings → Accounts* → hesap → *Manage Certificates* → **+** → **Developer ID Application**.
+2. Anahtar Zinciri Erişimi'nde "Developer ID Application: …" satırına sağ tık → *Dışa Aktar* → `.p12`
+   (bir parola ver).
+3. [account.apple.com](https://account.apple.com) → *Giriş ve Güvenlik* → *Uygulamaya Özel Parolalar*'dan
+   bir parola al (hesap parolası çalışmaz).
+4. `scripts/macos-notarize-setup.sh ~/Desktop/kum.p12` çalıştır (giriş yapılmış `gh` gerekir). Betik
+   sertifikayı denetler, Team ID'yi sertifikadan okur, Apple bilgilerini `notarytool` ile doğrular ve
+   `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
+   secret'larını GitHub'a yazar.
 
 Sonraki sürümden itibaren paket Apple'a onaylatılır ve onay pakete eklenir; iş akışı Gatekeeper'ın
 paketi kabul ettiğini de denetler. Üçü birden verilmezse iş akışı hata verir; hiçbiri yoksa eskisi gibi
