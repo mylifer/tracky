@@ -409,6 +409,7 @@ const handlers: Record<string, Handler> = {
     models: [{ id: "claude-opus-5-5", label: "Claude Opus 5.5", hint: "" }],
     usage: { month: "2026-11", requests: 0, costUsd: 0 },
   }),
+  get_retention: () => ({ months: null, lastRun: null, lastCount: 0 }),
   backup_status: () => ({ dir: "/tmp/yedek", last: null, damage: null, files: [] }),
   client_report: (a) => clientReport(a.month as string),
   data_health: () =>

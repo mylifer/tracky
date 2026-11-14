@@ -348,6 +348,11 @@ pub fn start(app: &tauri::App) -> std::io::Result<()> {
                 {
                     log_error!("yedek alınamadı: {e}");
                 }
+                // Eski kayıtların sadeleştirilmesi de (açıksa) günde bir buradan; bozuk
+                // veritabanında yapılmaz.
+                if sound {
+                    crate::retention::run_due(&app);
+                }
                 std::thread::sleep(CHECK_EVERY);
             }
         })?;

@@ -427,6 +427,8 @@ export type SchemaReport = {
   /** Ayrı şemada kurulum (`kum_schema.sql`). */
   schema: string | null;
 };
+/** Eski kayıtların sadeleştirilmesi (bu bilgisayarın ayarı). */
+export type Retention = { months: number | null; lastRun: string | null; lastCount: number };
 export type AiModel = { id: string; label: string; hint: string };
 export type AiStatus = {
   enabled: boolean;
@@ -853,6 +855,9 @@ export const api = {
   saveGoals: (goals: Goals) => invoke<void>("save_goals", { goals }),
   exportCsv: () => invoke<string>("export_csv"),
   backupStatus: () => invoke<BackupStatus>("backup_status"),
+  retention: () => invoke<Retention>("get_retention"),
+  /** `null`: kapatır. Açılınca ya da süre kısalınca önce yedek alınır, hemen sadeleştirilir. */
+  setRetention: (months: number | null) => invoke<Retention>("set_retention", { months }),
   backupNow: () => invoke<BackupFile>("backup_now"),
   openBackupFolder: () => invoke<void>("open_backup_folder"),
   /** Yedek dosyası seçtirir ve içeriğini döndürür; vazgeçilirse `null`. */
