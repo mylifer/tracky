@@ -165,19 +165,10 @@ export default function Timesheet({
   useEffect(() => {
     if (closing) closeRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [closing]);
-  // Yapay zekâyla yazma açık ve anahtar girilmiş (Ayarlar → Yapay zekâ).
-  const [ai, setAi] = useState(false);
   // Hafta ve ay panosunda satırları açılan gün (dönemin dışındaysa varsayılan gün).
   const [picked, setPicked] = useState<string | null>(null);
   // Seçili satırlar (anahtarlarıyla): birleştir, gönder, sil.
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  useEffect(() => {
-    api.aiSettings().then(
-      (s) => setAi(s.enabled && s.hasKey),
-      () => {},
-    );
-  }, []);
-
   // Çizelgenin dosyasındaki satırlar: hangi çizelge ve ay aralığının olduğu, okunuyor mu,
   // okunamadıysa neden.
   const [file, setFile] = useState<{ of: string; data: SheetRows } | null>(null);
@@ -518,7 +509,6 @@ export default function Timesheet({
       reloadFile={() => void loadFile(true)}
       file={fileState}
       outside={outside.filter((r) => r.date === d.date)}
-      ai={ai}
       selected={selected}
       onToggle={toggle}
       alwaysShow={alwaysShow}
@@ -923,7 +913,6 @@ export default function Timesheet({
                 sheet={sheet}
                 projects={projects}
                 ready={fresh && !exporting}
-                ai={ai}
                 pending={pending}
                 onClose={() => setClosing(false)}
                 onSend={() => send(pending, () => setClosing(false))}

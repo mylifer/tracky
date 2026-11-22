@@ -417,7 +417,6 @@ export type TimesheetConfig = {
   dayHours: number;
 };
 
-/** Yapay zekâyla açıklama yazma ayarı; anahtarın yalnızca son dört karakteri gelir. */
 export type MigrationInfo = { file: string; effect: string };
 export type SchemaReport = {
   missing: MigrationInfo[];
@@ -429,22 +428,6 @@ export type SchemaReport = {
 };
 /** Eski kayıtların sadeleştirilmesi (bu bilgisayarın ayarı). */
 export type Retention = { months: number | null; lastRun: string | null; lastCount: number };
-export type AiModel = { id: string; label: string; hint: string };
-export type AiStatus = {
-  enabled: boolean;
-  hasKey: boolean;
-  keyHint: string | null;
-  /** Seçili modelin kimliği. */
-  model: string;
-  models: AiModel[];
-  usage: AiUsage;
-};
-/** Yapay zekânın bir satıra (sayfadaki anahtarıyla) yazdığı açıklama (henüz kaydedilmedi). */
-export type AiChange = { key: string; details: string };
-/** Bir günün yazımı; `costUsd`: isteğin yaklaşık tutarı (istek gitmediyse `null`). */
-export type AiWritten = { changes: AiChange[]; costUsd: number | null };
-/** Bu bilgisayarda bu ayki istekler (`month`: YYYY-AA). */
-export type AiUsage = { month: string; requests: number; costUsd: number };
 
 export type BackupFile = { name: string; path: string; at: string; bytes: number };
 export type BackupStatus = {
@@ -780,13 +763,6 @@ export const api = {
   /** Çizelgenin tablosunu (Sheets bağlantısı ya da Excel dosyası) açar. */
   openTimesheet: (timesheetId: string) => invoke<void>("open_timesheet", { timesheetId }),
   removeTimesheet: (timesheetId: string) => invoke<TimesheetConfig>("remove_timesheet", { timesheetId }),
-  aiSettings: () => invoke<AiStatus>("get_ai_settings"),
-  /** `apiKey` verilmezse kayıtlı anahtar korunur; boş dize siler. `model` verilmezse değişmez. */
-  saveAiSettings: (enabled: boolean, apiKey?: string, model?: string) =>
-    invoke<AiStatus>("save_ai_settings", { enabled, apiKey: apiKey ?? null, model: model ?? null }),
-  testAi: (apiKey?: string) => invoke<string>("test_ai_connection", { apiKey: apiKey ?? null }),
-  aiWriteDetails: (timesheetId: string, date: string, rewrite: boolean) =>
-    invoke<AiWritten>("ai_write_details", { timesheetId, date, rewrite }),
   /** Toplantı serisini projeye ata; `null` yoksayar. */
   assignMeeting: (uid: string, projectId: string | null) => invoke<void>("assign_meeting", { uid, projectId }),
   /** Toplantının bu tekrarına katılıp katılmadığı (`null`: cevabı geri al). */

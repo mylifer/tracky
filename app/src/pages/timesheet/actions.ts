@@ -1,5 +1,4 @@
 import { api, type EntryView } from "../../api";
-import { formatUsd } from "../../lib/money";
 import { addDays, isoDate, parseIsoDate } from "../../lib/dates";
 import { friendlyError, notifyChanged, toast } from "../../lib/feedback";
 import { copyDetails } from "../../lib/timesheet";
@@ -52,49 +51,6 @@ export async function copyPreviousDetails(sheetId: string, date: string) {
     return;
   }
   await writeDetails(changes, (n) => `${n} satıra önceki günlerden açıklama yazıldı`);
-}
-
-/**
- * Günlerin açıklamalarını yapay zekâyla (Claude) yazar: gün başına bir istek, sırayla. Varsayılan
- * olarak yalnızca boş ya da otomatik gelen (başlıklardan, hazır açıklamadan) açıklamalar yazılır,
- * elle yazılana dokunulmaz; `rewrite` ise günün aktarılmamış bütün satırları. Yazılanlar hemen
- * kaydedilir, bildirimden hepsi birden geri alınır. Bir gün hata verirse sonraki günlere
- * geçilmez; o ana kadar yazılanlar kalır.
- */
-export async function aiWriteDays(
-  sheetId: string,
-  dates: string[],
-  rewrite: boolean,
-  onProgress?: (done: number) => void,
-) {
-  const saved: Saved[] = [];
-  let failure: unknown = null;
-  let cost = 0;
-  for (const [i, date] of dates.entries()) {
-    try {
-      const [day] = await api.timesheetDays(sheetId, date, 1);
-      if (!day.entries.some((e) => !e.exported)) continue;
-      const written = await api.aiWriteDetails(sheetId, date, rewrite);
-      cost += written.costUsd ?? 0;
-      for (const w of written.changes) {
-        const entry = day.entries.find((e) => e.key === w.key);
-        if (!entry || entry.details === w.details) continue;
-        saved.push({ before: entry, id: await api.saveTimesheetEntry(entry.id, { ...entry, details: w.details }) });
-      }
-    } catch (e) {
-      failure = e;
-      break;
-    } finally {
-      onProgress?.(i + 1);
-    }
-  }
-  if (saved.length > 0)
-    toast(`${saved.length} satıra yapay zekâyla açıklama yazıldı${cost > 0 ? ` · ≈ ${formatUsd(cost)}` : ""}`, {
-      tone: "success",
-      action: { label: "Geri al", run: () => undoSaves(saved) },
-    });
-  else if (!failure) toast("Yazılacak açıklama yok: boş ya da otomatik açıklamalı, aktarılmamış satır kalmadı");
-  if (failure) throw failure;
 }
 
 /** Satırları gizler (siler); bildirimden geri alınır. */

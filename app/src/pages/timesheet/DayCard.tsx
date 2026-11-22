@@ -1,6 +1,6 @@
 import { planApplies } from "../../lib/plan";
 import { useMemo, useState } from "react";
-import { CalendarDays, Copy, Loader2, RotateCcw, Sparkles, WandSparkles } from "lucide-react";
+import { CalendarDays, Copy, RotateCcw } from "lucide-react";
 import {
   api,
   formatDuration,
@@ -36,7 +36,7 @@ import {
   type Run,
   useBusy,
 } from "./shared";
-import { copyPreviousDetails, aiWriteDays } from "./actions";
+import { copyPreviousDetails } from "./actions";
 import { type PatchFile, type FileState, FileRowItem } from "./fileRows";
 import { EntryRow, SelectBox } from "./EntryRow";
 
@@ -53,7 +53,6 @@ export function DayCard({
   reloadFile,
   file,
   outside,
-  ai,
   selected,
   onToggle,
   alwaysShow,
@@ -75,8 +74,6 @@ export function DayCard({
   file: FileState;
   /** Günün dosyada Kum dışında girilmiş satırları. */
   outside: SheetRowView[];
-  /** Yapay zekâyla yazma açık. */
-  ai: boolean;
   selected: Set<string>;
   onToggle: (keys: string[], on: boolean) => void;
   alwaysShow: boolean;
@@ -84,19 +81,9 @@ export function DayCard({
   closed: boolean;
 }) {
   const [confirmReset, setConfirmReset] = useState(false);
-  // Yapay zekâ yazıyor (düğme kilitli, dönen simge).
-  const [writing, setWriting] = useState(false);
   // Satır ekleme ve önceki günden kopyalama sürüyor.
   const [adding, guardAdd] = useBusy();
   const [copying, guardCopy] = useBusy();
-  const aiWrite = async (rewrite: boolean) => {
-    setWriting(true);
-    try {
-      await run(() => aiWriteDays(sheet.id, [day.date], rewrite))();
-    } finally {
-      setWriting(false);
-    }
-  };
   // Satırın birim seçeneği: çizelgenin projelerinin birimleri ve dosyadaki birimler.
   const divisions = useMemo(() => {
     const list: string[] = [];
@@ -236,29 +223,6 @@ export function DayCard({
               onClick={guardCopy(run(() => copyPreviousDetails(sheet.id, day.date)))}
             >
               <Copy /> Önceki günden kopyala
-            </Button>
-          )}
-          {ai && open.length > 0 && (
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={writing}
-              title="Boş ya da otomatik gelen açıklamaları Claude yazar, elle yazdıklarına dokunulmaz. Bildirimden geri alınır."
-              onClick={() => aiWrite(false)}
-            >
-              {writing ? <Loader2 className="animate-spin" /> : <Sparkles />} Yapay zekâyla yaz
-            </Button>
-          )}
-          {ai && open.some((e) => e.details.trim()) && (
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              disabled={writing}
-              aria-label="Hepsini yapay zekâyla yeniden yaz"
-              title="Hepsini yeniden yaz: elle yazılanlar dahil aktarılmamış bütün açıklamaları Claude yazar. Bildirimden geri alınır."
-              onClick={() => aiWrite(true)}
-            >
-              <WandSparkles />
             </Button>
           )}
           {touched &&

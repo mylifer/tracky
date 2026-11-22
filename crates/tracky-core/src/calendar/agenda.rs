@@ -1,6 +1,6 @@
 //! Toplantı davetinin metninden gündem: Outlook'un yayımladığı DESCRIPTION (düz metin ya da
 //! HTML) okunur; Teams/Zoom katılım bloğu, iletilen davetin üst bilgisi ve bağlantılar atılır.
-//! Kalan, yapay zekâya açıklama yazarken kaynak olur ve toplantının ayrıntısında görünür.
+//! Kalan, toplantının ayrıntısında görünür.
 
 /// Gündemin en uzun hali (karakter); uzun davet metni istemi ve arayüzü şişirmesin.
 pub const MAX_AGENDA_CHARS: usize = 600;

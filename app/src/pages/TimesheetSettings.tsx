@@ -10,7 +10,7 @@ import { friendlyError } from "../lib/feedback";
 import { TIMESHEET_SECTION } from "./settingsSections";
 import { SheetConnect } from "./ConnectionSettings";
 
-export { AI_SECTION, CONNECTIONS_SECTION, TIMESHEET_SECTION } from "./settingsSections";
+export { CONNECTIONS_SECTION, TIMESHEET_SECTION } from "./settingsSections";
 
 /** Dosya yolunun son parçası. */
 export function fileName(path: string) {

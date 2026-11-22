@@ -1,4 +1,4 @@
-//! Gizli bilgiler (oturum jetonları, Google bağlantısı, yapay zekâ anahtarı) veritabanının
+//! Gizli bilgiler (oturum jetonları, Google bağlantısı) veritabanının
 //! dışında durur: Windows'ta Kimlik Bilgisi Yöneticisi'nde, macOS'ta veri klasöründeki yalnızca
 //! kullanıcının okuyabildiği `secrets.json` dosyasında. Veritabanında (ve yedeklerde) yalnızca
 //! "anahtar deposunda" işareti kalır.
@@ -59,8 +59,9 @@ mod backend {
     const FILE: &str = "secrets.json";
     /// Eski sürümlerin Anahtar Zinciri hizmet adı.
     const LEGACY_SERVICE: &str = "com.kum.app";
-    /// Eski sürümlerin Anahtar Zinciri'ne yazdığı adlar.
-    const LEGACY_NAMES: &[&str] = &["sync_auth", "google_oauth", "ai_api_key"];
+    /// Eski sürümlerin Anahtar Zinciri'ne yazdığı adlar. Yapay zekâ anahtarı (`ai_api_key`)
+    /// taşınmaz: özellik kaldırıldı, dosyada duran eski kopyayı da açılış siler (bkz. `lib.rs`).
+    const LEGACY_NAMES: &[&str] = &["sync_auth", "google_oauth"];
 
     struct Secrets {
         path: PathBuf,

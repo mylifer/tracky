@@ -73,8 +73,7 @@ struct Table {
 }
 
 /// Cihazlar arasında taşınan ayarlar (settings tablosunun anahtarları). Yeni Mac'te giriş
-/// yapınca zaman çizelgeleri, takvim, gizlilik, hedefler, görünüm ve yapay zekâ ayarları da
-/// gelir. Cihaza özgü olanlar (oturum jetonları, imleçler, otomatik başlatma, izin
+/// yapınca zaman çizelgeleri, takvim, gizlilik, hedefler ve görünüm ayarları da gelir. Cihaza özgü olanlar (oturum jetonları, imleçler, otomatik başlatma, izin
 /// kurulumu, duraklatma süresi, bildirim ve yedek işaretleri) eşitlenmez.
 pub const SYNCED_SETTINGS: &[&str] = &[
     "privacy",
@@ -84,6 +83,10 @@ pub const SYNCED_SETTINGS: &[&str] = &[
     "timesheet_details",
     "meeting_assignments",
     "calendar_url",
+    // Yapay zekâyla yazma kaldırıldı ve ayarı şema göçüyle silindi. Anahtar listede kalır:
+    // liste eşitleme şekline (`table_fingerprints`, `legacy_fingerprint`) giriyor, çıkarılırsa
+    // güncellenen her cihaz ayarları (eski özet kayıtlıysa bütün tabloları) baştan çeker.
+    // Kimse okumadığı için gelen satır zararsızdır.
     "ai_details",
     "dismissed_suggestions",
     "dismissed_rule_suggestions",
@@ -100,8 +103,9 @@ const AFTER_LEGACY_SETTINGS: &[&str] = &["meeting_attendance", "closed_days"];
 const AFTER_LEGACY_COLUMNS: &[&str] = &["passive"];
 
 /// Eşitlenen ayarlarda yalnızca bu cihazda kalan alanlar: sunucuya gönderilmez, gelen
-/// sürümde yerel değer korunur. Bir Mac'te duraklatmak diğerini duraklatmaz; API anahtarı
-/// gizlidir ve sunucuda (sürüm derlemelerinde ortak projede) açık metin durmamalı.
+/// sürümde yerel değer korunur. Bir Mac'te duraklatmak diğerini duraklatmaz. Kaldırılan yapay
+/// zekâ ayarının anahtarı, eşitleme şekli değişmesin diye burada da kalır
+/// (bkz. [`SYNCED_SETTINGS`]); eski sürümün anahtarı sunucuya hiç gitmemiş olur.
 const LOCAL_FIELDS: &[(&str, &[&str])] = &[("privacy", &["paused"]), ("ai_details", &["apiKey"])];
 
 fn local_fields(key: &str) -> &'static [&'static str] {

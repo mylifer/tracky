@@ -104,7 +104,6 @@ const EDIT_COMMANDS: &[&str] = &[
     "restore_hidden_entries",
     "restore_ignored_meetings",
     "restore_sheet_row",
-    "save_ai_settings",
     "save_client",
     "save_goals",
     "save_plan",

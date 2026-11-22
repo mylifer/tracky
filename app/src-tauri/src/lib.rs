@@ -2,7 +2,6 @@
 
 #[macro_use]
 mod applog;
-mod ai;
 mod backup;
 mod calendar;
 mod client_report;
@@ -378,6 +377,12 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     applog::init(dir.clone());
     applog::install_panic_hook();
     secrets::init(&dir);
+    // Yapay zekâyla yazma kaldırıldı: eski sürümün API anahtarı depoda kalmasın (ayarları
+    // şema göçü siler, bkz. store::schema).
+    if secrets::get_value("ai_api_key").is_some() {
+        secrets::set_value("ai_api_key", "");
+        log_info!("yapay zekâ API anahtarı silindi (özellik kaldırıldı)");
+    }
     log_info!(
         "Kum {} açıldı ({} {})",
         env!("CARGO_PKG_VERSION"),
@@ -620,10 +625,6 @@ pub fn run() {
             google::google_connect,
             google::google_cancel,
             google::google_disconnect,
-            ai::get_ai_settings,
-            ai::save_ai_settings,
-            ai::test_ai_connection,
-            ai::ai_write_details,
             calendar::calendar_status,
             calendar::set_calendar_url,
             calendar::refresh_calendar,

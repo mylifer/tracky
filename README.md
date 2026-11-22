@@ -92,10 +92,8 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       toplam 15 dk ve üstü; uyan sürenin en az %80'i o projede, başka projeden en çok %10 alır, aynı kural yoksa
       ve yoksayılmadıysa. Gözden geçir'in üstünde gerekçe ve önizlemeyle "Kural ekle" / "Önerme"; elle atamadan
       sonra bildirimde "Kural yap" (ikisi de geri alınabilir)
-- [x] 47. Yapay zekâyla yaz: zaman çizelgesi açıklamalarını Claude yazar (isteğe bağlı, kendi Anthropic API
-      anahtarınla). Gün kartında "Yapay zekâyla yaz" ve "Hepsini yeniden yaz", "Haftayı kapat"ta dönemin boş
-      açıklamaları; gün başına bir istek, satırın pencere başlıkları, iş anahtarları ve geçmiş açıklamaların
-      üslubuyla. Elle yazılan açıklamaya dokunulmaz; sonuç hemen yazılır, bildirimden geri alınır
+- [ ] 47. ~~Yapay zekâyla yaz~~: kaldırıldı (ücretli API kullanımı gerektiriyordu). Açıklamalar elle,
+      "Önceki günden kopyala", hazır açıklamalar ve pencere başlıklarından gelen önerilerle yazılır
 - [x] 48. Toplantı → proje önerileri: projesi belli olmayan toplantıya, daha önce atanan serilerden öğrenilen
       katılımcı alan adı (kendi ve gmail.com gibi genel alan adları hariç), düzenleyen ve konu sözcükleriyle ya da
       konuda geçen proje/müşteri adı ve kuralın bağladığı iş anahtarıyla proje önerilir ("→ Portal", gerekçesi
@@ -137,8 +135,7 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
 - [x] 57. Güncellemeler bilgisayar başında kimse yokken (10 dk girdi yok; video, görüşme ve zaman çizelgesi
       aktarımı sürmüyor) kendiliğinden kurulur; Ayarlar → Hakkında'dan kapatılır. Kurulan sürümün notları
       (sürümün feat/fix commit'lerinden) ilk açılışta kenar çubuğunda "Yenilikler" kartında
-- [x] 58. Yapay zekâ modeli seçimi (Opus 5.5, Sonnet 5.5, Haiku 5.5); her isteğin yaklaşık tutarı yazma
-      bildiriminde, bu bilgisayarın bu ayki toplamı Ayarlar → Yapay zekâ'da (yanıttaki jeton sayısından)
+- [ ] 58. ~~Yapay zekâ modeli seçimi ve maliyet sayacı~~: 47 ile birlikte kaldırıldı
 - [x] 59. Sunucu şeması denetimi: Ayarlar → Senkronizasyon'da Supabase'de çalıştırılmamış göçler, etkileri ve
       tek tıkla kopyalanan SQL
 - [x] 60. Eski kayıtları sadeleştirme (Ayarlar → Veriler, varsayılan kapalı): 6 ay, 1 yıl ya da 2 yıldan eski
@@ -164,7 +161,6 @@ crates/tracky-core/       Platformdan bağımsız çekirdek
   classify.rs             Kategoriler, projeler, kurallar ve varsayılan kategoriler
   calendar.rs             iCalendar (.ics) ayrıştırma: tekrar kuralları, VTIMEZONE, istisnalar
   timesheet.rs            Oturum ve toplantılardan günlük iş kaydı önerileri
-  ai.rs                   Yapay zekâyla açıklama: satırın başlıkları/iş anahtarları, istem, yanıt temizliği
   budget.rs               Sözleşme bütçeleri: adam-gün, harcanan süre, %80/%100 bildirimleri
   report.rs               Gün/hafta raporu (kategori, proje, uygulama, gün, zaman çizelgesi)
   client_report.rs        Aylık müşteri raporu: proje × gün saat tablosu
@@ -260,26 +256,6 @@ erişim "Herkes") ile dağıt ve `…/exec` adresini Kum'a gir. Betik yalnızca 
 istekleri kabul eder, kayıtları ilk sayfaya Excel aktarımıyla aynı kurallarla ekler ve aynı kaydı
 iki kez yazmaz. Betik `crates/tracky-xlsx/src/apps_script.gs` dosyasındadır.
 
-## Zaman çizelgesi: yapay zekâyla açıklama
-
-İsteğe bağlıdır ve varsayılan olarak kapalıdır. [console.anthropic.com](https://console.anthropic.com)
-→ *API Keys*'ten bir anahtar oluştur, Kum'da *Ayarlar → Yapay zekâ* bölümünde aç, anahtarı gir ve
-**Bağlantıyı dene** ile dene. Sonra zaman çizelgesinde gün kartındaki **Yapay zekâyla yaz** ya da
-"Haftayı kapat" panelindeki **Boş açıklamaları yapay zekâyla yaz** düğmesine bas.
-
-- **Ne yazılır:** aktarılmamış satırlardan açıklaması boş ya da otomatik (başlıklardan, hazır açıklamadan)
-  gelenler. Elle yazılan açıklamaya yalnızca gün kartındaki **Hepsini yeniden yaz** dokunur. Sonuç hemen
-  kaydedilir; bildirimdeki **Geri al** satırları önceki haline döndürür.
-- **Ne gönderilir:** yalnızca düğmeye basınca ve yalnızca `api.anthropic.com`'a; yazılacak satırların proje
-  ve müşteri adı, türü, saati ve başlangıcı; o satırın süresindeki en çok 15 pencere başlığı (süreleriyle),
-  iş anahtarları ve site adları ya da toplantı konusu; üslup örneği olarak o projeye daha önce yazdığın en
-  çok 10 açıklama (projede hiç yoksa diğer projelerden 5). Anahtar yalnızca bu bilgisayarda, işletim
-  sisteminin anahtar deposunda durur; eşitlenmez ve günlüğe yazılmaz.
-- **Maliyet:** gün başına bir istek (düşük çaba), ücreti senin API hesabından düşer; hafta için en çok
-  beş-yedi istek. Model *Ayarlar → Yapay zekâ*'dan seçilir (seçim bilgisayarlar arasında eşitlenir):
-  Claude Opus 5.5 (varsayılan, en iyi sonuç), Claude Sonnet 5.5 (yarı fiyatına) ya da Claude Haiku 5.5
-  (en ucuz). Açıklama yazmak kısa bir iş olduğu için daha ucuz modeller çoğu zaman yeter.
-
 ## Cihazlar arası senkronizasyon (Supabase)
 
 Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birleşik rapor için:
@@ -301,7 +277,7 @@ Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birl
    | `0005_clients.sql` | Müşteriler ve projelerin müşterisi. Kum 0.6'dan itibaren zorunlu. |
    | `0006_domain_rules.sql` | Web sitesi kuralları; yoksa web sitesi kuralı eklenince `rules_field_check` hatası. |
    | `0007_archive_budget.sql` | Proje arşivi ve sözleşme bütçeleri. |
-   | `0008_settings.sql` | Ayarlar (zaman çizelgeleri, Google Sheets, takvim, gizlilik, hedefler, görünüm, yapay zekâ modeli). |
+   | `0008_settings.sql` | Ayarlar (zaman çizelgeleri, Google Sheets, takvim, gizlilik, hedefler, görünüm). |
    | `0009_harden_grants.sql` | Tablo yetkilerini daraltır (anon rolünün yetkisi kalmaz); gerekmez ama önerilir. |
    | `0010_timesheet_entries.sql` | Zaman çizelgesi satırları (kaydedilen, gönderilen, silinen). |
    | `0011_timesheet_state.sql` | Satırların durum zamanı ve danışman adı. |
@@ -312,8 +288,6 @@ Veriler varsayılan olarak yalnızca bilgisayarda kalır. Mac ve Windows'ta birl
    | `0016_timesheet_marks.sql` | Zaman çizelgesine gönderilen bloklar öteki bilgisayarda da görünür. |
    | `0017_sync_nudges.sql` | Anında eşitleme (Realtime); yoksa değişiklikler en geç 5 dakikada gider. |
    | `0018_plan_blocks.sql` | Gün planının onaylı blokları; yoksa her bilgisayar kendi planını görür. |
-
-   Yapay zekâ API anahtarı hiçbir dosyayla eşitlenmez; her bilgisayarda ayrıca girilir.
 3. **Project Settings → API** sayfasından **Project URL** ve **anon / publishable** anahtarını kopyala.
 4. Kum'da **Ayarlar → Senkronizasyon** bölümüne bu ikisini gir, sonra e-posta ve şifreyle
    **Hesap oluştur** (ya da **Giriş yap**). E-posta doğrulaması açıksa önce gelen bağlantıya tıkla.

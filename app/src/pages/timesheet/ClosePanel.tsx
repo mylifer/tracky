@@ -1,15 +1,5 @@
 import { useState } from "react";
-import {
-  ChevronRight,
-  CircleCheck,
-  ClipboardCheck,
-  FileSpreadsheet,
-  Loader2,
-  Sheet,
-  Sparkles,
-  TriangleAlert,
-  X,
-} from "lucide-react";
+import { ChevronRight, CircleCheck, ClipboardCheck, FileSpreadsheet, Sheet, TriangleAlert, X } from "lucide-react";
 import {
   formatDuration,
   type EntryView,
@@ -20,11 +10,11 @@ import {
 } from "../../api";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import { isoDate, parseIsoDate, today } from "../../lib/dates";
+import { parseIsoDate } from "../../lib/dates";
 import { cn } from "../../lib/utils";
 import { type CloseReport, type Reconcile } from "../../lib/timesheet";
 import { dayFmt, num, WARN_BADGE, FIX_LINK, signedHours, type Run, useBusy } from "./shared";
-import { copyPreviousDetails, aiWriteDays, refreshRows } from "./actions";
+import { copyPreviousDetails, refreshRows } from "./actions";
 import { MeetingRows } from "./DayCard";
 
 /**
@@ -42,7 +32,6 @@ export function ClosePanel({
   sheet,
   projects,
   ready,
-  ai,
   pending,
   onClose,
   onSend,
@@ -61,8 +50,6 @@ export function ClosePanel({
   projects: Tag[];
   /** Ekrandaki günler güncel ve gönderim sürmüyor. */
   ready: boolean;
-  /** Yapay zekâyla yazma açık. */
-  ai: boolean;
   /** Dönemin gönderilmemiş satırları. */
   pending: EntryView[];
   onClose: () => void;
@@ -87,18 +74,6 @@ export function ClosePanel({
   const sendLabel = sheet.sheetUrl ? "Sheets'e gönder" : "Excel'e aktar";
   const isBlocked = report.blocking > 0;
   const [copying, guardCopy] = useBusy();
-  // Yapay zekâyla yazılacak günler: bugüne kadar, aktarılmamış satırı olanlar. Yazarken ilerleme.
-  const todayIso = isoDate(today());
-  const aiDays = days.filter((d) => d.date <= todayIso && d.entries.some((e) => !e.exported)).map((d) => d.date);
-  const [aiDone, setAiDone] = useState<number | null>(null);
-  const writeAll = async () => {
-    setAiDone(0);
-    try {
-      await run(() => aiWriteDays(sheet.id, aiDays, false, setAiDone))();
-    } finally {
-      setAiDone(null);
-    }
-  };
   const staleIds = report.stale.flatMap((s) => s.rows.map((e) => e.id).filter((id): id is string => !!id));
 
   const unassignedTotal = report.unassigned.reduce((s, u) => s + u.seconds, 0);
@@ -196,15 +171,6 @@ export function ClosePanel({
                     >
                       önceki günden kopyala
                     </button>
-                    {ai && (
-                      <button
-                        className={FIX_LINK}
-                        disabled={aiDone !== null}
-                        onClick={run(() => aiWriteDays(sheet.id, [d.date], false))}
-                      >
-                        yapay zekâyla yaz
-                      </button>
-                    )}
                     {show(d.date, true)}
                   </span>
                 </li>
@@ -299,18 +265,6 @@ export function ClosePanel({
               ? "Uyarılar göndermeyi engellemez."
               : ""}
         </p>
-        {ai && aiDays.length > 0 && (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!ready || aiDone !== null}
-            title="Boş ya da otomatik gelen açıklamaları Claude yazar (gün başına bir istek); elle yazdıklarına dokunulmaz."
-            onClick={writeAll}
-          >
-            {aiDone !== null ? <Loader2 className="animate-spin" /> : <Sparkles />}
-            {aiDone !== null ? `Yazılıyor… ${aiDone}/${aiDays.length} gün` : "Boş açıklamaları yapay zekâyla yaz"}
-          </Button>
-        )}
         <Button
           size="sm"
           disabled={!ready || isBlocked || pending.length === 0}

@@ -927,34 +927,6 @@ fn pausing_stays_on_its_own_device() {
 }
 
 #[test]
-fn the_ai_key_never_leaves_its_device() {
-    let a = Mutex::new(Store::open_in_memory().unwrap());
-    let b = Mutex::new(Store::open_in_memory().unwrap());
-    let mut remote = FakeRemote::default();
-    lock(&a)
-        .save_setting(
-            "ai_details",
-            &serde_json::json!({ "enabled": true, "apiKey": "sk-ant-gizli" }),
-        )
-        .unwrap();
-    lock(&b)
-        .save_setting(
-            "ai_details",
-            &serde_json::json!({ "enabled": false, "apiKey": "sk-ant-b" }),
-        )
-        .unwrap();
-    lock(&b).reset_sync_state().unwrap();
-    run(&a, &mut remote, "u1").unwrap();
-    let sent = remote.rows["settings"]["ai_details"].to_string();
-    assert!(!sent.contains("sk-ant"), "{sent}");
-
-    run(&b, &mut remote, "u1").unwrap();
-    let got = lock(&b).setting::<Value>("ai_details").unwrap().unwrap();
-    assert_eq!(got["enabled"], true);
-    assert_eq!(got["apiKey"], "sk-ant-b");
-}
-
-#[test]
 fn signing_in_on_a_new_device_takes_the_accounts_settings() {
     let a = Mutex::new(Store::open_in_memory().unwrap());
     let b = Mutex::new(Store::open_in_memory().unwrap());

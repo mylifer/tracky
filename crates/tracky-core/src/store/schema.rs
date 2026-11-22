@@ -284,6 +284,11 @@ CREATE INDEX plan_blocks_started_at ON plan_blocks (started_at);
 CREATE INDEX plan_blocks_unsynced ON plan_blocks (updated_at)
     WHERE synced_at IS NULL OR synced_at < updated_at;
 "#,
+    r#"
+-- Yapay zekâyla açıklama yazma kaldırıldı: ayarı (açık/kapalı, model, API anahtarı işareti) ve
+-- bu cihazın kullanım sayacı silinir. Anahtarın kendisi anahtar deposundan açılışta silinir.
+DELETE FROM settings WHERE key IN ('ai_details', 'ai_usage');
+"#,
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<()> {

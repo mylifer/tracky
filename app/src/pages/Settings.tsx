@@ -7,12 +7,11 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { cn } from "../lib/utils";
-import { AiSettings } from "./AiSettings";
 import { ConnectionsSettings } from "./ConnectionSettings";
 import GoalsSettings from "./GoalsSettings";
 import SyncSettings from "./SyncSettings";
 import DataHealthSettings from "./DataHealthSettings";
-import { AI_SECTION, CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections } from "./TimesheetSettings";
+import { CONNECTIONS_SECTION, TIMESHEET_SECTION, TimesheetSections } from "./TimesheetSettings";
 import UpdateSettings from "./UpdateSettings";
 import BackupSettings from "./BackupSettings";
 import { friendlyError, toast } from "../lib/feedback";
@@ -39,7 +38,6 @@ const GROUPS = [
     sections: [
       { id: TIMESHEET_SECTION, label: "Zaman çizelgeleri" },
       { id: CONNECTIONS_SECTION, label: "Bağlantılar" },
-      { id: AI_SECTION, label: "Yapay zekâ" },
     ],
   },
   { title: "Bildirimler", sections: [{ id: "hedefler", label: "Hedefler ve hatırlatıcılar" }] },
@@ -498,7 +496,6 @@ export default function Settings({
           <SettingsSuper title="İş akışı">
             <TimesheetSections />
             <ConnectionsSettings />
-            <AiSettings />
           </SettingsSuper>
 
           <SettingsSuper title="Bildirimler">
