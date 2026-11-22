@@ -146,12 +146,6 @@ Rize / Timely benzeri, macOS ve Windows'ta pencerelerde geçirilen süreyi takip
       Kuralla projeye düşen süre önce oturuma yazılır, rapor toplamları değişmez. Açılınca önce yedek alınır,
       sonra günde bir kez çalışır
 - [x] 61. Açılış: uygulama çizelgesi, ay takvimi, çizelge görünümü ve karşılama ihtiyaç anında yüklenir
-- [x] 62. Plan bloklarına yapay zekâyla ad: bloğun menüsünde "Yapay zekâyla yaz", Plan başlığında adı
-      olmayan bloklar için "Adsızları yaz". Ad, bloğun saatindeki pencerelerden, iş anahtarlarından ve
-      sitelerden ya da bloğa adını veren toplantının konusundan, daha önce yazdığın blok adlarının ve
-      çizelge açıklamalarının üslubuyla çıkar. Yalnızca projesi olan bloklara yazılır; elle yazılan ada
-      dokunulmaz, günün blokları tek istekte gider, hepsi tek "Geri al" ile geri alınır
-      (docs/gun-plani.md V9)
 
 ## Yapı
 

@@ -439,8 +439,6 @@ export type AiStatus = {
   models: AiModel[];
   usage: AiUsage;
 };
-/** Yapay zekânın ad yazacağı plan bloğu; kaydedilmemiş (kesik çizgili) öneri de olabilir. */
-export type PlanTarget = { id: string; start: string; end: string; projectId: string };
 /** Yapay zekânın bir satıra (sayfadaki anahtarıyla) yazdığı açıklama (henüz kaydedilmedi). */
 export type AiChange = { key: string; details: string };
 /** Bir günün yazımı; `costUsd`: isteğin yaklaşık tutarı (istek gitmediyse `null`). */
@@ -789,11 +787,6 @@ export const api = {
   testAi: (apiKey?: string) => invoke<string>("test_ai_connection", { apiKey: apiKey ?? null }),
   aiWriteDetails: (timesheetId: string, date: string, rewrite: boolean) =>
     invoke<AiWritten>("ai_write_details", { timesheetId, date, rewrite }),
-  /**
-   * Gün planı bloklarına yapay zekâyla ad yazar; kaydetmez (`changes[].key`: bloğun kimliği).
-   * Projesi olmayan ya da silinmiş projeye bağlı bloklar atlanır; hepsi tek istekte gider.
-   */
-  aiNamePlanBlocks: (blocks: PlanTarget[]) => invoke<AiWritten>("ai_name_plan_blocks", { blocks }),
   /** Toplantı serisini projeye ata; `null` yoksayar. */
   assignMeeting: (uid: string, projectId: string | null) => invoke<void>("assign_meeting", { uid, projectId }),
   /** Toplantının bu tekrarına katılıp katılmadığı (`null`: cevabı geri al). */

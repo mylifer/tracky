@@ -3,7 +3,6 @@ import type { WindowSpan } from "../api";
 import { NO_PROJECT } from "../api";
 import { buildModel, guess, relabel } from "./learn";
 import {
-  applyNames,
   confirm,
   draftSlots,
   draw,
@@ -15,7 +14,6 @@ import {
   resize,
   type Slot,
   split,
-  unnamed,
   update,
   visibleSuggestions,
   withAssigned,
@@ -305,44 +303,5 @@ describe("kurallar", () => {
       "next",
     );
     expect(show(merged)).toEqual(["09:00–11:00 p", "11:00–12:00 p"]);
-  });
-});
-
-// V9: yapay zekâyla ad yazma.
-describe("V9: yapay zekâyla ad", () => {
-  it("yalnızca adı olmayan, projesi olan onaylı blokları seçer", () => {
-    const named = { ...b("a", "09:00", "10:00"), note: "Ödeme akışı" };
-    const noProject = b("c", "10:00", "11:00", null);
-    const refused = b("d", "11:00", "12:00", NO_PROJECT);
-    const draft = { ...b("e", "12:00", "13:00"), draft: true };
-    const target = b("f", "13:00", "14:00");
-    expect(unnamed([named, noProject, refused, draft, target]).map((x) => x.id)).toEqual(["f"]);
-  });
-
-  it("yazılan adları bloklara yazar; adı yazılan öneri onaylanır", () => {
-    const block = b("a", "09:00", "10:00");
-    const draft = { ...b("e", "12:00", "13:00"), draft: true, meeting: "m" };
-    const [next, count] = applyNames(
-      [block],
-      [draft],
-      new Map([
-        ["a", "Ödeme akışı gözden geçirildi"],
-        ["e", "Sprint planlama"],
-      ]),
-    );
-    expect(count).toBe(2);
-    expect(next.map((x) => x.note)).toEqual(["Ödeme akışı gözden geçirildi", "Sprint planlama"]);
-    // Onaylanan öneri artık öneri değil ve yeni kimliği var (V2).
-    const confirmed = next[1];
-    expect(confirmed.draft).toBeUndefined();
-    expect(confirmed.id).not.toBe("e");
-  });
-
-  it("boş yanıt ve aynı ad bloğa dokunmaz", () => {
-    const block = { ...b("a", "09:00", "10:00"), note: "Ödeme akışı" };
-    const [next, count] = applyNames([block], [], new Map([["a", " Ödeme akışı "]]));
-    expect(count).toBe(0);
-    expect(next[0]).toBe(block);
-    expect(applyNames([block], [], new Map([["a", "  "]]))[1]).toBe(0);
   });
 });

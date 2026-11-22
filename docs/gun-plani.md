@@ -63,13 +63,3 @@ Kurallarla birlikte onaylandı.
   hazırlanan öneriler o bilgisayarda kalır; takvim etkinliği önerileri her bilgisayarda görünür.
 - **V7.** Etkinlik önerisinin projesi, toplantının proje atamasından gelir; yoksa projesizdir.
 - **V8.** "Katılmadım" denen (ya da Kum'un katılmadın dediği) toplantı öneri olmaz.
-- **V9.** Bloğun adını yapay zekâ yazabilir (isteğe bağlı, Ayarlar → Yapay zekâ açıksa):
-  bloğun menüsünde "Yapay zekâyla yaz", başlıkta adı olmayan blokların hepsi için "Adsızları
-  yaz". Yalnızca projesi olan bloklara yazılır (V4). Yazan, bloğun saatindeki pencereleri, iş
-  anahtarlarını ve siteleri ya da bloğa adını veren toplantının konusunu ve davet metnini,
-  kullanıcının daha önce yazdığı blok adlarının ve çizelge açıklamalarının üslubuyla kullanır.
-  Bir blokta bloğun saatindeki her şey kanıttır: pencerenin kurallardan gelen projesine bakılmaz.
-  - **V9a.** "Adsızları yaz" yalnızca adı olmayan onaylı bloklara yazar; elle yazılan ada ve
-    önerilere dokunmaz. Bir öneriye menüsünden ad yazdırmak onu onaylar (V2).
-  - **V9b.** Yazılan adlar hemen kaydedilir ve hepsi birden, tek "Geri al" ile geri alınır.
-    İsteğin yaklaşık tutarı bildirimde yazar; bir günün blokları tek istekte gider.

@@ -1,5 +1,5 @@
 import type { PlanBlock } from "../src/api";
-import { AI_NAME, PORTAL, SHEET, TRUMORE } from "./backend";
+import { PORTAL, SHEET, TRUMORE } from "./backend";
 import { type Page } from "@playwright/test";
 import { type App, expect, test } from "./fixtures";
 
@@ -315,36 +315,6 @@ test("Gün planı: Pencereler'de projeye atanan pencere Plan'da o projeyle öner
   await expect(drafts).toHaveCount(1);
   await expect(drafts).toContainText("Trumore");
   await expect(drafts).toHaveAttribute("title", /11:00–11:30/);
-});
-
-test("Gün planı: adı olmayan bloklara yapay zekâ ad yazar, geri alınabilir (V9)", async ({ app, page }) => {
-  await page.addInitScript(() => localStorage.setItem("e2e.ai", "1"));
-  await seed(page, "e2e.plan", [
-    { id: "b1", start: "2026-10-07T07:00:00.000Z", end: "2026-10-07T09:00:00.000Z", projectId: TRUMORE, note: "" },
-    {
-      id: "b2",
-      start: "2026-10-07T09:00:00.000Z",
-      end: "2026-10-07T10:00:00.000Z",
-      projectId: TRUMORE,
-      note: "Elle yazdım",
-    },
-  ]);
-  await app.open("Gün");
-  const blocks = page.locator("[data-plan=block]");
-  await expect(blocks).toHaveCount(2);
-  await page.getByRole("button", { name: /Adsızları yaz/ }).click();
-  // Yalnızca adsız blok istenir; elle yazılana dokunulmaz.
-  await expect.poll(async () => (await app.calls("ai_name_plan_blocks")).length).toBe(1);
-  const asked = (await app.calls("ai_name_plan_blocks"))[0].args.blocks as { id: string }[];
-  expect(asked.map((b) => b.id)).toEqual(["b1"]);
-  // Yazılan ad hemen kaydedilir; tutar ve geri alma bildirimde.
-  const saved = (await app.calls("save_plan")).at(-1)!.args.blocks as PlanBlock[];
-  expect(saved.map((b) => b.note)).toEqual([AI_NAME, "Elle yazdım"]);
-  await expect(page.getByText(/Bloğa yapay zekâyla ad yazıldı · ≈ \$0,01/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Geri al" })).toBeVisible();
-  await expect(blocks.first()).toContainText(AI_NAME);
-  // Adsız blok kalmadı: düğme de kalkar.
-  await expect(page.getByRole("button", { name: /Adsızları yaz/ })).toHaveCount(0);
 });
 
 test("Gün planı 1 Kasım'dan önceki günlere uygulanmaz: eski görünüm, süreler değişmez", async ({ app, page }) => {

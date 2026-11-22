@@ -624,7 +624,6 @@ pub fn run() {
             ai::save_ai_settings,
             ai::test_ai_connection,
             ai::ai_write_details,
-            ai::ai_name_plan_blocks,
             calendar::calendar_status,
             calendar::set_calendar_url,
             calendar::refresh_calendar,
