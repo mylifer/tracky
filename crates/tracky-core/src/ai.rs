@@ -100,11 +100,7 @@ pub fn row_activity(
 ) -> Activity {
     let mine =
         |s: &&Session| classifier.classify(s).project.as_deref() == Some(row.project_id.as_str());
-    let meeting = |m: &Meeting| Activity {
-        meeting: Some(m.subject.trim().to_string()).filter(|s| !s.is_empty()),
-        agenda: Some(m.agenda.trim().to_string()).filter(|s| !s.is_empty()),
-        ..Activity::default()
-    };
+    let meeting = from_meeting;
     // Takipten gelen satır: tam kapsadığı aralıklar.
     let own = row.spans();
     if !own.is_empty() {
@@ -234,6 +230,35 @@ fn summarize(spans: Vec<(DateTime<Utc>, DateTime<Utc>, &Session)>) -> Activity {
     }
 }
 
+/// Toplantı satırının (ya da bloğunun) bağlamı: konusu ve davet metni; pencerelere bakılmaz.
+fn from_meeting(m: &Meeting) -> Activity {
+    Activity {
+        meeting: Some(m.subject.trim().to_string()).filter(|s| !s.is_empty()),
+        agenda: Some(m.agenda.trim().to_string()).filter(|s| !s.is_empty()),
+        ..Activity::default()
+    }
+}
+
+/// Bir gün planı bloğunun ([`crate::store::plan::PlanBlock`]) süresindeki etkinlik: bloğa adını
+/// veren toplantı varsa ([`timesheet::plan_meeting`]) yalnızca konusu ve gündemi; yoksa bloğun
+/// saatinde açık olan pencereler, iş anahtarları ve siteler.
+///
+/// Blok kullanıcının kendi kararıdır (docs/gun-plani.md): satırlarda olduğu gibi pencerelerin
+/// kuraldan gelen projesine bakılmaz, bloğun saatindeki her şey o bloğun kanıtıdır.
+pub fn block_activity(block: Interval, sessions: &[Session], meetings: &[Meeting]) -> Activity {
+    if let Some(m) = timesheet::plan_meeting(block, meetings) {
+        return from_meeting(m);
+    }
+    let (start, end) = block;
+    let mut spans: Vec<(DateTime<Utc>, DateTime<Utc>, &Session)> = sessions
+        .iter()
+        .map(|s| (s.started_at.max(start), s.ended_at.min(end), s))
+        .filter(|(a, b, _)| b > a)
+        .collect();
+    spans.sort_by_key(|s| s.0);
+    summarize(spans)
+}
+
 /// Açıklama elle yazılmamış mı: boş, çizelgedeki projelerin hazır açıklaması ya da günün
 /// önerilerinden birinin (başlıklardan çıkan) açıklaması. Elle yazılan metin yalnızca istenirse
 /// değişir.
@@ -252,6 +277,20 @@ pub fn is_generated(details: &str, proposals: &[TimesheetEntry], sheet: &Timeshe
 /// `saved`'den) en çok [`MAX_EXAMPLES`] farklı açıklama. Örneği olmayan proje varsa başka
 /// projelerden birkaç açıklama "diğer" (`None`) olarak eklenir; dil ve üslup ondan çıkar.
 pub fn examples(saved: &[TimesheetEntry], projects: &[&str]) -> Vec<(Option<String>, Vec<String>)> {
+    let texts: Vec<(&str, &str)> = saved
+        .iter()
+        .map(|e| (e.project_id.as_str(), e.details.as_str()))
+        .collect();
+    examples_from(&texts, projects)
+}
+
+/// [`examples`] ile aynı, ama kaynağı (proje, metin) çiftleridir: gün planında bloklara yazılan
+/// adlar da örnek olur (docs/gun-plani.md V5: bloğun adı zaman çizelgesindeki açıklamadır).
+/// `saved` yeniden eskiye sıralı olmalıdır.
+pub fn examples_from(
+    saved: &[(&str, &str)],
+    projects: &[&str],
+) -> Vec<(Option<String>, Vec<String>)> {
     let mut out: Vec<(Option<String>, Vec<String>)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut missing = false;
@@ -260,8 +299,8 @@ pub fn examples(saved: &[TimesheetEntry], projects: &[&str]) -> Vec<(Option<Stri
             continue;
         }
         let mut texts: Vec<String> = Vec::new();
-        for e in saved.iter().filter(|e| e.project_id == project) {
-            let d = e.details.trim();
+        for (_, details) in saved.iter().filter(|(p, _)| *p == project) {
+            let d = details.trim();
             if !d.is_empty() && !texts.iter().any(|t| t.to_lowercase() == d.to_lowercase()) {
                 texts.push(truncate(d, MAX_TITLE_CHARS));
                 seen.insert(d.to_lowercase());
@@ -277,8 +316,8 @@ pub fn examples(saved: &[TimesheetEntry], projects: &[&str]) -> Vec<(Option<Stri
     }
     if missing {
         let mut other: Vec<String> = Vec::new();
-        for e in saved {
-            let d = e.details.trim();
+        for (_, details) in saved {
+            let d = details.trim();
             if !d.is_empty() && seen.insert(d.to_lowercase()) {
                 other.push(truncate(d, MAX_TITLE_CHARS));
             }
@@ -616,6 +655,84 @@ mod tests {
         assert_eq!(a.meeting.as_deref(), Some("Sprint planlama"));
         assert_eq!(a.agenda.as_deref(), Some("Kapasite ve LOY-214 kapsamı"));
         assert!(a.titles.is_empty());
+    }
+
+    fn plan_meeting(from: i64, to: i64, subject: &str, online: bool) -> Meeting {
+        Meeting {
+            uid: "u".into(),
+            start: t(from),
+            end: t(to),
+            subject: subject.into(),
+            location: String::new(),
+            online,
+            organizer: None,
+            attendees: Vec::new(),
+            agenda: String::new(),
+        }
+    }
+
+    #[test]
+    fn block_activity_covers_the_whole_block_whatever_the_rules_say() {
+        // Blok kullanıcının kararıdır: kuralların başka projeye attığı pencere de bloğun kanıtı.
+        let sessions = vec![
+            s("LOY-214 Checkout - Jira", Some("jira.togg.com"), 0, 40),
+            s("Sunum - Keynote", None, 40, 50),
+            // Bloğun dışında kalan kısım sayılmaz.
+            s("Haberler", Some("bbc.com"), 55, 90),
+        ];
+        let a = block_activity((t(0), t(60)), &sessions, &[]);
+        assert_eq!(
+            a.titles,
+            vec![
+                ("LOY-214 Checkout - Jira".to_string(), 40),
+                ("Sunum - Keynote".to_string(), 10),
+                ("Haberler".to_string(), 5)
+            ]
+        );
+        assert_eq!(a.issue_keys, vec!["LOY-214"]);
+        assert_eq!(a.sites[0], ("jira.togg.com".to_string(), 40));
+    }
+
+    #[test]
+    fn a_block_held_by_a_meeting_is_named_from_its_subject() {
+        let held = plan_meeting(0, 60, "Sprint planlama", true);
+        let a = block_activity((t(0), t(60)), &[s("Zoom", None, 0, 60)], &[held]);
+        assert_eq!(a.meeting.as_deref(), Some("Sprint planlama"));
+        assert!(a.titles.is_empty());
+        // Bloğun ucuna değen kısa toplantı bloğu toplantı yapmaz: pencereler kanıt kalır.
+        let short = plan_meeting(55, 65, "Hızlı görüşme", true);
+        let a = block_activity((t(0), t(60)), &[s("Zoom", None, 0, 60)], &[short]);
+        assert_eq!(a.meeting, None);
+        assert_eq!(a.titles.len(), 1);
+    }
+
+    #[test]
+    fn plan_block_kind_follows_the_meeting_that_holds_it() {
+        use crate::timesheet::plan_kind;
+        let block = (t(0), t(60));
+        assert_eq!(plan_kind(block, &[]), EntryKind::Working);
+        assert_eq!(
+            plan_kind(block, &[plan_meeting(0, 60, "Sprint", true)]),
+            EntryKind::Online
+        );
+        assert_eq!(
+            plan_kind(block, &[plan_meeting(10, 60, "Ziyaret", false)]),
+            EntryKind::F2F
+        );
+        // Bloğun yarısından azını kaplayan toplantı türünü değiştirmez.
+        assert_eq!(
+            plan_kind(block, &[plan_meeting(45, 60, "Kısa", false)]),
+            EntryKind::Working
+        );
+    }
+
+    #[test]
+    fn plan_block_names_are_style_examples_too() {
+        // Blok adları (proje, metin) olarak gelir: zaman çizelgesi satırı olmadan da üslup çıkar.
+        let notes = [("tru", "Ödeme akışı gözden geçirildi"), ("tru", "")];
+        let ex = examples_from(&notes, &["tru"]);
+        assert_eq!(ex.len(), 1);
+        assert_eq!(ex[0].1, vec!["Ödeme akışı gözden geçirildi"]);
     }
 
     #[test]

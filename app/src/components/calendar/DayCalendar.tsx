@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { AppWindow, CalendarDays, ChevronDown, FileSpreadsheet, MousePointer2, Shapes, Video } from "lucide-react";
+import {
+  AppWindow,
+  CalendarDays,
+  ChevronDown,
+  FileSpreadsheet,
+  Loader2,
+  MousePointer2,
+  Shapes,
+  Sparkles,
+  Video,
+} from "lucide-react";
 import type { CalendarMeeting, EditScope, EntryView, IdleSpan, Segment, Tag, WindowSpan, WorkBlock } from "../../api";
 import { formatDuration } from "../../api";
 import { addDays, formatTime, fromWallMs } from "../../lib/dates";
@@ -21,7 +31,7 @@ import {
 import { Block, IdleBlock } from "./Block";
 import { DraftBlock } from "./DraftBlock";
 import { PlanColumn, approveAll, usePlan } from "./PlanColumn";
-import { planApplies } from "../../lib/plan";
+import { planApplies, unnamed } from "../../lib/plan";
 import { DRAFT_STEPS, type DraftGroup, draftGroups } from "../../lib/draft";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { categoryBuckets } from "./buckets";
@@ -226,6 +236,8 @@ export function DayCalendar({
   // hiçbir şeyleri değişmez (docs/gun-plani.md kural 10).
   const planHere = planApplies(from);
   const plan = usePlan(from, windows ?? [], meetings, planHere);
+  // Adı olmayan onaylı bloklar: başlıktaki "Adsızları yaz" bunlara ad yazdırır (V9).
+  const unnamedBlocks = useMemo(() => unnamed(plan.confirmed ?? []), [plan.confirmed]);
   // Taslaklar; "Parçaları aç" denenler (başlangıçlarıyla) bloklarıyla çizilir.
   const groups = useMemo(() => draftGroups(blocks, draft), [blocks, draft]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -330,6 +342,18 @@ export function DayCalendar({
               onClick={() => void plan.save(approveAll(plan), `${plan.drafts.length} öneri onaylandı`)}
             >
               Hepsini onayla
+            </button>
+          )}
+          {planHere && plan.ai && unnamedBlocks.length > 0 && (
+            <button
+              type="button"
+              className="flex shrink-0 items-center gap-1 rounded px-1 font-medium text-primary hover:bg-accent disabled:opacity-50"
+              disabled={plan.naming}
+              title={`Adı olmayan ${unnamedBlocks.length} bloğun adını Claude yazar: bloğun saatindeki pencerelerden ya da toplantının konusundan, senin daha önce yazdığın adların üslubunda. Önerilere dokunmaz; bildirimden geri alınır.`}
+              onClick={() => void plan.nameWithAi(unnamedBlocks)}
+            >
+              {plan.naming ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+              Adsızları yaz
             </button>
           )}
           {!planHere && expanded.size > 0 && (

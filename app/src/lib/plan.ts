@@ -486,3 +486,33 @@ export type PlanAssigned = { start: number; end: number; projectId: string | nul
 export function announceAssigned(detail: PlanAssigned) {
   window.dispatchEvent(new CustomEvent<PlanAssigned>(PLAN_ASSIGNED, { detail }));
 }
+
+/** Bloğa yapay zekâ ad yazabilir mi: projesi olmalı (projesiz blok çizelgeye gitmez, V4, V9). */
+export const namable = (b: Slot) => !!b.projectId && b.projectId !== NO_PROJECT_ID;
+
+/**
+ * Yapay zekânın adlandıracağı bloklar (V9): adı olmayan, projesi olan onaylı bloklar. Öneriler
+ * burada yok: onlara ad vermek onları onaylar (V2), bu da yalnızca bloğun kendi menüsünden olur.
+ */
+export const unnamed = (list: Slot[]) => list.filter((b) => !b.draft && !b.note.trim() && namable(b));
+
+/**
+ * Yapay zekânın yazdığı adları bloklara yazar: adı yazılan öneri onaylı bloğa döner (V2).
+ * Değişmeyen bloklara dokunulmaz; dönen sayı gerçekten ad yazılan blok sayısıdır.
+ */
+export function applyNames(confirmed: Slot[], drafts: Slot[], notes: Map<string, string>): [Slot[], number] {
+  let written = 0;
+  const next = confirmed.map((b) => {
+    const note = notes.get(b.id)?.trim();
+    if (!note || note === b.note.trim()) return b;
+    written += 1;
+    return { ...b, note };
+  });
+  for (const d of drafts) {
+    const note = notes.get(d.id)?.trim();
+    if (!note) continue;
+    written += 1;
+    next.push({ ...confirm(d), note });
+  }
+  return [sorted(next), written];
+}

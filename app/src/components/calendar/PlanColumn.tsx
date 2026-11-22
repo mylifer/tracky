@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
-import { Check, Combine, Scissors, Trash2 } from "lucide-react";
+import { Check, Combine, Loader2, Scissors, Sparkles, Trash2 } from "lucide-react";
 import type { CalendarMeeting, Tag, WindowSpan } from "../../api";
 import { api, formatDuration, NO_PROJECT } from "../../api";
 import { addDays, formatTime, fromWallMs, isoDate } from "../../lib/dates";
 import { friendlyError, toast, undoable, useChanged } from "../../lib/feedback";
 import { buildModel, relabel } from "../../lib/learn";
+import { formatUsd } from "../../lib/money";
 import {
   PLAN_DEFAULTS,
   type Slot,
+  applyNames,
   confirm,
   draftSlots,
   draw,
   fromApi,
   meetingSlots,
   mergeWith,
+  namable,
   remove,
   resize,
   snap,
@@ -93,6 +96,16 @@ export function usePlan(from: Date, windows: WindowSpan[], meetings: CalendarMee
   const [stored, setStored] = useStored<Slot[]>(`kum.plan.suggestions.${day}`, []);
   const [dismissed, setDismissed] = useStored<string[]>(`kum.plan.dismissedMeetings.${day}`, []);
   const [suggesting, setSuggesting] = useState(false);
+  // Yapay zekâyla adlandırma yalnızca açık ve anahtarı girilmişse görünür (Ayarlar → Yapay zekâ).
+  const [ai, setAi] = useState(false);
+  const [naming, setNaming] = useState(false);
+  useEffect(() => {
+    if (!enabled) return;
+    api.aiSettings().then(
+      (st) => setAi(st.enabled && st.hasKey),
+      () => setAi(false),
+    );
+  }, [enabled]);
   const load = useCallback(() => {
     if (!enabled) return;
     api.getPlan(iso(dayStart), iso(dayEnd)).then(
@@ -194,7 +207,39 @@ export function usePlan(from: Date, windows: WindowSpan[], meetings: CalendarMee
     }
   };
 
-  return { confirmed, drafts, save, dismiss, suggest, suggesting, dayStart, dayEnd };
+  /**
+   * Bloklara yapay zekâyla ad yazar (V9): bloğun saatindeki pencereler, iş anahtarları ve
+   * siteler ya da toplantının konusu, kullanıcının daha önce yazdığı adların üslubunda. Adı
+   * yazılan öneri onaylanır (V2); hepsi tek kayıtla yazılır, bildirimden birden geri alınır.
+   */
+  const nameWithAi = async (targets: Slot[]) => {
+    if (!confirmed || naming) return;
+    const list = targets.filter(namable);
+    if (list.length === 0) {
+      toast("Yapay zekâ yalnızca projesi olan bloklara ad yazar");
+      return;
+    }
+    setNaming(true);
+    try {
+      const written = await api.aiNamePlanBlocks(
+        list.map((b) => ({ id: b.id, start: iso(b.start), end: iso(b.end), projectId: b.projectId! })),
+      );
+      const notes = new Map(written.changes.map((c) => [c.key, c.details]));
+      const [next, count] = applyNames(confirmed, drafts, notes);
+      if (count === 0) {
+        toast("Yapay zekâ yeni bir ad yazmadı");
+        return;
+      }
+      const cost = written.costUsd ? ` · ≈ ${formatUsd(written.costUsd)}` : "";
+      await save(next, `${count === 1 ? "Bloğa" : `${count} bloğa`} yapay zekâyla ad yazıldı${cost}`);
+    } catch (e) {
+      toast(friendlyError(e), { tone: "error" });
+    } finally {
+      setNaming(false);
+    }
+  };
+
+  return { confirmed, drafts, save, dismiss, suggest, suggesting, nameWithAi, ai, naming, dayStart, dayEnd };
 }
 
 export type Plan = ReturnType<typeof usePlan>;
@@ -232,7 +277,7 @@ export function PlanColumn({
 }) {
   const edit = useEdit();
   const projects = useMemo(() => edit?.projects ?? [], [edit]);
-  const { confirmed, drafts, save, dismiss, dayStart, dayEnd } = plan;
+  const { confirmed, drafts, save, dismiss, ai, naming, dayStart, dayEnd } = plan;
   const [paintSel, setPaintSel] = useState<{ a: number; b: number; x: number; y: number } | null>(null);
   // Menüden "Böl" seçilen blok: bir sonraki tıklama bölme yeridir (kural 8).
   const [splitting, setSplitting] = useState<string | null>(null);
@@ -268,6 +313,7 @@ export function PlanColumn({
       const [list, map] = materialize([b.id]);
       void save(update(list, idOf(map, b.id), { note }), "Ad kaydedildi");
     },
+    aiName: (b) => void plan.nameWithAi([b]),
     approve: (b) => {
       const [list] = materialize([b.id]);
       void save(list, "Blok onaylandı");
@@ -323,6 +369,8 @@ export function PlanColumn({
             actions={actions}
             neighbors={neighbors(b)}
             splitting={splitting === b.id}
+            ai={ai}
+            naming={naming}
           />
         ))}
         {children}
@@ -369,6 +417,8 @@ function usePastNames(): string[] {
 type PlanActions = {
   setProject: (b: Slot, projectId: string | null) => void;
   setNote: (b: Slot, note: string) => void;
+  /** Bloğun adını yapay zekâ yazar (öneriyse onaylanır). */
+  aiName: (b: Slot) => void;
   approve: (b: Slot) => void;
   startSplit: (b: Slot) => void;
   split: (b: Slot, t: number) => void;
@@ -400,6 +450,8 @@ function PlanBlockView({
   actions,
   neighbors,
   splitting,
+  ai,
+  naming,
 }: {
   b: Slot;
   tags: Map<string, Tag>;
@@ -411,6 +463,10 @@ function PlanBlockView({
   neighbors: { prev: boolean; next: boolean };
   /** "Böl" seçildi: bloğa tıklanan yer bölme yeridir. */
   splitting: boolean;
+  /** Yapay zekâyla yazma açık mı (Ayarlar → Yapay zekâ). */
+  ai: boolean;
+  /** Yapay zekâ şu an bir bloğa ad yazıyor. */
+  naming: boolean;
 }) {
   const [open, setOpen] = useState(false);
   // Bölme modunda imlecin gösterdiği bölme yeri (ms).
@@ -521,6 +577,8 @@ function PlanBlockView({
             windows={windows}
             actions={actions}
             neighbors={neighbors}
+            ai={ai}
+            naming={naming}
             onDone={() => setOpen(false)}
           />
         </PopoverContent>
@@ -573,6 +631,8 @@ function PlanDetails({
   windows,
   actions,
   neighbors,
+  ai,
+  naming,
   onDone,
 }: {
   b: Slot;
@@ -581,6 +641,8 @@ function PlanDetails({
   windows: WindowSpan[];
   actions: PlanActions;
   neighbors: { prev: boolean; next: boolean };
+  ai: boolean;
+  naming: boolean;
   onDone: () => void;
 }) {
   const [note, setNote] = useState(b.note);
@@ -591,6 +653,7 @@ function PlanDetails({
   // yazılan açıklamalar. Yazdıkça süzülür.
   const past = usePastNames();
   const listId = useId();
+  const inputId = useId();
   const suggestions = useMemo(() => {
     const titles = blockWindows(windows, iso(b.start), iso(b.end)).flatMap((a) => a.windows.map((w) => w.title.trim()));
     return [...new Set([...titles, ...past.map((d) => d.trim())].filter(Boolean))].slice(0, 200);
@@ -611,12 +674,30 @@ function PlanDetails({
           {b.draft && (b.meeting ? " · öneri: takvim etkinliği" : " · öneri: bilgisayar kaydından")}
         </p>
       </div>
-      <label className="block space-y-1">
-        <span className="block text-[11px] text-muted-foreground">Blok adı · zaman çizelgesinde açıklama olur</span>
+      <div className="space-y-1">
+        <div className="flex items-end justify-between gap-2">
+          <label htmlFor={inputId} className="block text-[11px] text-muted-foreground">
+            Blok adı · zaman çizelgesinde açıklama olur
+          </label>
+          {ai && namable(b) && (
+            <button
+              type="button"
+              disabled={naming}
+              className="flex shrink-0 items-center gap-1 rounded px-1 text-[11px] font-medium text-primary hover:bg-accent disabled:opacity-50"
+              title={`Bloğun saatindeki pencerelerden (ya da toplantının konusundan) ${
+                b.note.trim() ? "yeni bir adı" : "adı"
+              } Claude yazar, senin üslubunda.${b.draft ? " Blok onaylanır." : ""} Bildirimden geri alınır.`}
+              onClick={() => run(() => actions.aiName(b))}
+            >
+              {naming ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+              Yapay zekâyla yaz
+            </button>
+          )}
+        </div>
         <input
+          id={inputId}
           value={note}
           placeholder={titleOf({ ...b, note: "" }, tags, windows)}
-          aria-label="Blok adı"
           list={listId}
           autoComplete="off"
           className="h-8 w-full rounded-md border bg-transparent px-2 text-sm"
@@ -631,7 +712,7 @@ function PlanDetails({
             <option key={d} value={d} />
           ))}
         </datalist>
-      </label>
+      </div>
       <div className="grid gap-1" role="group" aria-label="Proje">
         {[
           ...quick,

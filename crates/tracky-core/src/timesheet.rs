@@ -733,6 +733,29 @@ pub fn pieces_with(
     out
 }
 
+/// Bloğa adını ve türünü veren takvim toplantısı: bloğun en az yarısını kaplayanlardan bloktaki
+/// süresi en uzun olanı (docs/gun-plani.md kural 6). Bloğun ucuna değen ya da kısa kalan toplantı
+/// bloğu toplantı yapmaz.
+pub fn plan_meeting((start, end): Interval, meetings: &[Meeting]) -> Option<&Meeting> {
+    let overlap = |m: &Meeting| (m.end.min(end) - m.start.max(start)).max(Duration::zero());
+    meetings
+        .iter()
+        .filter(|m| overlap(m) * 2 >= end - start)
+        .max_by_key(|m| overlap(m))
+}
+
+/// Plan bloğunun zaman çizelgesindeki türü: bloğa adını veren toplantı çevrim içiyse Online,
+/// değilse F2F; toplantı yoksa bilgisayarda çalışma.
+pub fn plan_kind(block: Interval, meetings: &[Meeting]) -> EntryKind {
+    plan_meeting(block, meetings).map_or(EntryKind::Working, |m| {
+        if m.online {
+            EntryKind::Online
+        } else {
+            EntryKind::F2F
+        }
+    })
+}
+
 /// Gün planının uygulandığı günlerde zaman çizelgesine giren süre: onaylı her plan bloğu
 /// (aralığı, projesi, adı) tek bir satırdır, başka hesap yoktur (docs/gun-plani.md, kural 6).
 /// Açıklama bloğun adıdır; adı yoksa bloktaki en uzun süren pencere başlığı. Tür, bloğun en az
@@ -769,17 +792,7 @@ pub fn plan_pieces(
             } else {
                 note.trim().to_string()
             };
-            let kind = meetings
-                .iter()
-                .filter(|m| overlap(m.start, m.end) * 2 >= end - start)
-                .max_by_key(|m| overlap(m.start, m.end))
-                .map_or(EntryKind::Working, |m| {
-                    if m.online {
-                        EntryKind::Online
-                    } else {
-                        EntryKind::F2F
-                    }
-                });
+            let kind = plan_kind((start, end), meetings);
             Piece {
                 project: project.clone(),
                 kind,

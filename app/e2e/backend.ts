@@ -339,8 +339,11 @@ const calendar: CalendarStatus = { url: null, events: 0, last: null, lastOk: nul
 /** Veri denetiminin onarımı yapıldı mı (onarımdan sonra denetim temiz döner). */
 let repaired = false;
 
-/** Gün planının kaydedilen blokları (`save_plan` yazar, `get_plan` okur). */
-let plan: PlanBlock[] = [];
+/**
+ * Gün planının kaydedilen blokları (`save_plan` yazar, `get_plan` okur); testin sayfa açılmadan
+ * yazdıklarıyla başlar (`e2e.plan`).
+ */
+let plan: PlanBlock[] = stored("e2e.plan") as PlanBlock[];
 
 /** Testin sayfa açılmadan yazdığı veri (yoksa boş liste). */
 function stored(key: string): unknown[] {
@@ -350,6 +353,18 @@ function stored(key: string): unknown[] {
     return [];
   }
 }
+
+/** Yapay zekâyla yazma testte açık mı. */
+function ai(): boolean {
+  try {
+    return localStorage.getItem("e2e.ai") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Sahte yapay zekânın bloğa yazdığı ad. */
+export const AI_NAME = "Ödeme akışı gözden geçirildi";
 
 type Args = Record<string, unknown>;
 type Handler = (args: Args) => unknown;
@@ -401,13 +416,19 @@ const handlers: Record<string, Handler> = {
   known_apps: () => [],
   get_trends: () => ({ periods: [], categories: [], projects: [] }),
   google_status: () => ({ connected: false, email: null, clientId: "", hasSecret: false }),
+  // Yapay zekâ yalnızca testin açtığı sayfalarda açık (`e2e.ai`); ötekilerde kapalı kalır.
   get_ai_settings: () => ({
-    enabled: false,
-    hasKey: false,
-    keyHint: null,
+    enabled: ai(),
+    hasKey: ai(),
+    keyHint: ai() ? "…1234" : null,
     model: "claude-opus-5-5",
     models: [{ id: "claude-opus-5-5", label: "Claude Opus 5.5", hint: "" }],
     usage: { month: "2026-11", requests: 0, costUsd: 0 },
+  }),
+  /** Her bloğa aynı adı yazar: arayüzün yazdığını kaydettiği ve geri aldığı görülsün. */
+  ai_name_plan_blocks: (a) => ({
+    changes: (a.blocks as { id: string }[]).map((b) => ({ key: b.id, details: AI_NAME })),
+    costUsd: 0.0123,
   }),
   get_retention: () => ({ months: null, lastRun: null, lastCount: 0 }),
   backup_status: () => ({ dir: "/tmp/yedek", last: null, damage: null, files: [] }),
